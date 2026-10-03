@@ -11,11 +11,11 @@
 //! `focusable_order` and its caret survives the per-keystroke filter
 //! rebuild.
 
+use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -674,10 +674,6 @@ impl AppShell {
 
 /// Free function (not a method) so it borrows none of `AppShell`'s fields —
 /// the caller keeps a live `&mut` on the child.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the free painter takes child, render, presence and permission inputs separately to avoid borrowing AppShell during a child borrow"
-)]
 fn paint_child(
     w: &mut dyn Widget,
     scene: &mut Scene,
@@ -694,7 +690,7 @@ fn paint_child(
 }
 
 impl Widget for AppShell {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.back_requested.replace(false) {
             self.back();
         }
@@ -845,21 +841,11 @@ impl Widget for AppShell {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -872,7 +858,7 @@ impl Widget for AppShell {
             } => {
                 // Esc on the narrow content screen goes back to the list.
                 if self.back() {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -896,7 +882,7 @@ impl Widget for AppShell {
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -906,7 +892,7 @@ impl Widget for AppShell {
         // that retain hover/press state: a content control must not consume a
         // release meant for a sidebar row, and a content wheel must reach its
         // Scrollable rather than the sidebar list.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let mut pairs: Vec<(Slot, NodeId)> = Vec::new();
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
@@ -926,7 +912,7 @@ impl Widget for AppShell {
             _ => [Slot::Back, Slot::Search, Slot::Content, Slot::Nav],
         };
         for want in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             if let Some(&(_, n)) = pairs.iter().find(|(s, _)| *s == want) {
@@ -939,20 +925,10 @@ impl Widget for AppShell {
                     Slot::Nav => self.nav.as_mut(),
                     Slot::Content => self.content.as_mut(),
                 };
-                w.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                w.handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 if self.back_requested.replace(false) {
                     self.back();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }
@@ -1083,6 +1059,7 @@ impl Widget for AppShell {
 mod tests {
     use super::*;
     use crate::widget::{Text, TextInput};
+    use automerge::AutoCommit;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
 
@@ -1133,419 +1110,427 @@ mod tests {
     }
 
     #[test]
-    fn breakpoint_boundary_is_inclusive_wide() {
-        assert_eq!(ShellLayout::from_width(720.0, 720.0), ShellLayout::Wide);
-        assert_eq!(ShellLayout::from_width(719.0, 720.0), ShellLayout::Narrow);
-    }
+    fn wide_shell_breakpoint_scale_and_sidebar() {
+        fn breakpoint_boundary_is_inclusive_wide() {
+            assert_eq!(ShellLayout::from_width(720.0, 720.0), ShellLayout::Wide);
+            assert_eq!(ShellLayout::from_width(719.0, 720.0), ShellLayout::Narrow);
+        }
 
-    /// HIG §9.6: the sidebar width and breakpoint are authored at 1× and
-    /// resolved against the theme (`× ui_scale × text_scale.max(1.0)`); the
-    /// default breakpoint is the `ui_scale`d `compact_breakpoint` token; the
-    /// search slot grows with the body line and the icon-only Back button
-    /// with `ui_scale` alone. 1× is exactly the authored geometry.
-    #[test]
-    fn shell_inputs_and_chrome_follow_the_responsive_scale() {
-        let authored = || {
-            AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")))
-                .with_search(Box::new(Text::new("search")))
-                .with_sidebar_width(264.0)
-                .with_breakpoint(720.0)
-        };
-        let mut one = authored();
-        lay(&mut one, 1000.0, 600.0);
-        assert_eq!((one.breakpoint(), one.sidebar_width()), (720.0, 264.0));
-        assert_eq!((one.pad, one.ctrl_h, one.back_btn), (12.0, 34.0, 34.0));
-        assert_eq!(one.search_band_h(), 58.0);
-        assert_eq!(search_rect(&one).height(), 34.0);
+        /// HIG §9.6: the sidebar width and breakpoint are authored at 1× and
+        /// resolved against the theme (`× ui_scale × text_scale.max(1.0)`); the
+        /// default breakpoint is the `ui_scale`d `compact_breakpoint` token; the
+        /// search slot grows with the body line and the icon-only Back button
+        /// with `ui_scale` alone. 1× is exactly the authored geometry.
+        fn shell_inputs_and_chrome_follow_the_responsive_scale() {
+            let authored = || {
+                AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")))
+                    .with_search(Box::new(Text::new("search")))
+                    .with_sidebar_width(264.0)
+                    .with_breakpoint(720.0)
+            };
+            let mut one = authored();
+            lay(&mut one, 1000.0, 600.0);
+            assert_eq!((one.breakpoint(), one.sidebar_width()), (720.0, 264.0));
+            assert_eq!((one.pad, one.ctrl_h, one.back_btn), (12.0, 34.0, 34.0));
+            assert_eq!(one.search_band_h(), 58.0);
+            assert_eq!(search_rect(&one).height(), 34.0);
 
-        let two = Theme::dark().with_text_scale(2.0);
-        let mut large = authored();
-        lay_with(&mut large, &two, 1000.0, 600.0);
-        assert_eq!((large.breakpoint(), large.sidebar_width()), (1440.0, 528.0));
-        assert_eq!(
-            large.layout,
-            ShellLayout::Narrow,
-            "1000 px at 2× is a 500 px window at 1×"
-        );
-        let grown = crate::widget::text_control_height(CTRL_H, &two);
-        assert!(grown > CTRL_H && grown < 2.0 * CTRL_H);
-        assert_eq!(
-            large.ctrl_h, grown,
-            "the search slot grows with the body line"
-        );
-        assert_eq!(
-            large.back_btn, 34.0,
-            "the icon-only Back button is not text-sized"
-        );
-        assert!(
-            (search_rect(&large).height() - grown).abs() <= 0.5,
-            "the slot style carries the grown height (taffy rounds to whole pixels): {} vs {grown}",
-            search_rect(&large).height()
-        );
+            let two = Theme::dark().with_text_scale(2.0);
+            let mut large = authored();
+            lay_with(&mut large, &two, 1000.0, 600.0);
+            assert_eq!((large.breakpoint(), large.sidebar_width()), (1440.0, 528.0));
+            assert_eq!(
+                large.layout,
+                ShellLayout::Narrow,
+                "1000 px at 2× is a 500 px window at 1×"
+            );
+            let grown = crate::widget::text_control_height(CTRL_H, &two);
+            assert!(grown > CTRL_H && grown < 2.0 * CTRL_H);
+            assert_eq!(
+                large.ctrl_h, grown,
+                "the search slot grows with the body line"
+            );
+            assert_eq!(
+                large.back_btn, 34.0,
+                "the icon-only Back button is not text-sized"
+            );
+            assert!(
+                (search_rect(&large).height() - grown).abs() <= 0.5,
+                "the slot style carries the grown height (taffy rounds to whole pixels): {} vs {grown}",
+                search_rect(&large).height()
+            );
 
-        let mut defaults =
-            AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")));
-        lay_with(
-            &mut defaults,
-            &Theme::dark().with_ui_scale(1.5),
-            1400.0,
-            600.0,
-        );
-        assert!(
-            (defaults.breakpoint() - 1080.0).abs() < 1e-6,
-            "compact_breakpoint at ui 1.5"
-        );
-        assert!(
-            (defaults.sidebar_width() - 396.0).abs() < 1e-6,
-            "264 authored × ui 1.5"
-        );
-        assert!(
-            (defaults.back_btn - 51.0).abs() < 1e-6,
-            "the Back button follows ui_scale"
-        );
-        assert!((defaults.pad - 18.0).abs() < 1e-6, "s3 at ui 1.5");
-    }
+            let mut defaults =
+                AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")));
+            lay_with(
+                &mut defaults,
+                &Theme::dark().with_ui_scale(1.5),
+                1400.0,
+                600.0,
+            );
+            assert!(
+                (defaults.breakpoint() - 1080.0).abs() < 1e-6,
+                "compact_breakpoint at ui 1.5"
+            );
+            assert!(
+                (defaults.sidebar_width() - 396.0).abs() < 1e-6,
+                "264 authored × ui 1.5"
+            );
+            assert!(
+                (defaults.back_btn - 51.0).abs() < 1e-6,
+                "the Back button follows ui_scale"
+            );
+            assert!((defaults.pad - 18.0).abs() < 1e-6, "s3 at ui 1.5");
+        }
 
-    /// Wide: the sidebar is ALWAYS docked — no collapse/expand toggle exists
-    /// anywhere.
-    #[test]
-    fn sidebar_always_visible_and_no_toggle_when_it_fits() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        assert!(!s.is_narrow(), "1000px is wide (the sidebar fits)");
-        assert!(s.sidebar_open(), "the fitting sidebar is always shown");
-        assert_eq!(
-            s.back_rect(),
-            Rect::ZERO,
-            "there is no toggle/back button when the sidebar fits"
-        );
-        assert_eq!(s.sidebar_panel_rect.x0, 0.0, "sidebar panel is flush left");
-        assert!(
-            (s.sidebar_panel_rect.height() - 700.0).abs() < 0.5,
-            "panel spans full height"
-        );
-        assert!(
-            (s.sidebar_panel_rect.width() - s.sidebar_width).abs() < 0.5,
-            "panel is exactly the sidebar width"
-        );
-        let sr = search_rect(&s);
-        assert!(
-            sr.x0 >= s.sidebar_panel_rect.x0 && sr.x1 <= s.sidebar_panel_rect.x1 + 0.5,
-            "search over the sidebar column"
-        );
-        assert!(
-            sr.y0 <= s.rect.y0 + PAD + 0.5,
-            "search is pinned to the top of the sidebar"
-        );
-        assert!(
-            (s.content_area_rect.x0 - s.sidebar_panel_rect.x1).abs() < 0.5,
-            "content starts flush against the sidebar"
-        );
-        assert!(
-            s.content_area_rect.x1 > s.sidebar_panel_rect.x1,
-            "content fills the area to the right"
-        );
-    }
+        /// Wide: the sidebar is ALWAYS docked — no collapse/expand toggle exists
+        /// anywhere.
+        fn sidebar_always_visible_and_no_toggle_when_it_fits() {
+            let mut s = shell();
+            lay(&mut s, 1000.0, 700.0);
+            assert!(!s.is_narrow(), "1000px is wide (the sidebar fits)");
+            assert!(s.sidebar_open(), "the fitting sidebar is always shown");
+            assert_eq!(
+                s.back_rect(),
+                Rect::ZERO,
+                "there is no toggle/back button when the sidebar fits"
+            );
+            assert_eq!(s.sidebar_panel_rect.x0, 0.0, "sidebar panel is flush left");
+            assert!(
+                (s.sidebar_panel_rect.height() - 700.0).abs() < 0.5,
+                "panel spans full height"
+            );
+            assert!(
+                (s.sidebar_panel_rect.width() - s.sidebar_width).abs() < 0.5,
+                "panel is exactly the sidebar width"
+            );
+            let sr = search_rect(&s);
+            assert!(
+                sr.x0 >= s.sidebar_panel_rect.x0 && sr.x1 <= s.sidebar_panel_rect.x1 + 0.5,
+                "search over the sidebar column"
+            );
+            assert!(
+                sr.y0 <= s.rect.y0 + PAD + 0.5,
+                "search is pinned to the top of the sidebar"
+            );
+            assert!(
+                (s.content_area_rect.x0 - s.sidebar_panel_rect.x1).abs() < 0.5,
+                "content starts flush against the sidebar"
+            );
+            assert!(
+                s.content_area_rect.x1 > s.sidebar_panel_rect.x1,
+                "content fills the area to the right"
+            );
+        }
 
-    /// Narrow collapse keeps the CONTENT on screen, never the category list.
-    /// The list is reachable via the back arrow — it is not the default screen.
-    #[test]
-    fn narrow_collapses_to_content_not_the_list() {
-        // Seed the width so the cold frame resolves narrow immediately (as a
-        // real narrow window boot does).
-        let mut s = shell().with_width_hint(460.0);
-        lay(&mut s, 460.0, 820.0);
-        assert!(s.is_narrow(), "460px resolves to the narrow layout");
-        assert_eq!(
-            s.narrow_screen(),
-            NarrowScreen::Content,
-            "a collapse keeps the content — never defaults to the nav list",
-        );
-        assert!(
-            !s.sidebar_open(),
-            "the category list is NOT the shown surface"
-        );
-        assert!(
-            (s.content_area_rect.width() - 460.0).abs() < 0.5,
-            "content fills the screen width"
-        );
-        assert!(
-            (s.content_area_rect.height() - 820.0).abs() < 0.5,
-            "content fills the screen height"
-        );
-        assert!(
-            s.back_rect().width() > 0.0,
-            "the content screen offers a back arrow to reach the list"
-        );
-        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(
-            names,
-            vec!["Button", "Text"],
-            "content screen composes the standard Back control before content"
-        );
-    }
+        fn resize_across_the_breakpoint_requests_a_rebuild() {
+            let mut s = shell();
+            lay(&mut s, 1000.0, 700.0);
+            assert!(!s.is_narrow());
+            let _ = s.take_structure_dirty();
+            // Shrink below the breakpoint: apply_layout should notice the cross.
+            lay(&mut s, 500.0, 700.0);
+            assert!(s.is_narrow(), "resize resolves to narrow");
+            assert!(s.take_structure_dirty() || s.built_layout == ShellLayout::Narrow);
+        }
 
-    #[test]
-    fn narrow_back_band_grows_for_large_text() {
-        let mut s = shell().with_width_hint(460.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = s.build_layout(&mut taffy, &theme, &mut map);
+        fn children_track_the_slot_set() {
+            let mut s = shell();
+            lay(&mut s, 1000.0, 700.0);
+            // Wide: search + nav + content.
+            assert_eq!(s.children().len(), 3);
+            // The cross is only known once `apply_layout` sees the new width, so
+            // the first frame after it still rebuilds — settle with a second
+            // layout, exactly what the host's frame loop does.
+            lay(&mut s, 460.0, 820.0);
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(
+                s.children().len(),
+                2,
+                "narrow collapse composes Back + content"
+            );
+            assert!(s.back(), "back moves to the list screen");
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(
+                s.children().len(),
+                2,
+                "narrow list composes search + nav (no content behind)"
+            );
+        }
 
-        assert_eq!(s.layout, ShellLayout::Narrow);
-        assert_eq!(s.back_band_h, BACK_BAND_H * 2.0);
-        assert_eq!(
-            s.back_button_top,
-            (s.back_band_h - BACK_BTN) / 2.0,
-            "Back remains centred in the expanded accessibility band"
-        );
-    }
-
-    /// The list screen is its OWN full-screen screen — not an overlay or
-    /// scrim; the content is not even built behind it.
-    #[test]
-    fn narrow_list_screen_is_standalone_not_an_overlay() {
-        let mut s = shell()
-            .with_width_hint(460.0)
-            .with_narrow_screen(NarrowScreen::List);
-        lay(&mut s, 460.0, 820.0);
-        assert!(s.is_narrow(), "460px resolves to the narrow layout");
-        assert_eq!(s.narrow_screen(), NarrowScreen::List);
-        assert!(s.sidebar_open(), "the list screen shows the sidebar");
-        assert!(
-            (s.sidebar_panel_rect.width() - 460.0).abs() < 0.5,
-            "the list fills the screen width"
-        );
-        assert!(
-            (s.sidebar_panel_rect.height() - 820.0).abs() < 0.5,
-            "the list fills the screen height"
-        );
-        assert_eq!(
-            s.content_area_rect,
-            Rect::ZERO,
-            "no content is shown behind the list (no scrim)"
-        );
-        assert_eq!(
-            s.back_rect(),
-            Rect::ZERO,
-            "the list screen has no back button"
-        );
-        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(
-            names,
-            vec!["TextInput", "Text"],
-            "list screen composes only search + nav"
-        );
-    }
-
-    /// Narrow: picking a category navigates the list screen → the content
-    /// screen, which shows the content full-screen with a back arrow.
-    #[test]
-    fn narrow_pick_navigates_to_content_with_back() {
-        // Start on the list screen (the user navigated Back to it).
-        let mut s = shell().with_narrow_screen(NarrowScreen::List);
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.narrow_screen(), NarrowScreen::List);
-        s.notify_selection(); // the host calls this when a row is picked
-        assert!(
-            s.take_structure_dirty(),
-            "a narrow selection requests a rebuild"
-        );
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(
-            s.narrow_screen(),
-            NarrowScreen::Content,
-            "the pick navigates to the content screen"
-        );
-        assert!(!s.sidebar_open(), "the list is no longer shown");
-        assert!(
-            (s.content_area_rect.width() - 460.0).abs() < 0.5,
-            "content fills the screen"
-        );
-        assert!(
-            s.back_rect().width() > 0.0,
-            "the content screen has a back arrow"
-        );
-        assert!(
-            s.back_rect().x0 < 60.0 && s.back_rect().y0 < 60.0,
-            "the back arrow is in the top-left"
-        );
-        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(
-            names,
-            vec!["Button", "Text"],
-            "content screen composes the standard Back control before content"
-        );
-    }
-
-    #[test]
-    fn bound_compact_navigation_and_accessible_back_share_one_state() {
-        let screen = LocalState::new(NarrowScreen::List);
-        let mut shell = shell()
-            .with_id("settings-shell")
-            .with_back_accessible_name("Go back")
-            .with_narrow_screen_state(&screen)
-            .with_width_hint(460.0);
-        lay(&mut shell, 460.0, 820.0);
-        assert_eq!(shell.narrow_screen(), NarrowScreen::List);
-
-        screen.set(NarrowScreen::Content);
-        let mut document = AutoCommit::new();
-        shell.sync(&mut document, &automerge::ROOT);
-        assert!(shell.take_structure_dirty());
-        lay(&mut shell, 460.0, 820.0);
-
-        assert_eq!(shell.back.test_id(), Some("settings-shell-back"));
-        let back = shell.back.accessibility().expect("retained Back button");
-        assert_eq!(back.role, crate::a11y::Role::Button);
-        assert_eq!(back.name.as_deref(), Some("Go back"));
-        assert!(shell.back.perform_action(
-            &crate::a11y::Action::Activate,
-            &mut document,
-            &automerge::ROOT,
-        ));
-        dispatch_view_actions(&mut shell, &document);
-        assert!(shell.take_structure_dirty());
-        assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
-    }
-
-    #[test]
-    fn headless_cold_compact_shell_is_structurally_settled() {
-        let app = shell().with_id("cold-shell");
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(app), (460, 820));
-
-        driver
-            .expect(
-                &crate::headless::SemanticExpectation::named("cold-shell-back")
-                    .role(crate::a11y::Role::Button)
-                    .name("Back"),
-            )
-            .expect("the first observable compact frame includes retained Back");
-        assert!(
-            driver
-                .focus_access_nodes()
+        fn draw_emits_content() {
+            let mut s = shell();
+            lay(&mut s, 1000.0, 700.0);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let perms = crate::permissions::PermissionContext::permissive();
+            let mut scene = Scene::new();
+            s.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &perms,
+            );
+            let fills = scene
+                .encoding()
+                .draw_tags
                 .iter()
-                .any(|node| node.name.as_deref() == Some("Back")),
-            "the settled Back control is in keyboard focus order"
-        );
-    }
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(fills >= 2, "a laid-out shell paints its surfaces + content");
+        }
 
-    /// Narrow: the back arrow is the way from the content screen back to the
-    /// list, preserving the selection.
-    #[test]
-    fn back_from_content_returns_to_the_list() {
-        let mut s = shell()
-            .with_narrow_screen(NarrowScreen::Content)
-            .with_width_hint(460.0);
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(
-            s.narrow_screen(),
-            NarrowScreen::Content,
-            "starts on the content screen"
-        );
-        assert!(s.back_rect().width() > 0.0, "the back arrow is present");
-        // A real click on the back arrow.
-        let mid = Point::new(
-            f64::midpoint(s.back_rect().x0, s.back_rect().x1),
-            f64::midpoint(s.back_rect().y0, s.back_rect().y1),
-        );
-        click(&mut s, mid);
-        assert!(
-            s.take_structure_dirty(),
-            "the retained Back activation requests a rebuild"
-        );
-        assert_eq!(
-            s.narrow_screen(),
-            NarrowScreen::List,
-            "back returns to the list screen"
-        );
-        lay(&mut s, 460.0, 820.0);
-        assert!(s.sidebar_open(), "the list screen is shown again");
-        assert_eq!(
-            s.content_area_rect,
-            Rect::ZERO,
-            "no content behind the list"
-        );
+        breakpoint_boundary_is_inclusive_wide();
+        shell_inputs_and_chrome_follow_the_responsive_scale();
+        sidebar_always_visible_and_no_toggle_when_it_fits();
+        resize_across_the_breakpoint_requests_a_rebuild();
+        children_track_the_slot_set();
+        draw_emits_content();
     }
 
     #[test]
-    fn esc_from_content_returns_to_the_list() {
-        let mut s = shell().with_narrow_screen(NarrowScreen::Content);
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.narrow_screen(), NarrowScreen::Content);
-        let mut handled = false;
-        dispatch(&mut s, &esc_event(), &mut handled);
-        assert!(handled, "Esc on the content screen is consumed");
-        assert_eq!(
-            s.narrow_screen(),
-            NarrowScreen::List,
-            "Esc navigates back to the list"
-        );
-    }
+    fn narrow_shell_navigates_between_list_and_content() {
+        /// Narrow collapse keeps the CONTENT on screen, never the category list.
+        /// The list is reachable via the back arrow — it is not the default screen.
+        fn narrow_collapses_to_content_not_the_list() {
+            // Seed the width so the cold frame resolves narrow immediately (as a
+            // real narrow window boot does).
+            let mut s = shell().with_width_hint(460.0);
+            lay(&mut s, 460.0, 820.0);
+            assert!(s.is_narrow(), "460px resolves to the narrow layout");
+            assert_eq!(
+                s.narrow_screen(),
+                NarrowScreen::Content,
+                "a collapse keeps the content — never defaults to the nav list",
+            );
+            assert!(
+                !s.sidebar_open(),
+                "the category list is NOT the shown surface"
+            );
+            assert!(
+                (s.content_area_rect.width() - 460.0).abs() < 0.5,
+                "content fills the screen width"
+            );
+            assert!(
+                (s.content_area_rect.height() - 820.0).abs() < 0.5,
+                "content fills the screen height"
+            );
+            assert!(
+                s.back_rect().width() > 0.0,
+                "the content screen offers a back arrow to reach the list"
+            );
+            let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+            assert_eq!(
+                names,
+                vec!["Button", "Text"],
+                "content screen composes the standard Back control before content"
+            );
+        }
 
-    #[test]
-    fn resize_across_the_breakpoint_requests_a_rebuild() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        assert!(!s.is_narrow());
-        let _ = s.take_structure_dirty();
-        // Shrink below the breakpoint: apply_layout should notice the cross.
-        lay(&mut s, 500.0, 700.0);
-        assert!(s.is_narrow(), "resize resolves to narrow");
-        assert!(s.take_structure_dirty() || s.built_layout == ShellLayout::Narrow);
-    }
+        fn narrow_back_band_grows_for_large_text() {
+            let mut s = shell().with_width_hint(460.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = s.build_layout(&mut taffy, &theme, &mut map);
 
-    #[test]
-    fn children_track_the_slot_set() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        // Wide: search + nav + content.
-        assert_eq!(s.children().len(), 3);
-        // The cross is only known once `apply_layout` sees the new width, so
-        // the first frame after it still rebuilds — settle with a second
-        // layout, exactly what the host's frame loop does.
-        lay(&mut s, 460.0, 820.0);
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(
-            s.children().len(),
-            2,
-            "narrow collapse composes Back + content"
-        );
-        assert!(s.back(), "back moves to the list screen");
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(
-            s.children().len(),
-            2,
-            "narrow list composes search + nav (no content behind)"
-        );
-    }
+            assert_eq!(s.layout, ShellLayout::Narrow);
+            assert_eq!(s.back_band_h, BACK_BAND_H * 2.0);
+            assert_eq!(
+                s.back_button_top,
+                (s.back_band_h - BACK_BTN) / 2.0,
+                "Back remains centred in the expanded accessibility band"
+            );
+        }
 
-    #[test]
-    fn draw_emits_content() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        s.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(fills >= 2, "a laid-out shell paints its surfaces + content");
+        /// The list screen is its OWN full-screen screen — not an overlay or
+        /// scrim; the content is not even built behind it.
+        fn narrow_list_screen_is_standalone_not_an_overlay() {
+            let mut s = shell()
+                .with_width_hint(460.0)
+                .with_narrow_screen(NarrowScreen::List);
+            lay(&mut s, 460.0, 820.0);
+            assert!(s.is_narrow(), "460px resolves to the narrow layout");
+            assert_eq!(s.narrow_screen(), NarrowScreen::List);
+            assert!(s.sidebar_open(), "the list screen shows the sidebar");
+            assert!(
+                (s.sidebar_panel_rect.width() - 460.0).abs() < 0.5,
+                "the list fills the screen width"
+            );
+            assert!(
+                (s.sidebar_panel_rect.height() - 820.0).abs() < 0.5,
+                "the list fills the screen height"
+            );
+            assert_eq!(
+                s.content_area_rect,
+                Rect::ZERO,
+                "no content is shown behind the list (no scrim)"
+            );
+            assert_eq!(
+                s.back_rect(),
+                Rect::ZERO,
+                "the list screen has no back button"
+            );
+            let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+            assert_eq!(
+                names,
+                vec!["TextInput", "Text"],
+                "list screen composes only search + nav"
+            );
+        }
+
+        /// Narrow: picking a category navigates the list screen → the content
+        /// screen, which shows the content full-screen with a back arrow.
+        fn narrow_pick_navigates_to_content_with_back() {
+            // Start on the list screen (the user navigated Back to it).
+            let mut s = shell().with_narrow_screen(NarrowScreen::List);
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(s.narrow_screen(), NarrowScreen::List);
+            s.notify_selection(); // the host calls this when a row is picked
+            assert!(
+                s.take_structure_dirty(),
+                "a narrow selection requests a rebuild"
+            );
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(
+                s.narrow_screen(),
+                NarrowScreen::Content,
+                "the pick navigates to the content screen"
+            );
+            assert!(!s.sidebar_open(), "the list is no longer shown");
+            assert!(
+                (s.content_area_rect.width() - 460.0).abs() < 0.5,
+                "content fills the screen"
+            );
+            assert!(
+                s.back_rect().width() > 0.0,
+                "the content screen has a back arrow"
+            );
+            assert!(
+                s.back_rect().x0 < 60.0 && s.back_rect().y0 < 60.0,
+                "the back arrow is in the top-left"
+            );
+            let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+            assert_eq!(
+                names,
+                vec!["Button", "Text"],
+                "content screen composes the standard Back control before content"
+            );
+        }
+
+        fn bound_compact_navigation_and_accessible_back_share_one_state() {
+            let screen = LocalState::new(NarrowScreen::List);
+            let mut shell = shell()
+                .with_id("settings-shell")
+                .with_back_accessible_name("Go back")
+                .with_narrow_screen_state(&screen)
+                .with_width_hint(460.0);
+            lay(&mut shell, 460.0, 820.0);
+            assert_eq!(shell.narrow_screen(), NarrowScreen::List);
+
+            screen.set(NarrowScreen::Content);
+            let mut document = AutoCommit::new();
+            shell.sync(&mut document, &automerge::ROOT);
+            assert!(shell.take_structure_dirty());
+            lay(&mut shell, 460.0, 820.0);
+
+            assert_eq!(shell.back.test_id(), Some("settings-shell-back"));
+            let back = shell.back.accessibility().expect("retained Back button");
+            assert_eq!(back.role, crate::a11y::Role::Button);
+            assert_eq!(back.name.as_deref(), Some("Go back"));
+            assert!(shell.back.perform_action(
+                &crate::a11y::Action::Activate,
+                &mut document,
+                &automerge::ROOT,
+            ));
+            dispatch_view_actions(&mut shell, &mut document);
+            assert!(shell.take_structure_dirty());
+            assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
+        }
+
+        fn headless_cold_compact_shell_is_structurally_settled() {
+            let app = shell().with_id("cold-shell");
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(app), (460, 820));
+
+            driver
+                .expect(
+                    &crate::headless::SemanticExpectation::named("cold-shell-back")
+                        .role(crate::a11y::Role::Button)
+                        .name("Back"),
+                )
+                .expect("the first observable compact frame includes retained Back");
+            assert!(
+                driver
+                    .focus_access_nodes()
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("Back")),
+                "the settled Back control is in keyboard focus order"
+            );
+        }
+
+        /// Narrow: the back arrow is the way from the content screen back to the
+        /// list, preserving the selection.
+        fn back_from_content_returns_to_the_list() {
+            let mut s = shell()
+                .with_narrow_screen(NarrowScreen::Content)
+                .with_width_hint(460.0);
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(
+                s.narrow_screen(),
+                NarrowScreen::Content,
+                "starts on the content screen"
+            );
+            assert!(s.back_rect().width() > 0.0, "the back arrow is present");
+            // A real click on the back arrow.
+            let mid = Point::new(
+                f64::midpoint(s.back_rect().x0, s.back_rect().x1),
+                f64::midpoint(s.back_rect().y0, s.back_rect().y1),
+            );
+            click(&mut s, mid);
+            assert!(
+                s.take_structure_dirty(),
+                "the retained Back activation requests a rebuild"
+            );
+            assert_eq!(
+                s.narrow_screen(),
+                NarrowScreen::List,
+                "back returns to the list screen"
+            );
+            lay(&mut s, 460.0, 820.0);
+            assert!(s.sidebar_open(), "the list screen is shown again");
+            assert_eq!(
+                s.content_area_rect,
+                Rect::ZERO,
+                "no content behind the list"
+            );
+        }
+
+        fn esc_from_content_returns_to_the_list() {
+            let mut s = shell().with_narrow_screen(NarrowScreen::Content);
+            lay(&mut s, 460.0, 820.0);
+            assert_eq!(s.narrow_screen(), NarrowScreen::Content);
+            let mut handled = false;
+            dispatch(&mut s, &esc_event(), &mut handled);
+            assert!(handled, "Esc on the content screen is consumed");
+            assert_eq!(
+                s.narrow_screen(),
+                NarrowScreen::List,
+                "Esc navigates back to the list"
+            );
+        }
+
+        narrow_collapses_to_content_not_the_list();
+        narrow_back_band_grows_for_large_text();
+        narrow_list_screen_is_standalone_not_an_overlay();
+        narrow_pick_navigates_to_content_with_back();
+        bound_compact_navigation_and_accessible_back_share_one_state();
+        headless_cold_compact_shell_is_structurally_settled();
+        back_from_content_returns_to_the_list();
+        esc_from_content_returns_to_the_list();
     }
 
     use winit::event::DeviceId;
@@ -1599,14 +1584,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
     fn click(s: &mut AppShell, at: Point) {
@@ -1616,24 +1603,26 @@ mod tests {
         dispatch(s, &left_press(), &mut handled);
         let mut handled = false;
         dispatch(s, &left_release(), &mut handled);
-        dispatch_view_actions(s, &AutoCommit::new());
+        dispatch_view_actions(s, &mut AutoCommit::new());
     }
 
-    fn dispatch_view_actions(s: &mut AppShell, doc: &AutoCommit) {
-        while let Some(intent) = s.take_control_invocation() {
+    fn dispatch_view_actions(s: &mut AppShell, doc: &mut AutoCommit) {
+        while let Some(intent) = crate::widget::controls::take_control_invocation(s) {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
             let encoded =
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("AppShell Back exports the action it emits");
             assert!(
-                s.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
+                s.start_operation(
+                    &crate::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     doc,
-                    &automerge::ROOT,
+                    &automerge::ROOT
                 )
                 .expect("Back view action succeeds")
                 .is_some()

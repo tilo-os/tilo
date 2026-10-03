@@ -5,13 +5,16 @@
 pub mod apply;
 pub mod boot;
 pub mod daemon;
+pub mod display;
 pub mod error;
 pub mod exec;
 mod fsutil;
 pub mod input;
 pub mod jobs;
 pub mod layers;
+mod linker;
 pub mod locks;
+pub mod packages;
 pub mod server;
 pub mod slots;
 pub mod systemd;

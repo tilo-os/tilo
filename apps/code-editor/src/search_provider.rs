@@ -183,6 +183,13 @@ mod tests {
     }
 
     #[test]
+    fn file_search_finds_late_partial_and_unicode_matches() {
+        // Each phase builds its own provider.
+        complete_projection_keeps_a_late_file_findable();
+        partial_matches_are_not_hidden_by_exact_file_names();
+        unicode_and_embedded_nul_grams_are_unambiguous();
+    }
+
     fn complete_projection_keeps_a_late_file_findable() {
         let mut files = (0..20_000)
             .map(|node| {
@@ -200,7 +207,6 @@ mod tests {
         assert_eq!(found[0].title, "needle.rs");
     }
 
-    #[test]
     fn partial_matches_are_not_hidden_by_exact_file_names() {
         let provider = FileSearchProvider::new(
             vec![
@@ -216,7 +222,6 @@ mod tests {
         assert!(found.iter().any(|hit| hit.title == "main.rs"));
     }
 
-    #[test]
     fn unicode_and_embedded_nul_grams_are_unambiguous() {
         let provider = FileSearchProvider::new(
             vec![
@@ -231,6 +236,12 @@ mod tests {
     }
 
     #[test]
+    fn file_search_pages_are_budgeted_and_restart_after_mutation() {
+        // Each phase builds its own provider.
+        pages_have_hard_inspection_budgets_and_reach_late_matches();
+        mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision();
+    }
+
     fn pages_have_hard_inspection_budgets_and_reach_late_matches() {
         let files = (0..1_000)
             .map(|node| {
@@ -268,7 +279,6 @@ mod tests {
         assert!(saw_late, "a late corpus row must remain discoverable");
     }
 
-    #[test]
     fn mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision() {
         let provider = FileSearchProvider::new(
             vec![

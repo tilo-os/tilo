@@ -27,7 +27,7 @@
 # ---- Kernel buildroot (build deps and the Fedora SRPM) ----------------------
 # Every build dependency and the signature-checked Fedora kernel SRPM come from
 # a digest-pinned, KMS-signed buildroot (os/Containerfile.kernel-buildroot,
-# published by .forgejo/workflows/snapshot-kernel-buildroot.yml and pinned per
+# published by .forgejo/workflows/build-buildroots.yml and pinned per
 # architecture in os/kernel-buildroot-snapshot.env). The buildroot carries no
 # package repository, so nothing below can resolve a package from the network.
 # The OS frozen RPM snapshot is not an input: OS package changes never
@@ -66,7 +66,10 @@ RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /wor
 COPY Cargo.toml Cargo.lock /work/workspace/
 COPY crates/system/tilo-crypto/Cargo.toml /work/crypto-member.toml
 COPY os/kernel/project-crate.py /work/project-crate.py
-COPY crates/system/tilo-crypto/src /work/tilo-crypto/src
+# Signing sources only: TLS fixture generation is a default-feature path
+# excluded from the kernel recipe so fixture-only edits do not rebuild.
+COPY crates/system/tilo-crypto/src/lib.rs /work/tilo-crypto/src/lib.rs
+COPY crates/system/tilo-crypto/src/main.rs /work/tilo-crypto/src/main.rs
 # bootc keeps /root as a symlink into an unpopulated /var. Cargo's registry
 # and lock files need a real writable build directory, independent of HOME.
 ENV CARGO_HOME=/work/cargo-home
@@ -79,7 +82,7 @@ RUN python3 /work/project-crate.py --workspace /work/workspace/Cargo.toml \
     && cargo fetch \
     && python3 /work/project-crate.py --lockfile /work/workspace/Cargo.lock \
         --verify-lock /work/tilo-crypto/Cargo.lock \
-    && RUSTC_WRAPPER= cargo build --release --frozen \
+    && RUSTC_WRAPPER= cargo build --release --frozen --no-default-features \
     && strip target/release/tilo-crypto \
     && install -m 0755 target/release/tilo-crypto /usr/local/bin/tilo-crypto \
     && rm -rf target
@@ -194,19 +197,16 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Compiler cache for the kernel's C and assembly objects. BuildKit exposes the
-# credential only to the compile RUN as a secret, never to a layer or build
-# argument. KBUILD_BUILD_TIMESTAMP reaches only the version objects, so a new
-# source epoch still reuses everything else.
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/kernel/v1"
-ARG SCCACHE_S3_USE_SSL="false"
+# Compiler cache for the kernel's C and assembly objects: the runner's Actions
+# cache, whose URL and job token BuildKit exposes only to the compile RUN as
+# secrets, never to a layer or build argument. KBUILD_BUILD_TIMESTAMP reaches
+# only the version objects, so a new source epoch still reuses everything else.
 ARG TILO_REQUIRE_COMPILER_CACHE=0
-# `off` is for publications: every CI job can write the shared compiler cache,
-# so a published kernel compiles without a launcher and refuses to receive
-# compiler-cache credentials or settings at all.
+# A published kernel never reads the cache: pull requests can write their own
+# scope, and main's scope is what a publication would read. `populate` is for
+# publications: every object is compiled here (SCCACHE_RECACHE) and then
+# written, so pull requests start from main's objects. `off` compiles without
+# a launcher and refuses to receive compiler-cache settings at all.
 ARG TILO_COMPILER_CACHE=shared
 
 # Build vmlinuz + modules directly and stage into a rootfs image tree.
@@ -216,24 +216,26 @@ ARG TILO_COMPILER_CACHE=shared
 # phase on this kernel size. Rolling our own spec below skips the
 # entire brp-* chain and produces the exact three files we need
 # (vmlinuz, modules tree, System.map) as a single tight RPM.
-RUN --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
     set -eu; \
-    AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)"; \
-    AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)"; \
-    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SCCACHE_DIRECT=false; \
+    ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)"; \
+    ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)"; \
+    export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_DIRECT=false \
+      SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1 SCCACHE_IDLE_TIMEOUT=0; \
     case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
       shared:0|off:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 ;; \
+      populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;; \
       shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-      *) echo "TILO_COMPILER_CACHE must be shared or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)" >&2; exit 1 ;; \
+      *) echo "TILO_COMPILER_CACHE must be shared, populate or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 unless shared)" >&2; exit 1 ;; \
     esac; \
     TILO_KERNEL_CC_LAUNCHER=; \
     if [ "$TILO_COMPILER_CACHE" = off ]; then \
-      if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}" ]; then \
+      if [ -n "${ACTIONS_CACHE_URL}${ACTIONS_RUNTIME_TOKEN}" ]; then \
         echo "A kernel build without the compiler cache received compiler-cache settings" >&2; exit 1; \
       fi; \
       echo "compiling the kernel without a compiler cache" >&2; \
-    elif [ -n "$SCCACHE_BUCKET" ] && command -v sccache >/dev/null && sccache --start-server; then \
+    elif [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ] && command -v sccache >/dev/null && sccache --start-server; then \
       TILO_KERNEL_CC_LAUNCHER=sccache; \
     elif [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
       echo "Required compiler cache is unavailable; refusing an uncached kernel build" >&2; exit 1; \

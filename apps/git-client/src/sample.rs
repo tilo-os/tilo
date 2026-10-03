@@ -39,7 +39,7 @@ pub fn model() -> (RepoModel, DiffMap) {
     let model = RepoModel {
         name: "renderer".into(),
         head: "main".into(),
-        workdir: "/var/workspace/renderer".into(),
+        workdir: format!("{}/renderer", tilo_paths::WORKSPACE_MOUNT),
         staged,
         unstaged,
         untracked,

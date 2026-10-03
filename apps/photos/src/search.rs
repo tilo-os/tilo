@@ -20,7 +20,7 @@ use ui::search::{
 
 use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
-    folder_resource_id, library_root_resource, metadata_label_counts, object_resource,
+    folder_resource_id, library_analysis_resource, metadata_label_counts, object_resource,
     object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
     photo_resource_from_seed, place_counts, place_resource, place_resource_id,
     places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
@@ -108,7 +108,15 @@ enum MaterializationSeed {
 impl MaterializationSeed {
     fn materialize(self) -> Resource {
         match self {
-            Self::Library => library_root_resource(),
+            Self::Library => {
+                let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
+                    "photos.library",
+                    "Photo library",
+                    &crate::resource::PhotosState::default(),
+                );
+                root.children.insert(0, library_analysis_resource());
+                root
+            }
             Self::Timeline { total, boundaries } => {
                 timeline_resource_from_search(total, &boundaries)
             }
@@ -659,9 +667,12 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::doc::PhotosDoc;
-    use crate::model::{LocationProvenance, OpenImage, PhotoLocation};
+    use crate::model::{
+        Album, AnalysisProvenance, ImageAnalysis, LibraryPhoto, LocationProvenance, OpenImage,
+        PhotoLibrary, PhotoLocation,
+    };
     use tilo_actions::ActionAddress;
-    use tilo_actions::ResourceProvider;
+
     use ui::search::SearchProvider;
     use ui::search::testing::assert_late_hit_reachable;
 
@@ -679,8 +690,9 @@ mod tests {
         doc
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn search_is_unicode_safe_and_includes_metadata_and_actions() {
+    fn photo_search_is_unicode_safe_and_hits_resolve_to_canonical_resources() {
         let doc = open_doc("München-夏.png");
         let provider = PhotosSearchProvider::new(&doc).unwrap();
         for query in ["MÜNCHEN", "夏", "800 x 400", "clockwise"] {
@@ -696,10 +708,136 @@ mod tests {
             provider.stats().records >= 2,
             "library and photo are indexed"
         );
+
+        {
+            let mut doc = open_doc("harbour.png");
+            let mut library = PhotosDoc::library(&doc);
+            let photo = library.photos.first_mut().expect("opening imports a photo");
+            photo.folder = Some("旅行-夏".into());
+            photo.people = vec!["Élodie".into()];
+            photo.tags = vec!["golden-hour".into()];
+            photo.captured_at = Some("2026-09-07".into());
+            PhotosDoc::set_library(&mut doc, &library);
+
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            for (query, expected_resource) in [
+                ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
+                ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
+                (
+                    "golden-hour",
+                    crate::actions::tag_resource_id("golden-hour"),
+                ),
+                ("2026-09-07", library.photos[0].id.clone()),
+            ] {
+                let hit = provider
+                    .search(query)
+                    .into_iter()
+                    .find(|hit| {
+                        hit.action_address()
+                            .is_some_and(|address| address.resource == expected_resource)
+                    })
+                    .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
+                let address = hit.action_address().unwrap();
+                let resource = PhotosResources
+                    .publish_resource(&doc, &address.resource)
+                    .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == address.action)
+                );
+            }
+        }
+
+        {
+            let mut doc = open_doc("timeline.png");
+            let mut library = PhotosDoc::library(&doc);
+            let photo = library.photos.first_mut().expect("opening imports a photo");
+            photo.captured_at = Some("2026-09-07 08:14".into());
+            PhotosDoc::set_library(&mut doc, &library);
+
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            for (query, expected_resource) in [
+                (
+                    "2026-09",
+                    crate::actions::timeline_month_resource_id("2026-09"),
+                ),
+                (
+                    "2026-09-07",
+                    crate::actions::timeline_day_resource_id("2026-09-07"),
+                ),
+            ] {
+                let page = provider.search_page(query, None, usize::MAX, usize::MAX);
+                assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+                assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+                let address = page
+                    .results
+                    .iter()
+                    .find(|hit| {
+                        hit.action_address()
+                            .is_some_and(|address| address.resource == expected_resource)
+                    })
+                    .and_then(SearchResult::action_address)
+                    .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
+                assert_eq!(address.action, "open");
+                let resource = PhotosResources
+                    .publish_resource(&doc, &address.resource)
+                    .expect("search must resolve the exact timeline resource");
+                assert!(resource.actions.iter().any(|action| action.id == "open"));
+            }
+        }
+
+        {
+            let mut doc = open_doc("receipt.png");
+            let mut library = PhotosDoc::library(&doc);
+            let photo = library.photos.first_mut().unwrap();
+            let content = photo.image.content.clone().unwrap_or_default();
+            photo.analysis = Some(ImageAnalysis {
+                ocr_text: "invoice 42 north harbour".into(),
+                description: "A dog beside a bicycle".into(),
+                objects: vec!["bicycle".into()],
+                pets: vec!["dog".into()],
+                people: vec!["Sam".into()],
+                provenance: AnalysisProvenance {
+                    source: "local-ocr".into(),
+                    engine: "tilo-ocr".into(),
+                    language: "eng".into(),
+                    content,
+                    scope: "shared".into(),
+                    ..AnalysisProvenance::default()
+                },
+                ..ImageAnalysis::default()
+            });
+            PhotosDoc::set_library(&mut doc, &library);
+
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            for (query, resource) in [
+                ("invoice 42", library.photos[0].id.clone()),
+                ("bicycle", library.photos[0].id.clone()),
+                ("dog", library.photos[0].id.clone()),
+            ] {
+                let address = provider
+                    .search(query)
+                    .into_iter()
+                    .find_map(|hit| {
+                        hit.action_address()
+                            .filter(|address| address.resource == resource)
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("missing canonical intelligence search result for {query}")
+                    });
+                assert!(provider.resolve_action_resource(&address).is_some());
+            }
+            let (ids, next, inspected) = provider.photo_matches_page("invoice 42", None);
+            assert_eq!(ids, [library.photos[0].id.clone()]);
+            assert!(next.is_none());
+            assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        }
     }
 
     #[test]
-    fn pages_are_bounded_and_the_result_targets_an_exported_action() {
+    fn search_pages_and_caller_limits_are_bounded_and_target_exported_actions() {
         let doc = open_doc("harbour.png");
         let provider = PhotosSearchProvider::new(&doc).unwrap();
         assert!(provider.search_page("", None, 0, 1).results.is_empty());
@@ -710,7 +848,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         let address = page.results[0].action_address().unwrap();
         let resource = PhotosResources
-            .resource(&doc, &address.resource)
+            .publish_resource(&doc, &address.resource)
             .expect("search address resolves through the canonical provider");
         assert!(
             resource
@@ -718,10 +856,37 @@ mod tests {
                 .iter()
                 .any(|action| ActionAddress::new(&resource.id.0, &action.id) == address)
         );
+
+        {
+            let doc = open_doc("harbour.png");
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            assert!(provider.search_limited("", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+            let page = provider.search_page("harbour", None, usize::MAX, usize::MAX);
+            assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+            let address = page.results[0].action_address().unwrap();
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("the search snapshot materializes its canonical resource");
+            assert_eq!(resource.id.0, address.resource);
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            );
+            assert!(
+                provider
+                    .resolve_action_resource(&ActionAddress::new(address.resource, "remove"))
+                    .is_some(),
+                "all actions on the materialized photograph remain agent-addressable"
+            );
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn a_place_search_result_materializes_the_exact_shared_collection() {
+    fn collection_and_late_search_hits_materialize_their_exact_resources() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let location = PhotoLocation {
@@ -730,21 +895,14 @@ mod tests {
             label: Some("Offline Paris".to_owned()),
             provenance: LocationProvenance::default(),
         };
-        let mut first = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
-            "/pictures/one.png",
-            64,
-            64,
-        ));
+        let mut first = LibraryPhoto::from_image(OpenImage::from_path("/pictures/one.png", 64, 64));
         first.location = Some(location.clone());
-        let mut second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
-            "/pictures/two.png",
-            64,
-            64,
-        ));
+        let mut second =
+            LibraryPhoto::from_image(OpenImage::from_path("/pictures/two.png", 64, 64));
         second.location = Some(location.clone());
         PhotosDoc::set_library(
             &mut doc,
-            &crate::model::PhotoLibrary {
+            &PhotoLibrary {
                 photos: vec![first, second],
                 albums: Vec::new(),
             },
@@ -767,10 +925,146 @@ mod tests {
                 .iter()
                 .any(|child| child.label == "2 photographs")
         );
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let mut library = PhotoLibrary::default();
+            for index in 0..80 {
+                library.albums.push(Album {
+                    id: format!("photos.album:{index}"),
+                    name: if index == 79 {
+                        "旅行-needle-夏".into()
+                    } else {
+                        format!("Album {index}")
+                    },
+                    photo_ids: Vec::new(),
+                });
+            }
+            PhotosDoc::set_library(&mut doc, &library);
+            let hit = PhotosSearchProvider::new(&doc)
+                .unwrap()
+                .search_page("NEEDLE-夏", None, 2, 1)
+                .results
+                .pop()
+                .expect("late album remains searchable outside the contextual snapshot");
+            let address = hit.action_address().expect("album hit has an action route");
+            assert_eq!(address.resource, "photos.album:79");
+            assert_eq!(
+                address.action, "open",
+                "search activation must not mutate membership"
+            );
+            let resource = PhotosResources
+                .publish_resource(&doc, &address.resource)
+                .expect("the late stable album id resolves lazily");
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+        }
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let library = PhotoLibrary {
+                photos: Vec::new(),
+                albums: vec![Album {
+                    id: "photos.album:journey".into(),
+                    name: "Journey".into(),
+                    photo_ids: Vec::new(),
+                }],
+            };
+            PhotosDoc::set_library(&mut doc, &library);
+
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            let address = provider
+                .search("shared albums")
+                .into_iter()
+                .find_map(|hit| {
+                    hit.action_address()
+                        .filter(|address| address.resource == "photos.albums")
+                })
+                .expect("album browsing is a global-search destination");
+            assert_eq!(address.action, "open");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("the compact search seed materializes the album collection");
+            assert_eq!(resource.kind, crate::actions::ALBUMS_KIND);
+            assert!(
+                resource.children.iter().any(|child| {
+                    child.id.0 == "photos.albums#count" && child.label == "1 album"
+                })
+            );
+        }
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let mut library = PhotoLibrary::default();
+            for index in 0..3_000 {
+                let name = if index == 2_999 {
+                    "旅行-needle-夏.png".to_string()
+                } else {
+                    format!("photo-{index}.png")
+                };
+                library
+                    .photos
+                    .push(LibraryPhoto::from_image(OpenImage::from_path(
+                        &format!("/pictures/{name}"),
+                        64,
+                        64,
+                    )));
+            }
+            PhotosDoc::set_library(&mut doc, &library);
+            let page =
+                PhotosSearchProvider::new(&doc)
+                    .unwrap()
+                    .search_page("NEEDLE-夏", None, 2, 1);
+            assert_eq!(page.results.len(), 1);
+            assert!(page.inspected <= 2, "query work exceeded its hard budget");
+            assert_eq!(page.results[0].title, "旅行-needle-夏.png");
+            assert_eq!(page.results[0].action_address().unwrap().action, "open");
+        }
+
+        {
+            let mut expected_records = 0;
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let doc = AutoCommit::new();
+                    let mut library = PhotoLibrary::default();
+                    for row in corpus {
+                        let stem = row.text.replace(' ', "-");
+                        let name = if row.is_target {
+                            format!("{stem}-夏.png")
+                        } else {
+                            format!("{stem}.png")
+                        };
+                        library
+                            .photos
+                            .push(LibraryPhoto::from_image(OpenImage::from_path(
+                                &format!("/pictures/{name}"),
+                                1,
+                                1,
+                            )));
+                    }
+                    expected_records = library.photos.len() + 4; // library + timeline + places + albums
+                    PhotosSearchProvider::from_library(&doc, &library).unwrap()
+                },
+                3_000,
+            );
+            assert_eq!(provider.stats().records, expected_records);
+            let page = provider.search_page("needle-夏", None, 2, 1);
+            assert_eq!(page.results, vec![hit.clone()]);
+            assert!(page.inspected <= 2);
+            let address = hit.action_address().unwrap();
+            assert_eq!(address.action, "open");
+            assert!(provider.resolve_action_resource(&address).is_some());
+            let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();
+            assert_eq!(seeds, expected_records);
+            assert_eq!(prebuilt_action_trees, 0);
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn a_target_for_the_previous_photo_is_not_exported_after_open_changes() {
+    fn stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically() {
         let before = open_doc("before.png");
         let address = PhotosSearchProvider::new(&before)
             .unwrap()
@@ -781,408 +1075,116 @@ mod tests {
         let after = open_doc("after.png");
         assert!(
             PhotosResources
-                .resources(&after)
+                .publish_resources(&after)
                 .iter()
                 .all(|resource| resource.id.0 != address.resource)
         );
-    }
 
-    #[test]
-    fn a_late_unicode_library_match_is_found_with_a_tiny_query_budget() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..3_000 {
-            let name = if index == 2_999 {
-                "旅行-needle-夏.png".to_string()
-            } else {
-                format!("photo-{index}.png")
+        {
+            let mut doc = open_doc("before.png");
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            let first = provider.search_page("", None, 1, 1);
+            let cursor = first.next.expect("the library has another browse row");
+            let address = provider.search("before")[0].action_address().unwrap();
+
+            PhotosDoc::set_library(&mut doc, &PhotoLibrary::default());
+            PhotosDoc::set_image(&mut doc, None);
+            provider.sync(&doc).unwrap();
+            assert!(!provider.action_directory_cursor_is_current(&cursor));
+            assert!(provider.resolve_action_resource(&address).is_none());
+        }
+
+        {
+            let doc = AutoCommit::new();
+            let mut photo =
+                LibraryPhoto::from_image(OpenImage::from_path("/pictures/collision.png", 1, 1));
+            photo.id = "photos.album:collision".into();
+            let library = PhotoLibrary {
+                photos: vec![photo],
+                albums: vec![Album {
+                    id: "photos.album:collision".into(),
+                    name: "Collision".into(),
+                    photo_ids: Vec::new(),
+                }],
             };
-            library.photos.push(crate::model::LibraryPhoto::from_image(
-                OpenImage::from_path(&format!("/pictures/{name}"), 64, 64),
-            ));
-        }
-        PhotosDoc::set_library(&mut doc, &library);
-        let page = PhotosSearchProvider::new(&doc)
-            .unwrap()
-            .search_page("NEEDLE-夏", None, 2, 1);
-        assert_eq!(page.results.len(), 1);
-        assert!(page.inspected <= 2, "query work exceeded its hard budget");
-        assert_eq!(page.results[0].title, "旅行-needle-夏.png");
-        assert_eq!(page.results[0].action_address().unwrap().action, "open");
-    }
-
-    #[test]
-    fn a_late_album_search_result_opens_the_safe_canonical_resource_action() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..80 {
-            library.albums.push(crate::model::Album {
-                id: format!("photos.album:{index}"),
-                name: if index == 79 {
-                    "旅行-needle-夏".into()
-                } else {
-                    format!("Album {index}")
-                },
-                photo_ids: Vec::new(),
-            });
-        }
-        PhotosDoc::set_library(&mut doc, &library);
-        let hit = PhotosSearchProvider::new(&doc)
-            .unwrap()
-            .search_page("NEEDLE-夏", None, 2, 1)
-            .results
-            .pop()
-            .expect("late album remains searchable outside the contextual snapshot");
-        let address = hit.action_address().expect("album hit has an action route");
-        assert_eq!(address.resource, "photos.album:79");
-        assert_eq!(
-            address.action, "open",
-            "search activation must not mutate membership"
-        );
-        let resource = PhotosResources
-            .resource(&doc, &address.resource)
-            .expect("the late stable album id resolves lazily");
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
-    }
-
-    #[test]
-    fn albums_collection_is_searchable_and_materializes_its_canonical_action() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let library = crate::model::PhotoLibrary {
-            photos: Vec::new(),
-            albums: vec![crate::model::Album {
-                id: "photos.album:journey".into(),
-                name: "Journey".into(),
-                photo_ids: Vec::new(),
-            }],
-        };
-        PhotosDoc::set_library(&mut doc, &library);
-
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        let address = provider
-            .search("shared albums")
-            .into_iter()
-            .find_map(|hit| {
-                hit.action_address()
-                    .filter(|address| address.resource == "photos.albums")
-            })
-            .expect("album browsing is a global-search destination");
-        assert_eq!(address.action, "open");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("the compact search seed materializes the album collection");
-        assert_eq!(resource.kind, crate::actions::ALBUMS_KIND);
-        assert!(
-            resource
-                .children
-                .iter()
-                .any(|child| { child.id.0 == "photos.albums#count" && child.label == "1 album" })
-        );
-    }
-
-    #[test]
-    fn metadata_search_hits_resolve_to_their_canonical_resources() {
-        let mut doc = open_doc("harbour.png");
-        let mut library = PhotosDoc::library(&doc);
-        let photo = library.photos.first_mut().expect("opening imports a photo");
-        photo.folder = Some("旅行-夏".into());
-        photo.people = vec!["Élodie".into()];
-        photo.tags = vec!["golden-hour".into()];
-        photo.captured_at = Some("2026-09-07".into());
-        PhotosDoc::set_library(&mut doc, &library);
-
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        for (query, expected_resource) in [
-            ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
-            ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
-            (
-                "golden-hour",
-                crate::actions::tag_resource_id("golden-hour"),
-            ),
-            ("2026-09-07", library.photos[0].id.clone()),
-        ] {
-            let hit = provider
-                .search(query)
-                .into_iter()
-                .find(|hit| {
-                    hit.action_address()
-                        .is_some_and(|address| address.resource == expected_resource)
-                })
-                .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
-            let address = hit.action_address().unwrap();
-            let resource = PhotosResources
-                .resource(&doc, &address.resource)
-                .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
-            assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action)
-            );
-        }
-    }
-
-    #[test]
-    fn timeline_month_and_day_search_hits_resolve_to_bounded_canonical_resources() {
-        let mut doc = open_doc("timeline.png");
-        let mut library = PhotosDoc::library(&doc);
-        let photo = library.photos.first_mut().expect("opening imports a photo");
-        photo.captured_at = Some("2026-09-07 08:14".into());
-        PhotosDoc::set_library(&mut doc, &library);
-
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        for (query, expected_resource) in [
-            (
-                "2026-09",
-                crate::actions::timeline_month_resource_id("2026-09"),
-            ),
-            (
-                "2026-09-07",
-                crate::actions::timeline_day_resource_id("2026-09-07"),
-            ),
-        ] {
-            let page = provider.search_page(query, None, usize::MAX, usize::MAX);
-            assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-            assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-            let address = page
-                .results
-                .iter()
-                .find(|hit| {
-                    hit.action_address()
-                        .is_some_and(|address| address.resource == expected_resource)
-                })
-                .and_then(SearchResult::action_address)
-                .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
-            assert_eq!(address.action, "open");
-            let resource = PhotosResources
-                .resource(&doc, &address.resource)
-                .expect("search must resolve the exact timeline resource");
-            assert!(resource.actions.iter().any(|action| action.id == "open"));
-        }
-    }
-
-    #[test]
-    fn intelligence_text_and_collections_have_canonical_search_hits() {
-        let mut doc = open_doc("receipt.png");
-        let mut library = PhotosDoc::library(&doc);
-        let photo = library.photos.first_mut().unwrap();
-        let content = photo.image.content.clone().unwrap_or_default();
-        photo.analysis = Some(crate::model::ImageAnalysis {
-            ocr_text: "invoice 42 north harbour".into(),
-            description: "A dog beside a bicycle".into(),
-            objects: vec!["bicycle".into()],
-            pets: vec!["dog".into()],
-            people: vec!["Sam".into()],
-            provenance: crate::model::AnalysisProvenance {
-                source: "local-ocr".into(),
-                engine: "tilo-ocr".into(),
-                language: "eng".into(),
-                content,
-                scope: "shared".into(),
-                ..crate::model::AnalysisProvenance::default()
-            },
-            ..crate::model::ImageAnalysis::default()
-        });
-        PhotosDoc::set_library(&mut doc, &library);
-
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        for (query, resource) in [
-            ("invoice 42", library.photos[0].id.clone()),
-            ("bicycle", library.photos[0].id.clone()),
-            ("dog", library.photos[0].id.clone()),
-        ] {
-            let address = provider
-                .search(query)
-                .into_iter()
-                .find_map(|hit| {
-                    hit.action_address()
-                        .filter(|address| address.resource == resource)
-                })
-                .unwrap_or_else(|| {
-                    panic!("missing canonical intelligence search result for {query}")
-                });
-            assert!(provider.resolve_action_resource(&address).is_some());
-        }
-        let (ids, next, inspected) = provider.photo_matches_page("invoice 42", None);
-        assert_eq!(ids, [library.photos[0].id.clone()]);
-        assert!(next.is_none());
-        assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-    }
-
-    #[test]
-    fn caller_limits_are_clamped_and_hits_materialize_the_exact_action_resource() {
-        let doc = open_doc("harbour.png");
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        assert!(provider.search_limited("", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-        let page = provider.search_page("harbour", None, usize::MAX, usize::MAX);
-        assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-        assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-        let address = page.results[0].action_address().unwrap();
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("the search snapshot materializes its canonical resource");
-        assert_eq!(resource.id.0, address.resource);
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action)
-        );
-        assert!(
-            provider
-                .resolve_action_resource(&ActionAddress::new(address.resource, "remove"))
-                .is_some(),
-            "all actions on the materialized photograph remain agent-addressable"
-        );
-    }
-
-    #[test]
-    fn deletion_invalidates_cursors_and_removes_old_exact_materialization() {
-        let mut doc = open_doc("before.png");
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        let first = provider.search_page("", None, 1, 1);
-        let cursor = first.next.expect("the library has another browse row");
-        let address = provider.search("before")[0].action_address().unwrap();
-
-        PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
-        PhotosDoc::set_image(&mut doc, None);
-        provider.sync(&doc).unwrap();
-        assert!(!provider.action_directory_cursor_is_current(&cursor));
-        assert!(provider.resolve_action_resource(&address).is_none());
-    }
-
-    #[test]
-    fn colliding_resource_ids_are_refused_instead_of_routing_to_the_wrong_kind() {
-        let doc = AutoCommit::new();
-        let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
-            "/pictures/collision.png",
-            1,
-            1,
-        ));
-        photo.id = "photos.album:collision".into();
-        let library = crate::model::PhotoLibrary {
-            photos: vec![photo],
-            albums: vec![crate::model::Album {
-                id: "photos.album:collision".into(),
-                name: "Collision".into(),
-                photo_ids: Vec::new(),
-            }],
-        };
-        let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        assert!(provider.search("collision").is_empty());
-        assert!(
-            provider
-                .resolve_action_resource(&ActionAddress::new("photos.album:collision", "open"))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn exact_unique_match_in_a_large_library_is_bounded_and_reachable() {
-        let mut expected_records = 0;
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let doc = AutoCommit::new();
-                let mut library = crate::model::PhotoLibrary::default();
-                for row in corpus {
-                    let stem = row.text.replace(' ', "-");
-                    let name = if row.is_target {
-                        format!("{stem}-夏.png")
-                    } else {
-                        format!("{stem}.png")
-                    };
-                    library.photos.push(crate::model::LibraryPhoto::from_image(
-                        OpenImage::from_path(&format!("/pictures/{name}"), 1, 1),
-                    ));
-                }
-                expected_records = library.photos.len() + 4; // library + timeline + places + albums
-                PhotosSearchProvider::from_library(&doc, &library).unwrap()
-            },
-            3_000,
-        );
-        assert_eq!(provider.stats().records, expected_records);
-        let page = provider.search_page("needle-夏", None, 2, 1);
-        assert_eq!(page.results, vec![hit.clone()]);
-        assert!(page.inspected <= 2);
-        let address = hit.action_address().unwrap();
-        assert_eq!(address.action, "open");
-        assert!(provider.resolve_action_resource(&address).is_some());
-        let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();
-        assert_eq!(seeds, expected_records);
-        assert_eq!(prebuilt_action_trees, 0);
-    }
-
-    #[test]
-    fn rejected_snapshot_keeps_catalog_generation_and_exact_seeds_atomic() {
-        let doc = open_doc("last-good.png");
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        let before_generation = provider.action_directory_generation();
-        let address = provider.search("last-good")[0].action_address().unwrap();
-        let before = provider.resource(&address.resource).unwrap();
-        let before_seed_stats = provider.retained_seed_stats();
-
-        assert_eq!(
-            provider.reject_malformed_snapshot_for_test(),
-            Err(SearchCatalogError::NonCanonicalResult)
-        );
-        assert_eq!(provider.action_directory_generation(), before_generation);
-        assert_eq!(provider.retained_seed_stats(), before_seed_stats);
-        let after = provider.resource(&address.resource).unwrap();
-        assert_eq!(after.id, before.id);
-        assert_eq!(after.actions.len(), before.actions.len());
-    }
-
-    #[test]
-    fn prior_search_and_exact_lookup_stay_available_until_a_rebuild_publishes() {
-        let doc = open_doc("before.png");
-        let provider = PhotosSearchProvider::new(&doc).unwrap();
-        let before_address = provider
-            .search("before")
-            .into_iter()
-            .find_map(|hit| hit.action_address())
-            .expect("fixture photograph is searchable");
-
-        let mut replacement = PhotosDoc::library(&doc);
-        replacement
-            .photos
-            .push(crate::model::LibraryPhoto::from_image(
-                OpenImage::from_path("/pictures/after.png", 16, 16),
-            ));
-        let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
-        let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
-        let replacement_provider = provider.clone();
-
-        std::thread::scope(|scope| {
-            scope.spawn(move || {
-                replacement_provider
-                    .replace_from_library_before_publish(&replacement, || {
-                        built_tx.send(()).expect("test observes completed rebuild");
-                        publish_rx.recv().expect("test releases publication");
-                    })
-                    .expect("valid replacement publishes");
-            });
-            built_rx.recv().expect("replacement finished off-lock work");
-
-            // This runs exactly in the window after the new postings/seeds
-            // exist but before the short atomic swap. If rebuild work ever
-            // re-enters the public state lock, either operation deadlocks
-            // here instead of continuing against the prior generation.
+            let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
+            assert!(provider.search("collision").is_empty());
             assert!(
                 provider
-                    .search("before")
-                    .iter()
-                    .any(|hit| hit.action_address() == Some(before_address.clone()))
+                    .resolve_action_resource(&ActionAddress::new("photos.album:collision", "open"))
+                    .is_none()
             );
-            assert!(provider.resource(&before_address.resource).is_some());
-            publish_tx.send(()).expect("release publication");
-        });
+        }
 
-        assert!(provider.search("after").iter().any(|hit| {
-            hit.action_address()
-                .is_some_and(|address| address.resource.contains("after.png"))
-        }));
+        {
+            let doc = open_doc("last-good.png");
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            let before_generation = provider.action_directory_generation();
+            let address = provider.search("last-good")[0].action_address().unwrap();
+            let before = provider.resource(&address.resource).unwrap();
+            let before_seed_stats = provider.retained_seed_stats();
+
+            assert_eq!(
+                provider.reject_malformed_snapshot_for_test(),
+                Err(SearchCatalogError::NonCanonicalResult)
+            );
+            assert_eq!(provider.action_directory_generation(), before_generation);
+            assert_eq!(provider.retained_seed_stats(), before_seed_stats);
+            let after = provider.resource(&address.resource).unwrap();
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.actions.len(), before.actions.len());
+        }
+
+        {
+            let doc = open_doc("before.png");
+            let provider = PhotosSearchProvider::new(&doc).unwrap();
+            let before_address = provider
+                .search("before")
+                .into_iter()
+                .find_map(|hit| hit.action_address())
+                .expect("fixture photograph is searchable");
+
+            let mut replacement = PhotosDoc::library(&doc);
+            replacement
+                .photos
+                .push(LibraryPhoto::from_image(OpenImage::from_path(
+                    "/pictures/after.png",
+                    16,
+                    16,
+                )));
+            let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
+            let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
+            let replacement_provider = provider.clone();
+
+            std::thread::scope(|scope| {
+                scope.spawn(move || {
+                    replacement_provider
+                        .replace_from_library_before_publish(&replacement, || {
+                            built_tx.send(()).expect("test observes completed rebuild");
+                            publish_rx.recv().expect("test releases publication");
+                        })
+                        .expect("valid replacement publishes");
+                });
+                built_rx.recv().expect("replacement finished off-lock work");
+
+                // This runs exactly in the window after the new postings/seeds
+                // exist but before the short atomic swap. If rebuild work ever
+                // re-enters the public state lock, either operation deadlocks
+                // here instead of continuing against the prior generation.
+                assert!(
+                    provider
+                        .search("before")
+                        .iter()
+                        .any(|hit| hit.action_address() == Some(before_address.clone()))
+                );
+                assert!(provider.resource(&before_address.resource).is_some());
+                publish_tx.send(()).expect("release publication");
+            });
+
+            assert!(provider.search("after").iter().any(|hit| {
+                hit.action_address()
+                    .is_some_and(|address| address.resource.contains("after.png"))
+            }));
+        }
     }
 }

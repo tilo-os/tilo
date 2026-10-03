@@ -154,11 +154,12 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 fn cache_dir() -> std::path::PathBuf {
     // An absolute XDG_CACHE_HOME wins on every platform (sandboxed launches
     // set one); otherwise the platform's own cache directory.
-    let base = xdg_paths::env_dir("XDG_CACHE_HOME")
-        .or_else(xdg_paths::cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = tilo_paths::env_dir("XDG_CACHE_HOME")
+        .or_else(tilo_paths::cache_dir)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     let dir = base.join("tilo-music");
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = crate::files::create_dir_all(&dir);
     dir
 }
 
@@ -736,49 +737,56 @@ impl MusicBackend for RustyPipeBackend {
 mod bounded_transport_tests {
     use super::*;
 
-    #[cfg(all(windows, target_arch = "aarch64"))]
     #[test]
-    fn native_quickjs_bindings_execute_stream_signature_operations() {
-        let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
-        let context = rquickjs::Context::full(&runtime).expect("JavaScript context");
-        context.with(|ctx| {
-            // Stream resolvers pass strings into JavaScript and read strings
-            // back. Exercise that ABI, including allocation and Unicode.
-            let result: String = ctx
-                .eval("Array.from('a🎵bc').reverse().join('')")
-                .expect("evaluate signature-style string transform");
-            assert_eq!(result, "cb🎵a");
-            assert!(
-                ctx.eval::<String, _>("throw new Error('invalid signature')")
-                    .is_err()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn live_transport_is_bounded_utf8_safe_and_signature_capable() {
+        // Phase `native_quickjs_bindings_execute_stream_signature_operations`.
+        #[cfg(all(windows, target_arch = "aarch64"))]
+        {
+            let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
+            let context = rquickjs::Context::full(&runtime).expect("JavaScript context");
+            context.with(|ctx| {
+                // Stream resolvers pass strings into JavaScript and read strings
+                // back. Exercise that ABI, including allocation and Unicode.
+                let result: String = ctx
+                    .eval("Array.from('a🎵bc').reverse().join('')")
+                    .expect("evaluate signature-style string transform");
+                assert_eq!(result, "cb🎵a");
+                assert!(
+                    ctx.eval::<String, _>("throw new Error('invalid signature')")
+                        .is_err()
+                );
+            });
+        }
+
+        // Phase `live_request_deadline_cancels_a_stalled_future`.
+        {
+            let result = block_with_deadline(
+                ui::rt::app(),
+                "test request",
+                std::time::Duration::from_millis(5),
+                async {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok::<_, &str>(())
+                },
             );
-        });
-    }
+            assert!(
+                result
+                    .expect_err("stalled future must be cancelled")
+                    .to_string()
+                    .contains("timed out")
+            );
+        }
 
-    #[test]
-    fn live_request_deadline_cancels_a_stalled_future() {
-        let result = block_with_deadline(
-            ui::rt::app(),
-            "test request",
-            std::time::Duration::from_millis(5),
-            async {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                Ok::<_, &str>(())
-            },
-        );
-        assert!(
-            result
-                .expect_err("stalled future must be cancelled")
-                .to_string()
-                .contains("timed out")
-        );
-    }
-
-    #[test]
-    fn external_text_is_utf8_safe_and_bounded() {
-        let text = "🎵".repeat(DESCRIPTION_LIMIT);
-        let bounded = bounded_text(text, DESCRIPTION_LIMIT);
-        assert!(bounded.len() <= DESCRIPTION_LIMIT);
-        assert!(bounded.is_char_boundary(bounded.len()));
+        // Phase `external_text_is_utf8_safe_and_bounded`.
+        {
+            let text = "🎵".repeat(DESCRIPTION_LIMIT);
+            let bounded = bounded_text(text, DESCRIPTION_LIMIT);
+            assert!(bounded.len() <= DESCRIPTION_LIMIT);
+            assert!(bounded.is_char_boundary(bounded.len()));
+        }
     }
 }

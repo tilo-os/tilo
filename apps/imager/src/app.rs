@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -38,13 +39,13 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Metrics;
 use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
@@ -58,6 +59,7 @@ use crate::model::{
     TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::write::{JobControl, WriteRequest, spawn_job};
+use crate::write_setup::WriteSetupPanel;
 
 // ---- layout constants (logical px) -------------------------------------
 // The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
@@ -503,6 +505,8 @@ pub struct ImagerApp {
     source: Option<Source>,
     recent: Vec<Source>,
     profile: InstallProfile,
+    /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
+    wifi_psk: String,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -567,12 +571,14 @@ pub struct ImagerApp {
     /// protected) and dispatches each edit through [`Self::actions`]. See
     /// [`crate::customize`].
     customize: CustomizePanel,
+    /// Wi-Fi and identity applied onto the written root by this machine.
+    write_setup: WriteSetupPanel,
     /// Framework-owned action dispatch (the only action-dispatch state the app
     /// holds). Every guided-customization profile edit dispatches its
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
     /// brackets the undo boundary and applies it through the executor so it
     /// records one Ctrl+Z step and replays byte-identically on peers.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for ImagerApp {
@@ -591,6 +597,7 @@ impl ImagerApp {
             selected: None,
             action: Action::Flash,
             profile: InstallProfile::default(),
+            wifi_psk: String::new(),
             progress: Progress::default(),
             confirm_input: TextInput::local()
                 .with_id("imager_device_confirmation")
@@ -623,7 +630,8 @@ impl ImagerApp {
             scroll_y: 0.0,
             keyboard_hit: None,
             customize: CustomizePanel::new(),
-            actions: ui::ActionHost::new(),
+            write_setup: WriteSetupPanel::new(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.estimate_bands();
         app
@@ -661,7 +669,7 @@ impl ImagerApp {
         }
     }
 
-    fn target(&self) -> Option<&TargetDrive> {
+    pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
@@ -741,6 +749,14 @@ impl ImagerApp {
             .is_some_and(|source| self.source_is_official(source))
     }
 
+    /// Confirm can collect Wi-Fi and enrollment for any selected image. Official
+    /// installable media still uses Customize for the secret-free embedded
+    /// profile; on-write handoff is staged separately and applied after the
+    /// verified write onto the installed root.
+    fn offers_write_setup(&self) -> bool {
+        self.source.is_some()
+    }
+
     fn source_is_official(&self, source: &Source) -> bool {
         source.kind == SourceKind::TiloImage
             && source.installable
@@ -771,8 +787,58 @@ impl ImagerApp {
     /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
     /// test.
     #[doc(hidden)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the selected image and install profile the framework resource holds.
+    /// An empty projection does not wipe a selection that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ImagerState) {
+        if state.source.is_none() && self.source.is_some() {
+            return;
+        }
+        if state.source.is_some() {
+            self.source.clone_from(&state.source);
+        }
+        let profile_changed = state.profile.hostname != self.profile.hostname
+            || state.profile.keyboard != self.profile.keyboard
+            || state.profile.timezone != self.profile.timezone
+            || state.profile.locale != self.profile.locale
+            || state.profile.user.username != self.profile.user.username
+            || state.profile.user.full_name != self.profile.user.full_name
+            || state.profile.encrypt != self.profile.encrypt;
+        if profile_changed {
+            self.profile = state.profile.clone();
+            self.customize.sync(&self.profile);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Imager>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Whether startup has finished reconciling an in-flight write helper.
+    pub(crate) fn startup_write_reconciled(&self) -> bool {
+        self.startup_write_state_reconciled
+    }
+
+    /// Whether a write/verify worker channel is open on this surface.
+    pub(crate) fn job_active(&self) -> bool {
+        self.job_rx.is_some()
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -1367,6 +1433,19 @@ impl ImagerApp {
                             ]),
                     );
                 }
+                if self.offers_write_setup() {
+                    children.push(
+                        Self::a11y_group(
+                            "Setup on write",
+                            self.write_setup.accessibility(
+                                lay.content,
+                                self.write_setup_top(lay.content),
+                                self.profile.enroll_local_identity,
+                            ),
+                        )
+                        .with_hashed_key("write-setup"),
+                    );
+                }
                 if let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == Hit::ConfirmField)
                 {
                     let expected = self
@@ -1478,92 +1557,116 @@ fn kind_color(theme: &Theme, kind: TargetKind) -> Color {
     }
 }
 
+/// A run of wizard text: the string, the style it is shaped with and its ink.
+pub(crate) struct TextRun<'a> {
+    text: &'a str,
+    style: TextStyle,
+    color: Color,
+}
+
+impl<'a> TextRun<'a> {
+    pub(crate) fn new(text: &'a str, style: TextStyle, color: Color) -> Self {
+        Self { text, style, color }
+    }
+
+    /// The run with its line box's top-left at `at`, wrapped at `max_w`.
+    pub(crate) fn draw(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        at: Point,
+        max_w: Option<f32>,
+    ) {
+        tr.draw_style(
+            scene,
+            self.text,
+            self.color,
+            Affine::translate(at.to_vec2()),
+            max_w,
+            &self.style,
+        );
+    }
+
+    fn width(&self, tr: &mut TextRenderer) -> f64 {
+        f64::from(tr.measure_style(self.text, None, &self.style).0)
+    }
+
+    fn draw_right(&self, scene: &mut Scene, tr: &mut TextRenderer, right: f64, top: f64) {
+        let w = self.width(tr);
+        self.draw(scene, tr, Point::new(right - w, top), None);
+    }
+
+    fn draw_center(&self, scene: &mut Scene, tr: &mut TextRenderer, cx: f64, top: f64) {
+        let w = self.width(tr);
+        self.draw(scene, tr, Point::new(cx - w / 2.0, top), None);
+    }
+
+    fn line_top(&self, tr: &mut TextRenderer, band_y0: f64, band_h: f64) -> f64 {
+        ImagerApp::line_top(
+            tr,
+            self.text,
+            self.style.size,
+            self.style.weight,
+            band_y0,
+            band_h,
+        )
+    }
+
+    /// Centred on `cx`, its line box centred in the band
+    /// `band_y0 ..= band_y0 + band_h`.
+    fn draw_center_v(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        cx: f64,
+        band_y0: f64,
+        band_h: f64,
+    ) {
+        let top = self.line_top(tr, band_y0, band_h);
+        self.draw_center(scene, tr, cx, top);
+    }
+
+    /// Right-aligned at `right`, its line box centred in the band
+    /// `band_y0 ..= band_y0 + band_h`.
+    fn draw_right_v(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        right: f64,
+        band_y0: f64,
+        band_h: f64,
+    ) {
+        let top = self.line_top(tr, band_y0, band_h);
+        self.draw_right(scene, tr, right, top);
+    }
+
+    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
+    /// left-aligned block of that width once it does not.
+    fn draw_para_centered(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        cx: f64,
+        top: f64,
+        max_w: f64,
+    ) {
+        if self.width(tr) <= max_w {
+            self.draw_center(scene, tr, cx, top);
+        } else {
+            self.draw(
+                scene,
+                tr,
+                Point::new(cx - max_w / 2.0, top),
+                Some(max_w as f32),
+            );
+        }
+    }
+}
+
 // =========================================================================
 // Drawing primitives
 // =========================================================================
 impl ImagerApp {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
-    )]
-    fn txt(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        x: f64,
-        top: f64,
-        max_w: Option<f32>,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            Affine::translate((x, top)),
-            max_w,
-            weight,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Right-aligned text needs scene and renderer, content and typography, and the right edge and line top."
-    )]
-    fn txt_right(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        right: f64,
-        top: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            right - f64::from(w),
-            top,
-            None,
-            weight,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Centered text needs scene and renderer, content and typography, and the horizontal center and line top."
-    )]
-    fn txt_center(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        top: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            cx - f64::from(w) / 2.0,
-            top,
-            None,
-            weight,
-        );
-    }
-
     /// Wrap a terminal failure into a small, measured block. Error strings can
     /// contain long device paths or platform diagnostics, so character-count
     /// truncation is not enough: every returned line is measured in the same
@@ -1729,106 +1832,23 @@ impl ImagerApp {
         centered_text_top(band_y0, band_h, f64::from(h))
     }
 
-    /// `s` centred on `cx`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Band-centered text combines scene and renderer, content and typography, horizontal center, and vertical band bounds."
-    )]
-    fn txt_center_v(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        band_y0: f64,
-        band_h: f64,
-        weight: TextWeight,
-    ) {
-        let top = Self::line_top(tr, s, size, weight, band_y0, band_h);
-        Self::txt_center(scene, tr, s, size, color, cx, top, weight);
-    }
-
-    /// `s` right-aligned at `right`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Right-aligned band text combines scene and renderer, content and typography, right edge, and vertical band bounds."
-    )]
-    fn txt_right_v(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        right: f64,
-        band_y0: f64,
-        band_h: f64,
-        weight: TextWeight,
-    ) {
-        let top = Self::line_top(tr, s, size, weight, band_y0, band_h);
-        Self::txt_right(scene, tr, s, size, color, right, top, weight);
-    }
-
     /// A kind badge (`Tilo`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
-    /// its label needs, filling the band `top ..= top + band_h` from `x`.
+    /// its label needs, filling the band `at.y ..= at.y + band_h` from `at.x`.
     /// Returns the badge's rect so the text column can follow it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "A measured source-kind badge needs render context, its origin and band height, label, and semantic fill color."
-    )]
     fn kind_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        top: f64,
+        ctx: &mut PaintCtx<'_>,
+        at: Point,
         band_h: f64,
         label: &str,
         fill: Color,
     ) -> Rect {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (x, top) = (at.x, at.y);
         let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         let (w, _) = tr.measure(label, size, None);
         let badge = Rect::new(x, top, x + f64::from(w) + 2.0 * RELATED, top + band_h);
         Badge::paint_at(scene, t, badge, label, fill, tr, theme);
         badge
-    }
-
-    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
-    /// left-aligned block of that width once it does not.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Paragraph painting needs scene and renderer, content and typography, center/top coordinates, and the wrapping width."
-    )]
-    fn txt_para_centered(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        top: f64,
-        max_w: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        if f64::from(w) <= max_w {
-            Self::txt_center(scene, tr, s, size, color, cx, top, weight);
-        } else {
-            Self::txt(
-                scene,
-                tr,
-                s,
-                size,
-                color,
-                cx - max_w / 2.0,
-                top,
-                Some(max_w as f32),
-                weight,
-            );
-        }
     }
 
     fn section_label(
@@ -1839,17 +1859,12 @@ impl ImagerApp {
         x: f64,
         y: f64,
     ) {
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             s,
-            11.0,
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             theme.tokens.colors.text_dim,
-            x,
-            y,
-            None,
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(x, y), None);
     }
 }
 
@@ -2272,13 +2287,27 @@ impl ImagerApp {
         )
     }
 
+    /// Origin of the optional on-write setup form (Wi-Fi / enrollment).
+    fn write_setup_top(&self, content: Rect) -> f64 {
+        self.confirm_banner_rect(content).y1 + GROUP
+    }
+
     /// The typed device-name confirmation field. It follows the danger banner
-    /// in reading order — review, warning, type the name, then the footer's
-    /// primary action — a `GROUP` below the banner, under its caption line.
+    /// (and optional write-setup form) in reading order — review, warning,
+    /// optional network/identity, type the name, then the footer's primary
+    /// action — a `GROUP` below the previous block, under its caption line.
     /// One rect for the hit layout and the painter.
     fn confirm_field_rect(&self, content: Rect) -> Rect {
         let m = &self.bands.confirm;
-        let top = self.confirm_banner_rect(content).y1 + GROUP + m.label_h + LABEL;
+        let after = if self.offers_write_setup() {
+            self.write_setup_top(content)
+                + self
+                    .write_setup
+                    .extent(content, self.write_setup_top(content))
+        } else {
+            self.confirm_banner_rect(content).y1 + GROUP
+        };
+        let top = after + m.label_h + LABEL;
         Rect::new(content.x0, top, content.x1, top + CONTROL_H)
     }
 
@@ -2347,11 +2376,28 @@ impl ImagerApp {
                 "Install Tilo with your settings (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
-            Action::Flash if self.customizable() => format!(
-                "Write Tilo, pre-configured (host {}, user {})",
-                self.profile.hostname, self.profile.user.username
-            ),
-            Action::Flash => "Write the image, then read-back verify".to_string(),
+            Action::Flash => {
+                let mut parts = if self.customizable() {
+                    vec![format!(
+                        "Write Tilo, pre-configured (host {}, user {})",
+                        self.profile.hostname, self.profile.user.username
+                    )]
+                } else {
+                    vec!["Write the image, then read-back verify".to_string()]
+                };
+                if !self.profile.wifi_ssid.trim().is_empty() {
+                    parts.push(format!("Wi-Fi {}", self.profile.wifi_ssid.trim()));
+                }
+                if self.profile.enroll_local_identity {
+                    let label = self.profile.device_label.trim();
+                    if label.is_empty() {
+                        parts.push("enroll identity".into());
+                    } else {
+                        parts.push(format!("enroll as {label}"));
+                    }
+                }
+                parts.join(" · ")
+            }
         };
         rows.push(ConfirmRow {
             key: "Action",
@@ -2503,16 +2549,12 @@ impl ImagerApp {
                 JobPhase::Success => c.semantic.success,
                 _ => c.text_dim,
             };
-            Self::txt_right(
-                scene,
-                tr,
+            TextRun::new(
                 &self.status,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 col,
-                v.x1 - OUTER,
-                v.y0 + RELATED,
-                TextWeight::Medium,
-            );
+            )
+            .draw_right(scene, tr, v.x1 - OUTER, v.y0 + RELATED);
         }
 
         // ---- Step indicator ----
@@ -2558,16 +2600,17 @@ impl ImagerApp {
             } else {
                 let ring = if current { c.accent[5] } else { c.neutral[4] };
                 scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, disc_r));
-                Self::txt_center_v(
+                TextRun::new(
+                    &format!("{}", s.index() + 1),
+                    TextStyle::new(12.0).with_weight(TextWeight::Bold),
+                    Self::ink_on(theme, ring),
+                )
+                .draw_center_v(
                     scene,
                     tr,
-                    &format!("{}", s.index() + 1),
-                    12.0,
-                    Self::ink_on(theme, ring),
                     disc_c.x,
                     disc_c.y - disc_r,
                     2.0 * disc_r,
-                    TextWeight::Bold,
                 );
             }
             if !lay.compact_crumbs {
@@ -2583,16 +2626,11 @@ impl ImagerApp {
                 };
                 let label_top =
                     Self::line_top(tr, s.title(), 13.5, weight, disc_c.y - disc_r, 2.0 * disc_r);
-                Self::txt(
+                TextRun::new(s.title(), TextStyle::new(13.5).with_weight(weight), label_c).draw(
                     scene,
                     tr,
-                    s.title(),
-                    13.5,
-                    label_c,
-                    disc_c.x + disc_r + RELATED,
-                    label_top,
+                    Point::new(disc_c.x + disc_r + RELATED, label_top),
                     None,
-                    weight,
                 );
             }
             // Connector to the next pill, inset a step from both stations.
@@ -2663,16 +2701,12 @@ impl ImagerApp {
         if !self.compact_content(lay.content)
             && let Some(hint) = self.footer_hint()
         {
-            Self::txt_center_v(
+            TextRun::new(&hint, TextStyle::new(12.0), c.text_dim).draw_center_v(
                 scene,
                 tr,
-                &hint,
-                12.0,
-                c.text_dim,
                 f64::midpoint(v.x0, v.x1),
                 fy,
                 FOOTER_H,
-                TextWeight::Regular,
             );
         }
     }
@@ -2781,28 +2815,18 @@ impl ImagerApp {
     ) {
         let c = &theme.tokens.colors;
         let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             title,
-            19.0,
+            TextStyle::new(19.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            content.x0,
-            content.y0,
-            None,
-            TextWeight::Bold,
-        );
+        )
+        .draw(scene, tr, Point::new(content.x0, content.y0), None);
         if let Some(sub) = sub {
-            Self::txt(
+            TextRun::new(sub, TextStyle::new(13.0), c.text_dim).draw(
                 scene,
                 tr,
-                sub,
-                13.0,
-                c.text_dim,
-                content.x0,
-                content.y0 + f64::from(title_h) + STEP_SUB_GAP,
+                Point::new(content.x0, content.y0 + f64::from(title_h) + STEP_SUB_GAP),
                 Some(content.width() as f32),
-                TextWeight::Regular,
             );
         }
     }
@@ -2897,31 +2921,31 @@ impl ImagerApp {
         // a `SECTION` after the icon.
         let text_x = gx + ICON / 2.0 + SECTION;
         let text_w = (browse.x1 - text_x - SECTION).max(0.0) as f32;
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             "Browse for an image…",
-            16.0,
+            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            text_x,
-            browse.y0 + m.dz_title_top,
-            Some(text_w),
-            TextWeight::Semibold,
-        );
-        Self::txt(
+        )
+        .draw(
             scene,
             tr,
+            Point::new(text_x, browse.y0 + m.dz_title_top),
+            Some(text_w),
+        );
+        TextRun::new(
             if compact {
                 "Choose an .iso, .img, or .raw file"
             } else {
                 "Opens the system file picker · .iso, .img, .raw"
             },
-            12.5,
+            TextStyle::new(12.5),
             c.text_dim,
-            text_x,
-            browse.y0 + m.dz_sub_top,
+        )
+        .draw(
+            scene,
+            tr,
+            Point::new(text_x, browse.y0 + m.dz_sub_top),
             Some(text_w),
-            TextWeight::Regular,
         );
         browse
     }
@@ -2980,12 +3004,8 @@ impl ImagerApp {
         );
         let badge_x = disc_x + CHECK_R + if compact { RELATED } else { SIBLING };
         let badge = Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            badge_x,
-            badge_top,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(badge_x, badge_top),
             badge_h,
             src.kind.tag(),
             source_color(theme, src.kind),
@@ -3013,17 +3033,12 @@ impl ImagerApp {
         } else {
             card.y0 + SECTION
         };
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &name,
-            15.5,
+            TextStyle::new(15.5).with_weight(TextWeight::Semibold),
             c.text_primary,
-            title_x,
-            title_top,
-            Some(title_max_w),
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(title_x, title_top), Some(title_max_w));
         // One line: a long image path elides against the card instead of
         // wrapping into the tag line beneath it.
         let summary = if compact {
@@ -3033,16 +3048,11 @@ impl ImagerApp {
         };
         let detail_max_w = (card.x1 - detail_x - SECTION).max(0.0) as f32;
         let summary = tr.elide_to_width(&summary, 12.0, detail_max_w);
-        Self::txt(
+        TextRun::new(&summary, TextStyle::new(12.0), c.text_dim).draw(
             scene,
             tr,
-            &summary,
-            12.0,
-            c.text_dim,
-            detail_x,
-            card.y0 + summary_top,
+            Point::new(detail_x, card.y0 + summary_top),
             Some(detail_max_w),
-            TextWeight::Regular,
         );
         let (tag, tag_c) = if self.source_is_official(src) {
             (
@@ -3052,16 +3062,16 @@ impl ImagerApp {
         } else {
             ("Local image · unverified · written as-is", c.text_dim)
         };
-        Self::txt(
+        TextRun::new(
+            tag,
+            TextStyle::new(11.5).with_weight(TextWeight::Medium),
+            tag_c,
+        )
+        .draw(
             scene,
             tr,
-            tag,
-            11.5,
-            tag_c,
-            detail_x,
-            card.y0 + tag_top,
+            Point::new(detail_x, card.y0 + tag_top),
             Some(detail_max_w),
-            TextWeight::Medium,
         );
         card.y1
     }
@@ -3095,7 +3105,13 @@ impl ImagerApp {
             if i > 0 {
                 y += SIBLING;
             }
-            y = self.draw_release_row(scene, tr, theme, t, content, y, i, rel);
+            let row = Rect::new(
+                content.x0,
+                y,
+                content.x1,
+                y + self.bands.source.release_row_h,
+            );
+            y = self.draw_release_row(&mut PaintCtx::new(scene, t, tr, theme), row, i, rel);
         }
         y
     }
@@ -3127,49 +3143,33 @@ impl ImagerApp {
         let sub_h = tr.line(12.0);
         let stack_h = title_h + RELATED + sub_h;
         let title_top = card.y0 + (card.height() - stack_h) / 2.0;
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             "No Tilo releases found",
-            14.0,
+            TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            cx,
-            title_top,
-            TextWeight::Semibold,
-        );
-        Self::txt_center(
-            scene,
-            tr,
+        )
+        .draw_center(scene, tr, cx, title_top);
+        TextRun::new(
             "Releases stored on this machine appear here.",
-            12.0,
+            TextStyle::new(12.0),
             c.text_dim,
-            cx,
-            title_top + title_h + RELATED,
-            TextWeight::Regular,
-        );
+        )
+        .draw_center(scene, tr, cx, title_top + title_h + RELATED);
         card.y1
     }
 
     /// One release row: selection badge, name, channel/size/location, and the
     /// "installable" tag. Returns its bottom edge.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Release row painting combines render context, content bounds and row position, release data, and its selection index."
-    )]
     fn draw_release_row(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        y: f64,
+        ctx: &mut PaintCtx<'_>,
+        r: Rect,
         index: usize,
         rel: &TiloRelease,
     ) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let c = &theme.tokens.colors;
         let m = &self.bands.source;
-        let r = Rect::new(content.x0, y, content.x1, y + m.release_row_h);
         let selected = self
             .source
             .as_ref()
@@ -3185,12 +3185,8 @@ impl ImagerApp {
         // The kind badge on its band, centred in the row and as wide as its
         // label needs; the text column starts a `SIBLING` after it.
         let badge = Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            r.x0 + SECTION,
-            r.y0 + (r.height() - m.card_badge_h) / 2.0,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(r.x0 + SECTION, r.y0 + (r.height() - m.card_badge_h) / 2.0),
             m.card_badge_h,
             "Tilo",
             c.accent[5],
@@ -3201,16 +3197,16 @@ impl ImagerApp {
         let (inst_w, _) = tr.measure_weighted("installable", 11.0, None, TextWeight::Medium);
         let title_max_w = (r.x1 - SECTION - f64::from(inst_w) - SIBLING - text_x)
             .max(f64::from(title_w).min(72.0)) as f32;
-        Self::txt(
+        TextRun::new(
+            &rel.display_name(),
+            TextStyle::new(14.5).with_weight(TextWeight::Semibold),
+            c.text_primary,
+        )
+        .draw(
             scene,
             tr,
-            &rel.display_name(),
-            14.5,
-            c.text_primary,
-            text_x,
-            r.y0 + RELATED,
+            Point::new(text_x, r.y0 + RELATED),
             Some(title_max_w),
-            TextWeight::Semibold,
         );
         let downloading = self.release_download_index == Some(index);
         let where_ = if downloading {
@@ -3220,9 +3216,7 @@ impl ImagerApp {
         } else {
             "on disk"
         };
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &format!(
                 "{}  ·  {}  ·  {}  ·  {}",
                 rel.target_label(),
@@ -3230,33 +3224,30 @@ impl ImagerApp {
                 fmt_size(rel.size),
                 where_
             ),
-            11.5,
+            TextStyle::new(11.5),
             c.text_dim,
-            text_x,
-            r.y0 + m.release_detail_top,
-            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
-            TextWeight::Regular,
-        );
-        // The tag shares the title's centre line.
-        Self::txt_right_v(
+        )
+        .draw(
             scene,
             tr,
+            Point::new(text_x, r.y0 + m.release_detail_top),
+            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
+        );
+        // The tag shares the title's centre line.
+        TextRun::new(
             if downloading {
                 "Cancel"
             } else {
                 "official · verified"
             },
-            11.0,
+            TextStyle::new(11.0).with_weight(TextWeight::Medium),
             if downloading {
                 c.semantic.danger
             } else {
                 c.semantic.success
             },
-            r.x1 - 16.0,
-            r.y0 + RELATED,
-            f64::from(title_h),
-            TextWeight::Medium,
-        );
+        )
+        .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
         if downloading {
             let fraction = self
                 .release_download_progress
@@ -3280,7 +3271,7 @@ impl ImagerApp {
                 );
             }
         }
-        y + 54.0 + 10.0
+        r.y0 + 54.0 + 10.0
     }
 
     /// Draws the "Recent" section (up to the three most recent sources) a
@@ -3324,40 +3315,30 @@ impl ImagerApp {
             Self::fill_rr(scene, t, sw, LABEL / 2.0, source_color(theme, src.kind));
             let text_x = sw.x1 + SIBLING;
             let (tag_w, _) = tr.measure_weighted(src.kind.tag(), 10.5, None, TextWeight::Semibold);
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &src.name,
-                13.0,
+                TextStyle::new(13.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                text_x,
-                r.y0 + RELATED,
-                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
-                TextWeight::Medium,
-            );
-            Self::txt(
+            )
+            .draw(
                 scene,
                 tr,
-                &fmt_size(src.size),
-                11.0,
-                c.text_dim,
-                text_x,
-                r.y0 + m.recent_size_top,
+                Point::new(text_x, r.y0 + RELATED),
+                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
+            );
+            TextRun::new(&fmt_size(src.size), TextStyle::new(11.0), c.text_dim).draw(
+                scene,
+                tr,
+                Point::new(text_x, r.y0 + m.recent_size_top),
                 None,
-                TextWeight::Regular,
             );
             // The kind tag is centred on the row.
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 src.kind.tag(),
-                10.5,
+                TextStyle::new(10.5).with_weight(TextWeight::Semibold),
                 c.text_tertiary,
-                r.x1 - SECTION,
-                r.y0,
-                r.height(),
-                TextWeight::Semibold,
-            );
+            )
+            .draw_right_v(scene, tr, r.x1 - SECTION, r.y0, r.height());
             y = r.y1;
         }
     }
@@ -3400,29 +3381,19 @@ impl ImagerApp {
                 rescan.y0,
                 rescan.height(),
             );
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &detected,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 c.text_dim,
-                content.x0,
-                count_top,
-                None,
-                TextWeight::Medium,
-            );
+            )
+            .draw(scene, tr, Point::new(content.x0, count_top), None);
         } else {
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 &detected,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 c.text_dim,
-                rescan.x0 - SIBLING,
-                rescan.y0,
-                rescan.height(),
-                TextWeight::Medium,
-            );
+            )
+            .draw_right_v(scene, tr, rescan.x0 - SIBLING, rescan.y0, rescan.height());
         }
 
         let vis = self.visible_targets();
@@ -3478,45 +3449,29 @@ impl ImagerApp {
             theme.tokens.radii.sm.into(),
             c.text_tertiary,
         );
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             EMPTY_TITLE,
-            17.0,
+            TextStyle::new(17.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            cx,
-            card.y0 + m.empty_title_top,
-            TextWeight::Semibold,
-        );
+        )
+        .draw_center(scene, tr, cx, card.y0 + m.empty_title_top);
         let para_w = (card.width() - 2.0 * GROUP).max(0.0);
-        Self::txt_para_centered(
+        TextRun::new(EMPTY_LINE_1, TextStyle::new(13.0), c.text_dim).draw_para_centered(
             scene,
             tr,
-            EMPTY_LINE_1,
-            13.0,
-            c.text_dim,
             cx,
             card.y0 + m.empty_line_top,
             para_w,
-            TextWeight::Regular,
         );
-        Self::txt_para_centered(
+        TextRun::new(EMPTY_LINE_2, TextStyle::new(12.0), c.text_tertiary).draw_para_centered(
             scene,
             tr,
-            EMPTY_LINE_2,
-            12.0,
-            c.text_tertiary,
             cx,
             card.y0 + m.empty_line2_top,
             para_w,
-            TextWeight::Regular,
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Drive card painting combines render context and card bounds with the drive data and selection/hover index."
-    )]
     fn draw_drive_card(
         &self,
         scene: &mut Scene,
@@ -3562,12 +3517,8 @@ impl ImagerApp {
 
         // Kind badge: as wide as its label needs, on the badge band.
         Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            left,
-            r.y0 + SECTION,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(left, r.y0 + SECTION),
             m.badge_h,
             drive.kind.tag(),
             kind_color(theme, drive.kind),
@@ -3578,10 +3529,6 @@ impl ImagerApp {
 
     /// Draws the removable/fixed/system chip, the model + capacity line, and
     /// the destructive-erase note for a drive card, each on its measured line.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "shares the (scene, tr, theme, t) render context plus per-card geometry with every draw_* helper in this file; bundling that context is a wider render-context refactor out of scope here"
-    )]
     fn draw_drive_card_details(
         &self,
         scene: &mut Scene,
@@ -3616,16 +3563,17 @@ impl ImagerApp {
             theme.tokens.radii.sm.into(),
             with_alpha(chip_c, 40),
         );
-        Self::txt_center_v(
+        TextRun::new(
+            chip_label,
+            TextStyle::new(10.5).with_weight(TextWeight::Bold),
+            chip_c,
+        )
+        .draw_center_v(
             scene,
             tr,
-            chip_label,
-            10.5,
-            chip_c,
             f64::midpoint(chip.x0, chip.x1),
             chip.y0,
             chip.height(),
-            TextWeight::Bold,
         );
 
         // Model + capacity, then the erase note: three single lines a `LABEL`
@@ -3634,33 +3582,23 @@ impl ImagerApp {
         // below it.
         let max_w = (r.x1 - SECTION - left).max(0.0) as f32;
         let model = tr.elide_to_width_weighted(&drive.model, 16.0, max_w, TextWeight::Semibold);
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &model,
-            16.0,
+            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            left,
-            r.y0 + m.model_top,
-            None,
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(left, r.y0 + m.model_top), None);
         let device = tr.elide_to_width_weighted(
             &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)),
             12.5,
             max_w,
             TextWeight::Regular,
         );
-        Self::txt(
+        TextRun::new(&device, TextStyle::new(12.5), c.text_dim).draw(
             scene,
             tr,
-            &device,
-            12.5,
-            c.text_dim,
-            left,
-            r.y0 + m.dev_top,
+            Point::new(left, r.y0 + m.dev_top),
             None,
-            TextWeight::Regular,
         );
         let erase = tr.elide_to_width_weighted(
             &format!("⚠ Erases {}", drive.contents_summary()),
@@ -3668,17 +3606,12 @@ impl ImagerApp {
             max_w,
             TextWeight::Medium,
         );
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &erase,
-            11.5,
+            TextStyle::new(11.5).with_weight(TextWeight::Medium),
             c.semantic.danger,
-            left,
-            r.y0 + m.erase_top,
-            None,
-            TextWeight::Medium,
-        );
+        )
+        .draw(scene, tr, Point::new(left, r.y0 + m.erase_top), None);
     }
 
     // ---- Customize --------------------------------------------------------
@@ -3702,42 +3635,25 @@ impl ImagerApp {
             surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
             let cx = f64::midpoint(card.x0, card.x1);
             let title_h = tr.line(16.0);
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 PLAIN_TITLE,
-                16.0,
+                TextStyle::new(16.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                cx,
-                card.y0 + SECTION,
-                TextWeight::Semibold,
-            );
-            Self::txt_para_centered(
+            )
+            .draw_center(scene, tr, cx, card.y0 + SECTION);
+            TextRun::new(PLAIN_BODY, TextStyle::new(13.0), c.text_dim).draw_para_centered(
                 scene,
                 tr,
-                PLAIN_BODY,
-                13.0,
-                c.text_dim,
                 cx,
                 card.y0 + SECTION + title_h + RELATED,
                 (card.width() - 2.0 * SECTION).max(0.0),
-                TextWeight::Regular,
             );
             return;
         }
 
         // The whole form is the shared guided-customization panel.
-        let removable = self.target().is_some_and(|d| d.removable);
-        self.customize.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            content,
-            &self.profile,
-            removable,
-        );
+        self.customize
+            .draw(&mut PaintCtx::new(scene, t, tr, theme), presence, content);
     }
 
     // ---- Confirm ----------------------------------------------------------
@@ -3749,12 +3665,23 @@ impl ImagerApp {
         theme: &Theme,
         t: Affine,
         lay: &Layout,
+        presence: &PresenceCtx,
     ) {
         let content = lay.content;
         let (title, sub) = self.confirm_heading();
         Self::draw_step_title(scene, tr, theme, content, title, sub);
         self.draw_confirm_review_card(scene, tr, theme, t, content);
         self.draw_confirm_danger_banner(scene, tr, theme, t, content);
+        if self.offers_write_setup() {
+            let top = self.write_setup_top(content);
+            self.write_setup.draw(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                presence,
+                content,
+                top,
+                &self.profile,
+            );
+        }
         self.draw_confirm_field(scene, tr, theme, t, content);
     }
 
@@ -3780,33 +3707,23 @@ impl ImagerApp {
             let (_, vh) = tr.measure_weighted(&row.value, row.size, Some(value_w), row.weight);
             let key_top = y + (f64::from(vh) - f64::from(kh)).max(0.0) / 2.0;
             let value_top = y + (f64::from(kh) - f64::from(vh)).max(0.0) / 2.0;
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 row.key,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
-                card.x0 + SECTION,
-                key_top,
-                None,
-                TextWeight::Semibold,
-            );
+            )
+            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
             let col = match row.tone {
                 RowTone::Primary => c.text_primary,
                 RowTone::Success => c.semantic.success,
                 RowTone::Danger => c.semantic.danger,
             };
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &row.value,
-                row.size,
+                TextStyle::new(row.size).with_weight(row.weight),
                 col,
-                value_x,
-                value_top,
-                Some(value_w),
-                row.weight,
-            );
+            )
+            .draw(scene, tr, Point::new(value_x, value_top), Some(value_w));
         }
     }
 
@@ -3839,16 +3756,16 @@ impl ImagerApp {
             with_alpha(c.semantic.danger, if internal { 170 } else { 130 }),
             if internal { 1.4 } else { 1.0 },
         );
-        Self::txt(
+        TextRun::new(
+            self.confirm_warning(),
+            TextStyle::new(13.0).with_weight(TextWeight::Semibold),
+            c.semantic.danger,
+        )
+        .draw(
             scene,
             tr,
-            self.confirm_warning(),
-            13.0,
-            c.semantic.danger,
-            banner.x0 + SECTION,
-            banner.y0 + SIBLING,
+            Point::new(banner.x0 + SECTION, banner.y0 + SIBLING),
             Some((banner.width() - 2.0 * SECTION).max(0.0) as f32),
-            TextWeight::Semibold,
         );
     }
 
@@ -3868,16 +3785,16 @@ impl ImagerApp {
         let focused = self.confirm_input.is_focused();
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        Self::txt(
+        TextRun::new(
+            "CONFIRM THE TARGET DEVICE",
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
+            c.text_dim,
+        )
+        .draw(
             scene,
             tr,
-            "CONFIRM THE TARGET DEVICE",
-            11.0,
-            c.text_dim,
-            field.x0,
-            field.y0 - LABEL - m.label_h,
+            Point::new(field.x0, field.y0 - LABEL - m.label_h),
             None,
-            TextWeight::Semibold,
         );
         // The field is the toolkit input's face — raised at rest, the active
         // tint while focused — under the gate's own semantic edge: danger
@@ -3925,28 +3842,18 @@ impl ImagerApp {
         self.confirm_input
             .draw(scene, t, tr, theme, &PresenceCtx::empty());
         if matches {
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 "✓ armed",
-                12.5,
+                TextStyle::new(12.5).with_weight(TextWeight::Bold),
                 c.semantic.success,
-                field.x1 - SECTION,
-                field.y0,
-                field.height(),
-                TextWeight::Bold,
-            );
+            )
+            .draw_right_v(scene, tr, field.x1 - SECTION, field.y0, field.height());
         }
-        Self::txt(
+        TextRun::new(self.confirm_note(), TextStyle::new(11.0), c.text_tertiary).draw(
             scene,
             tr,
-            self.confirm_note(),
-            11.0,
-            c.text_tertiary,
-            field.x0,
-            field.y1 + RELATED,
+            Point::new(field.x0, field.y1 + RELATED),
             None,
-            TextWeight::Regular,
         );
     }
 
@@ -4014,31 +3921,23 @@ impl ImagerApp {
         }
         let stack_h = m.pct_h + LABEL + m.small_h;
         let pct_top = cyp - stack_h / 2.0;
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             &format!("{:.0}%", overall * 100.0),
-            30.0,
+            TextStyle::new(30.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            pct_top,
-            TextWeight::Bold,
-        );
+        )
+        .draw_center(scene, tr, cxp, pct_top);
         let caption = match (writing, self.action) {
             (true, Action::Install) => "installing",
             (true, Action::Flash) => "writing",
             (false, _) => "verifying",
         };
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             caption,
-            12.0,
+            TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
-            cxp,
-            pct_top + m.pct_h + LABEL,
-            TextWeight::Medium,
-        );
+        )
+        .draw_center(scene, tr, cxp, pct_top + m.pct_h + LABEL);
     }
 
     /// The rate + ETA line below the ring, when either is known.
@@ -4066,16 +3965,12 @@ impl ImagerApp {
             let _ = write!(meta, "~{} left", fmt_eta(eta));
         }
         if !meta.is_empty() {
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 &meta,
-                13.0,
+                TextStyle::new(13.0).with_weight(TextWeight::Medium),
                 c.text_dim,
-                cxp,
-                content.y0 + self.bands.write.meta_top(head),
-                TextWeight::Medium,
-            );
+            )
+            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.meta_top(head));
         }
     }
 
@@ -4101,27 +3996,18 @@ impl ImagerApp {
             ("Write", p.write_frac, writing, c.semantic.info),
             ("Verify", p.verify_frac, !writing, c.semantic.success),
         ] {
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 label,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 if active { c.text_primary } else { c.text_dim },
-                bx0,
-                yy,
-                None,
-                TextWeight::Semibold,
-            );
-            Self::txt_right(
-                scene,
-                tr,
+            )
+            .draw(scene, tr, Point::new(bx0, yy), None);
+            TextRun::new(
                 &format!("{:.0}%", frac * 100.0),
-                12.0,
+                TextStyle::new(12.0),
                 c.text_dim,
-                bx1,
-                yy,
-                TextWeight::Regular,
-            );
+            )
+            .draw_right(scene, tr, bx1, yy);
             let bar_top = yy + m.small_h + LABEL;
             let bar = Rect::new(bx0, bar_top, bx1, bar_top + BAR_H);
             Self::bar(scene, t, bar, frac, c.neutral[3], fill);
@@ -4141,16 +4027,12 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let cxp = f64::midpoint(content.x0, content.x1);
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 &format!("{}  →  {}", src.name, tgt.dev_path()),
-                12.0,
+                TextStyle::new(12.0),
                 c.text_tertiary,
-                cxp,
-                content.y0 + self.bands.write.foot_top(head),
-                TextWeight::Regular,
-            );
+            )
+            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.foot_top(head));
         }
     }
 
@@ -4231,26 +4113,18 @@ impl ImagerApp {
             Self::glyph_ink(theme, c.semantic.success),
         );
         let (headline, sub) = Self::done_ok_copy(install, compact);
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             headline,
-            26.0,
+            TextStyle::new(26.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            DoneMetrics::headline_top(content.y0),
-            TextWeight::Bold,
-        );
-        Self::txt_para_centered(
+        )
+        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
+        TextRun::new(sub, TextStyle::new(14.0), c.text_dim).draw_para_centered(
             scene,
             tr,
-            sub,
-            14.0,
-            c.text_dim,
             cxp,
             m.sub_top(content.y0),
             content.width(),
-            TextWeight::Regular,
         );
     }
 
@@ -4276,27 +4150,18 @@ impl ImagerApp {
             None,
             &Circle::new(Point::new(cxp, cyp), HERO_DISC_R),
         );
-        Self::txt_center_v(
-            scene,
-            tr,
+        TextRun::new(
             "!",
-            44.0,
+            TextStyle::new(44.0).with_weight(TextWeight::Bold),
             Self::glyph_ink(theme, c.semantic.danger),
-            cxp,
-            cyp - HERO_DISC_R,
-            2.0 * HERO_DISC_R,
-            TextWeight::Bold,
-        );
-        Self::txt_center(
-            scene,
-            tr,
+        )
+        .draw_center_v(scene, tr, cxp, cyp - HERO_DISC_R, 2.0 * HERO_DISC_R);
+        TextRun::new(
             copy.0,
-            26.0,
+            TextStyle::new(26.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            DoneMetrics::headline_top(content.y0),
-            TextWeight::Bold,
-        );
+        )
+        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
         let max_width =
             (content.width() - if compact { SECTION } else { 2.0 * HERO }).max(40.0) as f32;
         let line_h = tr.line(13.5);
@@ -4305,15 +4170,11 @@ impl ImagerApp {
             .iter()
             .enumerate()
         {
-            Self::txt_center(
+            TextRun::new(line, TextStyle::new(13.5), c.text_dim).draw_center(
                 scene,
                 tr,
-                line,
-                13.5,
-                c.text_dim,
                 cxp,
                 sub_top + index as f64 * line_h,
-                TextWeight::Regular,
             );
         }
     }
@@ -4354,41 +4215,31 @@ impl ImagerApp {
         {
             let row_top = card.y0 + SECTION + i as f64 * (m.row_h + SIBLING);
             let key_top = Self::line_top(tr, key, 12.0, TextWeight::Semibold, row_top, m.row_h);
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 key,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
-                card.x0 + SECTION,
-                key_top,
-                None,
-                TextWeight::Semibold,
-            );
+            )
+            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
             let value_top = Self::line_top(tr, &value, 13.5, TextWeight::Medium, row_top, m.row_h);
-            Self::txt(
+            TextRun::new(
+                &value,
+                TextStyle::new(13.5).with_weight(TextWeight::Medium),
+                c.text_primary,
+            )
+            .draw(
                 scene,
                 tr,
-                &value,
-                13.5,
-                c.text_primary,
-                value_x,
-                value_top,
+                Point::new(value_x, value_top),
                 Some((card.x1 - SECTION - reserve - value_x).max(0.0) as f32),
-                TextWeight::Medium,
             );
             if ok && i == 0 {
-                Self::txt_right_v(
-                    scene,
-                    tr,
+                TextRun::new(
                     "✓ verified",
-                    12.5,
+                    TextStyle::new(12.5).with_weight(TextWeight::Bold),
                     c.semantic.success,
-                    card.x1 - SECTION,
-                    row_top,
-                    m.row_h,
-                    TextWeight::Bold,
-                );
+                )
+                .draw_right_v(scene, tr, card.x1 - SECTION, row_top, m.row_h);
             }
         }
     }
@@ -4418,7 +4269,7 @@ impl ImagerApp {
             state,
             crate::actions::IMAGER_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Imager", "Imager", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
         );
         self.source = Some(src.clone());
         self.set_status(
@@ -4596,6 +4447,7 @@ impl ImagerApp {
         self.keyboard_hit = None;
         self.confirm_input.set_focus(false);
         self.customize.clear_focus();
+        self.write_setup.clear_focus();
         self.dirty = true;
     }
 
@@ -4691,6 +4543,10 @@ impl ImagerApp {
                         Ok(())
                     }
                 }
+                crate::actions::ImagerOperation::SetWifiPsk { value } => {
+                    self.wifi_psk.clone_from(value);
+                    Ok(())
+                }
                 crate::actions::ImagerOperation::Write { .. } => {
                     Err("Invalid image-write operation dispatch".into())
                 }
@@ -4712,13 +4568,32 @@ impl ImagerApp {
         if *device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
+        // Stage Wi-Fi / enrollment for any image the operator configured on
+        // Confirm. Official media still embeds only the secret-free profile
+        // block; the passphrase and new device key stay in the staged tree
+        // and are copied onto the installed root after verification.
+        let handoff_stage =
+            if !self.profile.wifi_ssid.trim().is_empty() || self.profile.enroll_local_identity {
+                let local = crate::handoff::local_identity_from_env()?;
+                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?
+                    .map(|stage| stage.root)
+            } else {
+                None
+            };
         let req = WriteRequest {
             source: src,
             target: tgt.clone(),
             action: self.action,
             profile: self.profile.clone(),
+            handoff_stage: handoff_stage.clone(),
         };
         let (start, rx, control) = spawn_job(req, confirmation);
+        let refuse = |message: String| -> Result<(), String> {
+            if let Some(stage) = handoff_stage.as_ref() {
+                let _ = std::fs::remove_dir_all(stage);
+            }
+            Err(message)
+        };
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
@@ -4745,23 +4620,23 @@ impl ImagerApp {
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                return Err("Confirmation does not match — write refused.".into());
+                return refuse("Confirmation does not match — write refused.".into());
             }
             crate::write::JobStart::TooSmall => {
-                return Err("Image is larger than the drive — write refused.".into());
+                return refuse("Image is larger than the drive — write refused.".into());
             }
             crate::write::JobStart::UnsafeTarget => {
-                return Err(
+                return refuse(
                     "Internal and system disks can only be installed from the booted Tilo medium."
                         .into(),
                 );
             }
             crate::write::JobStart::Incomplete => {
-                return Err("Select a source and drive before writing.".into());
+                return refuse("Select a source and drive before writing.".into());
             }
-            crate::write::JobStart::InvalidProfile(message) => return Err(message),
+            crate::write::JobStart::InvalidProfile(message) => return refuse(message),
             crate::write::JobStart::WriteDisabled => {
-                return Err(
+                return refuse(
                     "Raw-device writing is disabled; enable the privileged Imager backend first."
                         .into(),
                 );
@@ -5004,11 +4879,17 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::IMAGER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
                 // Start genuinely blank. In the live app a real `lsblk` probe
@@ -5017,7 +4898,13 @@ impl Widget for ImagerApp {
                 // "insert a drive" state — the imager never invents drives.
                 // Sample content is opt-in (`--demo` / `--shots`), which seeds
                 // the document *before* the first sync so this branch is skipped.
-                ImagerDoc::seed(state, &[]);
+                let action = crate::actions::ImagerAction::EnsureRecords;
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::IMAGER_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
+                );
             }
             if live_probe_enabled() {
                 self.targets = crate::probe::probe().unwrap_or_default();
@@ -5059,6 +4946,7 @@ impl Widget for ImagerApp {
         // (each unfocused field mirrors the stored value; a focused one stays
         // the source of truth).
         self.customize.sync(&self.profile);
+        self.write_setup.sync(&self.profile, &self.wifi_psk);
         if self.export_after_sync {
             self.export_after_sync = false;
             self.export_config(state);
@@ -5108,6 +4996,7 @@ impl Widget for ImagerApp {
         let probe = Rect::new(0.0, 0.0, content_w, 0.0);
         let head = self.step_header_h(probe);
         changed |= self.customize.measure(tr, head);
+        changed |= self.write_setup.measure(tr);
         changed
     }
 
@@ -5186,7 +5075,7 @@ impl Widget for ImagerApp {
             Step::Customize => {
                 self.draw_customize_step(scene, tr, theme, transform, &lay, presence);
             }
-            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
+            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay, presence),
             Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
             Step::Done => self.draw_write_done(
                 scene,
@@ -5224,72 +5113,68 @@ impl Widget for ImagerApp {
         clippy::too_many_lines,
         reason = "the canvas wizard routes modal, text-field, profile-panel, pointer, scroll and keyboard capture in one explicitly ordered event transaction"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
 
         let lay = self.compute_layout();
 
         // The detached shared modal owns capture and dismissal before any
         // wizard field or shortcut sees the event.
-        if self
-            .export_dialog
-            .handle_detached(event, scale_factor, *modifiers, state, path)
-        {
-            *handled = true;
+        if self.export_dialog.handle_detached(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+        ) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
-        if self.handle_tab_event(event, *modifiers, &lay) {
-            *handled = true;
+        if self.handle_tab_event(event, *ctx.modifiers, &lay) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         // Destructive consent is peer-local and goes through the toolkit's
-        // real editor before any wizard shortcut sees the event.
+        // real editor before any wizard shortcut sees the event. On-write
+        // Wi-Fi / enrollment fields sit above it and take events first.
         if self.step == Step::Confirm && !self.export_dialog.is_open() {
+            if self.handle_write_setup_event(event, ctx, &lay) {
+                *ctx.handled = true;
+                self.dirty = true;
+                return;
+            }
             let mut input_handled = false;
             let mut focus_target = None;
             self.confirm_input.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut input_handled,
-                &mut focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    focus_target: &mut focus_target,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if focus_target.is_some() {
                 self.confirm_input.set_focus(true);
+                self.write_setup.clear_focus();
             }
             if self.confirm_input.take_dirty().is_some() {
                 self.dirty = true;
             }
             if self.confirm_input.take_submit() {
                 if self.can_advance(Step::Confirm) {
-                    self.start_write(state);
+                    self.start_write(ctx.state);
                 }
                 self.confirm_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
             if input_handled {
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -5299,32 +5184,23 @@ impl Widget for ImagerApp {
         // panel, which owns its fields, toggles and export affordance. Only
         // events it does not consume (footer clicks, global keys) fall through
         // to the wizard chrome below.
-        let consumed = self.handle_customize_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            &lay,
-            node_id,
-            taffy,
-        );
+        let consumed = self.handle_customize_event(event, ctx, &lay);
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, &lay);
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, &lay);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(state, &lay, handled);
+                self.handle_left_click(ctx.state, &lay, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. }
                 if lay.viewport_content.contains(self.last_mouse) =>
@@ -5332,14 +5208,14 @@ impl Widget for ImagerApp {
                 use winit::event::MouseScrollDelta;
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
-                    MouseScrollDelta::PixelDelta(point) => point.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(point) => point.y / ctx.scale_factor,
                 };
                 let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
                 if (next - self.scroll_y).abs() > f64::EPSILON {
                     self.scroll_y = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5350,125 +5226,33 @@ impl Widget for ImagerApp {
                     },
                 ..
             } => {
-                self.handle_key_pressed(logical_key, state, handled);
+                self.handle_key_pressed(logical_key, ctx.state, ctx.handled);
             }
             _ => {}
         }
     }
 
-    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        let available = self.source.is_some() && self.target().is_some();
-        let mut job = crate::actions::operation_resource(
-            self.target().map(TargetDrive::dev_path).as_deref(),
-            available,
-            !self.startup_write_state_reconciled || self.job_rx.is_some(),
-            crate::write::write_available(),
-        );
-        job.actions.push(
-            crate::actions::operation_spec(
-                "export-config",
-                "Export headless configuration",
-                tilo_actions::OperationKind::View,
-                crate::actions::ImagerOperation::ExportConfig,
-            )
-            .with_contract(tilo_actions::ActionContract {
-                availability: if available {
-                    tilo_actions::Availability::Available
-                } else {
-                    tilo_actions::Availability::Unavailable {
-                        code: "incomplete_plan".into(),
-                        reason: "Select an image source and target drive first".into(),
-                    }
-                },
-                result: tilo_actions::ResultSpec::Json {
-                    schema: serde_json::json!({ "type": "string" }),
-                },
-                discovery: tilo_actions::DiscoveryScope::Launchable,
-                ..tilo_actions::ActionContract::view()
-            }),
-        );
-        resources.push(job);
-        resources
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected_kind = match operation {
-            crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
-            _ => tilo_actions::OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Imager operation kind does not match its contract".into());
-        }
-        let mut local_doc = doc.clone();
-        self.perform_operation(&operation, &mut local_doc)?;
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        match crate::actions::decode_operation(type_id, payload)? {
-            Some(crate::actions::ImagerOperation::Status) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager status is a view operation".into());
-                }
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "phase": self.progress.phase.key(),
-                        "progress": self.progress.overall(),
-                        "message": self.status,
-                    })),
-                    resources: Vec::new(),
-                }));
-            }
-            Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager config export is a view operation".into());
-                }
-                if self.source.is_none() || self.target().is_none() {
-                    return Err("Select an image source and target drive first".into());
-                }
-                let text = self
-                    .profile
-                    .to_headless_config(self.source.as_ref(), self.target());
-                self.export_dialog.show(text.clone());
-                self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(text)),
-                    resources: Vec::new(),
-                }));
-            }
-            _ => {}
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    /// The framework host drains the undo boundary an on-screen profile control
-    /// dispatched, so it records exactly one boundary bracketing it — the same
-    /// path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        Ok(self
+            .answer_resource_operation_v2(
+                request.kind,
+                request.type_id,
+                request.payload,
+                doc,
+                path,
+            )?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -5493,13 +5277,76 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
+        let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
             return false;
+        }
+        if let Some(field_key) = target.strip_prefix("imager:write-setup:") {
+            if self.step != Step::Confirm || !self.offers_write_setup() {
+                return false;
+            }
+            return match (field_key, action) {
+                ("enroll-identity", AccessAction::Activate | AccessAction::Focus) => {
+                    let on = !self.profile.enroll_local_identity;
+                    let field_action = crate::actions::ImagerAction::SetEnrollLocalIdentity { on };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("wifi-ssid", AccessAction::SetValue(value)) => {
+                    let field_action = crate::actions::ImagerAction::SetWifiSsid {
+                        value: value.clone(),
+                    };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("device-label", AccessAction::SetValue(value)) => {
+                    let field_action = crate::actions::ImagerAction::SetDeviceLabel {
+                        value: value.clone(),
+                    };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("wifi-psk", AccessAction::SetValue(value)) => {
+                    self.wifi_psk.clone_from(value);
+                    true
+                }
+                _ => false,
+            };
         }
         if let Some(field_key) = target.strip_prefix("imager:profile:") {
             if self.step != Step::Customize || !self.customizable() {
@@ -5550,7 +5397,7 @@ impl Widget for ImagerApp {
                         crate::actions::IMAGER_ACTION_TYPE,
                         &field_action,
                         tilo_actions::ActionContext::for_action(
-                            "org.tilo.Imager",
+                            "so.tilo.imager",
                             "Imager",
                             &field_action,
                         ),
@@ -5655,24 +5502,129 @@ impl Widget for ImagerApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImagerApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the profile / write-plan door — keep only live extras (none today:
+    /// job status is a View on the resource, not a second published tree).
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "imager.sources" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
+    }
+}
+
+impl ui::undo::CommittedActions for ImagerApp {
+    /// The framework host drains the undo boundary an on-screen profile control
+    /// dispatched, so it records exactly one boundary bracketing it — the same
+    /// path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ImagerApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected_kind = match operation {
+            crate::actions::ImagerOperation::Status
+            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            crate::actions::ImagerOperation::SetWifiPsk { .. } => {
+                tilo_actions::OperationKind::Effect
+            }
+            _ => tilo_actions::OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Imager operation kind does not match its contract".into());
+        }
+        let mut local_doc = doc.clone();
+        self.perform_operation(&operation, &mut local_doc)?;
+        Ok(true)
+    }
+
+    fn answer_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        match crate::actions::decode_operation(type_id, payload)? {
+            Some(crate::actions::ImagerOperation::Status) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager status is a view operation".into());
+                }
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "phase": self.progress.phase.key(),
+                        "progress": self.progress.overall(),
+                        "message": self.status,
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+            Some(crate::actions::ImagerOperation::ExportConfig) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager config export is a view operation".into());
+                }
+                if self.source.is_none() || self.target().is_none() {
+                    return Err("Select an image source and target drive first".into());
+                }
+                let text = self
+                    .profile
+                    .to_headless_config(self.source.as_ref(), self.target());
+                self.export_dialog.show(text.clone());
+                self.dirty = true;
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(text)),
+                    resources: Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        self.answer_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+    }
+}
+
 impl ImagerApp {
     /// The Customize step's delegated handling. Returns `true` when the panel
     /// consumed the event, so the caller stops before the wizard chrome below
     /// ever sees it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Customize routing forwards input, CRDT state, wizard layout, and the widget node/tree to the shared panel."
-    )]
     fn handle_customize_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         lay: &Layout,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
     ) -> bool {
         if !(self.step == Step::Customize && self.customizable() && !self.export_dialog.is_open()) {
             return false;
@@ -5681,19 +5633,44 @@ impl ImagerApp {
         let profile = self.profile.clone();
         let resp = self.customize.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx,
             &mut self.actions,
             &profile,
             removable,
             lay.content,
-            node_id,
-            taffy,
         );
         if resp.export_requested {
-            self.export_config(state);
+            self.export_config(ctx.state);
+        }
+        resp.handled
+    }
+
+    /// Confirm-step Wi-Fi / enrollment form for the selected image.
+    fn handle_write_setup_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        lay: &Layout,
+    ) -> bool {
+        if !self.offers_write_setup() {
+            return false;
+        }
+        let profile = self.profile.clone();
+        let top = self.write_setup_top(lay.content);
+        let resp = self.write_setup.handle_event(
+            event,
+            ctx,
+            &mut self.actions,
+            &profile,
+            lay.content,
+            top,
+        );
+        if let Some(psk) = resp.wifi_psk {
+            self.wifi_psk = psk;
+        }
+        if resp.handled {
+            self.confirm_input.set_focus(false);
+            self.profile = ImagerDoc::profile(ctx.state);
         }
         resp.handled
     }
@@ -5895,32 +5872,160 @@ mod tests {
         (app, doc)
     }
 
+    /// Blank start, demo seeding, local state and restart reconciliation.
     #[test]
-    fn local_wizard_state_never_leaks_through_the_collaborative_document() {
-        let (mut app, mut doc) = seeded_app();
-        let before = doc.save();
-        app.selected = Some(0);
-        app.goto(&mut doc, Step::Confirm);
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.5,
-            verify_frac: 0.0,
-            rate_bps: 1,
-            error: None,
-        };
-        app.set_status(&doc, "local writer status");
-        assert_eq!(
-            doc.save(),
-            before,
-            "selection, station, status, and job progress are local"
-        );
-        let mut peer = AutoCommit::load(&before).unwrap();
-        let mut peer_app = ImagerApp::new();
-        peer_app.sync(&mut peer, &automerge::ROOT);
-        assert_eq!(peer_app.step, Step::Source);
-        assert_eq!(peer_app.selected, None);
-        assert_eq!(peer_app.progress.phase, JobPhase::Idle);
-        assert!(peer_app.status.is_empty());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn startup_state_is_blank_local_and_reconciled_before_writes() {
+        // Phase `local_wizard_state_never_leaks_through_the_collaborative_document`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let before = doc.save();
+            app.selected = Some(0);
+            app.goto(&mut doc, Step::Confirm);
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.5,
+                verify_frac: 0.0,
+                rate_bps: 1,
+                error: None,
+            };
+            app.set_status(&doc, "local writer status");
+            assert_eq!(
+                doc.save(),
+                before,
+                "selection, station, status, and job progress are local"
+            );
+            let mut peer = AutoCommit::load(&before).unwrap();
+            let mut peer_app = ImagerApp::new();
+            peer_app.sync(&mut peer, &automerge::ROOT);
+            assert_eq!(peer_app.step, Step::Source);
+            assert_eq!(peer_app.selected, None);
+            assert_eq!(peer_app.progress.phase, JobPhase::Idle);
+            assert!(peer_app.status.is_empty());
+        }
+
+        // Phase `sync_reads_demo_state_at_source_step`.
+        {
+            let (app, _doc) = seeded_app();
+            assert_eq!(app.targets.len(), 2);
+            assert!(app.source.is_some());
+            assert_eq!(app.step, Step::Source);
+            assert_eq!(app.recent.len(), 3);
+        }
+
+        // Phase `live_app_starts_blank_with_no_fabricated_content`.
+        {
+            // The live path (no demo seed) starts genuinely empty: no drives are
+            // invented and no image is pre-selected.
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.targets.is_empty(), "no fabricated drives");
+            assert!(app.source.is_none(), "no fabricated image");
+            assert!(app.recent.is_empty(), "no fabricated recent history");
+            assert_eq!(app.step, Step::Source);
+        }
+
+        // Phase `restart_drops_unsupervised_local_write_state_and_requires_new_review`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.step = Step::Write;
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.8,
+                verify_frac: 0.0,
+                rate_bps: 64_000_000,
+                error: None,
+            };
+            app.status = "Writing locally".into();
+            let saved = doc.save();
+            let mut restarted = ImagerApp::new();
+            let mut restored_doc = AutoCommit::load(&saved).unwrap();
+            restarted.sync(&mut restored_doc, &automerge::ROOT);
+            assert_eq!(restarted.step, Step::Source);
+            assert_eq!(restarted.progress.phase, JobPhase::Idle);
+            assert!(restarted.selected.is_none());
+            assert!(restarted.status.is_empty());
+            assert!(!restarted.can_advance_with_writer(Step::Drive, true));
+        }
+
+        // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.startup_write_state_reconciled = false;
+            app.confirm_input.set_text("sdb");
+
+            assert!(!app.can_advance_with_writer(Step::Confirm, true));
+            let error = app
+                .perform_operation(
+                    &crate::actions::ImagerOperation::Write {
+                        device: app.target().unwrap().dev_path(),
+                        confirmation: "sdb".into(),
+                    },
+                    &mut doc,
+                )
+                .expect_err("unreconciled startup must not expose a write");
+            assert!(error.contains("Restoring the previous image-write state"));
+
+            let root = ui::resources::resources(&app, &doc)
+                .into_iter()
+                .find(|resource| resource.kind == "imager.sources")
+                .expect("imager sources resource owns the write Effect");
+            let write = root
+                .actions
+                .iter()
+                .find(|action| action.id == "write")
+                .expect("write action");
+            assert!(!write.contract.availability.is_available());
+        }
+
+        // Phase `live_app_offers_no_tilo_release_to_write`.
+        // A release row is a *write source for erasing a drive*, so the live app
+        // must offer none of its own invention: the list comes from the document,
+        // and a live (unseeded) document has nothing in it. Sample releases are
+        // opt-in via `--demo` / `--shots` like every other sample surface here.
+        {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.releases().is_empty(), "no fabricated Tilo releases");
+
+            // ...and nothing on the Source step is clickable that would select one.
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let offered = app
+                .compute_layout()
+                .hits
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::Release(_)));
+            assert!(
+                !offered,
+                "no release row may be hit-testable on the live path"
+            );
+            assert!(
+                app.source.is_none(),
+                "and nothing is pre-selected as the source"
+            );
+        }
+
+        // Phase `demo_document_offers_its_seeded_releases`.
+        // The gate is a gate, not a deletion: the demo document still offers them.
+        {
+            let (mut app, _doc) = seeded_app();
+            assert_eq!(app.releases().len(), 2);
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let offered = app
+                .compute_layout()
+                .hits
+                .iter()
+                .filter(|(_, h)| matches!(h, Hit::Release(_)))
+                .count();
+            assert_eq!(offered, 2, "each seeded release has a row to click");
+        }
     }
 
     // ---- synthetic winit events for driving the real event path -----------
@@ -5993,14 +6098,16 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -6049,872 +6156,916 @@ mod tests {
         }
     }
 
+    /// Accessible semantics, selection labels, live regions and tab order.
     #[test]
-    fn main_canvas_semantics_expose_heading_sources_and_keyboard_order() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wizard_semantics_labels_live_regions_and_keyboard_order() {
+        // Phase `main_canvas_semantics_expose_heading_sources_and_keyboard_order`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
 
-        let tree = app.accessibility_tree();
-        assert_eq!(tree.role, ui::a11y::Role::Window);
-        assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
-        let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
-        assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
-        let selected = accessible_named(&tree, "Selected image").expect("selected image");
-        assert!(
-            selected
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("Tilo"))
-        );
+            let tree = app.accessibility_tree();
+            assert_eq!(tree.role, ui::a11y::Role::Window);
+            assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
+            let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
+            assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
+            let selected = accessible_named(&tree, "Selected image").expect("selected image");
+            assert!(
+                selected
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("Tilo"))
+            );
 
-        let mut order = Vec::new();
-        accessible_focus_order(&tree, &mut order);
-        assert_eq!(
-            order.first().map(String::as_str),
-            Some("Step 1 of 6: Source")
-        );
-        let browse = order
-            .iter()
-            .position(|name| name == "Browse for an image")
-            .expect("browse in focus order");
-        let continue_button = order
-            .iter()
-            .position(|name| name == "Continue")
-            .expect("continue in focus order");
-        assert!(browse < continue_button);
-        assert!(
-            accessible_named(&tree, "Step 3 of 6: Customize")
-                .expect("future customize step")
-                .state
-                .disabled
-        );
-    }
-
-    #[test]
-    fn hardware_variants_have_distinct_semantic_selection_and_review_labels() {
-        use ui::a11y::Action as AccessAction;
-
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let mut generic = crate::model::sample_releases().remove(0);
-        generic.architecture = "aarch64".into();
-        let mut board = generic.clone();
-        board.hardware_profile = "lenovo-83ed".into();
-        let target = format!("imager:release:{}", board.selection_id());
-        assert_ne!(generic.selection_id(), board.selection_id());
-        app.releases = vec![generic, board.clone()];
-        let tree = app.accessibility_tree();
-        assert!(accessible_named(&tree, &format!("Download {}", board.display_name())).is_some());
-        assert!(app.perform_semantic_action(
-            &target,
-            &AccessAction::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(board.matches_source(app.source.as_ref().unwrap()));
-        assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        let tree = app.accessibility_tree();
-        assert!(
-            accessible_named(&tree, "Image")
-                .unwrap()
-                .value
-                .as_deref()
-                .unwrap()
-                .contains("lenovo-83ed only")
-        );
-    }
-
-    #[test]
-    fn profile_and_confirmation_semantics_are_editable_and_focusable() {
-        use ui::a11y::Action as AccessAction;
-
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Customize);
-
-        let tree = app.accessibility_tree();
-        let mut order = Vec::new();
-        accessible_focus_order(&tree, &mut order);
-        let profile_order = [
-            "Hostname",
-            "Full name",
-            "Username",
-            "Language and locale",
-            "Time zone",
-            "Keyboard layout",
-            "Filesystem",
-            "Preview embedded setup",
-        ];
-        let positions = profile_order.map(|name| {
-            order
-                .iter()
-                .position(|candidate| candidate == name)
-                .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
-        });
-        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        for name in [
-            "Language and locale",
-            "Time zone",
-            "Keyboard layout",
-            "Filesystem",
-        ] {
+            let mut order = Vec::new();
+            accessible_focus_order(&tree, &mut order);
             assert_eq!(
-                accessible_named(&tree, name).expect("profile chooser").role,
-                ui::a11y::Role::ComboBox,
-                "{name} is exposed as a chooser, not unrestricted text"
+                order.first().map(String::as_str),
+                Some("Step 1 of 6: Source")
+            );
+            let browse = order
+                .iter()
+                .position(|name| name == "Browse for an image")
+                .expect("browse in focus order");
+            let continue_button = order
+                .iter()
+                .position(|name| name == "Continue")
+                .expect("continue in focus order");
+            assert!(browse < continue_button);
+            assert!(
+                accessible_named(&tree, "Step 3 of 6: Customize")
+                    .expect("future customize step")
+                    .state
+                    .disabled
             );
         }
 
-        assert!(app.perform_semantic_action(
-            "imager:profile:hostname",
-            &AccessAction::SetValue("accessible-host".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
+        // Phase `hardware_variants_have_distinct_semantic_selection_and_review_labels`.
+        {
+            use ui::a11y::Action as AccessAction;
 
-        for (target, chosen, expected) in [
-            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-        ] {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let mut generic = crate::model::sample_releases().remove(0);
+            generic.architecture = "aarch64".into();
+            let mut board = generic.clone();
+            board.hardware_profile = "lenovo-83ed".into();
+            let target = format!("imager:release:{}", board.selection_id());
+            assert_ne!(generic.selection_id(), board.selection_id());
+            app.releases = vec![generic, board.clone()];
+            let tree = app.accessibility_tree();
+            assert!(
+                accessible_named(&tree, &format!("Download {}", board.display_name())).is_some()
+            );
             assert!(app.perform_semantic_action(
-                target,
-                &AccessAction::SetValue(chosen.into()),
+                &target,
+                &AccessAction::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(board.matches_source(app.source.as_ref().unwrap()));
+            assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            let tree = app.accessibility_tree();
+            assert!(
+                accessible_named(&tree, "Image")
+                    .unwrap()
+                    .value
+                    .as_deref()
+                    .unwrap()
+                    .contains("lenovo-83ed only")
+            );
+        }
+
+        // Phase `profile_and_confirmation_semantics_are_editable_and_focusable`.
+        {
+            use ui::a11y::Action as AccessAction;
+
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Customize);
+
+            let tree = app.accessibility_tree();
+            let mut order = Vec::new();
+            accessible_focus_order(&tree, &mut order);
+            let profile_order = [
+                "Hostname",
+                "Full name",
+                "Username",
+                "Language and locale",
+                "Time zone",
+                "Keyboard layout",
+                "Filesystem",
+                "Preview embedded setup",
+            ];
+            let positions = profile_order.map(|name| {
+                order
+                    .iter()
+                    .position(|candidate| candidate == name)
+                    .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
+            });
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            for name in [
+                "Language and locale",
+                "Time zone",
+                "Keyboard layout",
+                "Filesystem",
+            ] {
+                assert_eq!(
+                    accessible_named(&tree, name).expect("profile chooser").role,
+                    ui::a11y::Role::ComboBox,
+                    "{name} is exposed as a chooser, not unrestricted text"
+                );
+            }
+
+            assert!(app.perform_semantic_action(
+                "imager:profile:hostname",
+                &AccessAction::SetValue("accessible-host".into()),
                 &mut doc,
                 &automerge::ROOT,
             ));
-            let profile = ImagerDoc::profile(&doc);
-            let actual = match target {
-                "imager:profile:locale" => profile.locale,
-                "imager:profile:timezone" => profile.timezone,
-                _ => profile.keyboard,
-            };
-            assert_eq!(actual, expected);
-        }
-        let timezone_before = ImagerDoc::profile(&doc).timezone;
-        assert!(app.perform_semantic_action(
-            "imager:profile:timezone",
-            &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
-        assert!(app.status.contains("Choose a listed Time zone"));
+            assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
 
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.scroll_y = 0.0;
-        assert!(app.perform_semantic_action(
-            "imager:profile:keyboard",
-            &AccessAction::Focus,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
-
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.goto(&mut doc, Step::Confirm);
-        let target_name = app.target().expect("target").name.clone();
-        let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
-            .expect("confirmation input")
-            .clone();
-        assert_eq!(confirm.role, ui::a11y::Role::TextInput);
-        assert!(confirm.state.required);
-        assert!(app.perform_semantic_action(
-            "imager:hit:confirm-field",
-            &AccessAction::SetValue(target_name),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.confirm_matches());
-        assert!(app.confirm_input.is_focused());
-    }
-
-    #[test]
-    fn write_progress_and_status_are_live_regions() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.step = Step::Write;
-        app.status = "Verifying written data".into();
-        app.progress = Progress {
-            phase: JobPhase::Verifying,
-            write_frac: 1.0,
-            verify_frac: 0.4,
-            rate_bps: 1,
-            error: None,
-        };
-
-        let tree = app.accessibility_tree();
-        let status = accessible_named(&tree, "Status").expect("live status");
-        assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
-        let progress = accessible_named(&tree, "Verifying image").expect("live progress");
-        assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
-        assert!(progress.state.busy);
-        assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
-        assert!(
-            progress
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("percent"))
-        );
-        assert_eq!(
-            accessible_named(&tree, "Write phase")
-                .expect("write phase progress")
-                .value
-                .as_deref(),
-            Some("100 percent")
-        );
-        assert_eq!(
-            accessible_named(&tree, "Verify phase")
-                .expect("verify phase progress")
-                .value
-                .as_deref(),
-            Some("40 percent")
-        );
-    }
-
-    #[test]
-    fn sync_reads_demo_state_at_source_step() {
-        let (app, _doc) = seeded_app();
-        assert_eq!(app.targets.len(), 2);
-        assert!(app.source.is_some());
-        assert_eq!(app.step, Step::Source);
-        assert_eq!(app.recent.len(), 3);
-    }
-
-    #[test]
-    fn live_app_starts_blank_with_no_fabricated_content() {
-        // The live path (no demo seed) starts genuinely empty: no drives are
-        // invented and no image is pre-selected.
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.targets.is_empty(), "no fabricated drives");
-        assert!(app.source.is_none(), "no fabricated image");
-        assert!(app.recent.is_empty(), "no fabricated recent history");
-        assert_eq!(app.step, Step::Source);
-    }
-
-    #[test]
-    fn restart_drops_unsupervised_local_write_state_and_requires_new_review() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.step = Step::Write;
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.8,
-            verify_frac: 0.0,
-            rate_bps: 64_000_000,
-            error: None,
-        };
-        app.status = "Writing locally".into();
-        let saved = doc.save();
-        let mut restarted = ImagerApp::new();
-        let mut restored_doc = AutoCommit::load(&saved).unwrap();
-        restarted.sync(&mut restored_doc, &automerge::ROOT);
-        assert_eq!(restarted.step, Step::Source);
-        assert_eq!(restarted.progress.phase, JobPhase::Idle);
-        assert!(restarted.selected.is_none());
-        assert!(restarted.status.is_empty());
-        assert!(!restarted.can_advance_with_writer(Step::Drive, true));
-    }
-
-    #[test]
-    fn write_operations_are_blocked_until_startup_state_is_reconciled() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.startup_write_state_reconciled = false;
-        app.confirm_input.set_text("sdb");
-
-        assert!(!app.can_advance_with_writer(Step::Confirm, true));
-        let error = app
-            .perform_operation(
-                &crate::actions::ImagerOperation::Write {
-                    device: app.target().unwrap().dev_path(),
-                    confirmation: "sdb".into(),
-                },
-                &mut doc,
-            )
-            .expect_err("unreconciled startup must not expose a write");
-        assert!(error.contains("Restoring the previous image-write state"));
-
-        let job = <ImagerApp as Widget>::resources(&app, &doc)
-            .into_iter()
-            .find(|resource| resource.kind == "imager.write-plan")
-            .expect("write operation resource");
-        let write = job
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .expect("write action");
-        assert!(!write.contract.availability.is_available());
-    }
-
-    /// A release row is a *write source for erasing a drive*, so the live app
-    /// must offer none of its own invention: the list comes from the document,
-    /// and a live (unseeded) document has nothing in it. Sample releases are
-    /// opt-in via `--demo` / `--shots` like every other sample surface here.
-    #[test]
-    fn live_app_offers_no_tilo_release_to_write() {
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.releases().is_empty(), "no fabricated Tilo releases");
-
-        // ...and nothing on the Source step is clickable that would select one.
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let offered = app
-            .compute_layout()
-            .hits
-            .iter()
-            .any(|(_, h)| matches!(h, Hit::Release(_)));
-        assert!(
-            !offered,
-            "no release row may be hit-testable on the live path"
-        );
-        assert!(
-            app.source.is_none(),
-            "and nothing is pre-selected as the source"
-        );
-    }
-
-    /// The gate is a gate, not a deletion: the demo document still offers them.
-    #[test]
-    fn demo_document_offers_its_seeded_releases() {
-        let (mut app, _doc) = seeded_app();
-        assert_eq!(app.releases().len(), 2);
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let offered = app
-            .compute_layout()
-            .hits
-            .iter()
-            .filter(|(_, h)| matches!(h, Hit::Release(_)))
-            .count();
-        assert_eq!(offered, 2, "each seeded release has a row to click");
-    }
-
-    #[test]
-    fn layout_has_six_step_stations() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let lay = app.compute_layout();
-        assert_eq!(lay.crumbs.len(), 6);
-        assert!(!lay.compact_crumbs);
-    }
-
-    #[test]
-    fn compact_layout_keeps_every_step_station_inside_the_viewport() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-        let lay = app.compute_layout();
-
-        assert!(lay.compact_crumbs);
-        assert_eq!(lay.crumbs.len(), Step::all().len());
-        // A station is a pointer target (HIG §9.6): the token is the floor,
-        // not the layout's own constant.
-        let target = f64::from(Metrics::BASE.min_pointer_target);
-        assert!(lay.crumbs.iter().all(|(rect, _)| {
-            rect.x0 >= app.rect.x0
-                && rect.x1 <= app.rect.x1
-                && rect.width() >= 40.0
-                && rect.height() >= target
-        }));
-        assert_eq!(
-            lay.crumbs.first().map(|(_, step)| *step),
-            Some(Step::Source)
-        );
-        assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
-    }
-
-    #[test]
-    fn compact_step_targets_use_the_same_on_screen_rects_as_the_rail() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        let lay = app.compute_layout();
-
-        for (rect, step) in &lay.crumbs {
-            if app.crumb_reachable(*step) {
-                assert!(lay.hits.iter().any(|(hit_rect, hit)| {
-                    hit_rect == rect && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
-                }));
+            for (target, chosen, expected) in [
+                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+            ] {
+                assert!(app.perform_semantic_action(
+                    target,
+                    &AccessAction::SetValue(chosen.into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                let profile = ImagerDoc::profile(&doc);
+                let actual = match target {
+                    "imager:profile:locale" => profile.locale,
+                    "imager:profile:timezone" => profile.timezone,
+                    _ => profile.keyboard,
+                };
+                assert_eq!(actual, expected);
             }
+            let timezone_before = ImagerDoc::profile(&doc).timezone;
+            assert!(app.perform_semantic_action(
+                "imager:profile:timezone",
+                &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
+            assert!(app.status.contains("Choose a listed Time zone"));
+
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.scroll_y = 0.0;
+            assert!(app.perform_semantic_action(
+                "imager:profile:keyboard",
+                &AccessAction::Focus,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
+
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.goto(&mut doc, Step::Confirm);
+            let target_name = app.target().expect("target").name.clone();
+            let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
+                .expect("confirmation input")
+                .clone();
+            assert_eq!(confirm.role, ui::a11y::Role::TextInput);
+            assert!(confirm.state.required);
+            assert!(app.perform_semantic_action(
+                "imager:hit:confirm-field",
+                &AccessAction::SetValue(target_name),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(app.confirm_matches());
+            assert!(app.confirm_input.is_focused());
         }
-    }
 
-    /// The Source drop zone starts below the measured heading group plus the
-    /// heading-to-content gap, at 1× and at 2×, and the Confirm review card
-    /// follows the same rule; the 1× floors the compact test pins still hold.
-    #[test]
-    fn step_content_starts_below_the_measured_heading_group() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-        let browse_top = |app: &ImagerApp| {
-            let lay = app.compute_layout();
-            let browse = lay
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-                .unwrap();
-            browse.y0 - lay.content.y0
-        };
-        let unmeasured = browse_top(&app);
-        assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
-
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let (title, sub) = app.source_heading();
-        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-        let at_1x = browse_top(&app);
-        assert!(
-            (at_1x - needed).abs() < 1e-6,
-            "drop zone starts after the measured heading"
-        );
-        assert!(
-            at_1x > unmeasured,
-            "the measured group needs more than the 1x floor"
-        );
-
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let at_2x = browse_top(&app);
-        assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
-
-        app.goto(&mut doc, Step::Confirm);
-        tr.set_text_scale(1.0);
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        let (title, sub) = app.confirm_heading();
-        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-        let lay = app.compute_layout();
-        assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
-        // The scroll extent grows by the same amount, so the bottom-anchored
-        // confirmation field cannot ride up into the review card.
-        let extent = app.content_extent(app.content_viewport_rect());
-        let confirm_field = lay
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
-            .unwrap();
-        let card_bottom = app.confirm_card_rect(lay.content).y1;
-        assert!(
-            lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
-            "the extent covers the field and its note"
-        );
-        assert!(
-            confirm_field.y0 >= card_bottom + SIBLING,
-            "field stays below the review card"
-        );
-    }
-
-    /// The Source blocks keep their 1× bands exactly and grow with the type at
-    /// 2×: every hit rect is the measured band, consecutive rows never
-    /// overlap, and the scroll extent covers the taller content.
-    #[test]
-    fn source_blocks_follow_the_text_scale_without_overlapping() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-        let rects = |app: &ImagerApp| {
-            let lay = app.compute_layout();
-            let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
-                let mut v: Vec<Rect> = lay
-                    .hits
-                    .iter()
-                    .filter_map(|(r, h)| f(h).then_some(*r))
-                    .collect();
-                v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-                v
+        // Phase `write_progress_and_status_are_live_regions`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.step = Step::Write;
+            app.status = "Verifying written data".into();
+            app.progress = Progress {
+                phase: JobPhase::Verifying,
+                write_frac: 1.0,
+                verify_frac: 0.4,
+                rate_bps: 1,
+                error: None,
             };
-            (
-                pick(&|h| matches!(h, Hit::PickFile))[0],
-                pick(&|h| matches!(h, Hit::Release(_))),
-                pick(&|h| matches!(h, Hit::Recent(_))),
-            )
-        };
 
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        // Every band is its measured line boxes plus rhythm steps — a row is
-        // two lines a `LABEL` apart under `RELATED` padding — the hit rects
-        // are exactly the bands the painters fill, and no two neighbouring
-        // blocks come closer than a `LABEL` step at 1×.
-        let m = app.bands.source.clone();
-        let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
-        assert!(
-            (m.release_row_h - row).abs() < 1e-6,
-            "release row is measured"
-        );
-        // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
-        // every measured band equals its unmeasured estimate: the probe frame
-        // and the painted frame place the blocks identically.
-        let floors = SourceMetrics::default();
-        for (got, want) in [
-            (m.dropzone_h, floors.dropzone_h),
-            (m.card_h, floors.card_h),
-            (m.card_h_compact, floors.card_h_compact),
-            (m.release_row_h, floors.release_row_h),
-            (m.recent_row_h, floors.recent_row_h),
-            (m.section_h, floors.section_h),
-            (m.zero_h, floors.zero_h),
-        ] {
+            let tree = app.accessibility_tree();
+            let status = accessible_named(&tree, "Status").expect("live status");
+            assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
+            let progress = accessible_named(&tree, "Verifying image").expect("live progress");
+            assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
+            assert!(progress.state.busy);
+            assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
             assert!(
-                (got - want).abs() < 1e-6,
-                "1× band {got} equals its estimate {want}"
+                progress
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("percent"))
             );
-        }
-        let (browse, releases, recents) = rects(&app);
-        // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
-        // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
-        // 52.5 px, a recent row 50 px — and every block at least a pointer
-        // target tall.
-        let target = f64::from(Metrics::BASE.min_pointer_target);
-        assert!(
-            (browse.height() - 91.625).abs() < 1e-6,
-            "{}",
-            browse.height()
-        );
-        assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
-        assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
-        assert!(
-            releases
-                .iter()
-                .chain(&recents)
-                .all(|r| r.height() >= target)
-        );
-        assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-        assert!(
-            releases
-                .iter()
-                .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-        );
-        assert!(
-            recents
-                .iter()
-                .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-        );
-        assert!(!releases.is_empty() && !recents.is_empty());
-        let mut blocks: Vec<Rect> = std::iter::once(browse)
-            .chain(releases.iter().copied())
-            .chain(recents.iter().copied())
-            .collect();
-        blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        for pair in blocks.windows(2) {
-            assert!(
-                pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
-                "Source blocks keep a token gap at 1× ({} → {})",
-                pair[0].y1,
-                pair[1].y0
+            assert_eq!(
+                accessible_named(&tree, "Write phase")
+                    .expect("write phase progress")
+                    .value
+                    .as_deref(),
+                Some("100 percent")
+            );
+            assert_eq!(
+                accessible_named(&tree, "Verify phase")
+                    .expect("verify phase progress")
+                    .value
+                    .as_deref(),
+                Some("40 percent")
             );
         }
 
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let m = app.bands.source.clone();
-        assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
-        let (browse, releases, recents) = rects(&app);
-        assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-        assert!(
-            releases
-                .iter()
-                .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-        );
-        assert!(
-            recents
-                .iter()
-                .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-        );
-        let mut all: Vec<Rect> = std::iter::once(browse)
-            .chain(releases.iter().copied())
-            .chain(recents.iter().copied())
-            .collect();
-        all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        for pair in all.windows(2) {
-            assert!(
-                pair[1].y0 >= pair[0].y1,
-                "Source blocks never overlap at 2×"
+        // Phase `tab_reaches_every_profile_control_and_both_footer_actions`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.goto(&mut doc, Step::Customize);
+            let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
+
+            for slot in 0..7 {
+                feed(&mut app, &mut doc, &tab);
+                assert_eq!(app.customize.keyboard_slot(), Some(slot));
+            }
+            assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
+
+            feed(&mut app, &mut doc, &tab);
+            assert_eq!(app.keyboard_hit, Some(Hit::Back));
+            feed(&mut app, &mut doc, &tab);
+            assert_eq!(app.keyboard_hit, Some(Hit::Next));
+            feed(
+                &mut app,
+                &mut doc,
+                &named_key_ev(winit::keyboard::NamedKey::Enter),
             );
+            assert_eq!(app.step, Step::Confirm, "focused Continue activates");
         }
-        // The content extent covers the last block plus the bottom margin.
-        let viewport = app.content_viewport_rect();
-        let last = all.last().unwrap();
-        let lay = app.compute_layout();
-        assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
     }
 
-    /// The Confirm blocks stack on their measured bands at both content
-    /// widths: the banner is the card's sibling, the field follows the banner
-    /// a group later under its caption, rows never overlap, and the hit rect
-    /// is the painted rect — the layout and the painter read one function.
+    /// Step stations and headings at compact and wide layouts.
     #[test]
-    fn confirm_field_follows_the_danger_banner() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        for width in [1200.0, 320.0] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn step_rail_keeps_six_stations_inside_the_viewport() {
+        // Phase `layout_has_six_step_stations`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let lay = app.compute_layout();
+            assert_eq!(lay.crumbs.len(), 6);
+            assert!(!lay.compact_crumbs);
+        }
+
+        // Phase `compact_layout_keeps_every_step_station_inside_the_viewport`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+            let lay = app.compute_layout();
+
+            assert!(lay.compact_crumbs);
+            assert_eq!(lay.crumbs.len(), Step::all().len());
+            // A station is a pointer target (HIG §9.6): the token is the floor,
+            // not the layout's own constant.
+            let target = f64::from(Metrics::BASE.min_pointer_target);
+            assert!(lay.crumbs.iter().all(|(rect, _)| {
+                rect.x0 >= app.rect.x0
+                    && rect.x1 <= app.rect.x1
+                    && rect.width() >= 40.0
+                    && rect.height() >= target
+            }));
+            assert_eq!(
+                lay.crumbs.first().map(|(_, step)| *step),
+                Some(Step::Source)
+            );
+            assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
+        }
+
+        // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
+        {
             let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
             app.select_target(&doc, 0);
             app.goto(&mut doc, Step::Confirm);
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
             let lay = app.compute_layout();
-            let field = lay
+
+            for (rect, step) in &lay.crumbs {
+                if app.crumb_reachable(*step) {
+                    assert!(lay.hits.iter().any(|(hit_rect, hit)| {
+                        hit_rect == rect
+                            && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
+                    }));
+                }
+            }
+        }
+
+        // Phase `step_content_starts_below_the_measured_heading_group`.
+        // The Source drop zone starts below the measured heading group plus the
+        // heading-to-content gap, at 1× and at 2×, and the Confirm review card
+        // follows the same rule; the 1× floors the compact test pins still hold.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+            let browse_top = |app: &ImagerApp| {
+                let lay = app.compute_layout();
+                let browse = lay
+                    .hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+                    .unwrap();
+                browse.y0 - lay.content.y0
+            };
+            let unmeasured = browse_top(&app);
+            assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
+
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let (title, sub) = app.source_heading();
+            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
+            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+            let at_1x = browse_top(&app);
+            assert!(
+                (at_1x - needed).abs() < 1e-6,
+                "drop zone starts after the measured heading"
+            );
+            assert!(
+                at_1x > unmeasured,
+                "the measured group needs more than the 1x floor"
+            );
+
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let at_2x = browse_top(&app);
+            assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
+
+            app.goto(&mut doc, Step::Confirm);
+            tr.set_text_scale(1.0);
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let (title, sub) = app.confirm_heading();
+            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
+            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+            let lay = app.compute_layout();
+            assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
+            // The scroll extent grows by the same amount, so the bottom-anchored
+            // confirmation field cannot ride up into the review card.
+            let extent = app.content_extent(app.content_viewport_rect());
+            let confirm_field = lay
                 .hits
                 .iter()
                 .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
                 .unwrap();
-            let m = app.bands.confirm.clone();
-            let card = app.confirm_card_rect(lay.content);
-            let banner = app.confirm_banner_rect(lay.content);
-            assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
+            let card_bottom = app.confirm_card_rect(lay.content).y1;
             assert!(
-                (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
-                "banner is the card's sibling at width {width}"
+                lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
+                "the extent covers the field and its note"
             );
             assert!(
-                (field.y0 - (banner.y1 + GROUP + m.label_h + LABEL)).abs() < 1e-6,
-                "field follows the banner under its caption at width {width}"
+                confirm_field.y0 >= card_bottom + SIBLING,
+                "field stays below the review card"
             );
-            assert!((field.height() - CONTROL_H).abs() < 1e-6);
-            assert_eq!(field, app.confirm_field_rect(lay.content));
-            // Measured rows: one per review line, each at least a key line
-            // and a `SIBLING` apart, the card wrapping the last with padding.
-            assert_eq!(app.confirm_rows().len(), m.row_top.len());
-            assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
-            for pair in m.row_top.windows(2) {
-                assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
+        }
+    }
+
+    /// Body blocks, banners, footers, scrolling and failure detail layout.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn step_body_and_footer_reflow_without_overlap() {
+        // Phase `source_blocks_follow_the_text_scale_without_overlapping`.
+        // The Source blocks keep their 1× bands exactly and grow with the type at
+        // 2×: every hit rect is the measured band, consecutive rows never
+        // overlap, and the scroll extent covers the taller content.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+            let rects = |app: &ImagerApp| {
+                let lay = app.compute_layout();
+                let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
+                    let mut v: Vec<Rect> = lay
+                        .hits
+                        .iter()
+                        .filter_map(|(r, h)| f(h).then_some(*r))
+                        .collect();
+                    v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+                    v
+                };
+                (
+                    pick(&|h| matches!(h, Hit::PickFile))[0],
+                    pick(&|h| matches!(h, Hit::Release(_))),
+                    pick(&|h| matches!(h, Hit::Recent(_))),
+                )
+            };
+
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            // Every band is its measured line boxes plus rhythm steps — a row is
+            // two lines a `LABEL` apart under `RELATED` padding — the hit rects
+            // are exactly the bands the painters fill, and no two neighbouring
+            // blocks come closer than a `LABEL` step at 1×.
+            let m = app.bands.source.clone();
+            let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
+            assert!(
+                (m.release_row_h - row).abs() < 1e-6,
+                "release row is measured"
+            );
+            // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
+            // every measured band equals its unmeasured estimate: the probe frame
+            // and the painted frame place the blocks identically.
+            let floors = SourceMetrics::default();
+            for (got, want) in [
+                (m.dropzone_h, floors.dropzone_h),
+                (m.card_h, floors.card_h),
+                (m.card_h_compact, floors.card_h_compact),
+                (m.release_row_h, floors.release_row_h),
+                (m.recent_row_h, floors.recent_row_h),
+                (m.section_h, floors.section_h),
+                (m.zero_h, floors.zero_h),
+            ] {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "1× band {got} equals its estimate {want}"
+                );
             }
-            assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
-            // It still fits inside the step's extent (no scroll needed for
-            // the field itself on a tall window).
-            let extent = app.content_extent(app.content_viewport_rect());
-            assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
-        }
-    }
+            let (browse, releases, recents) = rects(&app);
+            // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
+            // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
+            // 52.5 px, a recent row 50 px — and every block at least a pointer
+            // target tall.
+            let target = f64::from(Metrics::BASE.min_pointer_target);
+            assert!(
+                (browse.height() - 91.625).abs() < 1e-6,
+                "{}",
+                browse.height()
+            );
+            assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
+            assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
+            assert!(
+                releases
+                    .iter()
+                    .chain(&recents)
+                    .all(|r| r.height() >= target)
+            );
+            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
+            assert!(
+                releases
+                    .iter()
+                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
+            );
+            assert!(
+                recents
+                    .iter()
+                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
+            );
+            assert!(!releases.is_empty() && !recents.is_empty());
+            let mut blocks: Vec<Rect> = std::iter::once(browse)
+                .chain(releases.iter().copied())
+                .chain(recents.iter().copied())
+                .collect();
+            blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            for pair in blocks.windows(2) {
+                assert!(
+                    pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
+                    "Source blocks keep a token gap at 1× ({} → {})",
+                    pair[0].y1,
+                    pair[1].y0
+                );
+            }
 
-    #[test]
-    fn compact_body_controls_reserve_space_for_wrapped_headings() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-        let source = app.compute_layout();
-        let browse = source
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-            .unwrap();
-        assert!(browse.y0 >= source.content.y0 + 64.0);
-        assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
-
-        app.goto(&mut doc, Step::Drive);
-        let drive = app.compute_layout();
-        let rescan = drive
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
-            .unwrap();
-        let target = drive
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
-            .unwrap();
-        assert!(rescan.y0 >= drive.content.y0 + 52.0);
-        assert!(target.y0 >= rescan.y1 + 12.0);
-    }
-
-    #[test]
-    fn compact_footer_actions_never_overlap() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-        for step in [Step::Drive, Step::Customize, Step::Confirm] {
-            app.goto(&mut doc, step);
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let m = app.bands.source.clone();
+            assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
+            let (browse, releases, recents) = rects(&app);
+            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
+            assert!(
+                releases
+                    .iter()
+                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
+            );
+            assert!(
+                recents
+                    .iter()
+                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
+            );
+            let mut all: Vec<Rect> = std::iter::once(browse)
+                .chain(releases.iter().copied())
+                .chain(recents.iter().copied())
+                .collect();
+            all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            for pair in all.windows(2) {
+                assert!(
+                    pair[1].y0 >= pair[0].y1,
+                    "Source blocks never overlap at 2×"
+                );
+            }
+            // The content extent covers the last block plus the bottom margin.
+            let viewport = app.content_viewport_rect();
+            let last = all.last().unwrap();
             let lay = app.compute_layout();
-            let back = lay.back.unwrap();
-            let primary = lay.primary.unwrap();
-            assert!(back.x0 >= lay.content.x0);
-            assert!(primary.x1 <= lay.content.x1);
-            assert!(back.x1 + 12.0 <= primary.x0);
-            assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+            assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
+        }
+
+        // Phase `confirm_field_follows_the_danger_banner`.
+        // The Confirm blocks stack on their measured bands at both content
+        // widths: the banner is the card's sibling, the field follows the banner
+        // a group later under its caption, rows never overlap, and the hit rect
+        // is the painted rect — the layout and the painter read one function.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            for width in [1200.0, 320.0] {
+                let (mut app, mut doc) = seeded_app();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.select_target(&doc, 0);
+                app.goto(&mut doc, Step::Confirm);
+                app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+                let lay = app.compute_layout();
+                let field = lay
+                    .hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
+                    .unwrap();
+                let m = app.bands.confirm.clone();
+                let card = app.confirm_card_rect(lay.content);
+                let banner = app.confirm_banner_rect(lay.content);
+                assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
+                assert!(
+                    (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
+                    "banner is the card's sibling at width {width}"
+                );
+                let setup = if app.offers_write_setup() {
+                    app.write_setup
+                        .extent(lay.content, app.write_setup_top(lay.content))
+                } else {
+                    0.0
+                };
+                assert!(
+                    (field.y0 - (banner.y1 + GROUP + setup + m.label_h + LABEL)).abs() < 1e-6,
+                    "field follows the banner and write-setup form under its caption at width {width}"
+                );
+                assert!((field.height() - CONTROL_H).abs() < 1e-6);
+                assert_eq!(field, app.confirm_field_rect(lay.content));
+                // Measured rows: one per review line, each at least a key line
+                // and a `SIBLING` apart, the card wrapping the last with padding.
+                assert_eq!(app.confirm_rows().len(), m.row_top.len());
+                assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
+                for pair in m.row_top.windows(2) {
+                    assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
+                }
+                assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
+                // It still fits inside the step's extent (no scroll needed for
+                // the field itself on a tall window).
+                let extent = app.content_extent(app.content_viewport_rect());
+                assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
+            }
+        }
+
+        // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+            let source = app.compute_layout();
+            let browse = source
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+                .unwrap();
+            assert!(browse.y0 >= source.content.y0 + 64.0);
+            assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
+
+            app.goto(&mut doc, Step::Drive);
+            let drive = app.compute_layout();
+            let rescan = drive
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
+                .unwrap();
+            let target = drive
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
+                .unwrap();
+            assert!(rescan.y0 >= drive.content.y0 + 52.0);
+            assert!(target.y0 >= rescan.y1 + 12.0);
+        }
+
+        // Phase `compact_footer_actions_never_overlap`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+            for step in [Step::Drive, Step::Customize, Step::Confirm] {
+                app.goto(&mut doc, step);
+                let lay = app.compute_layout();
+                let back = lay.back.unwrap();
+                let primary = lay.primary.unwrap();
+                assert!(back.x0 >= lay.content.x0);
+                assert!(primary.x1 <= lay.content.x1);
+                assert!(back.x1 + 12.0 <= primary.x0);
+                assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+            }
+        }
+
+        // Phase `short_viewport_scrolls_body_without_moving_sticky_footer`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.goto(&mut doc, Step::Customize);
+            let before = app.compute_layout();
+            let footer_before = before.primary.unwrap();
+            assert!(app.max_scroll() > 100.0);
+
+            feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
+            feed(&mut app, &mut doc, &wheel_ev(-3.0));
+            assert!(app.scroll_y > 0.0);
+            let after = app.compute_layout();
+            assert!(after.content.y0 < before.content.y0);
+            assert_eq!(after.primary, Some(footer_before));
+            assert_eq!(after.viewport_content, before.viewport_content);
+        }
+
+        // Phase `failure_detail_is_measured_bounded_and_visible_at_compact_width`.
+        {
+            let mut renderer = TextRenderer::new();
+            let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
+            let max_width = 280.0;
+            let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+
+            assert_eq!(
+                lines.len(),
+                2,
+                "compact failure copy uses both visible lines"
+            );
+            assert!(
+                lines.iter().all(|line| {
+                    renderer
+                        .measure_weighted(line, 13.5, None, TextWeight::Regular)
+                        .0
+                        <= max_width
+                }),
+                "no failure-detail line paints beyond its content bounds"
+            );
+            assert!(
+                lines.join(" ").contains("authorized writer"),
+                "the actionable cause is visible rather than replaced by generic compact copy"
+            );
+            assert!(
+                lines.last().is_some_and(|line| line.ends_with('…')),
+                "bounded overflow is signalled"
+            );
         }
     }
 
+    /// Selection, capability, profile validity and confirmation gating.
     #[test]
-    fn short_viewport_scrolls_body_without_moving_sticky_footer() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.goto(&mut doc, Step::Customize);
-        let before = app.compute_layout();
-        let footer_before = before.primary.unwrap();
-        assert!(app.max_scroll() > 100.0);
-
-        feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
-        feed(&mut app, &mut doc, &wheel_ev(-3.0));
-        assert!(app.scroll_y > 0.0);
-        let after = app.compute_layout();
-        assert!(after.content.y0 < before.content.y0);
-        assert_eq!(after.primary, Some(footer_before));
-        assert_eq!(after.viewport_content, before.viewport_content);
-    }
-
-    #[test]
-    fn tab_reaches_every_profile_control_and_both_footer_actions() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.goto(&mut doc, Step::Customize);
-        let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
-
-        for slot in 0..7 {
-            feed(&mut app, &mut doc, &tab);
-            assert_eq!(app.customize.keyboard_slot(), Some(slot));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
+        // Phase `advancing_requires_selections`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            // Source is seeded → can advance to Drive.
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Drive);
+            // No target selected yet → stays on Drive.
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Drive);
+            app.select_target(&doc, 0);
+            app.advance(&mut doc);
+            // Seeded source is an installable Tilo image → goes through Customize.
+            assert_eq!(app.step, Step::Customize);
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Confirm);
         }
-        assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
 
-        feed(&mut app, &mut doc, &tab);
-        assert_eq!(app.keyboard_hit, Some(Hit::Back));
-        feed(&mut app, &mut doc, &tab);
-        assert_eq!(app.keyboard_hit, Some(Hit::Next));
-        feed(
-            &mut app,
-            &mut doc,
-            &named_key_ev(winit::keyboard::NamedKey::Enter),
-        );
-        assert_eq!(app.step, Step::Confirm, "focused Continue activates");
-    }
+        // Phase `privileged_helper_capability_enables_confirm_but_disabled_backend_does_not`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
 
-    #[test]
-    fn advancing_requires_selections() {
-        let (mut app, mut doc) = seeded_app();
-        // Source is seeded → can advance to Drive.
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Drive);
-        // No target selected yet → stays on Drive.
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Drive);
-        app.select_target(&doc, 0);
-        app.advance(&mut doc);
-        // Seeded source is an installable Tilo image → goes through Customize.
-        assert_eq!(app.step, Step::Customize);
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Confirm);
-    }
+            assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
+            assert!(app.can_advance_with_writer(
+                Step::Confirm,
+                crate::write::WriteBackend::PrivilegedHelper.is_available()
+            ));
+            assert!(!app.can_advance_with_writer(
+                Step::Confirm,
+                crate::write::WriteBackend::Disabled.is_available()
+            ));
+        }
 
-    #[test]
-    fn privileged_helper_capability_enables_confirm_but_disabled_backend_does_not() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("sdb");
+        // Phase `invalid_media_profile_blocks_confirm_and_direct_write`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.profile.hostname = "bad host".into();
+            app.goto(&mut doc, Step::Customize);
 
-        assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
-        assert!(app.can_advance_with_writer(
-            Step::Confirm,
-            crate::write::WriteBackend::PrivilegedHelper.is_available()
-        ));
-        assert!(!app.can_advance_with_writer(
-            Step::Confirm,
-            crate::write::WriteBackend::Disabled.is_available()
-        ));
-    }
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Customize);
+            assert!(app.status.contains("Hostname"));
 
-    #[test]
-    fn pending_release_download_keeps_the_event_loop_awake() {
-        let (mut app, _doc) = seeded_app();
-        assert!(!app.needs_animation_frame());
+            // A direct operation dispatch must repeat the gate rather than relying
+            // only on wizard navigation.
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
+            app.start_write(&mut doc);
+            assert_eq!(app.step, Step::Confirm);
+            assert!(app.job_rx.is_none());
+            assert!(app.status.contains("Hostname"));
+        }
 
-        let (_tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        assert!(app.needs_animation_frame());
-
-        app.release_rx = None;
-        assert!(!app.needs_animation_frame());
-    }
-
-    #[test]
-    fn active_release_download_replaces_selection_with_an_accessible_cancel_action() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let (_tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        app.release_control = Some(crate::release::DownloadControl::default());
-        app.release_download_index = Some(0);
-        app.release_download_progress = Some((25, 100));
-        app.release_download_stage = Some("downloading");
-
-        let layout = app.compute_layout();
-        assert!(
-            layout
-                .hits
+        // Phase `plain_iso_skips_customize`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let iso = app
+                .recent
                 .iter()
-                .any(|(_, hit)| *hit == Hit::CancelDownload)
-        );
-        assert!(
-            !layout
-                .hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::Release(_)))
-        );
-        let tree = app.accessibility_tree();
-        assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+                .find(|s| s.kind == SourceKind::IsoFile)
+                .cloned()
+                .unwrap();
+            app.select_source(&mut doc, &iso);
+            app.advance(&mut doc); // → Drive
+            app.select_target(&doc, 0);
+            app.advance(&mut doc); // installable == false → straight to Confirm
+            assert_eq!(app.step, Step::Confirm);
+            assert!(!app.customizable());
+        }
+
+        // Phase `local_tilo_claim_cannot_unlock_preconfiguration`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let official = crate::model::sample_source();
+            let mut local = official.clone();
+            local.kind = SourceKind::IsoFile;
+            local.path = "/tmp/tilo-official-looking.iso".into();
+            local.identity = None;
+            app.select_source(&mut doc, &local);
+            assert!(!app.customizable());
+            assert_eq!(app.action, Action::Flash);
+
+            app.source = Some(official);
+            assert!(app.customizable());
+        }
+
+        // Phase `official_installable_write_stages_handoff_instead_of_refusing`.
+        // Catalog-authenticated images used to refuse Wi-Fi / enrollment on
+        // Confirm. They must stage the same handoff local images do; tests
+        // then stop at the disabled write backend, never at an installer-stick
+        // refusal.
+        {
+            let (mut app, mut doc) = seeded_app();
+            assert!(app.customizable(), "seeded source is official");
+            assert!(
+                app.offers_write_setup(),
+                "official Confirm must collect Wi-Fi and enrollment"
+            );
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
+            app.profile.wifi_ssid = "studio".into();
+            app.wifi_psk = "correct-horse".into();
+            let err = app
+                .perform_operation(
+                    &crate::actions::ImagerOperation::Write {
+                        device: "/dev/sdb".into(),
+                        confirmation: "sdb".into(),
+                    },
+                    &mut doc,
+                )
+                .expect_err("privileged writer is off in unit tests");
+            assert!(
+                !err.to_lowercase().contains("installer stick"),
+                "official installable write must not refuse handoff: {err}"
+            );
+            assert!(
+                err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
+                "expected write-disabled after staging handoff, got: {err}"
+            );
+            assert!(app.job_rx.is_none());
+            assert_eq!(app.step, Step::Confirm);
+        }
+
+        // Phase `write_refused_without_matching_confirmation`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0); // sdb
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("wrong");
+            app.start_write(&mut doc);
+            assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
+            assert!(app.job_rx.is_none());
+            assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
+            assert!(app.status.to_lowercase().contains("confirm"));
+        }
     }
 
+    /// Release download job presentation.
     #[test]
-    fn release_progress_is_local_visible_and_terminal_events_clear_the_job() {
-        let (mut app, mut doc) = seeded_app();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        app.release_control = Some(crate::release::DownloadControl::default());
-        app.release_download_index = Some(0);
-        tx.send(crate::release::DownloadEvent::Downloading {
-            received: 25,
-            total: 100,
-        })
-        .unwrap();
-        app.drain_release(&mut doc);
-        assert_eq!(app.release_download_progress, Some((25, 100)));
-        assert!(app.status.contains("25%"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn release_download_is_local_visible_cancellable_and_keeps_the_loop_awake() {
+        // Phase `pending_release_download_keeps_the_event_loop_awake`.
+        {
+            let (mut app, _doc) = seeded_app();
+            assert!(!app.needs_animation_frame());
 
-        tx.send(crate::release::DownloadEvent::Finished(Err(
-            "Tilo installer download cancelled.".into(),
-        )))
-        .unwrap();
-        app.drain_release(&mut doc);
-        assert!(app.release_rx.is_none());
-        assert!(app.release_control.is_none());
-        assert!(app.status.contains("cancelled"));
-    }
+            let (_tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            assert!(app.needs_animation_frame());
 
-    #[test]
-    fn invalid_media_profile_blocks_confirm_and_direct_write() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.profile.hostname = "bad host".into();
-        app.goto(&mut doc, Step::Customize);
+            app.release_rx = None;
+            assert!(!app.needs_animation_frame());
+        }
 
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Customize);
-        assert!(app.status.contains("Hostname"));
+        // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let (_tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            app.release_control = Some(crate::release::DownloadControl::default());
+            app.release_download_index = Some(0);
+            app.release_download_progress = Some((25, 100));
+            app.release_download_stage = Some("downloading");
 
-        // A direct operation dispatch must repeat the gate rather than relying
-        // only on wizard navigation.
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("sdb");
-        app.start_write(&mut doc);
-        assert_eq!(app.step, Step::Confirm);
-        assert!(app.job_rx.is_none());
-        assert!(app.status.contains("Hostname"));
+            let layout = app.compute_layout();
+            assert!(
+                layout
+                    .hits
+                    .iter()
+                    .any(|(_, hit)| *hit == Hit::CancelDownload)
+            );
+            assert!(
+                !layout
+                    .hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::Release(_)))
+            );
+            let tree = app.accessibility_tree();
+            assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+        }
+
+        // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            app.release_control = Some(crate::release::DownloadControl::default());
+            app.release_download_index = Some(0);
+            tx.send(crate::release::DownloadEvent::Downloading {
+                received: 25,
+                total: 100,
+            })
+            .unwrap();
+            app.drain_release(&mut doc);
+            assert_eq!(app.release_download_progress, Some((25, 100)));
+            assert!(app.status.contains("25%"));
+
+            tx.send(crate::release::DownloadEvent::Finished(Err(
+                "Tilo installer download cancelled.".into(),
+            )))
+            .unwrap();
+            app.drain_release(&mut doc);
+            assert!(app.release_rx.is_none());
+            assert!(app.release_control.is_none());
+            assert!(app.status.contains("cancelled"));
+        }
     }
 
     /// The primary interaction, proven end to end by clicking the real
@@ -6982,52 +7133,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_iso_skips_customize() {
-        let (mut app, mut doc) = seeded_app();
-        let iso = app
-            .recent
-            .iter()
-            .find(|s| s.kind == SourceKind::IsoFile)
-            .cloned()
-            .unwrap();
-        app.select_source(&mut doc, &iso);
-        app.advance(&mut doc); // → Drive
-        app.select_target(&doc, 0);
-        app.advance(&mut doc); // installable == false → straight to Confirm
-        assert_eq!(app.step, Step::Confirm);
-        assert!(!app.customizable());
-    }
-
-    #[test]
-    fn local_tilo_claim_cannot_unlock_preconfiguration() {
-        let (mut app, mut doc) = seeded_app();
-        let official = crate::model::sample_source();
-        let mut local = official.clone();
-        local.kind = SourceKind::IsoFile;
-        local.path = "/tmp/tilo-official-looking.iso".into();
-        local.identity = None;
-        app.select_source(&mut doc, &local);
-        assert!(!app.customizable());
-        assert_eq!(app.action, Action::Flash);
-
-        app.source = Some(official);
-        assert!(app.customizable());
-    }
-
-    #[test]
-    fn write_refused_without_matching_confirmation() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0); // sdb
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("wrong");
-        app.start_write(&mut doc);
-        assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
-        assert!(app.job_rx.is_none());
-        assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-        assert!(app.status.to_lowercase().contains("confirm"));
-    }
-
-    #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn matching_confirmation_does_not_simulate_a_disabled_write() {
         if crate::write::allow_write() {
@@ -7044,102 +7149,110 @@ mod tests {
         assert!(app.status.contains("disabled"));
     }
 
+    /// Portal sources, external drives, rescans and forbidden disks.
     #[test]
-    fn portal_open_selects_inspected_source() {
-        let (mut app, mut doc) = seeded_app();
-        // The recording host answers with a real Tilo-looking image.
-        let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
-        app.open_file_picker(&doc);
-        assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
-        app.drain_portal(&mut doc);
-        // A `.iso` file → a valid source is selected.
-        assert!(app.source.is_some());
-        assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn source_and_target_selection_accept_only_inspected_external_media() {
+        // Phase `portal_open_selects_inspected_source`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            // The recording host answers with a real Tilo-looking image.
+            let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+            std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
+            app.open_file_picker(&doc);
+            assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
+            app.drain_portal(&mut doc);
+            // A `.iso` file → a valid source is selected.
+            assert!(app.source.is_some());
+            assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
+        }
 
-    #[test]
-    fn drive_step_only_offers_external_installation_media() {
-        let (app, _doc) = seeded_app();
-        // Sample has one USB (removable) + one NVMe (fixed).
-        assert_eq!(app.visible_targets().len(), 1);
-        assert_eq!(app.removable_count(), 1);
-    }
+        // Phase `drive_step_only_offers_external_installation_media`.
+        {
+            let (app, _doc) = seeded_app();
+            // Sample has one USB (removable) + one NVMe (fixed).
+            assert_eq!(app.visible_targets().len(), 1);
+            assert_eq!(app.removable_count(), 1);
+        }
 
-    #[test]
-    fn authoritative_empty_rescan_clears_stale_target_and_consent() {
-        let (mut app, doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.confirm_input.set_text("sdb");
+        // Phase `authoritative_empty_rescan_clears_stale_target_and_consent`.
+        {
+            let (mut app, doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.confirm_input.set_text("sdb");
 
-        app.apply_drive_inventory(Vec::new());
+            app.apply_drive_inventory(Vec::new());
 
-        assert!(app.targets.is_empty());
-        assert_eq!(app.selected, None);
-        assert!(app.confirm_input.value().is_empty());
-    }
+            assert!(app.targets.is_empty());
+            assert_eq!(app.selected, None);
+            assert!(app.confirm_input.value().is_empty());
+        }
 
-    #[test]
-    fn rescan_preserves_only_the_same_physical_target() {
-        let (mut app, doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.confirm_input.set_text("sdb");
-        let selected = app.target().unwrap().clone();
-        let mut reordered = crate::model::sample_targets();
-        reordered.swap(0, 1);
+        // Phase `rescan_preserves_only_the_same_physical_target`.
+        {
+            let (mut app, doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.confirm_input.set_text("sdb");
+            let selected = app.target().unwrap().clone();
+            let mut reordered = crate::model::sample_targets();
+            reordered.swap(0, 1);
 
-        app.apply_drive_inventory(reordered);
+            app.apply_drive_inventory(reordered);
 
-        assert_eq!(app.selected, Some(1));
-        assert_eq!(
-            app.target().and_then(|drive| drive.stable_id.as_deref()),
-            selected.stable_id.as_deref()
-        );
-        assert_eq!(app.confirm_input.value(), "sdb");
+            assert_eq!(app.selected, Some(1));
+            assert_eq!(
+                app.target().and_then(|drive| drive.stable_id.as_deref()),
+                selected.stable_id.as_deref()
+            );
+            assert_eq!(app.confirm_input.value(), "sdb");
 
-        let mut replacement = selected;
-        replacement.stable_id = Some("different-usb-stick".into());
-        app.apply_drive_inventory(vec![replacement]);
+            let mut replacement = selected;
+            replacement.stable_id = Some("different-usb-stick".into());
+            app.apply_drive_inventory(vec![replacement]);
 
-        assert_eq!(
-            app.selected, None,
-            "a reused OS device slot is not the reviewed drive"
-        );
-        assert!(
-            app.confirm_input.value().is_empty(),
-            "consent never carries to replacement hardware"
-        );
+            assert_eq!(
+                app.selected, None,
+                "a reused OS device slot is not the reviewed drive"
+            );
+            assert!(
+                app.confirm_input.value().is_empty(),
+                "consent never carries to replacement hardware"
+            );
 
-        let mut unidentified_before = crate::model::sample_targets()[0].clone();
-        unidentified_before.stable_id = None;
-        app.targets = vec![unidentified_before.clone()];
-        app.selected = Some(0);
-        app.confirm_input.set_text(&unidentified_before.name);
-        app.apply_drive_inventory(vec![unidentified_before]);
-        assert_eq!(
-            app.selected, None,
-            "a drive without stable identity must be chosen again after rescan"
-        );
-        assert!(app.confirm_input.value().is_empty());
-    }
+            let mut unidentified_before = crate::model::sample_targets()[0].clone();
+            unidentified_before.stable_id = None;
+            app.targets = vec![unidentified_before.clone()];
+            app.selected = Some(0);
+            app.confirm_input.set_text(&unidentified_before.name);
+            app.apply_drive_inventory(vec![unidentified_before]);
+            assert_eq!(
+                app.selected, None,
+                "a drive without stable identity must be chosen again after rescan"
+            );
+            assert!(app.confirm_input.value().is_empty());
+        }
 
-    #[test]
-    fn internal_and_system_disks_can_never_be_selected() {
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        let mut targets = crate::model::sample_targets();
-        targets[1].is_system = true; // the internal NVMe is the system disk
-        app.targets = targets.clone();
-        ImagerDoc::seed(&mut doc, &targets);
-        ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
-        app.sync(&mut doc, &automerge::ROOT);
+        // Phase `internal_and_system_disks_can_never_be_selected`.
+        {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            let mut targets = crate::model::sample_targets();
+            targets[1].is_system = true; // the internal NVMe is the system disk
+            app.targets = targets.clone();
+            ImagerDoc::seed(&mut doc, &targets);
+            ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+            app.sync(&mut doc, &automerge::ROOT);
 
-        app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(app.selected, None, "the system disk is never selectable");
-        assert!(app.status.to_lowercase().contains("system disk"));
+            app.dispatch_hit(&mut doc, Hit::Target(1));
+            assert_eq!(app.selected, None, "the system disk is never selectable");
+            assert!(app.status.to_lowercase().contains("system disk"));
+        }
     }
 
     /// Set the Customize step up with one field cleared and focused, ready for
@@ -7165,200 +7278,183 @@ mod tests {
         (app, doc)
     }
 
+    /// Hostname typing, keyboard chooser and preview.
     #[test]
-    fn typing_into_hostname_persists_to_profile_through_the_panel() {
-        use crate::customize::CzField;
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
-        for s in ["l", "a", "b", "0", "1"] {
-            feed(&mut app, &mut doc, &char_ev(s));
+    fn profile_panel_edits_persist_through_the_real_event_path() {
+        // Phase `typing_into_hostname_persists_to_profile_through_the_panel`.
+        {
+            use crate::customize::CzField;
+            let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
+            for s in ["l", "a", "b", "0", "1"] {
+                feed(&mut app, &mut doc, &char_ev(s));
+            }
+            assert_eq!(
+                ImagerDoc::profile(&doc).hostname,
+                "lab01",
+                "persisted to the doc"
+            );
+            assert_eq!(
+                app.customize.field_value(CzField::Hostname),
+                "lab01",
+                "the input holds it"
+            );
         }
-        assert_eq!(
-            ImagerDoc::profile(&doc).hostname,
-            "lab01",
-            "persisted to the doc"
-        );
-        assert_eq!(
-            app.customize.field_value(CzField::Hostname),
-            "lab01",
-            "the input holds it"
-        );
-    }
 
-    #[test]
-    fn keyboard_chooser_filters_and_commits_through_the_real_event_path() {
-        use crate::customize::CzField;
-        use winit::keyboard::NamedKey;
+        // Phase `keyboard_chooser_filters_and_commits_through_the_real_event_path`.
+        {
+            use crate::customize::CzField;
+            use winit::keyboard::NamedKey;
 
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
-        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-        for character in ["g", "e", "r", "m", "a", "n"] {
-            feed(&mut app, &mut doc, &char_ev(character));
+            let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
+            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+            for character in ["g", "e", "r", "m", "a", "n"] {
+                feed(&mut app, &mut doc, &char_ev(character));
+            }
+            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+
+            assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
+            assert_eq!(
+                app.customize.field_value(CzField::Keyboard),
+                "German (QWERTZ)"
+            );
         }
-        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
 
-        assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
-        assert_eq!(
-            app.customize.field_value(CzField::Keyboard),
-            "German (QWERTZ)"
-        );
+        // Phase `preview_shows_the_embedded_profile`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 1);
+            app.export_config(&mut doc);
+            let text = app.export_dialog.text();
+            assert!(text.contains("\"schema\": 1"));
+            assert!(text.contains("\"hostname\""));
+            assert!(!text.contains("password"));
+            assert!(app.export_dialog.is_open());
+        }
     }
 
+    /// Write another, failure, cancellation and cancel races.
     #[test]
-    fn preview_shows_the_embedded_profile() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 1);
-        app.export_config(&mut doc);
-        let text = app.export_dialog.text();
-        assert!(text.contains("\"schema\": 1"));
-        assert!(text.contains("\"hostname\""));
-        assert!(!text.contains("password"));
-        assert!(app.export_dialog.is_open());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn write_completion_failure_and_cancel_return_to_a_truthful_state() {
+        // Phase `write_another_resets_to_source`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.progress = Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                rate_bps: 0,
+                error: None,
+            };
+            app.write_another(&mut doc);
+            assert_eq!(app.step, Step::Source);
+            assert_eq!(app.progress.phase, JobPhase::Idle);
+        }
 
-    #[test]
-    fn write_another_resets_to_source() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.progress = Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-            error: None,
-        };
-        app.write_another(&mut doc);
-        assert_eq!(app.step, Step::Source);
-        assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    #[test]
-    fn failed_write_keeps_its_cause_and_returns_to_a_fresh_review() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Write);
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.4,
-            verify_frac: 0.0,
-            rate_bps: 0,
-            error: None,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.job_rx = Some(rx);
-        tx.send(Progress {
-            phase: JobPhase::Failed,
-            write_frac: 0.4,
-            verify_frac: 0.0,
-            rate_bps: 0,
-            error: Some("Could not write the drive: the selected drive was disconnected.".into()),
-        })
-        .unwrap();
-
-        app.drain_job(&mut doc);
-        assert_eq!(app.step, Step::Done);
-        assert_eq!(app.progress.phase, JobPhase::Failed);
-        assert!(
-            app.status.contains("disconnected"),
-            "the privileged writer's actionable cause reaches the UI"
-        );
-        let tree = app.accessibility_tree();
-        let result =
-            accessible_named(&tree, "Write failure details").expect("accessible terminal result");
-        assert!(
-            result
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("disconnected"))
-        );
-
-        app.confirm_input.set_text("sdb");
-        app.write_another(&mut doc);
-        assert_eq!(app.step, Step::Confirm, "failure returns to review");
-        assert!(app.source.is_some(), "the verified source is preserved");
-        assert_eq!(app.selected, Some(0), "the selected drive is preserved");
-        assert!(
-            app.confirm_input.value().is_empty(),
-            "retry requires fresh destructive consent"
-        );
-        assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    #[test]
-    fn active_write_cancel_operation_requests_a_safe_stop() {
-        let (mut app, mut doc) = seeded_app();
-        let control = JobControl::new();
-        app.job_control = Some(control.clone());
-        app.goto(&mut doc, Step::Write);
-
-        app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
+        // Phase `failed_write_keeps_its_cause_and_returns_to_a_fresh_review`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Write);
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.4,
+                verify_frac: 0.0,
+                rate_bps: 0,
+                error: None,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.job_rx = Some(rx);
+            tx.send(Progress {
+                phase: JobPhase::Failed,
+                write_frac: 0.4,
+                verify_frac: 0.0,
+                rate_bps: 0,
+                error: Some(
+                    "Could not write the drive: the selected drive was disconnected.".into(),
+                ),
+            })
             .unwrap();
 
-        assert!(control.is_cancelled());
-        assert!(app.status.contains("Keep the drive connected"));
-        let footer = app.a11y_footer_controls(&app.compute_layout());
-        let cancel = footer
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Cancel image write"))
-            .expect("write screen exposes a cancel button");
-        assert!(cancel.state.disabled);
-    }
+            app.drain_job(&mut doc);
+            assert_eq!(app.step, Step::Done);
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(
+                app.status.contains("disconnected"),
+                "the privileged writer's actionable cause reaches the UI"
+            );
+            let tree = app.accessibility_tree();
+            let result = accessible_named(&tree, "Write failure details")
+                .expect("accessible terminal result");
+            assert!(
+                result
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("disconnected"))
+            );
 
-    #[test]
-    fn cancel_wins_a_race_with_an_already_queued_success() {
-        let (mut app, mut doc) = seeded_app();
-        let control = JobControl::new();
-        control.cancel();
-        app.job_control = Some(control);
-        app.progress.phase = JobPhase::Verifying;
-        app.goto(&mut doc, Step::Write);
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.job_rx = Some(rx);
-        tx.send(Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-            error: None,
-        })
-        .unwrap();
+            app.confirm_input.set_text("sdb");
+            app.write_another(&mut doc);
+            assert_eq!(app.step, Step::Confirm, "failure returns to review");
+            assert!(app.source.is_some(), "the verified source is preserved");
+            assert_eq!(app.selected, Some(0), "the selected drive is preserved");
+            assert!(
+                app.confirm_input.value().is_empty(),
+                "retry requires fresh destructive consent"
+            );
+            assert_eq!(app.progress.phase, JobPhase::Idle);
+        }
 
-        app.drain_job(&mut doc);
+        // Phase `active_write_cancel_operation_requests_a_safe_stop`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let control = JobControl::new();
+            app.job_control = Some(control.clone());
+            app.goto(&mut doc, Step::Write);
 
-        assert_eq!(app.progress.phase, JobPhase::Failed);
-        assert!(app.progress.error.as_deref().is_some_and(|message| {
-            message.contains("cancelled") && message.contains("incomplete")
-        }));
-        assert_eq!(app.step, Step::Done);
-    }
+            app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
+                .unwrap();
 
-    #[test]
-    fn failure_detail_is_measured_bounded_and_visible_at_compact_width() {
-        let mut renderer = TextRenderer::new();
-        let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
-        let max_width = 280.0;
-        let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+            assert!(control.is_cancelled());
+            assert!(app.status.contains("Keep the drive connected"));
+            let footer = app.a11y_footer_controls(&app.compute_layout());
+            let cancel = footer
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Cancel image write"))
+                .expect("write screen exposes a cancel button");
+            assert!(cancel.state.disabled);
+        }
 
-        assert_eq!(
-            lines.len(),
-            2,
-            "compact failure copy uses both visible lines"
-        );
-        assert!(
-            lines.iter().all(|line| {
-                renderer
-                    .measure_weighted(line, 13.5, None, TextWeight::Regular)
-                    .0
-                    <= max_width
-            }),
-            "no failure-detail line paints beyond its content bounds"
-        );
-        assert!(
-            lines.join(" ").contains("authorized writer"),
-            "the actionable cause is visible rather than replaced by generic compact copy"
-        );
-        assert!(
-            lines.last().is_some_and(|line| line.ends_with('…')),
-            "bounded overflow is signalled"
-        );
+        // Phase `cancel_wins_a_race_with_an_already_queued_success`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let control = JobControl::new();
+            control.cancel();
+            app.job_control = Some(control);
+            app.progress.phase = JobPhase::Verifying;
+            app.goto(&mut doc, Step::Write);
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.job_rx = Some(rx);
+            tx.send(Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                rate_bps: 0,
+                error: None,
+            })
+            .unwrap();
+
+            app.drain_job(&mut doc);
+
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(app.progress.error.as_deref().is_some_and(|message| {
+                message.contains("cancelled") && message.contains("incomplete")
+            }));
+            assert_eq!(app.step, Step::Done);
+        }
     }
 }

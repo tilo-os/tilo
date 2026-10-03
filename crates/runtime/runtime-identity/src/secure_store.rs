@@ -1,31 +1,36 @@
 //! Host-side storage for identity signing material.
 //!
-//! The preferred backend is the freedesktop Secret Service, reached through
-//! the standard `secret-tool` client shipped by libsecret.  A session without
-//! a Secret Service (a rescue shell, CI, or a non-GNOME/KDE desktop) falls back
-//! to a mode-0600 file below the mode-0700 identity directory.  That fallback
-//! is deliberately named *broker file*: the launcher may read it, sandboxed
-//! applications never receive either its path or its bytes.
+//! The preferred backend is the system secret store through `tilo-secrets`:
+//! the freedesktop Secret Service over D-Bus on Linux, the login Keychain on
+//! macOS. A Linux session without one (a rescue shell, CI, or a desktop
+//! without a Secret Service) falls back to a mode-0600 file below the
+//! mode-0700 identity directory. That fallback is deliberately named *broker
+//! file*: the launcher may read it, sandboxed applications never receive
+//! either its path or its bytes. macOS always has the Keychain, so there a
+//! failing Keychain fails the operation, and a broker file an earlier build
+//! wrote moves into the Keychain the next time its identity is secured.
 //!
 //! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
 
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
+use tilo_secrets::{PutOptions, SecretError, SecretStore};
 use zeroize::Zeroizing;
 
-// Secret Service transports the hex encoding through the bounded subprocess
-// helper, so the decoded value may consume at most half its input ceiling.
-const MAX_IDENTITY_SECRET_BYTES: u64 = (bounded_command::MAX_INPUT_BYTES / 2) as u64;
+/// The largest signing secret either store accepts. Items are hex text, as
+/// `secret-tool` stored them, so this is half of what earlier builds could
+/// pass through its bounded stdin.
+const MAX_IDENTITY_SECRET_BYTES: u64 = 32 * 1024;
 
 use crate::{KeyProtection, SecretReference};
 
+/// The secret-store namespace of identity signing keys.
+const SECRETS_APP: &str = "so.tilo.identity";
 const PURPOSE_ATTRIBUTE: &str = "tilo-identity-signing-v1";
 
 fn validate_software_locator(locator: &str) -> io::Result<()> {
@@ -65,8 +70,55 @@ pub trait SecretProvider {
     fn remove(&self, locator: &str) -> io::Result<()>;
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SecretServiceProvider;
+/// The system secret store. Its backend id keeps the name earlier builds
+/// recorded in identity files, when this store was reached through
+/// `secret-tool`.
+#[derive(Clone)]
+pub(crate) struct SecretServiceProvider {
+    store: SecretStore,
+}
+
+impl SecretServiceProvider {
+    pub(crate) fn system() -> Self {
+        Self::with_store(SecretStore::for_app(SECRETS_APP))
+    }
+
+    pub(crate) fn with_store(store: SecretStore) -> Self {
+        Self { store }
+    }
+
+    /// Whether the store answers on this session.
+    #[cfg_attr(test, allow(dead_code, reason = "tests use the broker file provider"))]
+    fn available(&self) -> bool {
+        self.store.probe_blocking().is_ok()
+    }
+}
+
+/// The key under which the store holds `locator`'s secret.
+fn secret_key(locator: &str) -> String {
+    format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
+}
+
+/// The item attributes earlier builds stored `locator`'s secret under,
+/// through `secret-tool store tilo-purpose … tilo-identity-key <locator>`.
+fn legacy_attributes(locator: &str) -> [(&str, &str); 2] {
+    [
+        ("tilo-purpose", PURPOSE_ATTRIBUTE),
+        ("tilo-identity-key", locator),
+    ]
+}
+
+fn store_error(error: SecretError) -> io::Error {
+    match error {
+        SecretError::Unavailable(_) | SecretError::Denied | SecretError::Unsupported(_) => {
+            crate::secret_service_unavailable_error()
+        }
+        SecretError::InvalidKey => {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid identity secret key")
+        }
+        SecretError::Failed(reason) => io::Error::other(reason),
+    }
+}
 
 impl SecretProvider for SecretServiceProvider {
     fn protection(&self) -> KeyProtection {
@@ -85,113 +137,72 @@ impl SecretProvider for SecretServiceProvider {
                 "identity secret has an invalid length",
             ));
         }
-        // secret-tool's stdin is text. Hex is unambiguous, contains no NULs,
-        // and is decoded into a zeroizing buffer on lookup.
+        match self.load(locator) {
+            Ok(current) if current.as_slice() == secret => return Ok(()),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a different key already uses this identity locator",
+                ));
+            }
+            Err(error) if crate::is_secret_service_unavailable_io(&error) => {}
+            Err(error) => return Err(error),
+        }
+        // Hex text, as earlier builds stored it: one format for adopted and
+        // new items.
         let encoded = Zeroizing::new(hex::encode(secret));
-        let output = bounded_command::run(
-            "secret-tool",
-            &[
-                "store",
-                "--label=Tilo identity signing key",
-                "tilo-purpose",
-                PURPOSE_ATTRIBUTE,
-                "tilo-identity-key",
-                locator,
-            ],
-            Some(encoded.as_bytes()),
-            1024,
-            Duration::from_secs(5),
-        )
-        .map_err(io::Error::other)?;
-        if output.status.success() {
+        self.store
+            .put_blocking(
+                &secret_key(locator),
+                encoded.as_bytes(),
+                PutOptions {
+                    label: Some("Tilo identity signing key".into()),
+                },
+            )
+            .map_err(store_error)?;
+        let stored = self.load(locator)?;
+        if stored.as_slice() == secret {
             Ok(())
         } else {
             Err(io::Error::other(
-                "Secret Service refused or could not store the identity key",
+                "the secret store did not return the stored identity key",
             ))
         }
     }
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
-        secret_service_load(locator, &[OsStr::new("secret-tool")])
+        validate_software_locator(locator)?;
+        let stored = self
+            .store
+            .get_or_adopt_blocking(
+                &secret_key(locator),
+                &legacy_attributes(locator),
+                PutOptions {
+                    label: Some("Tilo identity signing key".into()),
+                },
+            )
+            .map_err(store_error)?
+            .ok_or_else(crate::secret_service_unavailable_error)?;
+        // Corruption must surface; never mask it by generating a replacement key.
+        let encoded = std::str::from_utf8(stored.expose())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?;
+        let decoded = hex::decode(encoded.trim())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?;
+        if decoded.is_empty() || decoded.len() as u64 > MAX_IDENTITY_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity secret has an invalid size",
+            ));
+        }
+        Ok(Zeroizing::new(decoded))
     }
 
     fn remove(&self, locator: &str) -> io::Result<()> {
-        secret_service_remove(locator, &[OsStr::new("secret-tool")])
+        validate_software_locator(locator)?;
+        self.store
+            .delete_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
+            .map_err(store_error)
     }
-}
-
-/// Run the Secret Service client named by `argv` (the program, then any
-/// arguments that precede the subcommand) with `subcommand` appended.
-fn secret_tool(
-    argv: &[&OsStr],
-    subcommand: [&str; 5],
-    output_limit: usize,
-) -> io::Result<bounded_command::Output> {
-    let Some((program, prefix)) = argv.split_first() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "no Secret Service client command",
-        ));
-    };
-    let full: Vec<&OsStr> = prefix
-        .iter()
-        .copied()
-        .chain(subcommand.iter().map(OsStr::new))
-        .collect();
-    bounded_command::run_os(program, &full, None, output_limit, Duration::from_secs(5))
-        .map_err(io::Error::other)
-}
-
-fn secret_service_remove(locator: &str, argv: &[&OsStr]) -> io::Result<()> {
-    validate_software_locator(locator)?;
-    let output = secret_tool(
-        argv,
-        [
-            "clear",
-            "tilo-purpose",
-            PURPOSE_ATTRIBUTE,
-            "tilo-identity-key",
-            locator,
-        ],
-        1024,
-    )?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(
-            "Secret Service refused or could not remove the identity key",
-        ))
-    }
-}
-
-fn secret_service_load(locator: &str, argv: &[&OsStr]) -> io::Result<Zeroizing<Vec<u8>>> {
-    validate_software_locator(locator)?;
-    let output = secret_tool(
-        argv,
-        [
-            "lookup",
-            "tilo-purpose",
-            PURPOSE_ATTRIBUTE,
-            "tilo-identity-key",
-            locator,
-        ],
-        usize::try_from(MAX_IDENTITY_SECRET_BYTES)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(2)
-            .saturating_add(2),
-    )?;
-    if !output.status.success() {
-        return Err(crate::secret_service_unavailable_error());
-    }
-    // Corruption must surface; never mask it by generating a replacement key.
-    let encoded = Zeroizing::new(
-        String::from_utf8(output.stdout)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?,
-    );
-    let decoded = hex::decode(encoded.trim())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?;
-    Ok(Zeroizing::new(decoded))
 }
 
 #[derive(Debug, Clone)]
@@ -325,7 +336,7 @@ pub(crate) fn provider_for<'a>(
     reference: &SecretReference,
 ) -> io::Result<Box<dyn SecretProvider + 'a>> {
     match reference.backend.as_str() {
-        "secret-service-v1" => Ok(Box::new(SecretServiceProvider)),
+        "secret-service-v1" => Ok(Box::new(SecretServiceProvider::system())),
         "broker-file-v1" => Ok(Box::new(BrokerFileProvider::new(identity_dir))),
         "tpm2-sealed-v1" => Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -338,6 +349,36 @@ pub(crate) fn provider_for<'a>(
     }
 }
 
+/// Whether a session without an answering system store keeps new identity
+/// secrets in the broker file. The login Keychain is always there on macOS,
+/// so a failing one fails the operation instead.
+pub(crate) const FILE_FALLBACK: bool = !cfg!(target_os = "macos");
+
+/// Set (to anything), it keeps every identity secret of the session in
+/// private files, out of the user's login Keychain or Secret Service: for
+/// tests, and for a locally built release (see [`file_secrets_requested`]).
+pub const FILE_SECRETS_ENV: &str = "TILO_IDENTITY_FILE_SECRETS";
+
+/// Whether this session keeps its identity secrets in files.
+///
+/// A debug build does when told to ([`FILE_SECRETS_ENV`], for tests) or when
+/// the system store would not keep them for its next build (on macOS, a
+/// build without a Developer ID signature, whose Keychain items belong to
+/// that exact build). A release build does only when told to *and* its store
+/// would not keep them, so a locally built bundle can start after a rebuild:
+/// a Developer ID release never keeps secrets in files, and no release does
+/// unasked.
+#[must_use]
+pub fn file_secrets_requested() -> bool {
+    let told = std::env::var_os(FILE_SECRETS_ENV).is_some();
+    let kept = tilo_secrets::items_outlive_rebuilds();
+    if cfg!(debug_assertions) {
+        told || !kept
+    } else {
+        told && !kept
+    }
+}
+
 pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider + '_> {
     #[cfg(test)]
     {
@@ -345,14 +386,15 @@ pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider 
     }
     #[cfg(not(test))]
     {
-        // Presence alone is insufficient: a container can have secret-tool but no
-        // unlocked collection/session bus. Callers try the provider and fall back
-        // only on a real store failure.
-        let secret_tool_exists = std::env::var_os("PATH").is_some_and(|path| {
-            std::env::split_paths(&path).any(|dir| dir.join("secret-tool").is_file())
-        });
-        if secret_tool_exists {
-            Box::new(SecretServiceProvider)
+        if file_secrets_requested() {
+            return Box::new(BrokerFileProvider::new(identity_dir));
+        }
+        // An answering store can still refuse (a locked collection whose
+        // prompt is dismissed): callers try the provider and fall back only on
+        // a real store failure.
+        let system = SecretServiceProvider::system();
+        if !FILE_FALLBACK || system.available() {
+            Box::new(system)
         } else {
             Box::new(BrokerFileProvider::new(identity_dir))
         }
@@ -363,46 +405,13 @@ pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
 }
 
-#[cfg(test)]
-mod secret_service_tests {
-    use super::*;
-
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    /// A dev build (cargo's test binaries included) has only the linker's
+    /// ad-hoc signature, so its Keychain items would not outlive it.
     #[test]
-    fn secret_service_removes_the_identity_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let command = dir.path().join("secret-tool-fixture");
-        let command = tilo_test_env::script(
-            &command,
-            r#"#!/bin/sh
-[ "$1" = clear ] || exit 99
-[ "$2" = tilo-purpose ] || exit 1
-[ "$3" = tilo-identity-signing-v1 ] || exit 99
-[ "$4" = tilo-identity-key ] || exit 99
-exit 0
-"#,
-        )
-        .unwrap();
-        secret_service_remove(&"ab".repeat(32), &command.exec_argv()).unwrap();
-    }
-
-    #[test]
-    fn corrupt_secret_is_reported_as_invalid_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let command = dir.path().join("secret-tool-fixture");
-        let command = tilo_test_env::script(
-            &command,
-            r#"#!/bin/sh
-[ "$1" = lookup ] || exit 99
-[ "$2" = tilo-purpose ] || exit 1
-printf 'not-hex'
-"#,
-        )
-        .unwrap();
-        assert_eq!(
-            secret_service_load(&"ab".repeat(32), &command.exec_argv())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+    fn a_debug_build_without_developer_id_keeps_identity_secrets_in_files() {
+        assert!(!tilo_secrets::items_outlive_rebuilds());
+        assert!(super::file_secrets_requested());
     }
 }

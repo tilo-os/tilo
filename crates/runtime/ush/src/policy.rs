@@ -87,7 +87,10 @@ impl Policy {
                 .cloned()
                 .collect(),
         };
-        atomic_file::write_creating_parent(path, &serde_json::to_vec_pretty(&durable)?)
+        tilo_files::native::atomic::write_creating_parent(
+            path,
+            &serde_json::to_vec_pretty(&durable)?,
+        )
     }
 
     /// The actor every question is asked about. `role: None` is load-bearing:
@@ -209,12 +212,9 @@ pub fn is_trustable(path: &Path) -> bool {
 fn stable_id(raw: &str) -> String {
     // FNV-1a. Not a security property — this only has to be deterministic and
     // short enough to read in `perm list`.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in raw.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 #[cfg(test)]
@@ -223,112 +223,114 @@ mod tests {
     use collab_types::caps::Expiry;
 
     #[test]
-    fn trusting_a_directory_mints_the_grant_the_compositor_would_have_written() {
-        let mut policy = Policy::default();
-        let id = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+    fn a_trusted_directory_grant_is_recursive_unique_and_revocable() {
+        // phase: trusting_a_directory_mints_the_grant_the_compositor_would_have_written
+        {
+            let mut policy = Policy::default();
+            let id = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
 
-        assert_eq!(policy.capabilities.len(), 1);
-        let cap = &policy.capabilities[0];
-        assert_eq!(cap.id, id);
-        assert_eq!(cap.effect, Effect::Grant);
-        assert_eq!(cap.verb, Verb::Write);
-        assert_eq!(cap.scope, Scope::FsPath("/var/home/you/src".to_string()));
-        assert_eq!(
-            cap.subject,
-            Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
-            "the grant must name the runtime as an app, or the permissions \
+            assert_eq!(policy.capabilities.len(), 1);
+            let cap = &policy.capabilities[0];
+            assert_eq!(cap.id, id);
+            assert_eq!(cap.effect, Effect::Grant);
+            assert_eq!(cap.verb, Verb::Write);
+            assert_eq!(cap.scope, Scope::FsPath("/var/home/you/src".to_string()));
+            assert_eq!(
+                cap.subject,
+                Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
+                "the grant must name the runtime as an app, or the permissions \
              panel has no subject to show and nothing to revoke"
-        );
+            );
+        }
+        // phase: a_trusted_directory_is_writable_and_an_untrusted_one_is_not
+        {
+            let mut policy = Policy::default();
+            policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+
+            assert_eq!(
+                policy.trusted_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/src")]
+            );
+            assert!(policy.permits(Path::new("/var/home/you/src"), Verb::Write, Some(1_000)));
+            assert!(
+                policy.permits(
+                    Path::new("/var/home/you/src/deep/file.rs"),
+                    Verb::Write,
+                    Some(1_000)
+                ),
+                "a filesystem grant is recursive; that is what `path_covers` means"
+            );
+            assert!(
+                !policy.permits(Path::new("/var/home/you/.ssh"), Verb::Read, Some(1_000)),
+                "a sibling directory must not come along with the grant"
+            );
+            assert!(
+                !policy.permits(
+                    Path::new("/var/home/you/srcextra"),
+                    Verb::Write,
+                    Some(1_000)
+                ),
+                "a component-boundary check must not be a prefix check"
+            );
+        }
+        // phase: re_trusting_a_directory_rewrites_one_record
+        {
+            let mut policy = Policy::default();
+            let a = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            let b = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            assert_eq!(a, b);
+            assert_eq!(policy.capabilities.len(), 1);
+        }
+        // phase: revoking_removes_the_decision
+        {
+            let mut policy = Policy::default();
+            let id = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            assert!(policy.revoke(&id));
+            assert!(!policy.revoke(&id));
+            assert!(policy.trusted_dirs(Some(1_000)).is_empty());
+        }
     }
 
     #[test]
-    fn a_trusted_directory_is_writable_and_an_untrusted_one_is_not() {
-        let mut policy = Policy::default();
-        policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+    fn restrictions_and_expiry_narrow_a_trusted_directory() {
+        // phase: a_restriction_from_the_shared_vocabulary_removes_a_trusted_directory
+        // The one that makes this not a second permission system: a `Restrict`
+        // written by the compositor removes the bind here.
+        {
+            let mut policy = Policy::default();
+            policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            policy.capabilities.push(CapOverride::new(
+                Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
+                Scope::FsPath("/var/home/you/src".to_string()),
+                Effect::Restrict,
+                Verb::Read,
+            ));
 
-        assert_eq!(
-            policy.trusted_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/src")]
-        );
-        assert!(policy.permits(Path::new("/var/home/you/src"), Verb::Write, Some(1_000)));
-        assert!(
-            policy.permits(
-                Path::new("/var/home/you/src/deep/file.rs"),
-                Verb::Write,
-                Some(1_000)
-            ),
-            "a filesystem grant is recursive; that is what `path_covers` means"
-        );
-        assert!(
-            !policy.permits(Path::new("/var/home/you/.ssh"), Verb::Read, Some(1_000)),
-            "a sibling directory must not come along with the grant"
-        );
-        assert!(
-            !policy.permits(
-                Path::new("/var/home/you/srcextra"),
-                Verb::Write,
-                Some(1_000)
-            ),
-            "a component-boundary check must not be a prefix check"
-        );
-    }
+            assert!(
+                policy.trusted_dirs(Some(1_000)).is_empty(),
+                "a Restrict capped at Read must remove the writable bind"
+            );
+            assert_eq!(
+                policy.readable_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/src")],
+                "and must leave the directory readable, not invisible"
+            );
+        }
+        // phase: an_expired_grant_binds_nothing
+        {
+            let mut policy = Policy::default();
+            policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            policy.capabilities[0].expiry = Expiry::AtUnix(500);
 
-    /// The one that makes this not a second permission system: a `Restrict`
-    /// written by the compositor removes the bind here.
-    #[test]
-    fn a_restriction_from_the_shared_vocabulary_removes_a_trusted_directory() {
-        let mut policy = Policy::default();
-        policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        policy.capabilities.push(CapOverride::new(
-            Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
-            Scope::FsPath("/var/home/you/src".to_string()),
-            Effect::Restrict,
-            Verb::Read,
-        ));
-
-        assert!(
-            policy.trusted_dirs(Some(1_000)).is_empty(),
-            "a Restrict capped at Read must remove the writable bind"
-        );
-        assert_eq!(
-            policy.readable_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/src")],
-            "and must leave the directory readable, not invisible"
-        );
-    }
-
-    #[test]
-    fn an_expired_grant_binds_nothing() {
-        let mut policy = Policy::default();
-        policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        policy.capabilities[0].expiry = Expiry::AtUnix(500);
-
-        assert_eq!(
-            policy.trusted_dirs(Some(499)),
-            vec![PathBuf::from("/var/home/you/src")]
-        );
-        assert!(
-            policy.trusted_dirs(Some(501)).is_empty(),
-            "an expired grant must not survive into the next session"
-        );
-    }
-
-    #[test]
-    fn re_trusting_a_directory_rewrites_one_record() {
-        let mut policy = Policy::default();
-        let a = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        let b = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(policy.capabilities.len(), 1);
-    }
-
-    #[test]
-    fn revoking_removes_the_decision() {
-        let mut policy = Policy::default();
-        let id = policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        assert!(policy.revoke(&id));
-        assert!(!policy.revoke(&id));
-        assert!(policy.trusted_dirs(Some(1_000)).is_empty());
+            assert_eq!(
+                policy.trusted_dirs(Some(499)),
+                vec![PathBuf::from("/var/home/you/src")]
+            );
+            assert!(
+                policy.trusted_dirs(Some(501)).is_empty(),
+                "an expired grant must not survive into the next session"
+            );
+        }
     }
 
     /// Binding a base subtree would put the host's copy back on top of the
@@ -343,6 +345,8 @@ mod tests {
             "/etc/ssh",
             "relative/path",
             "",
+            // A dotdot path is refused.
+            "/var/home/you/../../etc",
         ] {
             assert!(
                 !is_trustable(Path::new(bad)),
@@ -362,51 +366,48 @@ mod tests {
     }
 
     #[test]
-    fn a_dotdot_path_is_refused() {
-        assert!(!is_trustable(Path::new("/var/home/you/../../etc")));
-    }
+    fn the_policy_file_persists_only_durable_grants() {
+        // phase: a_missing_or_malformed_policy_grants_nothing
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                Policy::load(&dir.path().join("absent.json"))
+                    .capabilities
+                    .is_empty()
+            );
 
-    #[test]
-    fn a_missing_or_malformed_policy_grants_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            Policy::load(&dir.path().join("absent.json"))
+            let bad = dir.path().join("bad.json");
+            std::fs::write(&bad, b"{ not json ").unwrap();
+            assert!(Policy::load(&bad).capabilities.is_empty());
+
+            let wrong = dir.path().join("wrong.json");
+            std::fs::write(&wrong, br"[1,2,3]").unwrap();
+            assert!(Policy::load(&wrong).capabilities.is_empty());
+        }
+        // phase: policy_round_trips_and_drops_session_scoped_decisions
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("policy.json");
+
+            let mut policy = Policy::default();
+            policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+            let session_id = policy
+                .trust_dir(Path::new("/var/home/you/scratch"))
+                .unwrap();
+            let idx = policy
                 .capabilities
-                .is_empty()
-        );
+                .iter()
+                .position(|c| c.id == session_id)
+                .unwrap();
+            policy.capabilities[idx].expiry = Expiry::EndOfSession;
 
-        let bad = dir.path().join("bad.json");
-        std::fs::write(&bad, b"{ not json ").unwrap();
-        assert!(Policy::load(&bad).capabilities.is_empty());
-
-        let wrong = dir.path().join("wrong.json");
-        std::fs::write(&wrong, br"[1,2,3]").unwrap();
-        assert!(Policy::load(&wrong).capabilities.is_empty());
-    }
-
-    #[test]
-    fn policy_round_trips_and_drops_session_scoped_decisions() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("policy.json");
-
-        let mut policy = Policy::default();
-        policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        let session_id = policy
-            .trust_dir(Path::new("/var/home/you/scratch"))
-            .unwrap();
-        let idx = policy
-            .capabilities
-            .iter()
-            .position(|c| c.id == session_id)
-            .unwrap();
-        policy.capabilities[idx].expiry = Expiry::EndOfSession;
-
-        policy.save(&path).unwrap();
-        let reloaded = Policy::load(&path);
-        assert_eq!(
-            reloaded.trusted_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/src")],
-            "a session-scoped decision must not survive a restart"
-        );
+            policy.save(&path).unwrap();
+            let reloaded = Policy::load(&path);
+            assert_eq!(
+                reloaded.trusted_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/src")],
+                "a session-scoped decision must not survive a restart"
+            );
+        }
     }
 }

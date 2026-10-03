@@ -4,13 +4,14 @@
 //! hit-testing, and drawing. The map app remains responsible only for effects:
 //! starting/deleting tile downloads and recording collaborative region rows.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Autocomplete, AutocompleteOutcome, Button, ButtonFace, Suggestion, Widget};
 use vello::Scene;
@@ -25,6 +26,11 @@ use crate::net::RegionHit;
 use crate::tiles::{DownloadProgress, GeoBounds, TileLayer};
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
+
+/// Why the Download button is inert: the OpenStreetMap tile server's usage
+/// policy forbids fetching tiles nobody is viewing.
+pub(crate) const OFFLINE_AREAS_REFUSED: &str =
+    "OpenStreetMap's tile server doesn't allow saving areas";
 const MAX_EXTRA_ZOOM: u8 = 6;
 
 /// Effect requested by a pointer interaction inside the panel.
@@ -55,6 +61,9 @@ pub(crate) struct OfflineFrame<'a> {
     pub viewport_zoom: u8,
     pub regions: &'a [DownloadedRegion],
     pub progress: DownloadProgress,
+    /// Whether the tile server permits saving areas; the Download button is
+    /// inert and says why when it does not.
+    pub downloads_allowed: bool,
 }
 
 /// Transient state for the offline-map overlay.
@@ -143,6 +152,11 @@ impl OfflinePanel {
         }
     }
 
+    /// When the typed city settles into a live geocode.
+    pub const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
+    }
+
     /// Return the settled query exactly once when live geocoding should begin.
     pub fn take_due_query(&mut self, now: Instant) -> Option<String> {
         let deadline = self.debounce?;
@@ -184,14 +198,16 @@ impl OfflinePanel {
         let mut focus_target: Option<NodeId> = None;
         self.input.handle_event(
             event,
-            scale,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         self.reconcile_field();
         handled
@@ -356,7 +372,7 @@ impl OfflinePanel {
                 self.results.clear();
                 self.input.set_suggestions_open(Vec::new());
             } else {
-                self.debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
+                self.debounce = Some(ui::time::now() + SEARCH_DEBOUNCE);
             }
         }
         match self.input.take_outcome() {
@@ -447,7 +463,7 @@ impl OfflinePanel {
             scene,
             transform,
             frame.viewport,
-            draw::alpha(Color::BLACK, 0.45),
+            draw::alpha(colors.surfaces.scrim, 0.45),
         );
         self.targets.push((frame.viewport, OfflineAction::Close));
 
@@ -492,22 +508,18 @@ impl OfflinePanel {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        draw::card(scene, transform, card, 16.0, colors.surfaces.raised);
+        draw::card(scene, transform, theme, card, 16.0, colors.surfaces.raised);
         self.targets.push((card, OfflineAction::Consume));
 
         let left = card.x0 + gutter;
         let right = card.x1 - gutter;
         let mut y = card.y0 + gutter;
-        draw::text_w(
-            scene,
-            text,
-            transform,
+        PaintCtx::new(scene, transform, text, theme).text(
             "Offline maps",
-            left,
-            y,
-            18.0,
+            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            TextWeight::Bold,
+            Point::new(left, y),
+            None,
         );
         // Close (×): a 26 px target centred on the title line.
         let close = Rect::new(
@@ -517,29 +529,24 @@ impl OfflinePanel {
             y + (title_h + stepper_h) / 2.0,
         );
         draw::text_center(
-            scene,
-            text,
-            transform,
+            &mut PaintCtx::new(scene, transform, text, theme),
             "✕",
-            close.x0,
-            close.x1,
-            vmid_scaled(close.y0, stepper_h, 14.0, f64::from(scale)),
+            Point::new(
+                close.center().x,
+                vmid_scaled(close.y0, stepper_h, 14.0, f64::from(scale)),
+            ),
             14.0,
             theme.text_dim,
         );
         self.targets.push((close, OfflineAction::Close));
         y += title_h + s2;
 
-        draw::text_w(
-            scene,
-            text,
-            transform,
+        PaintCtx::new(scene, transform, text, theme).text(
             "Area to download",
-            left,
-            y,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            TextWeight::Semibold,
+            Point::new(left, y),
+            None,
         );
         y += label_h + s2;
         let field = Rect::new(left, y, right, y + field_h);
@@ -552,26 +559,19 @@ impl OfflinePanel {
         let request =
             self.download_request(frame.viewport_bounds, frame.viewport_zoom, frame.viewport);
         if let Some(pick) = &self.pick {
-            draw::text_w(
-                scene,
-                text,
-                transform,
+            PaintCtx::new(scene, transform, text, theme).text(
                 &pick.name,
-                left,
-                y,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 theme.accent_primary,
-                TextWeight::Semibold,
+                Point::new(left, y),
+                None,
             );
             if !pick.context.is_empty() {
                 let name_width = draw::measure_w(text, &pick.name, 13.0) + 10.0;
                 draw::text_clip(
-                    scene,
-                    text,
-                    transform,
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     &pick.context,
-                    left + name_width,
-                    y,
+                    Point::new(left + name_width, y),
                     11.5,
                     theme.text_dim,
                     (right - left - name_width).max(20.0),
@@ -579,12 +579,9 @@ impl OfflinePanel {
             }
         } else {
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 "Search a city or place above, or download the current view.",
-                left,
-                y,
+                Point::new(left, y),
                 11.5,
                 theme.text_dim,
                 right - left,
@@ -595,16 +592,12 @@ impl OfflinePanel {
         // Detail row: the label sits on the stepper's centre line; the two
         // stepper buttons are the shared face with the range between them.
         let row = Rect::new(left, y, right, y + stepper_h);
-        draw::text_w(
-            scene,
-            text,
-            transform,
+        PaintCtx::new(scene, transform, text, theme).text(
             "Detail (zoom levels)",
-            left,
-            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            TextWeight::Semibold,
+            Point::new(left, vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale))),
+            None,
         );
         let range_w = 58.0;
         let plus = Rect::new(right - stepper_h, row.y0, right, row.y1);
@@ -627,13 +620,12 @@ impl OfflinePanel {
             );
         }
         draw::text_center(
-            scene,
-            text,
-            transform,
+            &mut PaintCtx::new(scene, transform, text, theme),
             &format!("z{}–z{}", request.z0, request.z1),
-            minus.x1,
-            plus.x0,
-            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
+            Point::new(
+                (minus.x1 + plus.x0) / 2.0,
+                vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
+            ),
             13.0,
             theme.accent_primary,
         );
@@ -642,7 +634,9 @@ impl OfflinePanel {
         y += stepper_h + s2;
 
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
-        let readout = if frame.progress.is_active() {
+        let readout = if !frame.downloads_allowed {
+            OFFLINE_AREAS_REFUSED.to_string()
+        } else if frame.progress.is_active() {
             format!(
                 "Downloading {}/{} tiles…",
                 frame.progress.done, frame.progress.total
@@ -660,6 +654,7 @@ impl OfflinePanel {
                 ui::format::bytes_si(u64::from(estimate) * 18_000)
             )
         };
+        let readout = text.elide_to_width(&readout, 12.0, ui::num::f32_of_f64(right - left));
         draw::text(
             scene,
             text,
@@ -703,16 +698,12 @@ impl OfflinePanel {
         );
         y += body_h + s4;
 
-        draw::text_w(
-            scene,
-            text,
-            transform,
+        PaintCtx::new(scene, transform, text, theme).text(
             "Downloaded areas",
-            left,
-            y,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            TextWeight::Semibold,
+            Point::new(left, y),
+            None,
         );
         y += label_h + s2;
         if frame.regions.is_empty() {
@@ -746,23 +737,17 @@ impl OfflinePanel {
                 let available = (trash.x0 - row.x0 - s3 - s2).max(40.0);
                 let name_y = row.y0 + (row_h - name_h - meta_h) / 2.0;
                 draw::text_clip(
-                    scene,
-                    text,
-                    transform,
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     &region.name,
-                    row.x0 + s3,
-                    name_y,
+                    Point::new(row.x0 + s3, name_y),
                     13.0,
                     theme.text_primary,
                     available,
                 );
                 draw::text_clip(
-                    scene,
-                    text,
-                    transform,
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     &format!("z{}–z{} · {} tiles", region.z0, region.z1, region.tiles),
-                    row.x0 + s3,
-                    name_y + name_h,
+                    Point::new(row.x0 + s3, name_y + name_h),
                     11.0,
                     theme.text_dim,
                     available,
@@ -813,10 +798,18 @@ impl OfflinePanel {
             theme,
             &ButtonFace::new(download, &label)
                 .primary()
+                .disabled(!frame.downloads_allowed)
                 .radius(9.0)
                 .text_size(13.0),
         );
-        self.targets.push((download, OfflineAction::Download));
+        self.targets.push((
+            download,
+            if frame.downloads_allowed {
+                OfflineAction::Download
+            } else {
+                OfflineAction::Consume
+            },
+        ));
         Button::paint(
             scene,
             transform,
@@ -888,42 +881,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zoom_depth_is_owned_and_clamped_by_panel() {
-        let mut panel = OfflinePanel::new(0);
-        panel.adjust_zoom(100);
-        assert_eq!(panel.zoom_extra, MAX_EXTRA_ZOOM);
-        panel.adjust_zoom(-100);
-        assert_eq!(panel.zoom_extra, 0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn offline_panel_owns_zoom_depth_selection_and_hit_testing() {
+        // Phase `zoom_depth_is_owned_and_clamped_by_panel`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            panel.adjust_zoom(100);
+            assert_eq!(panel.zoom_extra, MAX_EXTRA_ZOOM);
+            panel.adjust_zoom(-100);
+            assert_eq!(panel.zoom_extra, 0);
+        }
 
-    #[test]
-    fn reopening_drops_stale_search_selection() {
-        let mut panel = OfflinePanel::new(0);
-        let hit = RegionHit {
-            name: "Munich".to_string(),
-            context: "Germany".to_string(),
-            pos: crate::model::LatLon::new(48.5, 11.5),
-            sw: crate::model::LatLon::new(48.0, 11.0),
-            ne: crate::model::LatLon::new(49.0, 12.0),
-        };
-        panel.set_demo(42, "Mun", vec![hit]);
-        assert!(panel.query_matches("Mun"));
-        panel.close();
-        panel.open(84);
-        assert!(!panel.query_matches("Mun"));
-        assert!(panel.query.is_empty());
-        assert!(panel.pick.is_none());
-    }
+        // Phase `reopening_drops_stale_search_selection`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            let hit = RegionHit {
+                name: "Munich".to_string(),
+                context: "Germany".to_string(),
+                pos: crate::model::LatLon::new(48.5, 11.5),
+                sw: crate::model::LatLon::new(48.0, 11.0),
+                ne: crate::model::LatLon::new(49.0, 12.0),
+            };
+            panel.set_demo(42, "Mun", vec![hit]);
+            assert!(panel.query_matches("Mun"));
+            panel.close();
+            panel.open(84);
+            assert!(!panel.query_matches("Mun"));
+            assert!(panel.query.is_empty());
+            assert!(panel.pick.is_none());
+        }
 
-    #[test]
-    fn topmost_panel_target_wins_hit_testing() {
-        let mut panel = OfflinePanel::new(0);
-        let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
-        panel.targets.push((rect, OfflineAction::Close));
-        panel.targets.push((rect, OfflineAction::ClearCache));
-        assert_eq!(
-            panel.action_at(Point::new(10.0, 10.0)),
-            Some(OfflineAction::ClearCache)
-        );
+        // Phase `topmost_panel_target_wins_hit_testing`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
+            panel.targets.push((rect, OfflineAction::Close));
+            panel.targets.push((rect, OfflineAction::ClearCache));
+            assert_eq!(
+                panel.action_at(Point::new(10.0, 10.0)),
+                Some(OfflineAction::ClearCache)
+            );
+        }
     }
 }

@@ -127,7 +127,8 @@ fn peer_focus_offers_a_chip_and_accepting_it_moves_focus_here() {
     recency.observe(&laptop_focused_on_notes(&tree, &laptop), Instant::now());
 
     let chrome = ChromeState::new(tree.clone());
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let mut bar = TopBarChrome::from_tree(&tree.desktop)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
     assert_eq!(continuity_control(&bar), None, "no offer before the feed");
 
     chrome.borrow_mut().set_continuity_feed(ContinuityFeed {
@@ -167,7 +168,8 @@ fn dismissing_the_chip_leaves_focus_alone() {
     let mut recency = FocusRecency::default();
     recency.observe(&laptop_focused_on_notes(&tree, &laptop), Instant::now());
     let chrome = ChromeState::new(tree.clone());
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let mut bar = TopBarChrome::from_tree(&tree.desktop)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
     chrome.borrow_mut().set_continuity_feed(ContinuityFeed {
         local_device: None,
         observations: recency.observations(),

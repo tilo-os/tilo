@@ -19,14 +19,22 @@ TILO_REPO="$(cd "$TILO_OS_DIR/.." && pwd)"             # cargo workspace root
 
 # --- tunables ----------------------------------------------------------------
 TILO_DISTROBOX="${TILO_DISTROBOX-my-distrobox}"        # "" => run tools on host
-TILO_IMAGE="${TILO_IMAGE:-localhost/tilo:latest}"
+# The tag of the locally built images (localhost/tilo, localhost/tilo-vm,
+# localhost/tilo-installer), so builds from different checkouts sharing one
+# podman store keep theirs apart. TILO_IMAGE and the like still win.
+TILO_LOCAL_TAG="${TILO_LOCAL_TAG:-latest}"
+if [ "${#TILO_LOCAL_TAG}" -gt 128 ] || ! [[ "$TILO_LOCAL_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+  printf 'TILO_LOCAL_TAG=%s is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)\n' "$TILO_LOCAL_TAG" >&2
+  exit 1
+fi
+TILO_IMAGE="${TILO_IMAGE:-localhost/tilo:$TILO_LOCAL_TAG}"
 TILO_OUTPUT="${TILO_OUTPUT:-$TILO_OS_DIR/output}"
 TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
 
 # Custom (self-install) installer: a bootable live qcow2 that runs the Tilo
 # graphical installer (installer/, binary tilo-installer). Built by
 # os/dev/build-custom-installer.sh; booted by vm.sh boot-installer.
-TILO_INSTALLER_IMAGE="${TILO_INSTALLER_IMAGE:-localhost/tilo-installer:latest}"
+TILO_INSTALLER_IMAGE="${TILO_INSTALLER_IMAGE:-localhost/tilo-installer:$TILO_LOCAL_TAG}"
 TILO_INSTALLER_OUTPUT="${TILO_INSTALLER_OUTPUT:-$TILO_OUTPUT/installer}"   # distinct subdir
 TILO_INSTALLER_DISK="${TILO_INSTALLER_DISK:-$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
 # Writable overlay used by VM install cycles. The live installer needs scratch
@@ -151,6 +159,80 @@ podman_epoch_args() {
   fi
 }
 
+# The creation time of an image, in seconds since the epoch: from local storage
+# when it is there, else from its registry.
+tilo_image_epoch() {
+  local created
+  created="$(podman image inspect --format '{{.Created.Unix}}' "$1" 2>/dev/null)" \
+    || created="$(skopeo inspect --format '{{.Created.Unix}}' "docker://$1" 2>/dev/null)" \
+    || return 1
+  [[ "$created" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$created"
+}
+
+# When the source of a local image was made, as an RFC 3339 UTC time: its
+# org.tilo.source-date-epoch label (the commit time; a local build's layers may
+# be dated by its base instead, TILO_LAYER_EPOCH=base), else the image's
+# creation time. Empty when neither is readable.
+tilo_image_source_time() {
+  local epoch
+  epoch="$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$1" 2>/dev/null || true)"
+  if [[ "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
+  else
+    podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$1" 2>/dev/null || true
+  fi
+}
+
+# Flags every local `podman build` of an OS image takes:
+#   --jobs  independent stages build in parallel (podman's default is one at a
+#           time; BuildKit in CI already runs them concurrently).
+#           TILO_PODMAN_BUILD_JOBS overrides it.
+#   label=disable  RUN steps bind-mount files straight from the build context
+#           (RUN --mount=type=bind,source=os/...). Under SELinux such a file
+#           keeps its host label (var_t on a data disk, user_home_t in a home
+#           directory), which the container may not read: "Permission denied"
+#           from a script that exists. The build's RUN containers are not what
+#           SELinux protects the host from; the image's own labels are unchanged.
+TILO_PODMAN_BUILD_FLAGS=(--jobs "${TILO_PODMAN_BUILD_JOBS:-4}" --security-opt label=disable)
+# An x86 builder with registered qemu-user can produce the aarch64 board image.
+# The flag is absent when the machine already is that architecture, so a native
+# ARM build is unchanged.
+if [ -n "${TILO_BUILD_ARCH:-}" ] && [ "$TILO_BUILD_ARCH" != "$(uname -m)" ]; then
+  case "$TILO_BUILD_ARCH" in
+    aarch64) _tilo_platform=linux/arm64 ;;
+    x86_64) _tilo_platform=linux/amd64 ;;
+    *) echo "TILO_BUILD_ARCH must be x86_64 or aarch64, not $TILO_BUILD_ARCH" >&2; exit 1 ;;
+  esac
+  case " ${TILO_PODMAN_BUILD_FLAGS[*]} " in
+    *" $_tilo_platform "*) ;;
+    *) TILO_PODMAN_BUILD_FLAGS+=(--platform "$_tilo_platform") ;;
+  esac
+  unset _tilo_platform
+fi
+
+# Parallel cargo jobs for an in-image compile: a CPU per job, as far as memory
+# holds out at $1 GiB a job; 8 when memory cannot be read.
+cargo_build_jobs() {
+  local per_job=$1 cpus mem_jobs
+  cpus="$(nproc 2>/dev/null || echo 4)"
+  mem_jobs="$(awk -v g="$per_job" '/^MemTotal:/ { print int($2 / (g * 1048576)) }' /proc/meminfo 2>/dev/null || true)"
+  [ -n "$mem_jobs" ] && [ "$mem_jobs" -ge 1 ] || mem_jobs=8
+  [ "$cpus" -le "$mem_jobs" ] || cpus="$mem_jobs"
+  printf '%s\n' "$cpus"
+}
+
+# The two digests of bootc install's composefs refusal, read from its log $1:
+#   The UKI has the wrong composefs= parameter (is '<A>', should be '<B>')
+# Older bootc prefixed both with `sha512:` and left <B> unquoted; accept either.
+# Print nothing, and still succeed, when the log holds no such refusal.
+composefs_expected_digest() {
+  { sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'\{0,1\}.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
+}
+composefs_sealed_digest() {
+  { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
@@ -165,7 +247,9 @@ warn_slow_podman_storage() {
 # Runs with the *current working directory preserved* (distrobox does this), so
 # relative paths and the cargo workspace resolve correctly.
 inenv() {
-  if [ -n "$TILO_DISTROBOX" ]; then
+  # Already inside a container (the distrobox itself, a build container), or no
+  # distrobox here: the tools are where this runs.
+  if [ -n "$TILO_DISTROBOX" ] && [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null; then
     distrobox enter "$TILO_DISTROBOX" -- bash -lc "$1"
   else
     bash -lc "$1"
@@ -173,15 +257,27 @@ inenv() {
 }
 
 qemu_accel_args() {
+  local kvm_cpu=host
+  case "${TILO_KVM_CPU_VARIANT:-host}" in
+    host) ;;
+    host-no-sve) kvm_cpu=host,sve=off ;;
+    *) die "TILO_KVM_CPU_VARIANT must be host or host-no-sve" ;;
+  esac
   case "$TILO_ACCEL" in
     auto)
-      if inenv "test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm"; then
-        echo "-enable-kvm -cpu host"
+      # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
+      local probe
+      printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
+      if inenv "$probe"; then
+        echo "-enable-kvm -cpu $kvm_cpu"
       else
+        # Emulated CPU: boot and frame timings from this VM say nothing about
+        # a KVM guest (the release gate) or hardware. Do not compare them.
+        warn "no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware"
         echo "-accel tcg,thread=multi -cpu max"
       fi
       ;;
-    kvm) echo "-enable-kvm -cpu host" ;;
+    kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
     *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
   esac

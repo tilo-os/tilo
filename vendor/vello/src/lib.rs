@@ -1622,10 +1622,85 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 
 #[cfg(feature = "wgpu")]
 impl Renderer {
+    /// Run every GPU pipeline's first dispatch now, spread over this device and up to
+    /// `helpers` more opened by `open_device`, each driven from its own thread.
+    ///
+    /// Mesa's CPU Vulkan driver (lavapipe) compiles a pipeline's machine code on its first
+    /// dispatch, so a cold first frame compiles every stage one after another. It also keeps the
+    /// code in its shader disk cache, shared by every device in the process. This dispatches the
+    /// largest pipeline here while the helpers take the rest, whose code this device then reads
+    /// from the cache. When that one dispatch finds its code already compiled, the cache is warm
+    /// and the helpers stop before compiling anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn precompile_pipelines(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        helpers: usize,
+        open_device: &(dyn Fn() -> Option<(Device, Queue)> + Sync),
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A dispatch this quick found its code compiled already.
+        const COMPILED: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let order = self.engine.precompile_order();
+        let Some((&largest, rest)) = order.split_first() else {
+            return;
+        };
+        let (use_cpu, antialiasing_support) =
+            (self.options.use_cpu, self.options.antialiasing_support);
+        let next = AtomicUsize::new(0);
+        let warm = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..helpers.min(rest.len()) {
+                let (next, warm) = (&next, &warm);
+                let _ = std::thread::Builder::new()
+                    .name("vello pipeline precompile".into())
+                    .spawn_scoped(scope, move || {
+                        let Some((device, queue)) = open_device() else {
+                            return;
+                        };
+                        if warm.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let options = RendererOptions {
+                            use_cpu,
+                            antialiasing_support,
+                            num_init_threads: NonZeroUsize::new(1),
+                            pipeline_cache: None,
+                        };
+                        let Ok(helper) = Self::new(&device, options) else {
+                            return;
+                        };
+                        // The same order as `order`: both renderers registered the same shaders.
+                        let helper_order = helper.engine.precompile_order();
+                        while !warm.load(Ordering::Relaxed)
+                            && let Some(&index) =
+                                helper_order.get(1 + next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            helper.engine.dispatch_empty(&device, &queue, index);
+                        }
+                    });
+            }
+            let started = std::time::Instant::now();
+            self.engine.dispatch_empty(device, queue, largest);
+            if started.elapsed() < COMPILED {
+                warm.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
     /// Creates a new renderer for the specified device.
-    pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+    pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // The GL backend has one context, and every pipeline compile holds
+        // its lock. Worker threads only queue on that lock, and a slow driver
+        // keeps one waiting past wgpu-hal's lock timeout, which panics.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            options.num_init_threads = NonZeroUsize::new(1);
+        }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1636,6 +1711,8 @@ impl Renderer {
         engine.build_shaders_if_needed(device, options.num_init_threads);
         #[cfg(feature = "debug_layers")]
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
+        let mut budget = bump_budget::BudgetTracker::new();
+        budget.set_device_limits(&device.limits());
 
         Ok(Self {
             options,
@@ -1645,7 +1722,7 @@ impl Renderer {
             recording: Recording::default(),
             packed_scene: Vec::new(),
             shaders,
-            budget: bump_budget::BudgetTracker::new(),
+            budget,
             unsettled_bump_overflow: OverflowLatch::default(),
             sparse_masks: Vec::new(),
             sparse_records: Vec::new(),
@@ -1682,6 +1759,31 @@ impl Renderer {
                 .as_ref()
                 .map_or(0, |upload| upload.capacity_bytes),
         }
+    }
+
+    /// Limit the image atlas to `max_size` pixels per side (8192 by
+    /// default). Images that do not fit after eviction are omitted and
+    /// reported, instead of a 256 MB atlas taking a browser's GPU process
+    /// past its memory limit.
+    pub fn set_image_atlas_max(&mut self, max_size: u32) {
+        self.resolver.set_image_atlas_max(max_size);
+    }
+
+    /// Grow the bump buffers at most once, straight to the
+    /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
+    /// fills up. Each growth reallocates every buffer, which a browser's GPU
+    /// process briefly holds twice.
+    pub fn set_bump_budget_grow_once(&mut self, grow_once: bool) {
+        self.budget.set_grow_once(grow_once);
+    }
+
+    /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
+    /// report using. Scenes past it drop geometry, which the shaders report,
+    /// instead of taking a browser's GPU process past its memory limit.
+    /// Viewport floors come on top.
+    pub fn set_bump_budget_limit(&mut self, bytes: u64) {
+        self.budget.set_max_total_bytes(bytes);
+        self.engine.clear_pool();
     }
 
     /// Drop transient GPU buffers held only for reuse. In-flight command
@@ -1739,6 +1841,25 @@ impl Renderer {
     #[doc(hidden)]
     pub fn defer_bump_readback_enabled(&self) -> bool {
         !self.options.use_cpu && self.defer_bump_readback
+    }
+
+    /// Sum every tile's segments in a fixed order, so repeated renders of one
+    /// scene are bit-identical regardless of GPU scheduling. Same as
+    /// `VELLO_CANONICAL_SEGMENT_ORDER=1`; recompiles the shader set.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self, device: &Device) -> Result<()> {
+        if self.engine.canonical_segment_order_enabled() {
+            return Ok(());
+        }
+        self.engine.enable_canonical_segment_order();
+        self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.engine
+            .build_shaders_if_needed(device, self.options.num_init_threads);
+        Ok(())
     }
 
     /// Override deferred synchronous bump readback for a differential oracle.

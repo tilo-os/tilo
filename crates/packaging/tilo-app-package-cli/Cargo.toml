@@ -32,6 +32,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
+registry-client = { path = "../registry-client" }
 getrandom.workspace = true
 
 anyhow.workspace = true
@@ -44,9 +45,9 @@ serde_json.workspace = true
 # The other subcommands stay synchronous; publish drives a runtime inline.
 tokio = { workspace = true, features = ["macros", "signal"] }
 tilo-rt.workspace = true
-
-[dev-dependencies]
+# `pack-web` stages the module and assets as a payload directory.
 tempfile.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

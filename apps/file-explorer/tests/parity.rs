@@ -31,7 +31,17 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
     }
 }
 
+/// Every sort key and both orders, each on its own entry fixture.
 #[test]
+fn sort_entries_orders_by_each_key_and_keeps_directories_first() {
+    sort_entries_always_places_directories_first();
+    sort_by_size_orders_by_file_size();
+    sort_by_modified_orders_by_mtime();
+    sort_by_type_orders_by_mime();
+    sort_by_name_places_alpha_order_with_dirs_first();
+    sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first();
+}
+
 fn sort_entries_always_places_directories_first() {
     let mut v = vec![
         e("z_file.txt", false, 10, "text/plain", 2020),
@@ -43,7 +53,6 @@ fn sort_entries_always_places_directories_first() {
     assert_eq!(v[0].name, "a_dir", "descending still keeps dirs first");
 }
 
-#[test]
 fn sort_by_size_orders_by_file_size() {
     let mut v = vec![
         e("big.bin", false, 1000, "application/octet-stream", 2020),
@@ -53,7 +62,6 @@ fn sort_by_size_orders_by_file_size() {
     assert_eq!(v[0].name, "small.bin");
 }
 
-#[test]
 fn sort_by_modified_orders_by_mtime() {
     let mut v = vec![
         e("new.txt", false, 0, "text/plain", 2025),
@@ -63,7 +71,6 @@ fn sort_by_modified_orders_by_mtime() {
     assert_eq!(v[0].name, "old.txt");
 }
 
-#[test]
 fn sort_by_type_orders_by_mime() {
     let mut v = vec![
         e("b.png", false, 0, "image/png", 2020),
@@ -74,6 +81,12 @@ fn sort_by_type_orders_by_mime() {
 }
 
 #[test]
+fn paths_and_breadcrumbs_name_home_workspaces_and_root() {
+    format_path_substitutes_home_prefix();
+    breadcrumb_component_click_navigates_to_that_component();
+    a_workspace_root_is_named_rather_than_spelled_out();
+}
+
 fn format_path_substitutes_home_prefix() {
     let home = PathBuf::from("/home/user");
     let p = PathBuf::from("/home/user/Documents");
@@ -85,7 +98,6 @@ fn format_path_substitutes_home_prefix() {
 
 use file_explorer::breadcrumbs::breadcrumb_components;
 
-#[test]
 fn breadcrumb_component_click_navigates_to_that_component() {
     crate::common::pin_locale();
     let home = PathBuf::from("/home/user");
@@ -111,7 +123,6 @@ fn breadcrumb_component_click_navigates_to_that_component() {
 /// looking at scratch space on somebody's laptop, which is the opposite of
 /// what a workspace is - and the app already knew better, because its own
 /// sidebar lists the same directory by name under System.
-#[test]
 fn a_workspace_root_is_named_rather_than_spelled_out() {
     let ws = PathBuf::from("/var/tmp/tilo/workspace");
     let roots = vec![ws.clone()];
@@ -156,7 +167,18 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
 use file_explorer::FileExplorerWidget;
 use ui::{AppKind, AppWidget, IconDescriptor};
 
+/// App identity, the startup path, footer, refresh and view-mode defaults,
+/// each on a freshly constructed widget.
 #[test]
+fn widget_identity_defaults_and_initial_path() {
+    file_explorer_widget_implements_app_widget_and_defaults_correctly();
+    file_explorer_widget_constructs_with_sensible_default_path();
+    initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root();
+    footer_shows_item_count_and_formatted_path();
+    refresh_rereads_same_directory();
+    view_mode_toggle_switches_between_list_and_grid();
+}
+
 fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
     crate::common::pin_locale();
     let w = FileExplorerWidget::new();
@@ -169,7 +191,6 @@ fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
     assert_eq!(w.permission_hint(), Some(AppKind::Files));
 }
 
-#[test]
 fn file_explorer_widget_constructs_with_sensible_default_path() {
     let w = FileExplorerWidget::new();
     let cwd = w.current_path();
@@ -178,6 +199,12 @@ fn file_explorer_widget_constructs_with_sensible_default_path() {
 }
 
 #[test]
+fn sidebar_shortcuts_width_and_active_highlight() {
+    sidebar_shows_fixed_seven_shortcuts_when_home_present();
+    sidebar_highlights_active_shortcut();
+    sidebar_has_fixed_width_180();
+}
+
 fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
     use file_explorer::sidebar::build_shortcuts;
     use ui::icons::Icon;
@@ -200,7 +227,18 @@ fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
 // Behavioural parity tests
 // ---------------------------------------------------------------------------
 
+/// Back, click/double-click, error and loading states and Open Terminal,
+/// each on a freshly constructed widget.
 #[test]
+fn navigation_selection_loading_and_terminal_commands() {
+    back_button_moves_to_parent_and_noops_at_root();
+    double_click_dir_navigates_into_it();
+    single_click_selects_single_entry();
+    error_state_shows_message_and_retry_button();
+    loading_state_shown_during_navigation();
+    open_terminal_button_spawns_quick_terminal_subprocess();
+}
+
 fn back_button_moves_to_parent_and_noops_at_root() {
     let mut w = FileExplorerWidget::new();
     let start_parent = w.current_path().parent().map(std::path::Path::to_path_buf);
@@ -218,7 +256,6 @@ fn back_button_moves_to_parent_and_noops_at_root() {
     assert_eq!(w2.current_path(), before, "back at / is a no-op");
 }
 
-#[test]
 fn refresh_rereads_same_directory() {
     let mut w = FileExplorerWidget::new();
     let cwd = w.current_path();
@@ -226,7 +263,6 @@ fn refresh_rereads_same_directory() {
     assert_eq!(w.current_path(), cwd);
 }
 
-#[test]
 fn double_click_dir_navigates_into_it() {
     let mut w = FileExplorerWidget::new();
     // Find a directory in current entries, if any. If no dirs, skip (test env-dep).
@@ -249,7 +285,6 @@ fn w_entry_path(w: &FileExplorerWidget, i: usize) -> PathBuf {
     w.entries_snapshot()[i].path.clone()
 }
 
-#[test]
 fn single_click_selects_single_entry() {
     let mut w = FileExplorerWidget::new();
     if w.entries_snapshot().len() >= 2 {
@@ -262,14 +297,12 @@ fn single_click_selects_single_entry() {
     }
 }
 
-#[test]
 fn error_state_shows_message_and_retry_button() {
     let mut w = FileExplorerWidget::new();
     w.navigate(PathBuf::from("/this/path/does/not/exist/for/sure"));
     assert!(w.error_message().is_some(), "error path should set error");
 }
 
-#[test]
 fn footer_shows_item_count_and_formatted_path() {
     let w = FileExplorerWidget::new();
     let (count, path_str) = w.footer_text();
@@ -277,11 +310,10 @@ fn footer_shows_item_count_and_formatted_path() {
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), xdg_paths::home().as_deref())
+        file_explorer::model::format_path(&w.current_path(), tilo_paths::home().as_deref())
     );
 }
 
-#[test]
 fn view_mode_toggle_switches_between_list_and_grid() {
     use file_explorer::model::ViewMode;
     let mut w = FileExplorerWidget::new();
@@ -290,7 +322,6 @@ fn view_mode_toggle_switches_between_list_and_grid() {
     assert_eq!(w.view_mode(), ViewMode::Grid);
 }
 
-#[test]
 fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root() {
     // Assert the exact startup path for the current environment, including
     // configured mounts and the sandbox's granted user home. An explicit
@@ -315,7 +346,6 @@ fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root(
     }
 }
 
-#[test]
 fn sidebar_highlights_active_shortcut() {
     use file_explorer::sidebar::{active_shortcut_index, build_shortcuts};
     let home = PathBuf::from("/home/tester");
@@ -331,16 +361,14 @@ fn sidebar_highlights_active_shortcut() {
     // Root at the end of the list.
     assert_eq!(
         active_shortcut_index(&shortcuts, &PathBuf::from("/")),
-        Some(shortcuts.len() - 1)
+        shortcuts.len().checked_sub(1)
     );
 }
 
-#[test]
 fn sidebar_has_fixed_width_180() {
     assert!((file_explorer::sidebar::SIDEBAR_WIDTH_PX - 180.0).abs() < f32::EPSILON);
 }
 
-#[test]
 fn sort_by_name_places_alpha_order_with_dirs_first() {
     use file_explorer::model::{SortBy, SortOrder, sort_entries};
     let mut v = vec![
@@ -354,7 +382,6 @@ fn sort_by_name_places_alpha_order_with_dirs_first() {
     assert_eq!(v[2].name, "zeta.txt");
 }
 
-#[test]
 fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
     use file_explorer::model::{SortBy, SortOrder, sort_entries};
     let mut v = vec![
@@ -373,7 +400,6 @@ fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
     assert_eq!(desc_names, vec!["dir_z", "dir_a", "zeta.txt", "alpha.txt"]);
 }
 
-#[test]
 fn open_terminal_button_spawns_quick_terminal_subprocess() {
     use file_explorer::files_app::CommandRunner;
 
@@ -395,8 +421,8 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
             self.calls.push((program.to_string(), cwd.to_path_buf()));
             Ok(())
         }
-        fn open_default(&mut self, _path: &std::path::Path) -> std::io::Result<()> {
-            Ok(())
+        fn open_default(&mut self, _path: &std::path::Path) -> ui::portal::LaunchChannel {
+            std::sync::mpsc::channel().1
         }
     }
 
@@ -409,6 +435,14 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
 }
 
 #[test]
+fn list_and_grid_builders_compose_real_file_views() {
+    list_mode_has_name_size_modified_columns();
+    list_build_yields_a_file_view();
+    grid_mode_uses_responsive_file_view();
+    grid_cell_metrics_are_documented_values();
+    draw_composition_exercises_the_five_pass_pipeline();
+}
+
 fn list_mode_has_name_size_modified_columns() {
     // The type glyph is now drawn inline in the Name column, so the header
     // columns are Name / Size / Modified.
@@ -416,10 +450,10 @@ fn list_mode_has_name_size_modified_columns() {
     assert_eq!(COLUMN_KEYS, ["name", "size", "modified"]);
 }
 
-#[test]
 fn list_build_yields_a_file_view() {
     use file_explorer::command::new_sink;
     use file_explorer::model::{Entry, SortBy, SortOrder};
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::list_view::build_list;
     use ui::SelectionModel;
     let entries = vec![Entry {
@@ -439,29 +473,21 @@ fn list_build_yields_a_file_view() {
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_list(
-        &entries,
-        &SelectionModel::new(),
-        &new_sink(),
-        1.0,
-        1.0,
-        SortBy::Name,
-        SortOrder::Ascending,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &SelectionModel::new(), &new_sink())
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_list(view, SortBy::Name, SortOrder::Ascending);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
-#[test]
 fn grid_mode_uses_responsive_file_view() {
     // The grid is a responsive FileView: the column count reflows to the
     // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
     use std::path::PathBuf;
     use ui::SelectionModel;
@@ -491,22 +517,15 @@ fn grid_mode_uses_responsive_file_view() {
     let sink = new_sink();
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_grid(
-        &entries,
-        &sel,
-        &sink,
-        1.0,
-        1.0,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &sel, &sink)
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_grid(view);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
-#[test]
 fn grid_cell_metrics_are_documented_values() {
     // Pins the default grid cell size so a regression in the grid builder is
     // caught (the grid derives its column count from these).
@@ -514,7 +533,6 @@ fn grid_cell_metrics_are_documented_values() {
     assert!((file_explorer::views::grid_view::GRID_CELL_HEIGHT - 104.0).abs() < f64::EPSILON);
 }
 
-#[test]
 fn loading_state_shown_during_navigation() {
     // Navigation is synchronous, so every return path must clear the flag.
     let mut w = FileExplorerWidget::new();
@@ -530,54 +548,30 @@ fn loading_state_shown_during_navigation() {
     );
 }
 
-#[test]
 fn draw_composition_exercises_the_five_pass_pipeline() {
-    // Drives the composed widget through build_layout → apply_layout → draw.
+    // Drives the composed widget through the host's full frame
+    // (sync → build_layout → compute → apply_layout → draw).
     // Assertion: the widget's `rect` is non-empty after the pipeline runs and
     // the child widget tree is non-empty.
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
+    use ui::headless::Framed;
     use ui::theme::Theme;
     use ui::widget::Widget;
-    use vello::Scene;
-    use vello::kurbo::Point;
 
-    let mut w = FileExplorerWidget::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let theme = Theme::dark();
-    let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-    let mut text_renderer = TextRenderer::new();
-
-    let root = w.build_layout(&mut taffy, &theme, &mut node_map);
+    let w = Framed::new(
+        ui::State::new(),
+        FileExplorerWidget::new(),
+        (1024, 768),
+        Theme::dark(),
+    );
 
     // The composition registers many taffy nodes (toolbar, breadcrumbs,
     // sidebar, view, footer, plus the intermediate Rows/Columns). A plain
     // leaf-only widget would register exactly one.
+    let nodes = Framed::harness(&w).layout_node_ids().len();
     assert!(
-        node_map.len() > 1,
-        "draw composition must register multiple layout nodes; got {}",
-        node_map.len()
+        nodes > 1,
+        "draw composition must register multiple layout nodes; got {nodes}"
     );
-
-    taffy
-        .compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(1024.0),
-                height: AvailableSpace::Definite(768.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut text_renderer) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    w.apply_layout(&taffy, root, Point::new(0.0, 0.0));
 
     let rect = w.get_rect();
     assert!(
@@ -586,19 +580,10 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
     );
 
     // draw must not panic and must fill a non-empty scene.
-    let mut scene = Scene::new();
-    let presence = PresenceCtx::empty();
-    w.draw(
-        &mut scene,
-        vello::kurbo::Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
     // Scene should have encoded *something* from the composition — at a
     // minimum the toolbar's buttons produce fill/stroke commands.
     assert!(
-        !scene.encoding().is_empty(),
+        !Framed::harness(&w).scene().encoding().is_empty(),
         "draw composition must emit draw commands from the subtree"
     );
 }

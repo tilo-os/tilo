@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "add-ten", "action": "activate"}},
+  {"perform": {"target": "subtract-one", "action": "activate"}},
+  {"expect": {"target": "count", "name": "9"}}
+]

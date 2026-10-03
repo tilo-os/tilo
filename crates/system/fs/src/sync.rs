@@ -1,7 +1,7 @@
 //! The sync plane: namespace replication plus content hydration.
 //!
 //! Unenforced workspaces use iroh-gossip for live Automerge deltas and
-//! `tilo-fs-sync/0` for bootstrap/anti-entropy. Enforced workspaces use only
+//! `tilo-fs-sync/1` for bootstrap/anti-entropy. Enforced workspaces use only
 //! the authenticated sync ALPN: gossip does not preserve the original author
 //! needed for a write-authorisation decision. Iroh-blobs hydrates content on
 //! read, guarded by the live namespace and ACL.
@@ -9,6 +9,13 @@
 //! A joiner must *load the host's document* so both share the same
 //! Automerge object ids — independently-created docs would fork on
 //! merge. The bootstrap exchange guarantees that shared history.
+//!
+//! Every request names the workspace it is for, and every namespace
+//! payload either side sends is bound to that workspace by the sender's
+//! device signature ([`crate::namespace_binding`]). A receiver applies
+//! nothing that [`accept_namespace_payload`] refuses: another workspace's
+//! tree, bytes that are not the ones signed, or a device whose holder may
+//! not serve this workspace's namespace.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,6 +35,7 @@ use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
@@ -36,6 +44,9 @@ use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::hydration::Hydrator;
 use crate::identity::PeerCredentials;
 use crate::namespace::Namespace;
+use crate::namespace_binding::{
+    BoundNamespacePayloadV1, NamespaceBindingError, NamespacePayloadKind,
+};
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_access::RecordAccessRegistry;
 use crate::record_mesh::{
@@ -63,7 +74,7 @@ use crate::workspace_authority::{
 use session::{SessionPool, SessionProtocol};
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
-pub const TILO_FS_SYNC_ALPN: &[u8] = b"tilo-fs-sync/0";
+pub const TILO_FS_SYNC_ALPN: &[u8] = b"tilo-fs-sync/1";
 /// Interactive peers always retain small previews when metadata changes, but
 /// never fetch a file manifest/chunks merely to populate a directory view.
 const MAX_INTERACTIVE_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
@@ -150,6 +161,17 @@ impl FsTransportIdentity {
         Arc::clone(&self.revocations)
     }
 
+    /// Binds namespace `bytes` of `workspace_id` as this device, for a peer
+    /// to verify with [`accept_namespace_payload`].
+    pub(crate) fn bind_namespace(
+        &self,
+        workspace_id: uuid::Uuid,
+        kind: NamespacePayloadKind,
+        bytes: Vec<u8>,
+    ) -> Result<BoundNamespacePayloadV1, NamespaceBindingError> {
+        BoundNamespacePayloadV1::sign(workspace_id, kind, bytes, self.credentials.signing_key())
+    }
+
     fn revocation_snapshot(&self) -> Result<RevocationList> {
         self.revocations
             .read()
@@ -207,10 +229,111 @@ async fn authenticate_connection(
     Ok(peer)
 }
 
-/// Mode byte: transfer the full document (first-join bootstrap).
-const MODE_FULL: u8 = b'F';
-/// Mode byte: incremental Automerge sync-protocol exchange (anti-entropy).
-const MODE_SYNC: u8 = b'S';
+/// What a client asks of the sync ALPN, and for which workspace. A device
+/// serving several workspaces under one key answers only for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamespaceRequestV1 {
+    workspace_id: uuid::Uuid,
+    mode: NamespaceModeV1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum NamespaceModeV1 {
+    /// The whole document (first-join bootstrap, read-only pull).
+    Document,
+    /// Incremental Automerge sync rounds between two writers.
+    Sync,
+}
+
+/// One frame of a sync-ALPN exchange after the request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum NamespaceFrameV1 {
+    /// The server does not serve this request.
+    Refused(NamespaceRefusalV1),
+    /// Namespace bytes bound to the request's workspace.
+    Payload(BoundNamespacePayloadV1),
+    /// A sync round with nothing to send.
+    Idle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum NamespaceRefusalV1 {
+    /// The request names a workspace this device does not serve here.
+    OtherWorkspace,
+    /// The requester may not read (or, to sync, write) the whole workspace.
+    NotAuthorised,
+}
+
+impl std::fmt::Display for NamespaceRefusalV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OtherWorkspace => "the peer does not serve the requested workspace",
+            Self::NotAuthorised => "the peer does not serve this workspace's namespace to us",
+        })
+    }
+}
+
+/// The one check every namespace payload received from `peer` passes
+/// before it is applied: `peer` may serve the workspace's namespace (read
+/// the whole workspace for a document or changes, also write it for a sync
+/// message, which authors changes), and the payload is bound to
+/// `workspace_id`, as `kind`, by `peer`'s own device, over these bytes.
+///
+/// # Errors
+///
+/// Returns why the payload is refused.
+pub(crate) fn accept_namespace_payload(
+    policy: &PeerPolicy,
+    workspace_id: uuid::Uuid,
+    peer: &AuthenticatedFsPeer,
+    kind: NamespacePayloadKind,
+    payload: &BoundNamespacePayloadV1,
+) -> Result<(), NamespaceBindingError> {
+    let authorised = match kind {
+        NamespacePayloadKind::SyncMessage => {
+            authenticated_peer_may_write_whole_workspace(policy, peer)
+        }
+        NamespacePayloadKind::Document | NamespacePayloadKind::Changes => {
+            authenticated_peer_may_read_whole_workspace(policy, peer)
+        }
+    };
+    if !authorised {
+        return Err(NamespaceBindingError::Unauthorised);
+    }
+    payload
+        .binding
+        .verify(workspace_id, kind, peer.device_public_key, &payload.bytes)
+}
+
+async fn write_namespace_frame(
+    send: &mut SendStream,
+    frame: &NamespaceFrameV1,
+) -> std::io::Result<()> {
+    Ok(SYNC_FRAMING.write_value_async(send, frame).await?)
+}
+
+async fn read_namespace_frame(recv: &mut RecvStream) -> std::io::Result<NamespaceFrameV1> {
+    Ok(SYNC_FRAMING
+        .read_value_async(recv)
+        .await?
+        .ok_or(FrameError::Closed)?)
+}
+
+/// Sends the request that opens a sync-ALPN exchange.
+async fn open_namespace_exchange(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    identity: &FsTransportIdentity,
+    request: NamespaceRequestV1,
+) -> Result<(AuthenticatedFsPeer, SendStream, RecvStream)> {
+    let conn = endpoint.connect(peer, TILO_FS_SYNC_ALPN).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let remote = authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
+    let request = postcard::to_allocvec(&request)?;
+    SYNC_FRAMING.write_async(&mut send, &request).await?;
+    Ok((remote, send, recv))
+}
 /// Hard cap on a single sync frame (`DoS` guard).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// Bound aggregate sync-frame memory and Automerge CPU consumed by remote
@@ -219,36 +342,10 @@ const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// allocation without bound.
 const MAX_CONCURRENT_SYNC_CONNECTIONS: usize = 4;
 
-async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(data.len())
-        .map_err(|_| std::io::Error::other("sync frame too large to length-prefix"))?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(std::io::Error::other)?;
-    if !data.is_empty() {
-        send.write_all(data).await.map_err(std::io::Error::other)?;
-    }
-    Ok(())
-}
-
-async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    recv.read_exact(&mut len)
-        .await
-        .map_err(std::io::Error::other)?;
-    let n = u32::from_le_bytes(len) as usize;
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    if n > MAX_FRAME {
-        return Err(std::io::Error::other(format!("sync frame too large: {n}")));
-    }
-    let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(std::io::Error::other)?;
-    Ok(buf)
-}
+/// Each round of the sync-mode exchange, in both directions: a
+/// little-endian `u32` length, then the Automerge sync message, which is
+/// empty when that side has nothing to send.
+const SYNC_FRAMING: Framing = Framing::little_endian(MAX_FRAME);
 
 /// A shareable invitation to join a workspace: how to reach a peer + which
 /// gossip topic the workspace uses.
@@ -303,8 +400,22 @@ impl Ticket {
 ///
 /// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
+    use iroh::endpoint::{QuicTransportConfig, VarInt};
+    /// Unacknowledged bytes one stream, and one connection, may have in
+    /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
+    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s
+    /// over a 40 ms round trip; content transfer needs a window of a few
+    /// bandwidth-delay products.
+    const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+    const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+    let transport = QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
+        .send_window(u64::from(CONNECTION_WINDOW))
+        .build();
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
+        .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
         .bind()
@@ -324,34 +435,63 @@ pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
-/// Fetch the full namespace document from a peer over the bootstrap
-/// ALPN, bounded by a timeout so a stalled host can't hang the caller.
+/// Fetch the full namespace document of `workspace_id` from a peer over
+/// the bootstrap ALPN, bounded by a timeout so a stalled host can't hang
+/// the caller. The document is returned only when `policy` lets the peer
+/// read the whole workspace and the peer bound these exact bytes to
+/// `workspace_id` ([`accept_namespace_payload`]).
 ///
 /// # Errors
 ///
-/// Returns an error when the partition gate is closed or connection,
-/// authentication, framing, or transport fails.
+/// Returns an error when the partition gate is closed, when connection,
+/// authentication, framing, or transport fails, or when the peer refuses
+/// or serves a document that is not bound to `workspace_id` by an
+/// authorised device.
 pub async fn fetch_remote_doc(
     endpoint: &Endpoint,
     host: EndpointAddr,
     identity: &FsTransportIdentity,
+    workspace_id: uuid::Uuid,
+    policy: &PeerPolicy,
 ) -> Result<Vec<u8>> {
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
     tokio::time::timeout(Duration::from_secs(10), async {
-        let conn = endpoint.connect(host, TILO_FS_SYNC_ALPN).await?;
-        let (mut send, mut recv) = conn.open_bi().await?;
-        let _peer =
-            authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
-        send.write_all(&[MODE_FULL]).await?;
+        let (remote, mut send, mut recv) = open_namespace_exchange(
+            endpoint,
+            host,
+            identity,
+            NamespaceRequestV1 {
+                workspace_id,
+                mode: NamespaceModeV1::Document,
+            },
+        )
+        .await?;
         send.finish()?;
-        // Documents are small (metadata only); 64 MiB is a generous ceiling.
-        let doc = recv.read_to_end(MAX_FRAME).await?;
-        if doc.is_empty() {
+        // Documents are small (metadata only); a frame's 64 MiB bound is a
+        // generous ceiling.
+        let payload = match read_namespace_frame(&mut recv).await {
+            Ok(NamespaceFrameV1::Payload(payload)) => payload,
+            Ok(NamespaceFrameV1::Refused(refusal)) => {
+                anyhow::bail!("peer did not serve a workspace document: {refusal}")
+            }
+            Ok(NamespaceFrameV1::Idle) | Err(_) => {
+                anyhow::bail!("peer did not serve a workspace document")
+            }
+        };
+        accept_namespace_payload(
+            policy,
+            workspace_id,
+            &remote,
+            NamespacePayloadKind::Document,
+            &payload,
+        )
+        .map_err(|error| anyhow::anyhow!("refusing the peer's workspace document: {error}"))?;
+        if payload.bytes.is_empty() {
             anyhow::bail!("peer did not serve a workspace document");
         }
-        Ok::<_, anyhow::Error>(doc)
+        Ok::<_, anyhow::Error>(payload.bytes)
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out fetching workspace document"))?
@@ -369,8 +509,18 @@ pub async fn sync_with_peer(
     peer: EndpointAddr,
     namespace: &Arc<Mutex<Namespace>>,
     identity: &FsTransportIdentity,
+    workspace_id: uuid::Uuid,
+    policy: &PeerPolicy,
 ) -> Result<bool> {
-    sync_with_peer_at_boundaries(endpoint, peer, namespace, identity, None).await
+    sync_with_peer_at_boundaries(
+        endpoint,
+        peer,
+        namespace,
+        identity,
+        (workspace_id, policy),
+        None,
+    )
+    .await
 }
 
 /// Waits until no changeset is being published into this device's namespace
@@ -391,17 +541,23 @@ async fn sync_with_peer_at_boundaries(
     peer: EndpointAddr,
     namespace: &Arc<Mutex<Namespace>>,
     identity: &FsTransportIdentity,
+    (workspace_id, policy): (uuid::Uuid, &PeerPolicy),
     repository: Option<&RecordRepository>,
 ) -> Result<bool> {
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
     tokio::time::timeout(Duration::from_secs(15), async {
-        let conn = endpoint.connect(peer, TILO_FS_SYNC_ALPN).await?;
-        let (mut send, mut recv) = conn.open_bi().await?;
-        let _peer =
-            authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
-        send.write_all(&[MODE_SYNC]).await?;
+        let (remote, mut send, mut recv) = open_namespace_exchange(
+            endpoint,
+            peer,
+            identity,
+            NamespaceRequestV1 {
+                workspace_id,
+                mode: NamespaceModeV1::Sync,
+            },
+        )
+        .await?;
         let mut state = automerge::sync::State::new();
         // Initiator: write-then-read each round; the responder mirrors.
         let mut received_change = false;
@@ -413,8 +569,35 @@ async fn sync_with_peer_at_boundaries(
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_generate(&mut state)
             };
-            write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
-            let peer_msg = read_frame(&mut recv).await?;
+            let sent_nothing = msg.is_none();
+            let frame = match msg {
+                Some(msg) => NamespaceFrameV1::Payload(identity.bind_namespace(
+                    workspace_id,
+                    NamespacePayloadKind::SyncMessage,
+                    msg,
+                )?),
+                None => NamespaceFrameV1::Idle,
+            };
+            write_namespace_frame(&mut send, &frame).await?;
+            let peer_msg = match read_namespace_frame(&mut recv).await? {
+                NamespaceFrameV1::Payload(payload) => {
+                    accept_namespace_payload(
+                        policy,
+                        workspace_id,
+                        &remote,
+                        NamespacePayloadKind::SyncMessage,
+                        &payload,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("refusing the peer's namespace sync message: {error}")
+                    })?;
+                    payload.bytes
+                }
+                NamespaceFrameV1::Idle => Vec::new(),
+                NamespaceFrameV1::Refused(refusal) => {
+                    anyhow::bail!("peer refused namespace sync: {refusal}")
+                }
+            };
             if !peer_msg.is_empty() {
                 received_change = true;
                 let _ = namespace
@@ -422,7 +605,7 @@ async fn sync_with_peer_at_boundaries(
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_receive(&mut state, &peer_msg);
             }
-            if msg.is_none() && peer_msg.is_empty() {
+            if sent_nothing && peer_msg.is_empty() {
                 break;
             }
         }
@@ -588,6 +771,8 @@ struct SyncProtocol {
     identity: FsTransportIdentity,
     namespace: Arc<Mutex<Namespace>>,
     policy: PeerPolicy,
+    /// The workspace this namespace is; requests for any other are refused.
+    workspace_id: uuid::Uuid,
     inflight: Arc<tokio::sync::Semaphore>,
     /// Whose publication gate namespace reads wait on, so a changeset
     /// being published is never served half.
@@ -600,6 +785,148 @@ impl SyncProtocol {
             Some(repository) => Some(repository.publication_gate().read().await),
             None => None,
         }
+    }
+
+    /// The responder's Automerge sync rounds with a workspace writer.
+    async fn serve_sync_rounds(
+        &self,
+        peer: &AuthenticatedFsPeer,
+        send: &mut SendStream,
+        recv: &mut RecvStream,
+    ) -> Result<(), AcceptError> {
+        // Responder: read-then-write each round (mirrors the initiator).
+        let mut state = automerge::sync::State::new();
+        for _ in 0..200 {
+            // The authority handle is live. A newer signed
+            // tombstone/revocation cuts an already-connected
+            // writer off at the next protocol round.
+            if !authenticated_peer_may_write_whole_workspace(&self.policy, peer) {
+                let _ = send.finish();
+                break;
+            }
+            let peer_msg = match read_namespace_frame(recv)
+                .await
+                .map_err(AcceptError::from_err)?
+            {
+                NamespaceFrameV1::Payload(payload) => {
+                    if let Err(error) = accept_namespace_payload(
+                        &self.policy,
+                        self.workspace_id,
+                        peer,
+                        NamespacePayloadKind::SyncMessage,
+                        &payload,
+                    ) {
+                        eprintln!(
+                            "refusing a namespace sync message from {}: {error}",
+                            hex::encode(&peer.device_public_key[..5])
+                        );
+                        let _ = send.finish();
+                        break;
+                    }
+                    payload.bytes
+                }
+                NamespaceFrameV1::Idle => Vec::new(),
+                NamespaceFrameV1::Refused(_) => break,
+            };
+            if !peer_msg.is_empty() {
+                let _ = self
+                    .namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .sync_receive(&mut state, &peer_msg);
+            }
+            let msg = {
+                let _gate = self.gate().await;
+                self.namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .sync_generate(&mut state)
+            };
+            let sent_nothing = msg.is_none();
+            let frame = match msg {
+                Some(msg) => NamespaceFrameV1::Payload(
+                    self.identity
+                        .bind_namespace(self.workspace_id, NamespacePayloadKind::SyncMessage, msg)
+                        .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?,
+                ),
+                None => NamespaceFrameV1::Idle,
+            };
+            write_namespace_frame(send, &frame)
+                .await
+                .map_err(AcceptError::from_err)?;
+            if peer_msg.is_empty() && sent_nothing {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Answers one authenticated peer's request: refused unless it names
+    /// this workspace and the peer may read it (write it, to sync), then
+    /// the document or the sync rounds, each payload bound to this
+    /// workspace.
+    async fn serve_request(
+        &self,
+        peer: &AuthenticatedFsPeer,
+        send: &mut SendStream,
+        recv: &mut RecvStream,
+    ) -> Result<(), AcceptError> {
+        let request = SYNC_FRAMING
+            .read_async(recv)
+            .await
+            .and_then(|frame| frame.ok_or(FrameError::Closed))
+            .map_err(AcceptError::from_err)?;
+        let Ok(request) = postcard::from_bytes::<NamespaceRequestV1>(&request) else {
+            let _ = send.finish();
+            return Ok(());
+        };
+        let authorised = match request.mode {
+            NamespaceModeV1::Document => {
+                authenticated_peer_may_read_whole_workspace(&self.policy, peer)
+            }
+            NamespaceModeV1::Sync => {
+                authenticated_peer_may_write_whole_workspace(&self.policy, peer)
+            }
+        };
+        let refusal = if request.workspace_id != self.workspace_id {
+            Some(NamespaceRefusalV1::OtherWorkspace)
+        } else if authorised {
+            None
+        } else {
+            Some(NamespaceRefusalV1::NotAuthorised)
+        };
+        if let Some(refusal) = refusal {
+            write_namespace_frame(send, &NamespaceFrameV1::Refused(refusal))
+                .await
+                .map_err(AcceptError::from_err)?;
+            let _ = send.finish();
+            return Ok(());
+        }
+        let bind = |kind, bytes| {
+            self.identity
+                .bind_namespace(self.workspace_id, kind, bytes)
+                .map(NamespaceFrameV1::Payload)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
+        };
+        match request.mode {
+            NamespaceModeV1::Document => {
+                let gate = self.gate().await;
+                let doc = self
+                    .namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .save();
+                drop(gate);
+                write_namespace_frame(send, &bind(NamespacePayloadKind::Document, doc)?)
+                    .await
+                    .map_err(AcceptError::from_err)?;
+                let _ = send.finish();
+            }
+            NamespaceModeV1::Sync => {
+                self.serve_sync_rounds(peer, send, recv).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -624,7 +951,7 @@ impl ProtocolHandler for SyncProtocol {
         // can't leak an accept task or connection forever.
         let exchange = async {
             // This is the first application-layer exchange. No
-            // mode byte or namespace data is accepted until the transport key
+            // request or namespace data is accepted until the transport key
             // has been bound to a certified human/device and checked against
             // the current revocation snapshot.
             let peer = authenticate_connection(
@@ -636,70 +963,7 @@ impl ProtocolHandler for SyncProtocol {
             )
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let mut mode = [0u8; 1];
-            recv.read_exact(&mut mode)
-                .await
-                .map_err(AcceptError::from_err)?;
-            match mode[0] {
-                MODE_FULL => {
-                    if !authenticated_peer_may_read_whole_workspace(&self.policy, &peer) {
-                        let _ = send.finish();
-                        return Ok(());
-                    }
-                    let _ = recv.read_to_end(64).await;
-                    let gate = self.gate().await;
-                    let doc = self
-                        .namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .save();
-                    drop(gate);
-                    send.write_all(&doc).await.map_err(AcceptError::from_err)?;
-                    let _ = send.finish();
-                }
-                MODE_SYNC => {
-                    if !authenticated_peer_may_write_whole_workspace(&self.policy, &peer) {
-                        let _ = send.finish();
-                        return Ok(());
-                    }
-                    // Responder: read-then-write each round (mirrors the initiator).
-                    let mut state = automerge::sync::State::new();
-                    for _ in 0..200 {
-                        // The authority handle is live. A newer signed
-                        // tombstone/revocation cuts an already-connected
-                        // writer off at the next protocol round.
-                        if !authenticated_peer_may_write_whole_workspace(&self.policy, &peer) {
-                            let _ = send.finish();
-                            break;
-                        }
-                        let peer_msg =
-                            read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
-                        if !peer_msg.is_empty() {
-                            let _ = self
-                                .namespace
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .sync_receive(&mut state, &peer_msg);
-                        }
-                        let msg = {
-                            let _gate = self.gate().await;
-                            self.namespace
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .sync_generate(&mut state)
-                        };
-                        write_frame(&mut send, msg.as_deref().unwrap_or(&[]))
-                            .await
-                            .map_err(AcceptError::from_err)?;
-                        if peer_msg.is_empty() && msg.is_none() {
-                            break;
-                        }
-                    }
-                }
-                _ => {
-                    let _ = send.finish();
-                }
-            }
+            self.serve_request(&peer, &mut send, &mut recv).await?;
             Ok::<(), AcceptError>(())
         };
         match tokio::time::timeout(Duration::from_secs(30), exchange).await {
@@ -793,9 +1057,35 @@ async fn peer_may_read_blob_with_records(
     .await
 }
 
+/// What one blob request asks for.
+enum BlobAsk {
+    /// Whole blobs, with `context`: further hashes named in the same request
+    /// with nothing asked of them (the manifests of requested chunks).
+    Blobs {
+        wanted: Vec<iroh_blobs::Hash>,
+        context: Vec<iroh_blobs::Hash>,
+    },
+    /// Positions of a file version's manifest: the manifest itself (0) and
+    /// its chunks.
+    Manifest {
+        root: iroh_blobs::Hash,
+        children: Vec<u64>,
+    },
+}
+
+impl BlobAsk {
+    fn len(&self) -> usize {
+        match self {
+            Self::Blobs { wanted, .. } => wanted.len(),
+            Self::Manifest { children, .. } => children.len(),
+        }
+    }
+}
+
 /// Whether the caller `(device, certified person)` may receive every blob
 /// in `wanted`; `context` are further hashes named in the same request with
 /// nothing asked of them (the manifests of requested chunks).
+#[cfg(test)]
 async fn authorize_blob_request(
     policy: &PeerPolicy,
     index: &BlobAccessIndex,
@@ -804,6 +1094,28 @@ async fn authorize_blob_request(
     caller: (IdentityKey, Option<IdentityKey>),
     wanted: &[iroh_blobs::Hash],
     context: &[iroh_blobs::Hash],
+) -> bool {
+    authorize_ask(
+        policy,
+        index,
+        store,
+        records,
+        caller,
+        &BlobAsk::Blobs {
+            wanted: wanted.to_vec(),
+            context: context.to_vec(),
+        },
+    )
+    .await
+}
+
+async fn authorize_ask(
+    policy: &PeerPolicy,
+    index: &BlobAccessIndex,
+    store: &ContentStore,
+    records: Option<&RecordPlane>,
+    caller: (IdentityKey, Option<IdentityKey>),
+    ask: &BlobAsk,
 ) -> bool {
     if policy.is_none() && records.is_none() {
         return true;
@@ -825,7 +1137,16 @@ async fn authorize_blob_request(
         person,
         readable_records,
     };
-    index.authorize(store, &requester, wanted, context).await
+    match ask {
+        BlobAsk::Blobs { wanted, context } => {
+            index.authorize(store, &requester, wanted, context).await
+        }
+        BlobAsk::Manifest { root, children } => {
+            index
+                .authorize_manifest_children(store, &requester, *root, children)
+                .await
+        }
+    }
 }
 
 /// Blob requests authorised at once; further requests wait for a slot,
@@ -886,13 +1207,8 @@ impl BlobGuard {
 
     /// Decides one request on its own task and answers on `reply`. Waits
     /// for a free slot first, so a flood of requests is pushed back.
-    async fn decide<R, F>(
-        &self,
-        connection: u64,
-        wanted: Vec<iroh_blobs::Hash>,
-        context: Vec<iroh_blobs::Hash>,
-        reply: R,
-    ) where
+    async fn decide<R, F>(&self, connection: u64, ask: BlobAsk, reply: R)
+    where
         R: FnOnce(iroh_blobs::provider::events::EventResult) -> F + Send + 'static,
         F: std::future::Future<Output = ()> + Send,
     {
@@ -911,14 +1227,13 @@ impl BlobGuard {
         tokio::spawn(async move {
             let ok = match caller {
                 Some(caller) => {
-                    authorize_blob_request(
+                    authorize_ask(
                         &guard.policy,
                         &guard.index,
                         &guard.store,
                         guard.records.as_ref(),
                         caller,
-                        &wanted,
-                        &context,
+                        &ask,
                     )
                     .await
                 }
@@ -928,7 +1243,7 @@ impl BlobGuard {
             if !ok {
                 eprintln!(
                     "iroh-blobs: refusing {} unreadable blob(s) on connection {connection}",
-                    wanted.len()
+                    ask.len()
                 );
             }
             reply(if ok {
@@ -1049,20 +1364,31 @@ fn blob_guard(
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
                     let request = &msg.inner.request;
-                    if !request.ranges.is_blob() {
-                        // Children of a hash sequence would be served without
-                        // a check of their own; this plane never asks for them.
+                    let hash = request.hash;
+                    let ask = if request.ranges.is_blob() {
+                        BlobAsk::Blobs {
+                            wanted: vec![hash],
+                            context: Vec::new(),
+                        }
+                    } else if request.ranges.is_infinite() {
+                        // An open-ended sequence would reach past the chunks
+                        // of a manifest; this plane never asks for one.
                         msg.tx.send(Err(AbortReason::Permission)).await.ok();
                         continue;
-                    }
-                    let hash = request.hash;
+                    } else {
+                        // Ranges of a file version: its chunks are readable
+                        // exactly when the version is.
+                        BlobAsk::Manifest {
+                            root: hash,
+                            children: request
+                                .ranges
+                                .iter_non_empty_infinite()
+                                .map(|(offset, _)| offset)
+                                .collect(),
+                        }
+                    };
                     guard
-                        .decide(
-                            msg.inner.connection_id,
-                            vec![hash],
-                            Vec::new(),
-                            reply!(msg.tx),
-                        )
+                        .decide(msg.inner.connection_id, ask, reply!(msg.tx))
                         .await;
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
@@ -1078,7 +1404,11 @@ fn blob_guard(
                         }
                     }
                     guard
-                        .decide(msg.inner.connection_id, wanted, context, reply!(msg.tx))
+                        .decide(
+                            msg.inner.connection_id,
+                            BlobAsk::Blobs { wanted, context },
+                            reply!(msg.tx),
+                        )
                         .await;
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
@@ -1086,8 +1416,10 @@ fn blob_guard(
                     guard
                         .decide(
                             msg.inner.connection_id,
-                            vec![hash],
-                            Vec::new(),
+                            BlobAsk::Blobs {
+                                wanted: vec![hash],
+                                context: Vec::new(),
+                            },
                             reply!(msg.tx),
                         )
                         .await;
@@ -1514,6 +1846,19 @@ fn build_record_plane(
     }))
 }
 
+/// The local node a workspace's sync runs on: its endpoint and peer lookup,
+/// content store and hydrator, the namespace it projects, the transport
+/// identity it authenticates as and the [`PeerPolicy`] it serves through.
+pub struct SyncNode {
+    pub endpoint: Endpoint,
+    pub lookup: MemoryLookup,
+    pub store: Arc<ContentStore>,
+    pub hydrator: Arc<Hydrator>,
+    pub namespace: Arc<Mutex<Namespace>>,
+    pub identity: FsTransportIdentity,
+    pub policy: PeerPolicy,
+}
+
 impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
@@ -1537,7 +1882,16 @@ impl Workspace {
         policy: PeerPolicy,
     ) -> Result<(Workspace, Ticket)> {
         Self::host_inner(
-            endpoint, namespace, lookup, store, hydrator, identity, policy, None,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
+            None,
         )
         .await
     }
@@ -1547,10 +1901,6 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error when the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit transport, authority, storage, and record dependencies make the host trust boundary auditable"
-    )]
     pub async fn host_with_records(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1562,32 +1912,33 @@ impl Workspace {
         records: RecordServices,
     ) -> Result<(Workspace, Ticket)> {
         Self::host_inner(
-            endpoint,
-            namespace,
-            lookup,
-            store,
-            hydrator,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             Some(records),
         )
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the internal host constructor preserves the explicit trust-boundary inputs of the public entry points"
-    )]
     async fn host_inner(
-        endpoint: Endpoint,
-        namespace: Arc<Mutex<Namespace>>,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
+        node: SyncNode,
         records: Option<RecordServices>,
     ) -> Result<(Workspace, Ticket)> {
+        let SyncNode {
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            identity,
+            policy,
+        } = node;
         let topic = *endpoint.id().as_bytes();
         let ticket = Ticket {
             node: endpoint.addr(),
@@ -1607,13 +1958,15 @@ impl Workspace {
             ticket.workspace_id(),
         ));
         let ws = Self::start(
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             (topic, ticket.workspace_id()),
             vec![],
             record_plane,
@@ -1631,10 +1984,6 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error if the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the join boundary mirrors host authority inputs and adds the authenticated invitation ticket"
-    )]
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1646,7 +1995,17 @@ impl Workspace {
         policy: PeerPolicy,
     ) -> Result<Workspace> {
         Self::join_inner(
-            endpoint, lookup, store, hydrator, namespace, ticket, identity, policy, None,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
+            ticket,
+            None,
         )
         .await
     }
@@ -1656,50 +2015,28 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns an error if the gossip topic or protocol router fails to start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit transport, authority, storage, and record dependencies make the join trust boundary auditable"
-    )]
     pub async fn join_with_records(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
+        node: SyncNode,
         ticket: Ticket,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
         records: RecordServices,
     ) -> Result<Workspace> {
-        Self::join_inner(
+        Self::join_inner(node, ticket, Some(records)).await
+    }
+
+    async fn join_inner(
+        node: SyncNode,
+        ticket: Ticket,
+        records: Option<RecordServices>,
+    ) -> Result<Workspace> {
+        let SyncNode {
             endpoint,
             lookup,
             store,
             hydrator,
             namespace,
-            ticket,
             identity,
             policy,
-            Some(records),
-        )
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the internal join constructor preserves the explicit trust-boundary inputs of the public entry points"
-    )]
-    async fn join_inner(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        ticket: Ticket,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
-        records: Option<RecordServices>,
-    ) -> Result<Workspace> {
+        } = node;
         let topic = ticket.workspace;
         let record_plane = build_record_plane(
             &endpoint,
@@ -1745,13 +2082,15 @@ impl Workspace {
             }
         }
         Self::start(
-            endpoint,
-            lookup,
-            store,
-            hydrator,
-            namespace,
-            identity,
-            policy,
+            SyncNode {
+                endpoint,
+                lookup,
+                store,
+                hydrator,
+                namespace,
+                identity,
+                policy,
+            },
             (topic, ticket.workspace_id()),
             vec![ticket.node],
             record_plane,
@@ -1761,26 +2100,25 @@ impl Workspace {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "startup wires explicit authenticated services whose authority must not be hidden in an unvalidated bag"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "startup owns the ordered lifecycle and cleanup of every sync protocol task"
     )]
     async fn start(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        store: Arc<ContentStore>,
-        hydrator: Arc<Hydrator>,
-        namespace: Arc<Mutex<Namespace>>,
-        identity: FsTransportIdentity,
-        policy: PeerPolicy,
+        node: SyncNode,
         (topic_bytes, workspace_id): ([u8; 32], uuid::Uuid),
         bootstrap: Vec<EndpointAddr>,
         record_plane: Option<RecordPlane>,
         sessions: Arc<SessionPool>,
     ) -> Result<Workspace> {
+        let SyncNode {
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            identity,
+            policy,
+        } = node;
         // After bootstrap/seed, set the delta watermark so future local
         // writes produce minimal deltas (and the seed isn't re-broadcast).
         prime_namespace_baseline(&namespace);
@@ -1793,6 +2131,7 @@ impl Workspace {
             identity: identity.clone(),
             namespace: namespace.clone(),
             policy: policy.clone(),
+            workspace_id,
             inflight: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYNC_CONNECTIONS)),
             records: record_plane
                 .as_ref()
@@ -1916,6 +2255,7 @@ impl Workspace {
             sender: gossip_sender,
             identity,
             policy,
+            workspace_id,
             records: record_plane,
             local_rx: reconcile_rx,
             announcements: announce_rx,
@@ -2450,6 +2790,8 @@ struct PeerPass<'a> {
     sender: Option<&'a GossipSender>,
     identity: &'a FsTransportIdentity,
     policy: &'a PeerPolicy,
+    /// The workspace every namespace payload must be bound to.
+    workspace_id: uuid::Uuid,
     records: Option<&'a RecordPlane>,
     /// Both sides write the whole workspace: exchange namespace changes.
     exchange_namespace: bool,
@@ -2491,6 +2833,7 @@ impl PeerPass<'_> {
                 peer,
                 self.namespace,
                 self.records.map(|records| &*records.repository),
+                self.policy,
             )
             .await
             {
@@ -2506,7 +2849,7 @@ impl PeerPass<'_> {
                 Err(error) => report("namespace sync", &error),
             }
         } else if self.read_only {
-            match session::pull_namespace(sessions, peer, self.namespace).await {
+            match session::pull_namespace(sessions, peer, self.namespace, self.policy).await {
                 Ok((received, resolution)) => {
                     changed |= received;
                     self.broadcast(resolution).await;
@@ -2574,29 +2917,51 @@ impl PeerPass<'_> {
     async fn per_request(&self, peer: EndpointAddr) -> bool {
         let mut changed = false;
         if self.exchange_namespace {
-            if let Ok(received_change) = sync_with_peer_at_boundaries(
+            match sync_with_peer_at_boundaries(
                 self.endpoint,
                 peer.clone(),
                 self.namespace,
                 self.identity,
+                (self.workspace_id, self.policy),
                 self.records.map(|records| &*records.repository),
             )
             .await
             {
-                changed |= received_change;
-                let resolution = self
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .post_sync_resolve();
-                self.broadcast(resolution).await;
+                Ok(received_change) => {
+                    changed |= received_change;
+                    let resolution = self
+                        .namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .post_sync_resolve();
+                    self.broadcast(resolution).await;
+                }
+                Err(error) if !self.identity.partitioned() => {
+                    eprintln!("namespace sync with {} failed: {error:#}", peer.id);
+                }
+                Err(_) => {}
             }
-        } else if self.read_only
-            && let Ok(doc) = fetch_remote_doc(self.endpoint, peer.clone(), self.identity).await
-        {
+        } else if self.read_only {
             // Read-only peers pull a full snapshot and never upload local
-            // changes. Full snapshots are safe here because the remote
-            // serves them only to workspace-root readers.
+            // changes. It is merged only from a peer this device's policy
+            // lets read the whole workspace, bound to this workspace.
+            let doc = match fetch_remote_doc(
+                self.endpoint,
+                peer.clone(),
+                self.identity,
+                self.workspace_id,
+                self.policy,
+            )
+            .await
+            {
+                Ok(doc) => doc,
+                Err(error) => {
+                    if !self.identity.partitioned() {
+                        eprintln!("namespace pull from {} failed: {error:#}", peer.id);
+                    }
+                    return self.per_request_records(peer, changed).await;
+                }
+            };
             let before_merge = namespace_generation(self.namespace);
             let resolution = self
                 .namespace
@@ -2610,6 +2975,11 @@ impl PeerPass<'_> {
             changed |= before_merge != namespace_generation(self.namespace);
             self.broadcast(resolution).await;
         }
+        self.per_request_records(peer, changed).await
+    }
+
+    /// The record part of [`Self::per_request`].
+    async fn per_request_records(&self, peer: EndpointAddr, mut changed: bool) -> bool {
         if let Some(records) = self.records {
             if let Some(authority) = &records.workspace_authority
                 && let Err(error) = pull_workspace_authority_from_peer(
@@ -2691,6 +3061,7 @@ struct ReconcileLoop {
     sender: Option<GossipSender>,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
+    workspace_id: uuid::Uuid,
     records: Option<RecordPlane>,
     local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
     /// Peers that announced new changes over a session.
@@ -2711,6 +3082,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         sender,
         identity,
         policy,
+        workspace_id,
         records,
         mut local_rx,
         mut announcements,
@@ -2785,6 +3157,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 sender: sender.as_ref(),
                 identity: &identity,
                 policy: &policy,
+                workspace_id,
                 records: records.as_ref(),
                 exchange_namespace: may_write && remote_may_write,
                 read_only: !may_write,

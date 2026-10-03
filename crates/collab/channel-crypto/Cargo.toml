@@ -4,8 +4,11 @@ autotests = false
 name = "channel-crypto"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Per-channel MLS group encryption for Tilo collaboration."
 
 [lib]
 name = "channel_crypto"
@@ -23,9 +26,9 @@ hex.workspace = true
 # Sibling crate — re-uses `ChannelId` so the encrypted-metadata field
 # on `SignedOp` names the same identifier this
 # crate keys its groups by.
-collab-types = { path = "../collab-types" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
 # Crash-safe, owner-only state replacement.
-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 # OpenMLS. Pin the minor version so an upstream API change receives an
 # explicit review before it changes this crate's public surface.
@@ -54,7 +57,12 @@ postcard.workspace = true
 zeroize.workspace = true
 # Content keys, key-history bundles and persisted state are sealed through
 # the shared construction.
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+
+# OpenMLS reads randomness and the clock through JavaScript on wasm, and
+# refuses to build there without being told those APIs exist.
+[target.'cfg(target_family = "wasm")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
 
 [dev-dependencies]
 # Used in the integration test that wraps a ciphertext inside a
@@ -64,6 +72,8 @@ collab-types = { path = "../collab-types" }
 # `SigningKey` type. Same major version tilo-collab-types is on.
 ed25519-dalek = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
+# Drives the steward's asynchronous calls.
+pollster.workspace = true
 
 [[test]]
 name = "it"
@@ -71,3 +81,10 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

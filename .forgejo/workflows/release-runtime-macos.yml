@@ -1,0 +1,126 @@
+name: Release / runtime-macos
+
+# The distributed Tilo.app for stock macOS: the Store as the visible launcher
+# beside the per-user `tilo-runtime`, as one universal (arm64 + x86_64)
+# bundle, its zip and DMG, and the rendered Homebrew cask
+# (dist/macos/README.md). Manual only: no macOS runner serves
+# imager-macos-aarch64 yet, and a release build is an explicit act. When a
+# runner exists, keep it manual; per-push builds belong to dev-runtime-macos.
+#
+# Unsigned runs are ad-hoc signed and need no credentials. `sign` reuses the
+# imager's macOS credential broker and lease validation unchanged
+# (apps/imager/packaging/acquire-release-credentials.sh). The broker admits
+# only claims its server-side policy names, so it must also admit this
+# workflow on a protected runtime-vMAJOR.MINOR.PATCH tag before `sign` can
+# succeed (docs/imager-release-operations.md, "Short-lived credentials").
+on:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Developer ID sign, notarize and staple. Dispatch on a protected runtime-vMAJOR.MINOR.PATCH tag."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: release-runtime-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
+    timeout-minutes: 150
+    runs-on: imager-macos-aarch64
+    # Forgejo injects the OIDC request variables only with this native key.
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require the native macOS architecture
+        run: ./os/dev/assert-native-arch.sh aarch64
+      - name: Install both Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Configure release signing
+        if: github.event.inputs.sign == 'true'
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
+          EXPECTED_TEAM_ID: ${{ vars.IMAGER_MAC_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ vars.IMAGER_MAC_CERT_SHA256 }}
+          # Self-update (dist/macos/README.md, "Updates"). Without a feed the
+          # signed bundle updates only through its installer.
+          UPDATE_FEED: ${{ vars.TILO_RUNTIME_UPDATE_FEED }}
+          UPDATE_PUBLIC_KEY: ${{ vars.TILO_RUNTIME_UPDATE_PUBLIC_KEY }}
+          UPDATE_KEY: ${{ secrets.TILO_RUNTIME_UPDATE_KEY }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF:-}" in
+            refs/tags/runtime-v*) ;;
+            *) printf 'signing requires a runtime-vMAJOR.MINOR.PATCH tag ref\n' >&2; exit 1 ;;
+          esac
+          version="${GITHUB_REF_NAME#runtime-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { printf 'release tag must be runtime-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
+          test -n "${CREDENTIAL_BROKER:-}" || {
+            printf 'configure IMAGER_MACOS_CREDENTIAL_BROKER; release signing is OIDC-broker-only\n' >&2
+            exit 1
+          }
+          apps/imager/packaging/acquire-release-credentials.sh \
+            macos "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
+          [[ "${EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] \
+            || { printf 'configure IMAGER_MAC_TEAM_ID\n' >&2; exit 1; }
+          cert_fingerprint="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr '[:lower:]' '[:upper:]')"
+          cert_fingerprint="${cert_fingerprint//:/}"
+          [[ "$cert_fingerprint" =~ ^[A-F0-9]{64}$ ]] \
+            || { printf 'configure IMAGER_MAC_CERT_SHA256\n' >&2; exit 1; }
+          {
+            echo "TILO_REQUIRE_SIGNING=1"
+            echo "TILO_MAC_EXPECTED_TEAM_ID=$EXPECTED_TEAM_ID"
+            echo "TILO_MAC_EXPECTED_CERT_SHA256=$cert_fingerprint"
+            echo "TILO_VERSION=$version"
+          } >> "$GITHUB_ENV"
+          if [ -n "${UPDATE_FEED:-}" ]; then
+            test -n "${UPDATE_PUBLIC_KEY:-}" && test -n "${UPDATE_KEY:-}" || {
+              printf 'an update feed needs TILO_RUNTIME_UPDATE_PUBLIC_KEY and the TILO_RUNTIME_UPDATE_KEY secret\n' >&2
+              exit 1
+            }
+            key_file="$RUNNER_TEMP/tilo-runtime-update-key.json"
+            (umask 077 && printf '%s' "$UPDATE_KEY" > "$key_file")
+            {
+              echo "TILO_RUNTIME_UPDATE_FEED=$UPDATE_FEED"
+              echo "TILO_RUNTIME_UPDATE_PUBLIC_KEY=$UPDATE_PUBLIC_KEY"
+              echo "TILO_RUNTIME_UPDATE_KEY_FILE=$key_file"
+            } >> "$GITHUB_ENV"
+          fi
+      - name: Build, sign and package Tilo.app
+        run: dist/macos/build-app.sh target/dist-macos
+      - name: Remove temporary macOS signing credentials
+        if: always()
+        run: |
+          set +e
+          rm -f "$RUNNER_TEMP/tilo-runtime-update-key.json"
+          if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+            security delete-generic-password -s com.apple.gke.notary.tool \
+              -a "$TILO_NOTARY_KEYCHAIN_PROFILE" 2>/dev/null
+          fi
+          true
+      - name: Mount the DMG and start its bundled runtime
+        run: dist/macos/verify-app.sh target/dist-macos/tilo-macos-universal.dmg
+      # Forgejo does not implement the Artifact API v2 used by v4.
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-macos-universal
+          path: |
+            target/dist-macos/tilo-macos-universal.dmg
+            target/dist-macos/tilo-macos-universal.dmg.sha256
+            target/dist-macos/tilo-macos-universal.zip
+            target/dist-macos/tilo-macos-universal.zip.sha256
+            target/dist-macos/tilo.rb
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: env.TILO_RUNTIME_UPDATE_KEY_FILE != ''
+        with:
+          name: tilo-macos-update-feed
+          path: |
+            target/dist-macos/tilo-macos-update.json
+            target/dist-macos/tilo-macos-update.json.sig
+          if-no-files-found: error

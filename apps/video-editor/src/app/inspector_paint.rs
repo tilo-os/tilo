@@ -150,11 +150,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &self.project_format_shown,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                x0,
-                l.project_format_y,
-                TextWeight::Medium,
+                Point::new(x0, l.project_format_y),
             );
         }
         if !l.project_frames.is_empty() {
@@ -515,11 +513,9 @@ impl VideoEditorApp {
             tr,
             tf,
             "INSPECTOR",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             c.text_dim,
-            x0,
-            top + 14.0 * s,
-            TextWeight::Semibold,
+            Point::new(x0, top + 14.0 * s),
         );
         if self.selection.len() > 1 {
             let label = format!("{} clips selected", self.selection.len());
@@ -536,11 +532,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &label,
-                10.5,
+                &TextStyle::new(10.5).with_weight(TextWeight::Medium),
                 c.accent[5],
-                pillr.x0 + 7.0 * s,
-                top + 9.0 * s,
-                TextWeight::Medium,
+                Point::new(pillr.x0 + 7.0 * s, top + 9.0 * s),
             );
         }
         let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
@@ -558,11 +552,9 @@ impl VideoEditorApp {
             tr,
             tf,
             &shown,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            x0 + 14.0 * s,
-            top + 39.0 * s,
-            TextWeight::Semibold,
+            Point::new(x0 + 14.0 * s, top + 39.0 * s),
         );
         let track_name = self
             .project
@@ -595,11 +587,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &value,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                x1 - f64::from(w),
-                y,
-                TextWeight::Medium,
+                Point::new(x1 - f64::from(w), y),
             );
         };
         let fps = self.project.fps;
@@ -662,11 +652,9 @@ impl VideoEditorApp {
             tr,
             tf,
             "INSPECTOR",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             c.text_dim,
-            x0,
-            heading_y,
-            TextWeight::Semibold,
+            Point::new(x0, heading_y),
         );
         // With more than one clip selected, say so where the count matters —
         // every edit below applies to all of them.
@@ -683,11 +671,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &label,
-                10.5,
+                &TextStyle::new(10.5).with_weight(TextWeight::Medium),
                 c.accent[5],
-                pillr.x0 + 7.0,
-                pill_y,
-                TextWeight::Medium,
+                Point::new(pillr.x0 + 7.0, pill_y),
             );
         }
 
@@ -718,19 +704,24 @@ impl VideoEditorApp {
             // that read as a label for the sections beneath them rather than
             // as the state of the pane.
             ui::widget::EmptyState::paint(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 area,
-                Some(ui::icons::Icon::Layers),
-                INSPECTOR_EMPTY_TITLE,
-                Some(INSPECTOR_EMPTY_HINT),
-                None,
+                &ui::widget::EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Layers),
+                    title: INSPECTOR_EMPTY_TITLE,
+                    message: Some(INSPECTOR_EMPTY_HINT),
+                    action_label: None,
+                },
                 Point::new(f64::MIN, f64::MIN),
             );
             for (s, rect) in &l.sections {
-                self.draw_section_header(scene, tf, tr, theme, *rect, *s, &blank, None);
+                self.draw_section_header(
+                    &mut PaintCtx::new(scene, tf, tr, theme),
+                    *rect,
+                    *s,
+                    &blank,
+                    None,
+                );
             }
             self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
             self.draw_project_section(scene, tf, tr, theme, &l, x0);
@@ -756,11 +747,9 @@ impl VideoEditorApp {
             tr,
             tf,
             &shown_name,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            x0 + 14.0,
-            top + 38.0,
-            TextWeight::Semibold,
+            Point::new(x0 + 14.0, top + 38.0),
         );
         // Name the lane, and say plainly when it refuses edits — the same
         // reason the timeline hatches it.
@@ -787,11 +776,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 value,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                x1 - f64::from(vw),
-                y,
-                TextWeight::Medium,
+                Point::new(x1 - f64::from(vw), y),
             );
         };
         prop(scene, tr, "Position", &timecode(clip.start, fps), y);
@@ -1015,10 +1002,7 @@ impl VideoEditorApp {
                 l.link_label_y - 15.0,
             );
             draw_button_enabled(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 offer.label(),
                 false,
@@ -1029,7 +1013,13 @@ impl VideoEditorApp {
         // ---- collapsible sections ------------------------------------
         // Headers first, so a folded section still says what is inside it.
         for (s, rect) in &l.sections {
-            self.draw_section_header(scene, tf, tr, theme, *rect, *s, &clip, media.as_ref());
+            self.draw_section_header(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                *rect,
+                *s,
+                &clip,
+                media.as_ref(),
+            );
         }
         // Every ranged control laid out this frame: geometry, rate, title
         // size. Each reads its value back through `num_value`, so a keyframed
@@ -1193,10 +1183,7 @@ impl VideoEditorApp {
         if let Some(rect) = l.reset_transform {
             let plain = clip.transform.is_identity();
             draw_button_enabled(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 "Fill frame",
                 false,
@@ -1313,10 +1300,7 @@ impl VideoEditorApp {
             let ch = self.curve_channel;
             let shaped = !clip.curves.spline(ch).is_identity();
             draw_button_enabled(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 &format!("Reset {}", ch.label()),
                 false,
@@ -1377,10 +1361,7 @@ impl VideoEditorApp {
             // footage never had.
             let have = self.preview_pixel(0.5, 0.5).is_some();
             draw_button_enabled(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 if have {
                     "Sample centre"
@@ -1706,11 +1687,9 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     e.kind.label(),
-                    12.0,
+                    &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                     c.text_primary,
-                    down.x1 + 8.0,
-                    name_y,
-                    TextWeight::Medium,
+                    Point::new(down.x1 + 8.0, name_y),
                 );
                 // Intensity slider.
                 draw_track(
@@ -1793,26 +1772,20 @@ impl VideoEditorApp {
     /// a fold that hid "this clip plays at 4x in reverse" would turn a view
     /// choice into missing state, and the user would have no way to know the
     /// clip was re-timed without unfolding every section on every clip.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the paint context plus the section, its rect, fold state and summary"
-    )]
     fn draw_section_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         section: Section,
         clip: &Clip,
         media: Option<&MediaItem>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let open = !self.collapsed.contains(&section);
         selection_row(
-            scene,
-            tf,
+            ctx.scene,
+            ctx.transform,
             theme,
             rect,
             5.0,
@@ -1826,8 +1799,8 @@ impl VideoEditorApp {
             rect.center().y + g / 2.0,
         );
         ui::icons::draw_icon(
-            scene,
-            tf,
+            ctx.scene,
+            ctx.transform,
             arrow,
             if open {
                 ui::icons::Icon::ChevronDown
@@ -1837,17 +1810,15 @@ impl VideoEditorApp {
             c.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let baseline = text_baseline(rect, 11.0, tr);
+        let baseline = text_baseline(rect, 11.0, ctx.text);
         text_w(
-            scene,
-            tr,
-            tf,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             section.label(),
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             c.text_dim,
-            rect.x0 + 18.0,
-            baseline,
-            TextWeight::Semibold,
+            Point::new(rect.x0 + 18.0, baseline),
         );
         if open {
             return;
@@ -1855,13 +1826,13 @@ impl VideoEditorApp {
         let Some(summary) = self.section_summary(section, clip, media) else {
             return;
         };
-        let (w, _) = tr.measure(&summary, 11.0, None);
+        let (w, _) = ctx.text.measure(&summary, 11.0, None);
         // A summary that reports something other than the default is worth
         // reading, so it takes the accent rather than the dim tone.
         text(
-            scene,
-            tr,
-            tf,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &summary,
             11.0,
             c.accent[5],

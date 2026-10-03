@@ -1,11 +1,7 @@
 //! Opt-in receipt-to-scene identity; not evidence of input causality.
-use std::{
-    cell::RefCell,
-    sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{cell::RefCell, sync::OnceLock};
 
 #[derive(Default)]
 struct SceneFrames {
@@ -38,6 +34,7 @@ fn enabled() -> bool {
 }
 /// Unique within this Rust process, including across native helpers and tabs.
 /// Receipt is after transport/decode; it is not the CEF paint timestamp.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option<u64> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static SCROLL_MARKER: OnceLock<bool> = OnceLock::new();
@@ -65,6 +62,11 @@ pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option
         }),
     );
     Some(id)
+}
+/// The browser build has no native scenario log to receive frames into.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn received(_: u32, _: &[u8], _: u32, _: u32) -> Option<u64> {
+    None
 }
 /// Discard observations from any offscreen draw before this window scene.
 #[cfg(feature = "native")]
@@ -101,26 +103,29 @@ pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
 mod tests {
     use super::*;
     #[test]
-    fn scenes_keep_repeated_cached_frames_but_do_not_leak_previous_scene() {
-        let mut scene = SceneFrames::default();
-        scene.record(7);
-        scene.record(7);
-        scene.record(9);
-        assert_eq!(scene.take(), (vec![7, 9], false));
-        assert_eq!(scene.take(), (vec![], false));
-        scene.record(7);
-        assert_eq!(scene.take(), (vec![7], false));
-    }
-    #[test]
-    fn overflow_is_explicit_and_resets_for_the_next_scene() {
-        let mut scene = SceneFrames::default();
-        for id in 1..=65 {
-            scene.record(id);
+    fn frame_traces_are_per_scene_and_overflow_explicitly() {
+        // phase: scenes_keep_repeated_cached_frames_but_do_not_leak_previous_scene
+        {
+            let mut scene = SceneFrames::default();
+            scene.record(7);
+            scene.record(7);
+            scene.record(9);
+            assert_eq!(scene.take(), (vec![7, 9], false));
+            assert_eq!(scene.take(), (vec![], false));
+            scene.record(7);
+            assert_eq!(scene.take(), (vec![7], false));
         }
-        let (ids, overflow) = scene.take();
-        assert_eq!(ids.len(), 64);
-        assert!(overflow);
-        assert_eq!(scene.take(), (vec![], false));
+        // phase: overflow_is_explicit_and_resets_for_the_next_scene
+        {
+            let mut scene = SceneFrames::default();
+            for id in 1..=65 {
+                scene.record(id);
+            }
+            let (ids, overflow) = scene.take();
+            assert_eq!(ids.len(), 64);
+            assert!(overflow);
+            assert_eq!(scene.take(), (vec![], false));
+        }
     }
 }
 

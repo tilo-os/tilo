@@ -6,15 +6,12 @@
 //! entry into the target registry's index and (for a self-hosted
 //! `file://` registry) re-sign the index with the operator key.
 //!
-//! The `file://` path is fully implemented + tested here. The
-//! `https://` path emits the signed entry to a registry server's
-//! `/publish` endpoint; the server-side blob ingest + index re-sign is
-//! the registry service's job (a `file://` directory is the reference
-//! for what that server does).
+//! This is the `file://` registry directory. An HTTP registry server takes
+//! uploads and owner-reviewed entries instead; `registry-client` speaks that.
 
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 
 use tilo_app_package::PackageId;
 use tilo_app_package::manifest::Arch;
@@ -199,47 +196,6 @@ pub async fn publish_to_dir(
     })
 }
 
-/// Serialise a signed entry as the JSON body a registry server's
-/// `/publish` endpoint accepts. The publisher signature in the entry
-/// IS the authentication — no separate password.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise.
-pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
-    serde_json::to_vec_pretty(entry).map_err(|e| anyhow!("encode entry: {e}"))
-}
-
-/// POST a signed entry to an `https://` registry's `/publish`
-/// endpoint. The registry authenticates by verifying the entry's
-/// publisher signature and ingests the blob out of band from the
-/// entry's ticket. Not exercised in-tree (needs a live server); the
-/// `file://` path is the tested reference.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise, the request fails,
-/// or the registry responds with a non-success status.
-pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
-    let url = format!("{}/publish", base_url.trim_end_matches('/'));
-    let body = entry_publish_body(entry)?;
-    let client = tilo_net::http::client()
-        .build()
-        .context("build registry HTTP client")?;
-    let resp = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("x-tilo-publisher", &entry.publisher_identity)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| anyhow!("POST {url}: {e}"))?;
-    if !resp.status().is_success() {
-        bail!("registry rejected publish: HTTP {}", resp.status());
-    }
-    Ok(())
-}
-
 /// Convenience for a signed index built off a fresh (non-directory)
 /// context — used by CI / tooling that assembles an index in memory.
 ///
@@ -259,72 +215,75 @@ mod tests {
     use tilo_app_package::PackageMeta;
 
     #[test]
-    fn build_entry_accepts_a_cryptographically_valid_bundle() {
-        let publisher = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&publisher);
-        let (entry, actual) = build_entry(&bytes, &publisher, None, None).unwrap();
-        assert_eq!(actual, id);
-        assert_eq!(entry.package_id, id.to_string());
-    }
-
-    #[test]
-    fn build_entry_rejects_a_manifest_that_names_publisher_but_has_bad_signature() {
-        let publisher = SigningIdentity::generate();
-        let packed = signed_package(&publisher);
-        let mut root = packed.meta.root.clone();
-        let mut signature = root.signature.unwrap();
-        signature[0] ^= 1;
-        root.signature = Some(signature);
-        let tampered_meta = PackageMeta::from_root(
-            root,
-            packed.meta.manifest_bytes.clone(),
-            packed.meta.collection_bytes.clone(),
-        )
-        .unwrap();
-        let tampered = tilo_app_package::tapp::to_bytes(&tampered_meta, Some(&packed)).unwrap();
-
-        let error = build_entry(&tampered, &publisher, None, None).unwrap_err();
-        let message = error.to_string().to_ascii_lowercase();
-        assert!(
-            message.contains("signature") || message.contains("verify"),
-            "unexpected rejection: {error:#}"
-        );
-    }
-
-    #[test]
-    fn build_entry_rejects_signed_deduplication_amplification() {
-        let publisher = SigningIdentity::generate();
-        let packed = signed_package(&publisher);
-
-        // 2,049 references expand beyond 5 MiB while remaining under the
-        // independent 4,096-entry ceiling, so this specifically exercises
-        // the materialized-byte boundary.
-        let repeated_bytes = vec![0x5a; 3072];
-        let repeated = tilo_app_package::BlobHash::of(&repeated_bytes);
-        let mut collection = tilo_app_package::Collection::default();
-        for index in 0..=2048 {
-            collection
-                .entries
-                .insert(format!("share/repeated-{index}"), repeated);
+    fn publishing_accepts_only_valid_signed_bounded_bundles() {
+        // Phase `build_entry_accepts_a_cryptographically_valid_bundle`.
+        {
+            let publisher = SigningIdentity::generate();
+            let (bytes, id) = signed_tapp(&publisher);
+            let (entry, actual) = build_entry(&bytes, &publisher, None, None).unwrap();
+            assert_eq!(actual, id);
+            assert_eq!(entry.package_id, id.to_string());
         }
-        let collection_bytes = collection.encode();
-        let mut root = packed.meta.root.clone();
-        root.payload_root_hash = tilo_app_package::BlobHash::of(&collection_bytes);
-        root.signature = Some(publisher.sign_signed_root(&root).unwrap());
-        let malicious_meta =
-            PackageMeta::from_root(root, packed.meta.manifest_bytes, collection_bytes).unwrap();
-        let blobs = std::collections::BTreeMap::from([(repeated, repeated_bytes)]);
-        let malicious = tilo_app_package::tapp::to_bytes(&malicious_meta, Some(&blobs)).unwrap();
-        assert!(
-            u64::try_from(malicious.len()).unwrap_or(u64::MAX)
-                < tilo_app_package::MAX_APP_TAPP_BYTES,
-            "fixture must exercise materialization rather than wire-size rejection"
-        );
+        // Phase `build_entry_rejects_a_manifest_that_names_publisher_but_has_bad_signature`.
+        {
+            let publisher = SigningIdentity::generate();
+            let packed = signed_package(&publisher);
+            let mut root = packed.meta.root.clone();
+            let mut signature = root.signature.unwrap();
+            signature[0] ^= 1;
+            root.signature = Some(signature);
+            let tampered_meta = PackageMeta::from_root(
+                root,
+                packed.meta.manifest_bytes.clone(),
+                packed.meta.collection_bytes.clone(),
+            )
+            .unwrap();
+            let tampered = tilo_app_package::tapp::to_bytes(&tampered_meta, Some(&packed)).unwrap();
 
-        let error = build_entry(&malicious, &publisher, None, None).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("materializes"),
-            "unexpected rejection: {error:#}"
-        );
+            let error = build_entry(&tampered, &publisher, None, None).unwrap_err();
+            let message = error.to_string().to_ascii_lowercase();
+            assert!(
+                message.contains("signature") || message.contains("verify"),
+                "unexpected rejection: {error:#}"
+            );
+        }
+        // Phase `build_entry_rejects_signed_deduplication_amplification`.
+        {
+            let publisher = SigningIdentity::generate();
+            let packed = signed_package(&publisher);
+
+            // 2,049 references expand beyond the materialized limit while
+            // remaining under the independent 4,096-entry ceiling, so this
+            // specifically exercises the materialized-byte boundary.
+            let blob_len = tilo_app_package::MAX_APP_UNPACKED_BYTES / 2048;
+            let repeated_bytes = vec![0x5a; usize::try_from(blob_len).unwrap()];
+            let repeated = tilo_app_package::BlobHash::of(&repeated_bytes);
+            let mut collection = tilo_app_package::Collection::default();
+            for index in 0..=2048 {
+                collection
+                    .entries
+                    .insert(format!("share/repeated-{index}"), repeated);
+            }
+            let collection_bytes = collection.encode();
+            let mut root = packed.meta.root.clone();
+            root.payload_root_hash = tilo_app_package::BlobHash::of(&collection_bytes);
+            root.signature = Some(publisher.sign_signed_root(&root).unwrap());
+            let malicious_meta =
+                PackageMeta::from_root(root, packed.meta.manifest_bytes, collection_bytes).unwrap();
+            let blobs = std::collections::BTreeMap::from([(repeated, repeated_bytes)]);
+            let malicious =
+                tilo_app_package::tapp::to_bytes(&malicious_meta, Some(&blobs)).unwrap();
+            assert!(
+                u64::try_from(malicious.len()).unwrap_or(u64::MAX)
+                    < tilo_app_package::MAX_APP_TAPP_BYTES,
+                "fixture must exercise materialization rather than wire-size rejection"
+            );
+
+            let error = build_entry(&malicious, &publisher, None, None).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("materializes"),
+                "unexpected rejection: {error:#}"
+            );
+        }
     }
 }

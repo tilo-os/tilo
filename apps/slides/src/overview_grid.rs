@@ -2,17 +2,16 @@
 
 use std::cell::Cell;
 
-use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::assets::ImageStore;
 use crate::chrome;
-use crate::model::{Deck, Palette, SLIDE_H, SLIDE_W, Slide};
-use crate::render;
+use crate::model::{Deck, SLIDE_H, SLIDE_W, Slide};
+use crate::render::{self, DeckAssets};
 
 /// Classic 1× header (title line, subtitle line, divider, `s1` seam); the
 /// floor of the measured header and the value used before the first draw.
@@ -124,22 +123,16 @@ impl OverviewGrid {
             .map(|(index, _)| index)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The overview paints deck thumbnails using window bounds, current-slide selection, slide palette, and image store beside render context."
-    )]
     pub(crate) fn draw(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         window: Rect,
         deck: &Deck,
         current: usize,
-        palette: &Palette,
-        images: &ImageStore,
+        assets: DeckAssets<'_>,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         chrome::fill_rect(scene, transform, window, colors.surfaces.base);
         // Header rows follow the measured title and subtitle line boxes, so a
@@ -187,10 +180,9 @@ impl OverviewGrid {
             let Some(slide) = deck.slides.get(index) else {
                 continue;
             };
-            Self::draw_thumb(
-                scene, transform, text, theme, palette, images, current, index, rect, slide,
-            );
+            Self::draw_thumb(ctx, assets, (index, slide), rect, index == current);
         }
+        let scene = &mut *ctx.scene;
         scene.pop_layer();
         if let Some((track, thumb)) = scrollbar_rects(area, self.scroll.clamp(0.0, max), max) {
             chrome::fill_round(
@@ -213,33 +205,24 @@ impl OverviewGrid {
     /// One overview-grid thumbnail: drop shadow, the slide render, the
     /// current-slide accent border, and its index/layout-label caption.
     /// Part of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_thumb(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        palette: &Palette,
-        images: &ImageStore,
-        current: usize,
-        index: usize,
+        ctx: &mut PaintCtx<'_>,
+        assets: DeckAssets<'_>,
+        (index, slide): (usize, &Slide),
         rect: Rect,
-        slide: &Slide,
+        is_current: bool,
     ) {
-        let colors = &theme.tokens.colors;
-        chrome::fill_round(
-            scene,
+        let (transform, colors, palette) =
+            (ctx.transform, &ctx.theme.tokens.colors, assets.palette);
+        ui::surface::shadow(
+            ctx.scene,
             transform,
-            (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
+            rect,
             8.0,
-            render::with_alpha(Color::BLACK, 60),
+            &ctx.theme.tokens.elevation.e2,
         );
-        render::draw_slide(
-            scene, transform, text, theme, palette, slide, rect, 8.0, images,
-        );
+        render::draw_slide(ctx, assets, slide, rect, 8.0);
+        let (scene, text) = (&mut *ctx.scene, &mut *ctx.text);
         // The thumbnail frame is the window ground's derived edge; the
         // current slide keeps its accent ring.
         chrome::stroke_round(
@@ -247,12 +230,12 @@ impl OverviewGrid {
             transform,
             rect,
             8.0,
-            if index == current {
+            if is_current {
                 palette.accent
             } else {
                 ui::surface::edge_on(colors.surfaces.base)
             },
-            if index == current { 2.5 } else { 1.0 },
+            if is_current { 2.5 } else { 1.0 },
         );
         let number = format!("{}", index + 1);
         let y = rect.y1 + 7.0;
@@ -260,7 +243,7 @@ impl OverviewGrid {
             scene,
             &number,
             12.0,
-            if index == current {
+            if is_current {
                 palette.accent
             } else {
                 colors.text_primary

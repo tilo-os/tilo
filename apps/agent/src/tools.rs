@@ -10,18 +10,30 @@
 //! | [`LIST_APPLICATIONS`] | what is running, and what could be opened |
 //! | [`LIST_OPERATIONS`] | what can be done — to one resource, to a kind of resource in any application, in one application, or anywhere |
 //! | [`DESCRIBE_OPERATION`] | what one operation does, what it takes, the application's own example of it, and what the resource says about itself |
-//! | [`PLAN`] | the answer: the steps to perform, in order |
+//! | [`INVOKE`] | perform one published operation now, and see what it changed |
+//! | [`PLAN`] | the answer: the steps to perform in order (plan mode), or the reply that finishes the task (loop mode) |
+//!
+//! Two tool sets are built from these. The *plan* set ([`definitions`]) is
+//! discovery plus a `plan` naming every step; the caller dispatches the steps
+//! afterwards. The *loop* set ([`loop_definitions`]) is discovery plus
+//! [`INVOKE`] plus a `plan` that only carries the reply: the agent
+//! discovers, invokes and observes step by step, the same way a person uses
+//! the palette, and a step that changes its view (a selection, a find) can
+//! make later operations available.
 //!
 //! ## Nothing here can perform anything
 //!
-//! Three of the four are read-only in the shape of what they return rather
+//! The discovery tools are read-only in the shape of what they return rather
 //! than by promise: a listing is labels and addresses, with no callback,
 //! token or handle anywhere in one — "what can I do here" must be free to
 //! ask, so that a caller exploring an unfamiliar room can explore it safely.
 //!
-//! [`PLAN`] is the one that commits, and it performs nothing either: it ends
-//! the conversation with an answer, which the caller then validates against a
-//! freshly taken survey before anything is dispatched.
+//! [`PLAN`] performs nothing either: it ends the conversation with an answer,
+//! which the caller validates against a freshly taken survey before anything
+//! is dispatched. [`INVOKE`] is the one tool that acts, and only through the
+//! same broker path and checks as any other step: the id must be one a tool
+//! showed, the operation must still be published, and the broker authorizes
+//! it again.
 //!
 //! ## An id cannot be invented
 //!
@@ -51,6 +63,11 @@ use crate::surface::{self, APPLICATION_KIND, CONTRACTS, Catalogue, Offer};
 pub const LIST_APPLICATIONS: &str = "list_applications";
 pub const LIST_OPERATIONS: &str = "list_operations";
 pub const DESCRIBE_OPERATION: &str = "describe_operation";
+pub const INVOKE: &str = "invoke";
+/// The [`INVOKE`] property holding the argument object.
+pub const INVOKE_PARAMETERS: &str = "parameters";
+/// The optional [`INVOKE`] property carrying the task's final reply.
+pub const INVOKE_REPLY: &str = "reply";
 pub const PLAN: &str = "plan";
 
 /// How many operations one listing returns.
@@ -98,6 +115,151 @@ impl Revealed {
     fn ids(&self) -> Vec<&str> {
         self.0.iter().map(String::as_str).collect()
     }
+
+    /// The revealed id `given` names: itself, or — when a model copied an id
+    /// without its `broker:<peer>:` routing prefix, or with another peer's —
+    /// the one revealed id with the same address. Only what was shown can be
+    /// named this way, and only unambiguously.
+    ///
+    /// # Errors
+    ///
+    /// In words for the model, with the revealed ids for the same action as
+    /// suggestions.
+    pub fn resolve(&self, given: &str) -> Result<String, String> {
+        let given = given.trim();
+        if self.contains(given) && given != plan::NOTHING_FITS {
+            return Ok(given.to_owned());
+        }
+        let address = address_part(given);
+        let same: Vec<&str> = self
+            .0
+            .iter()
+            .map(String::as_str)
+            .filter(|id| *id != plan::NOTHING_FITS && address_part(id) == address)
+            .collect();
+        if let [only] = same.as_slice() {
+            return Ok((*only).to_owned());
+        }
+        let action = address.rsplit_once(surface::ADDRESS_SEP).map(|(_, a)| a);
+        let similar: Vec<&str> = if same.is_empty() {
+            self.0
+                .iter()
+                .map(String::as_str)
+                .filter(|id| {
+                    action.is_some_and(|action| {
+                        id.rsplit_once(surface::ADDRESS_SEP)
+                            .is_some_and(|(_, a)| a == action)
+                    })
+                })
+                .take(3)
+                .collect()
+        } else {
+            same.into_iter().take(3).collect()
+        };
+        let mut error = format!(
+            "{given:?} is not an operation any listing in this conversation showed. Copy an \
+             id exactly as listed (with its `broker:<n>:` prefix), or ask `{LIST_OPERATIONS}` \
+             first"
+        );
+        if !similar.is_empty() {
+            let _ = write!(
+                error,
+                ". Listed ids for that action: {}",
+                similar.join(", ")
+            );
+        }
+        Err(error)
+    }
+}
+
+/// An operation id without its `broker:<peer>:` routing prefix.
+fn address_part(id: &str) -> &str {
+    id.strip_prefix("broker:")
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(peer, _)| !peer.is_empty() && peer.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(id, |(_, address)| address)
+}
+
+/// The application an operation opens in a new window, when it is an open:
+/// an application's own `open`, or the launcher's open that the desktop
+/// publishes for every application it can start (`desktop:app:<app>#open`).
+pub fn opened_app(offer: &Offer) -> Option<&str> {
+    let address = offer.address();
+    surface::opens(address).or_else(|| {
+        (address.action == surface::OPEN_ACTION)
+            .then(|| address.resource.strip_prefix(LAUNCHER_OPEN_PREFIX))
+            .flatten()
+            .filter(|app| !app.is_empty())
+    })
+}
+
+/// What an open does, said next to it: start a closed application, or —
+/// when the application already publishes operations — a second window, as
+/// the launcher does for a person.
+fn open_note(catalogue: &Catalogue, app: &str) -> String {
+    if catalogue
+        .offers
+        .iter()
+        .any(|o| o.app == app && opened_app(o).is_none())
+    {
+        format!(
+            " ({app} is already open and its operations are listed: use those; this would \
+             open a second window)"
+        )
+    } else {
+        format!(" (opens {app} in a new window; its operations then appear)")
+    }
+}
+
+/// The resource prefix of the launcher's published open.
+pub const LAUNCHER_OPEN_PREFIX: &str = "desktop:app:";
+
+/// One operation's parameters as a compact signature and how to pass them,
+/// for an invoke that was refused for its arguments.
+pub fn parameter_hint(offer: &Offer) -> String {
+    if offer.wants_content() {
+        return "It takes what an earlier step produced, not words.".into();
+    }
+    if offer.descriptor.params.is_empty() {
+        return "It takes no parameters: pass `parameters: {}`.".into();
+    }
+    let params = offer
+        .descriptor
+        .params
+        .iter()
+        .map(|p| {
+            let mut line = format!(
+                "`{}`: {} ({}) — {}",
+                p.name,
+                p.ty.label(),
+                if p.required { "required" } else { "optional" },
+                p.description
+            );
+            if !p.choices.is_empty() {
+                let choices = p
+                    .choices
+                    .iter()
+                    .map(std::convert::AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("|");
+                let _ = write!(line, " [{choices}]");
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let example = offer
+        .descriptor
+        .params
+        .iter()
+        .filter(|p| p.required)
+        .map(|p| format!("\"{}\": …", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} takes: {params}. Pass them inside `parameters`, e.g. \"parameters\": {{{example}}}.",
+        offer.descriptor.action_label
+    )
 }
 
 /// What a model answers [`PLAN`] with, before it has been checked against a
@@ -111,7 +273,17 @@ pub struct Answer {
     /// — the words after the steps named, kept for when an earlier step
     /// opens the application that would answer it.
     pub then: Option<String>,
+    /// The optional chat reply to the person who asked, bounded; the task's
+    /// terminal message when present.
+    pub reply: Option<String>,
 }
+
+/// The `plan` tool's optional `reply` property, as the model is told it.
+pub const PLAN_REPLY_DESCRIPTION: &str =
+    "One or two sentences to the person who asked, written as you would answer them in chat.";
+
+/// The most characters of a plan's `reply` that are kept.
+pub const MAX_PLAN_REPLY_CHARS: usize = 1000;
 
 // ---------------------------------------------------------------------------
 // The definitions
@@ -212,6 +384,12 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
         "input_schema": {
             "type": "object",
             "properties": {
+                // First, so it streams before the steps and a live reply can
+                // grow while the rest of the plan is still being written.
+                "reply": {
+                    "type": "string",
+                    "description": PLAN_REPLY_DESCRIPTION
+                },
                 "steps": {
                     "type": "array",
                     "items": {
@@ -231,15 +409,7 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
                             },
                             "arguments": {
                                 "type": "object",
-                                "description":
-                                    "The complete JSON argument object described by \
-                                     `describe_operation`, keyed by the application's \
-                                     parameter names. Use {} for a nullary operation. Values \
-                                     retain their declared JSON types; never stringify numbers, \
-                                     booleans, arrays, objects or null. When the descriptor's \
-                                     confirmation policy is Confirm, also include `confirm: true`; \
-                                     for Phrase include `confirmation_phrase` with the exact phrase. \
-                                     Those two names are invocation metadata, not app parameters."
+                                "description": ARGUMENTS_DESCRIPTION
                             }
                         },
                         "required": ["operation", "arguments"],
@@ -274,6 +444,461 @@ pub fn definitions(revealed: &Revealed, most_steps: usize) -> Value {
     ])
 }
 
+/// The description shared by `plan` steps and `invoke` of an argument object.
+const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described by \
+    `describe_operation`, keyed by the application's parameter names. Use {} for a nullary \
+    operation. Values retain their declared JSON types; never stringify numbers, booleans, \
+    arrays, objects or null. When the descriptor's confirmation policy is Confirm, also \
+    include `confirm: true`; for Phrase include `confirmation_phrase` with the exact phrase. \
+    Those two names are invocation metadata, not app parameters.";
+
+/// The [`INVOKE`] tool definition. Its `operation` is an enum of what the
+/// tools have shown in this conversation, rebuilt every turn.
+fn invoke_definition() -> Value {
+    // Byte-stable across turns and tasks (no per-conversation enum), so the
+    // provider's prompt cache keeps the whole tool prefix; `read_invoke`
+    // refuses an id no tool showed.
+    json!({
+        "name": INVOKE,
+        "description":
+            "Perform one listed operation now, as a person using the application would. \
+             Returns the result, how your own view changed and which operations became \
+             available. Several invokes in one turn run in order as soon as each is \
+             written; after a failure the rest of the turn is skipped. Put your reply \
+             on the last invoke of the task to finish in the same turn.",
+        "input_schema": {
+            "type": "object",
+            // Sorted maps on the wire: `operation` precedes `parameters` (its
+            // text is attributable while it streams), and `reply` comes last.
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "An operation id exactly as listed."
+                },
+                INVOKE_PARAMETERS: {
+                    "type": "object",
+                    "description": ARGUMENTS_DESCRIPTION
+                },
+                PARTS: parts_schema(),
+                INVOKE_REPLY: {
+                    "type": "string",
+                    "description":
+                        "Only on the last invoke of the task: your short reply to the person \
+                         (shown in your agent panel only). The task finishes when this invoke \
+                         succeeds and every part is done; no plan call is needed."
+                },
+                UNABLE: unable_schema()
+            },
+            "required": ["operation", INVOKE_PARAMETERS],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The loop's terminal [`PLAN`]: the reply that finishes the task.
+fn finish_definition() -> Value {
+    json!({
+        "name": PLAN,
+        "description":
+            "Finish the task with your reply to the person (shown in your agent panel \
+             only) when no invoke carried it: alone, or in the same turn as your last \
+             invokes (it takes effect only if they all succeed and every part is done). \
+             `done` is false only when the request cannot be completed with the \
+             operations available; say why in the reply and list those parts under \
+             `unable`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                // First, so the reply streams as it is written.
+                "reply": {
+                    "type": "string",
+                    "description": PLAN_REPLY_DESCRIPTION
+                },
+                "done": {
+                    "type": "boolean",
+                    "description": "Whether the request was completed."
+                },
+                PARTS: parts_schema(),
+                UNABLE: unable_schema()
+            },
+            "required": ["reply", "done"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The property listing the request's parts (first invoke or plan).
+pub const PARTS: &str = "parts";
+/// The property naming parts that cannot be done, with the reason.
+pub const UNABLE: &str = "unable";
+
+fn parts_schema() -> Value {
+    json!({
+        "type": "array",
+        "description":
+            "On your FIRST invoke (or plan): every separate thing the request asks for, in \
+             order, each with the application it happens in (its id, e.g. `so.tilo.chat`). \
+             Each message to post is its own part. Opening an application is a step, not a \
+             part: list what the request wants done in it. The task cannot finish until \
+             each part has a successful operation in its application or is listed under \
+             `unable`.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "part": { "type": "string" },
+                "app": { "type": "string" }
+            },
+            "required": ["part", "app"],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn unable_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "Parts you cannot do with the operations available, each with the reason.",
+        "items": { "type": "string" }
+    })
+}
+
+/// One part of a request, as the model listed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Part {
+    pub text: String,
+    /// The application it happens in, as the model named it.
+    pub app: String,
+}
+
+/// The `parts` of a call, bounded.
+pub fn read_parts(input: &Value) -> Vec<Part> {
+    input
+        .get(PARTS)
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .take(12)
+                .filter_map(|part| {
+                    let text = part.get("part")?.as_str()?.trim();
+                    let app = part.get("app").and_then(Value::as_str).unwrap_or("").trim();
+                    (!text.is_empty()).then(|| Part {
+                        text: text.chars().take(200).collect(),
+                        app: app.chars().take(120).collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `unable` explanations of a call, bounded.
+pub fn read_unable(input: &Value) -> Vec<String> {
+    input
+        .get(UNABLE)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(12)
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| text.chars().take(300).collect())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The loop tool set: discovery, [`INVOKE`], and the terminal [`PLAN`].
+pub fn loop_definitions() -> Value {
+    json!([
+        list_applications_definition(),
+        list_operations_definition(),
+        describe_operation_definition(),
+        invoke_definition(),
+        finish_definition(),
+    ])
+}
+
+/// What the loop's terminal [`PLAN`] said.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finish {
+    pub reply: Option<String>,
+    pub done: bool,
+}
+
+/// Read the loop's terminal [`PLAN`] call. Lenient by design: a missing
+/// `done` is read as done, a blank reply as none.
+pub fn read_finish(input: &Value) -> Finish {
+    Finish {
+        reply: input
+            .get("reply")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reply| !reply.is_empty())
+            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+        done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
+    }
+}
+
+/// An [`INVOKE`] call's input, before it is checked against the catalogue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invocation {
+    pub operation: String,
+    pub arguments: serde_json::Map<String, Value>,
+    /// The task's final reply, when this is its last invoke.
+    pub reply: Option<String>,
+}
+
+/// Read an [`INVOKE`] call.
+///
+/// # Errors
+///
+/// In words for the model: no operation, an operation no tool in this
+/// conversation showed, or arguments that are not an object.
+pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, String> {
+    let operation = input
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "invoke needs an `operation`".to_string())?;
+    let operation = revealed.resolve(operation)?;
+    let operation = operation.as_str();
+    // `arguments` is accepted too: it is what a model trained on the common
+    // name may write anyway.
+    let given = input
+        .get(INVOKE_PARAMETERS)
+        .or_else(|| input.get("arguments"));
+    let arguments = match given {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(arguments)) => arguments.clone(),
+        Some(_) => return Err(format!("`{INVOKE_PARAMETERS}` must be a JSON object")),
+    };
+    Ok(Invocation {
+        operation: operation.to_owned(),
+        arguments,
+        reply: input
+            .get(INVOKE_REPLY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reply| !reply.is_empty())
+            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+    })
+}
+
+/// How many operations the first turn's catalogue shows.
+pub const MOST_SUMMARISED: usize = 60;
+
+/// An operation's parameters as a compact signature (`{text: text, n?:
+/// integer [a|b]}`), or what it takes instead; empty for none.
+pub fn parameter_signature(offer: &Offer) -> String {
+    if offer.wants_content() {
+        return "{takes what the previous step produced}".into();
+    }
+    if offer.descriptor.params.is_empty() {
+        return String::new();
+    }
+    let params = offer
+        .descriptor
+        .params
+        .iter()
+        .map(|param| {
+            let mut p = format!(
+                "{}: {}{}",
+                param.name,
+                param.ty.label(),
+                if param.required { "" } else { "?" }
+            );
+            if !param.choices.is_empty() {
+                let choices = param
+                    .choices
+                    .iter()
+                    .map(std::convert::AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("|");
+                let _ = write!(p, " [{choices}]");
+            }
+            p
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{params}}}")
+}
+
+/// The published operations, compactly, for the first turn: enough to invoke
+/// the common ones directly without a discovery round trip. Every id shown is
+/// revealed. Every application gets its share (document operations first,
+/// then view, then the rest), and every open — how a closed application is
+/// started — is always shown; a cut summary says how to reach what it left
+/// out.
+pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
+    let rank = |offer: &&Offer| match offer.descriptor.kind {
+        _ if opened_app(offer).is_some() => 0,
+        tilo_actions::OperationKind::Document => 1,
+        tilo_actions::OperationKind::View => 2,
+        tilo_actions::OperationKind::Effect => 3,
+    };
+    // Per application, best first; then round-robin so a large application
+    // cannot crowd the others (or the opens) out of the summary.
+    let mut per_app: std::collections::BTreeMap<&str, Vec<&Offer>> =
+        std::collections::BTreeMap::default();
+    for offer in &catalogue.offers {
+        per_app.entry(offer.app.as_str()).or_default().push(offer);
+    }
+    for offers in per_app.values_mut() {
+        offers.sort_by_key(rank);
+    }
+    let mut shown: Vec<&Offer> = catalogue
+        .offers
+        .iter()
+        .filter(|offer| opened_app(offer).is_some())
+        .collect();
+    let mut depth = 0;
+    while shown.len() < most {
+        let mut any = false;
+        for offers in per_app.values() {
+            if let Some(offer) = offers.get(depth) {
+                any = true;
+                if opened_app(offer).is_none() && shown.len() < most {
+                    shown.push(offer);
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        depth += 1;
+    }
+    if shown.is_empty() {
+        return "No application publishes an operation you may perform right now.\n".into();
+    }
+    // Grouped by application, then by resource in first-appearance order.
+    let mut groups: Vec<(&str, &str)> = Vec::new();
+    for app in per_app.keys() {
+        for offer in shown.iter().filter(|o| o.app == *app) {
+            let resource = offer.address().resource.as_str();
+            if !groups.contains(&(app, resource)) {
+                groups.push((app, resource));
+            }
+        }
+    }
+    let mut s = String::new();
+    for (app, resource) in groups {
+        let mut first = true;
+        for offer in shown
+            .iter()
+            .filter(|o| o.app == app && o.address().resource == resource)
+        {
+            if first {
+                let _ = writeln!(
+                    s,
+                    "In {app}: {} ({}) — resource {resource}",
+                    offer.descriptor.resource_label, offer.descriptor.resource_kind
+                );
+                first = false;
+            }
+            revealed.reveal(offer.id());
+            let _ = write!(s, "  {} — {}", offer.id(), offer.descriptor.action_label);
+            if let Some(opened) = opened_app(offer) {
+                s.push_str(&open_note(catalogue, opened));
+            }
+            if let tilo_actions::Availability::Unavailable { reason, .. } =
+                &offer.descriptor.contract.availability
+            {
+                let _ = write!(s, " (currently unavailable: {reason})");
+            }
+            let signature = parameter_signature(offer);
+            if !signature.is_empty() {
+                let _ = write!(s, " {signature}");
+            }
+            s.push('\n');
+        }
+    }
+    let rest = catalogue.offers.len().saturating_sub(shown.len());
+    if rest > 0 {
+        let _ = writeln!(
+            s,
+            "… and {rest} more; ask `{LIST_OPERATIONS}` (by application, kind, resource or \
+             search) to reach them."
+        );
+    }
+    s
+}
+
+/// What one [`INVOKE`] did, as the model reads it.
+#[derive(Clone, Debug, Default)]
+pub struct InvokeReport {
+    pub succeeded: bool,
+    pub error: Option<String>,
+    /// The application's declared result value.
+    pub value: Option<Value>,
+    /// Resources the operation produced or revealed.
+    pub resources: Vec<String>,
+    /// How the invoker's own view changed, when the operation is a view
+    /// operation that says.
+    pub changed_view: Option<Value>,
+    /// Operations that became available because of this step, as
+    /// `"<id> — <label>"`.
+    pub newly_available: Vec<String>,
+    /// Set when the step did not run at all.
+    pub skipped: Option<String>,
+    /// What to do next, when the loop can tell (e.g. after an open).
+    pub note: Option<String>,
+}
+
+/// The most characters of a returned value shown to the model.
+pub const MOST_RESULT_CHARS: usize = 2_000;
+
+/// A compact JSON observation for one [`INVOKE`].
+pub fn invoke_result(report: &InvokeReport) -> String {
+    let bounded = |value: &Value| {
+        let text = value.to_string();
+        if text.chars().count() <= MOST_RESULT_CHARS {
+            value.clone()
+        } else {
+            Value::String(format!(
+                "{}… (cut)",
+                text.chars().take(MOST_RESULT_CHARS).collect::<String>()
+            ))
+        }
+    };
+    let mut out = serde_json::Map::new();
+    if let Some(skipped) = &report.skipped {
+        out.insert("result".into(), Value::String("not run".into()));
+        out.insert("why".into(), Value::String(skipped.clone()));
+        return Value::Object(out).to_string();
+    }
+    out.insert(
+        "result".into(),
+        Value::String(
+            if report.succeeded {
+                "succeeded"
+            } else {
+                "failed"
+            }
+            .into(),
+        ),
+    );
+    if let Some(error) = &report.error {
+        out.insert("error".into(), Value::String(error.clone()));
+    }
+    if let Some(value) = &report.value {
+        out.insert("value".into(), bounded(value));
+    }
+    if !report.resources.is_empty() {
+        out.insert("resources".into(), json!(report.resources));
+    }
+    out.insert(
+        "changed_view".into(),
+        report.changed_view.as_ref().map_or(Value::Null, bounded),
+    );
+    out.insert("newly_available".into(), json!(report.newly_available));
+    if let Some(note) = &report.note {
+        out.insert("note".into(), Value::String(note.clone()));
+    }
+    Value::Object(out).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Answering them
 // ---------------------------------------------------------------------------
@@ -294,7 +919,7 @@ pub fn answer(name: &str, input: &Value, catalogue: &Catalogue, revealed: &mut R
     match name {
         LIST_APPLICATIONS => applications(catalogue, revealed),
         LIST_OPERATIONS => operations(input, catalogue, revealed),
-        DESCRIBE_OPERATION => describe(input, catalogue),
+        DESCRIBE_OPERATION => describe(input, catalogue, revealed),
         // Not reachable through a well-formed call — the API only ever names
         // a tool that was defined — and answered rather than panicked on,
         // because a name is untrusted input like everything else here.
@@ -378,6 +1003,23 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
     s
 }
 
+/// Whether `asked` (an application id, its last segment, its title, or one
+/// of its resources, as a model may write it) names `o`'s application — or
+/// the application `o` opens, so a closed application's listing shows how
+/// to open it.
+fn names_application(asked: &str, o: &Offer) -> bool {
+    let names = |app: &str| {
+        let asked = asked.to_lowercase();
+        let app_lower = app.to_lowercase();
+        app_lower == asked
+            || app_lower.ends_with(&format!(".{asked}"))
+            || CONTRACTS
+                .iter()
+                .any(|c| c.namespace == app && c.title.eq_ignore_ascii_case(&asked))
+    };
+    names(&o.app) || o.address().resource == asked || opened_app(o).is_some_and(names)
+}
+
 /// The words a search is matched against: everything the app itself wrote.
 fn haystack(o: &Offer) -> String {
     format!(
@@ -408,7 +1050,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
     let matching: Vec<&Offer> = catalogue
         .offers
         .iter()
-        .filter(|o| application.is_none_or(|a| o.app == a))
+        .filter(|o| application.is_none_or(|a| names_application(a, o)))
         .filter(|o| resource.is_none_or(|r| o.address().resource == r))
         .filter(|o| kind.is_none_or(|k| o.descriptor.resource_kind == k))
         .filter(|o| {
@@ -433,7 +1075,20 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         } else {
             asked.join(", ")
         };
-        return nothing_found(&what);
+        let mut s = nothing_found(&what);
+        if application.is_some() {
+            let apps = catalogue
+                .offers
+                .iter()
+                .map(|o| o.app.as_str())
+                .collect::<BTreeSet<_>>();
+            let _ = write!(
+                s,
+                " `application` is an application id: one of {}.",
+                apps.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        }
+        return s;
     }
 
     // Grouped by the resource that publishes them, so the reply says what
@@ -446,13 +1101,16 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         if last != Some(r) {
             let _ = writeln!(
                 s,
-                "\n{} — {} ({})",
-                r, o.descriptor.resource_label, o.descriptor.resource_kind
+                "\n{} ({}) in {} — resource {}",
+                o.descriptor.resource_label, o.descriptor.resource_kind, o.app, r
             );
             last = Some(r);
         }
         revealed.reveal(o.id());
         let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
+        if let Some(app) = opened_app(o) {
+            s.push_str(&open_note(catalogue, app));
+        }
         if let tilo_actions::Availability::Unavailable { reason, .. } =
             &o.descriptor.contract.availability
         {
@@ -461,16 +1119,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         if o.wants_content() {
             s.push_str("; takes what an earlier step produced, not words");
         } else if !o.descriptor.params.is_empty() {
-            let _ = write!(
-                s,
-                "; takes {} structured argument{} (ask `{DESCRIBE_OPERATION}` for the schema)",
-                o.descriptor.params.len(),
-                if o.descriptor.params.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            );
+            let _ = write!(s, "; parameters {}", parameter_signature(o));
         }
         s.push('\n');
     }
@@ -487,16 +1136,31 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
 }
 
 /// One operation, in the app's own words.
-fn describe(input: &Value, catalogue: &Catalogue) -> String {
-    let Some(id) = input.get("operation").and_then(Value::as_str) else {
+fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> String {
+    let Some(given) = input.get("operation").and_then(Value::as_str) else {
         return format!("{DESCRIBE_OPERATION} needs an `operation`.");
     };
-    let Some(offer) = surface::find(&catalogue.offers, id) else {
+    let given = given.trim();
+    // An id copied without its `broker:<n>:` prefix names the one offer with
+    // that address, as long as only one has it.
+    let offer = surface::find(&catalogue.offers, given).or_else(|| {
+        let mut same = catalogue
+            .offers
+            .iter()
+            .filter(|o| address_part(&o.id()) == address_part(given));
+        match (same.next(), same.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    });
+    let Some(offer) = offer else {
         // Unknown and not-offered are deliberately one answer, as they are at
         // the door: a caller must not be able to map what it may not see by
         // getting a different refusal for it.
-        return nothing_found(&format!("the operation {id}"));
+        return nothing_found(&format!("the operation {given}"));
     };
+    let id = offer.id();
+    revealed.reveal(id.clone());
     let d = &offer.descriptor;
     let mut s = format!(
         "{id}\n  does: {}\n  to: {} ({})\n  in: {}\n",
@@ -555,7 +1219,18 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
             "  arguments: produced content, not words. It must be bound from the prior step.\n",
         );
     } else {
-        s.push_str("  Pass one JSON object containing exactly the parameters above.\n");
+        let example = d
+            .params
+            .iter()
+            .filter(|p| p.required)
+            .map(|p| format!("\"{}\": …", p.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            s,
+            "  Pass one JSON object containing exactly the parameters above: \
+             {{\"operation\": \"{id}\", \"parameters\": {{{example}}}}}"
+        );
     }
     // What the resource says about itself. An application with a fact and no
     // operation to hang it on publishes a child resource that exports
@@ -646,6 +1321,12 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(|t| t.chars().take(240).collect()),
+        reply: input
+            .get("reply")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reply| !reply.is_empty())
+            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
     })
 }
 
@@ -742,280 +1423,545 @@ mod tests {
         }
     }
 
-    /// The listing separates what the room holds from what could still be
-    /// opened, using the real [`CONTRACTS`] rather than a hand-built one —
-    /// so this proves the wiring, not a fixture that agrees with itself.
+    /// An id copied without its `broker:<n>:` routing prefix names the one
+    /// shown operation with that address; an ambiguous or unshown one is
+    /// refused with the listed ids for the same action.
     #[test]
-    fn the_application_listing_separates_what_is_open_from_what_could_be() {
-        let word_processor_open = Catalogue {
-            held: vec!["word-processor"],
-            offers: vec![Offer {
-                app: "chat".to_string(),
-                broker_peer_id: None,
-                descriptor: ActionDescriptor {
-                    address: surface::open_address("chat"),
-                    resource_kind: APPLICATION_KIND.to_string(),
-                    resource_label: "the conversation".to_string(),
-                    action_label: "open the conversation".to_string(),
-                    description: None,
-                    locus: ExecutionLocus::ServerPreferred,
-                    kind: tilo_actions::OperationKind::Effect,
-                    contract: tilo_actions::ActionContract::default(),
-                    params: Vec::new(),
-                    input: InputSpec::None,
-                    view: None,
-                },
-            }],
-            facts: vec![],
-        };
+    fn an_id_without_its_routing_prefix_names_the_one_shown_operation() {
         let mut revealed = Revealed::new();
-        let out = applications(&word_processor_open, &mut revealed);
-        assert!(
-            out.contains("the word processor (word-processor) — open"),
-            "{out}"
-        );
-        assert!(out.contains("the conversation (chat) — not open"), "{out}");
-        assert!(out.contains("chat.app#open"), "{out}");
-
-        // An app named in `CONTRACTS` but granted no route to opening it is
-        // still listed, with no route — the shape a denied open takes.
-        let mut revealed = Revealed::new();
-        let bare = applications(&Catalogue::default(), &mut revealed);
-        assert!(
-            bare.contains("and there is no opening it from here"),
-            "{bare}"
-        );
-        assert!(!bare.contains(".app#open"), "{bare}");
-    }
-
-    /// An operation is nameable exactly when a listing returned it.
-    ///
-    /// The property the whole restructure rests on: the model does not pick
-    /// from a list somebody guessed it would need, it picks from what it
-    /// asked for — and an id nothing showed it cannot be answered at all.
-    #[test]
-    fn only_what_a_listing_returned_can_be_planned() {
-        let mut revealed = Revealed::new();
-        assert!(!revealed.contains("files.entry:/home/q/harbour.png#rename"));
-        // The editorial changes and "none" are the agent's own and are there
-        // from the start; nothing an application exports is.
-        assert!(revealed.contains(plan::NOTHING_FITS));
-
-        let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
-            "why": "", "then": null
-        });
-        let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
-        assert!(
-            refused.contains("no listing in this conversation returned"),
-            "{refused}"
-        );
-
-        let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
-        assert!(
-            listed.contains("files.entry:/home/q/harbour.png#rename"),
-            "{listed}"
-        );
-        let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
+        revealed.reveal("broker:3:word-processor.document#append-paragraph");
+        revealed.reveal("broker:4:chat.channel:general#post");
         assert_eq!(
-            answer.arguments,
-            vec![serde_json::Map::from_iter([(
-                "value".into(),
-                Value::String("a.png".into())
-            )])]
+            revealed.resolve("word-processor.document#append-paragraph"),
+            Ok("broker:3:word-processor.document#append-paragraph".to_owned())
         );
+        assert_eq!(
+            revealed.resolve("broker:9:chat.channel:general#post"),
+            Ok("broker:4:chat.channel:general#post".to_owned())
+        );
+        let unshown = revealed.resolve("word-processor.other#append-paragraph");
+        let error = unshown.unwrap_err();
+        assert!(error.contains("is not an operation any listing"), "{error}");
+        assert!(
+            error.contains("broker:3:word-processor.document#append-paragraph"),
+            "suggests the shown id for the same action: {error}"
+        );
+        revealed.reveal("broker:5:word-processor.document#append-paragraph");
+        assert!(
+            revealed
+                .resolve("word-processor.document#append-paragraph")
+                .is_err(),
+            "two peers publish that address: ambiguous"
+        );
+        assert!(revealed.resolve(plan::NOTHING_FITS).is_err());
     }
 
+    /// The first turn's summary always shows how to open a closed
+    /// application, and gives every application a share however many
+    /// operations one of them publishes.
     #[test]
-    fn one_published_operation_can_be_planned_repeatedly_with_distinct_arguments() {
+    fn the_summary_keeps_opens_and_every_application_in_view() {
+        let mut catalogue = room();
+        for n in 0..50 {
+            catalogue.offers.push(offer(
+                "word-processor",
+                "word-processor.document",
+                "word_processor.document",
+                &format!("op-{n}"),
+                "Something",
+                InputSpec::None,
+            ));
+        }
+        let mut open = offer(
+            "desktop",
+            "desktop:app:so.tilo.notes",
+            "desktop.application",
+            "open",
+            "Open Notes",
+            InputSpec::None,
+        );
+        open.descriptor.kind = tilo_actions::OperationKind::Effect;
+        catalogue.offers.push(open);
         let mut revealed = Revealed::new();
-        let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
-        let operation = "files.entry:/home/q/harbour.png#rename";
-        let call = json!({
-            "steps": [
-                {"operation": operation, "arguments": {"value": "first.png"}},
-                {"operation": operation, "arguments": {"value": "second.png"}}
-            ],
-            "why": "the same canonical operation applies to two requested values",
-            "then": null
-        });
-        let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
-        assert_eq!(answer.actions, vec![operation, operation]);
-        assert_ne!(answer.arguments.first(), answer.arguments.last());
-    }
-
-    /// A kind crosses applications by construction: the filter is the
-    /// resource's own kind tag, which is shared across the OS.
-    #[test]
-    fn a_kind_is_asked_about_across_the_room_and_not_within_one_app() {
-        let mut revealed = Revealed::new();
-        let out = operations(
-            &json!({"kind": "word_processor.document"}),
-            &room(),
+        let summary = catalogue_summary(&catalogue, &mut revealed, 10);
+        assert!(
+            summary.contains("desktop:app:so.tilo.notes#open — Open Notes (opens so.tilo.notes"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("files.entry:/home/q/harbour.png#rename"),
+            "{summary}"
+        );
+        assert!(summary.contains("{value: text}"), "{summary}");
+        assert!(summary.contains("In word-processor:"), "{summary}");
+        // A listing by the closed application's id reaches its open.
+        let listed = operations(
+            &json!({"application": "so.tilo.notes"}),
+            &catalogue,
             &mut revealed,
         );
-        assert!(out.contains("insert-table"), "{out}");
-        assert!(!out.contains("harbour.png#rename"), "{out}");
+        assert!(
+            listed.contains("desktop:app:so.tilo.notes#open"),
+            "{listed}"
+        );
+        let none = operations(
+            &json!({"application": "nowhere"}),
+            &catalogue,
+            &mut revealed,
+        );
+        assert!(
+            none.contains("one of desktop, files, word-processor"),
+            "{none}"
+        );
     }
 
-    /// The description carries the declared typed parameter and the fact the
-    /// publishing resource states with no operation on it — neither of which
-    /// a flat list reaches.
+    /// An open next to an application that already publishes operations
+    /// says so: opening again makes a second window.
     #[test]
-    fn describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts() {
-        let out = describe(
-            &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
-            &room(),
+    fn an_open_of_an_already_open_application_says_so() {
+        let mut catalogue = room();
+        let mut open = offer(
+            "desktop",
+            "desktop:app:word-processor",
+            "desktop.application",
+            "open",
+            "Open Writer",
+            InputSpec::None,
         );
-        assert!(out.contains("value: text (required)"), "{out}");
-        assert!(out.contains("512 x 320 pixels"), "{out}");
+        open.descriptor.kind = tilo_actions::OperationKind::Effect;
+        catalogue.offers.push(open);
+        let summary = catalogue_summary(&catalogue, &mut Revealed::new(), MOST_SUMMARISED);
+        assert!(
+            summary.contains("word-processor is already open"),
+            "{summary}"
+        );
     }
 
-    /// An operation whose argument is content says so, and says not to write
-    /// one — the one thing a caller must never invent.
+    /// A refused argument says what the operation takes and how to pass it.
     #[test]
-    fn an_operation_that_collects_content_is_not_asked_for_a_value() {
-        let out = describe(
-            &json!({"operation": "word-processor.document#place-image"}),
-            &room(),
-        );
-        assert!(out.contains("content, not words"), "{out}");
-        assert!(out.contains("bound from the prior step"), "{out}");
+    fn a_parameter_hint_names_each_parameter_and_an_example() {
+        let catalogue = room();
+        let rename = &catalogue.offers[2];
+        let hint = parameter_hint(rename);
+        assert!(hint.contains("`value`: text (required)"), "{hint}");
+        assert!(hint.contains("\"parameters\": {\"value\": …}"), "{hint}");
     }
 
-    /// An address that is not on offer and one that does not exist are
-    /// answered the same way, so probing maps nothing.
-    ///
-    /// Not byte-identical — each reply names the id it was *asked* about —
-    /// but same sentence, no mention of permission, and nothing that would
-    /// let a caller tell "no such operation" from "not for you" apart.
     #[test]
-    fn an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist() {
-        let hidden_id = "word-processor.document#imaginary-crop";
-        let absent_id = "nothing.at#all";
-        let hidden = describe(&json!({"operation": hidden_id}), &room());
-        let absent = describe(&json!({"operation": absent_id}), &room());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn discovery_answers_list_and_describe_only_what_the_room_offers() {
+        // Case `the_application_listing_separates_what_is_open_from_what_could_be`.
+        {
+            let word_processor_open = Catalogue {
+                held: vec!["word-processor"],
+                offers: vec![Offer {
+                    app: "chat".to_string(),
+                    broker_peer_id: None,
+                    descriptor: ActionDescriptor {
+                        address: surface::open_address("chat"),
+                        resource_kind: APPLICATION_KIND.to_string(),
+                        resource_label: "the conversation".to_string(),
+                        action_label: "open the conversation".to_string(),
+                        description: None,
+                        locus: ExecutionLocus::ServerPreferred,
+                        kind: tilo_actions::OperationKind::Effect,
+                        contract: tilo_actions::ActionContract::default(),
+                        params: Vec::new(),
+                        input: InputSpec::None,
+                        view: None,
+                    },
+                }],
+                facts: vec![],
+            };
+            let mut revealed = Revealed::new();
+            let out = applications(&word_processor_open, &mut revealed);
+            assert!(
+                out.contains("the word processor (word-processor) — open"),
+                "{out}"
+            );
+            assert!(out.contains("the conversation (chat) — not open"), "{out}");
+            assert!(out.contains("chat.app#open"), "{out}");
 
-        assert_eq!(hidden, nothing_found(&format!("the operation {hidden_id}")));
-        assert_eq!(absent, nothing_found(&format!("the operation {absent_id}")));
-        assert_eq!(
-            hidden.replace(hidden_id, "<id>"),
-            absent.replace(absent_id, "<id>"),
-            "the two must be indistinguishable once each stops quoting the \
-             caller's own words back at it"
-        );
-        for reply in [&hidden, &absent] {
-            let lower = reply.to_lowercase();
-            for leak in [
-                "permission",
-                "denied",
-                "allowed",
-                "not for you",
-                "capabilit",
-            ] {
-                assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
+            // An app named in `CONTRACTS` but granted no route to opening it is
+            // still listed, with no route — the shape a denied open takes.
+            let mut revealed = Revealed::new();
+            let bare = applications(&Catalogue::default(), &mut revealed);
+            assert!(
+                bare.contains("and there is no opening it from here"),
+                "{bare}"
+            );
+            assert!(!bare.contains(".app#open"), "{bare}");
+        }
+
+        // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
+        {
+            let mut revealed = Revealed::new();
+            let out = operations(
+                &json!({"kind": "word_processor.document"}),
+                &room(),
+                &mut revealed,
+            );
+            assert!(out.contains("insert-table"), "{out}");
+            assert!(!out.contains("harbour.png#rename"), "{out}");
+        }
+
+        // Case `a_cut_listing_says_how_to_reach_what_it_left_out`.
+        {
+            let mut room = room();
+            for i in 0..MOST_LISTED + 5 {
+                room.offers.push(offer(
+                    "files",
+                    &format!("files.entry:/home/q/f{i}.md"),
+                    "files.entry",
+                    "rename",
+                    "Rename",
+                    InputSpec::None,
+                ));
+            }
+            let mut revealed = Revealed::new();
+            let out = operations(&json!({}), &room, &mut revealed);
+            assert!(out.contains("more not listed"), "{out}");
+            assert!(out.contains("narrower"), "{out}");
+            // And the narrower question reaches what the wide one cut.
+            let narrowed = operations(
+                &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
+                &room,
+                &mut revealed,
+            );
+            assert!(
+                narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)),
+                "{narrowed}"
+            );
+        }
+
+        // Case `describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts`.
+        {
+            let out = describe(
+                &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
+                &room(),
+                &mut Revealed::new(),
+            );
+            assert!(out.contains("value: text (required)"), "{out}");
+            assert!(out.contains("512 x 320 pixels"), "{out}");
+        }
+
+        // Case `an_operation_that_collects_content_is_not_asked_for_a_value`.
+        {
+            let out = describe(
+                &json!({"operation": "word-processor.document#place-image"}),
+                &room(),
+                &mut Revealed::new(),
+            );
+            assert!(out.contains("content, not words"), "{out}");
+            assert!(out.contains("bound from the prior step"), "{out}");
+        }
+
+        // Case `an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist`.
+        {
+            let hidden_id = "word-processor.document#imaginary-crop";
+            let absent_id = "nothing.at#all";
+            let hidden = describe(
+                &json!({"operation": hidden_id}),
+                &room(),
+                &mut Revealed::new(),
+            );
+            let absent = describe(
+                &json!({"operation": absent_id}),
+                &room(),
+                &mut Revealed::new(),
+            );
+
+            assert_eq!(hidden, nothing_found(&format!("the operation {hidden_id}")));
+            assert_eq!(absent, nothing_found(&format!("the operation {absent_id}")));
+            assert_eq!(
+                hidden.replace(hidden_id, "<id>"),
+                absent.replace(absent_id, "<id>"),
+                "the two must be indistinguishable once each stops quoting the \
+                 caller's own words back at it"
+            );
+            for reply in [&hidden, &absent] {
+                let lower = reply.to_lowercase();
+                for leak in [
+                    "permission",
+                    "denied",
+                    "allowed",
+                    "not for you",
+                    "capabilit",
+                ] {
+                    assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
+                }
             }
         }
     }
 
-    /// A listing that is cut short says how to reach the rest, because the
-    /// cap is on the reply and not on what may be named.
     #[test]
-    fn a_cut_listing_says_how_to_reach_what_it_left_out() {
-        let mut room = room();
-        for i in 0..MOST_LISTED + 5 {
-            room.offers.push(offer(
-                "files",
-                &format!("files.entry:/home/q/f{i}.md"),
-                "files.entry",
-                "rename",
-                "Rename",
-                InputSpec::None,
-            ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn a_plan_is_read_only_from_revealed_operations_within_the_step_cap() {
+        // Case `only_what_a_listing_returned_can_be_planned`.
+        {
+            let mut revealed = Revealed::new();
+            assert!(!revealed.contains("files.entry:/home/q/harbour.png#rename"));
+            // The editorial changes and "none" are the agent's own and are there
+            // from the start; nothing an application exports is.
+            assert!(revealed.contains(plan::NOTHING_FITS));
+
+            let call = json!({
+                "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
+                "why": "", "then": null
+            });
+            let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
+            assert!(
+                refused.contains("no listing in this conversation returned"),
+                "{refused}"
+            );
+
+            let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            assert!(
+                listed.contains("files.entry:/home/q/harbour.png#rename"),
+                "{listed}"
+            );
+            let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
+            assert_eq!(
+                answer.arguments,
+                vec![serde_json::Map::from_iter([(
+                    "value".into(),
+                    Value::String("a.png".into())
+                )])]
+            );
         }
-        let mut revealed = Revealed::new();
-        let out = operations(&json!({}), &room, &mut revealed);
-        assert!(out.contains("more not listed"), "{out}");
-        assert!(out.contains("narrower"), "{out}");
-        // And the narrower question reaches what the wide one cut.
-        let narrowed = operations(
-            &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
-            &room,
-            &mut revealed,
-        );
-        assert!(
-            narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)),
-            "{narrowed}"
-        );
+
+        // Case `one_published_operation_can_be_planned_repeatedly_with_distinct_arguments`.
+        {
+            let mut revealed = Revealed::new();
+            let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            let operation = "files.entry:/home/q/harbour.png#rename";
+            let call = json!({
+                "steps": [
+                    {"operation": operation, "arguments": {"value": "first.png"}},
+                    {"operation": operation, "arguments": {"value": "second.png"}}
+                ],
+                "why": "the same canonical operation applies to two requested values",
+                "then": null
+            });
+            let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
+            assert_eq!(answer.actions, vec![operation, operation]);
+            assert_ne!(answer.arguments.first(), answer.arguments.last());
+        }
+
+        // Case `a_plan_longer_than_a_sentence_is_refused_rather_than_truncated`.
+        {
+            let mut revealed = Revealed::new();
+            revealed.reveal("a#b");
+            let steps: Vec<Value> = (0..=STEPS)
+                .map(|_| json!({"operation": "a#b", "arguments": {}}))
+                .collect();
+            let err = read_plan(
+                &json!({"steps": steps, "why": "", "then": null}),
+                &revealed,
+                STEPS,
+            )
+            .expect_err("over the cap");
+            assert!(err.contains("more than the"), "{err}");
+        }
+
+        // Case `what_the_room_cannot_name_yet_is_carried_as_words`.
+        {
+            let mut revealed = Revealed::new();
+            revealed.reveal("chat.app#open");
+            let answer = read_plan(
+                &json!({
+                    "steps": [{"operation": "chat.app#open", "arguments": {}}],
+                    "why": "the conversation is not open",
+                    "then": "post it there"
+                }),
+                &revealed,
+                STEPS,
+            )
+            .expect("read");
+            assert_eq!(answer.then.as_deref(), Some("post it there"));
+            // A blank is nothing, not a clause whose words are no words.
+            let blank = read_plan(
+                &json!({
+                    "steps": [{"operation": "chat.app#open", "arguments": {}}],
+                    "why": "", "then": "   "
+                }),
+                &revealed,
+                STEPS,
+            )
+            .expect("read");
+            assert_eq!(blank.then, None);
+        }
+
+        // Case `a_plan_naming_an_address_never_revealed_is_refused_not_attempted`.
+        {
+            let mut revealed = Revealed::new();
+            // Revealed by one call, so the check below is genuinely about the
+            // *other* address rather than an empty `Revealed` refusing anything.
+            revealed.reveal("word-processor.document#insert-table");
+
+            let call = json!({
+                "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
+                "why": "", "then": null
+            });
+            let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");
+            assert!(
+                err.contains("no listing in this conversation returned"),
+                "{err}"
+            );
+            assert!(
+                err.contains("files.entry:/home/q/harbour.png#rename"),
+                "{err}"
+            );
+        }
     }
 
+    /// `reply` is optional, first in the schema, and kept (trimmed, bounded)
+    /// when the model writes one.
     #[test]
-    fn a_plan_longer_than_a_sentence_is_refused_rather_than_truncated() {
+    fn a_plan_reply_is_optional_first_and_kept() {
+        let definition = plan_definition(&Revealed::new(), STEPS);
+        let schema = &definition["input_schema"];
+        let first = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(first, "reply");
+        assert_eq!(schema["properties"]["reply"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["reply"]["description"],
+            PLAN_REPLY_DESCRIPTION
+        );
+        assert_eq!(schema["required"], json!(["steps", "why", "then"]));
+
         let mut revealed = Revealed::new();
         revealed.reveal("a#b");
-        let steps: Vec<Value> = (0..=STEPS)
-            .map(|_| json!({"operation": "a#b", "arguments": {}}))
-            .collect();
-        let err = read_plan(
-            &json!({"steps": steps, "why": "", "then": null}),
-            &revealed,
-            STEPS,
-        )
-        .expect_err("over the cap");
-        assert!(err.contains("more than the"), "{err}");
-    }
-
-    /// The half of a request the room cannot name yet survives the read, in
-    /// the words it was asked in.
-    #[test]
-    fn what_the_room_cannot_name_yet_is_carried_as_words() {
-        let mut revealed = Revealed::new();
-        revealed.reveal("chat.app#open");
-        let answer = read_plan(
-            &json!({
-                "steps": [{"operation": "chat.app#open", "arguments": {}}],
-                "why": "the conversation is not open",
-                "then": "post it there"
-            }),
+        let step = json!([{"operation": "a#b", "arguments": {}}]);
+        let with = read_plan(
+            &json!({"reply": "  Sure, writing it now.  ", "steps": step, "why": "", "then": null}),
             &revealed,
             STEPS,
         )
         .expect("read");
-        assert_eq!(answer.then.as_deref(), Some("post it there"));
-        // A blank is nothing, not a clause whose words are no words.
-        let blank = read_plan(
-            &json!({
-                "steps": [{"operation": "chat.app#open", "arguments": {}}],
-                "why": "", "then": "   "
-            }),
+        assert_eq!(with.reply.as_deref(), Some("Sure, writing it now."));
+        let without = read_plan(
+            &json!({"steps": step, "why": "", "then": null}),
             &revealed,
             STEPS,
         )
         .expect("read");
-        assert_eq!(blank.then, None);
+        assert_eq!(without.reply, None);
+        let long = "x".repeat(MAX_PLAN_REPLY_CHARS + 50);
+        let bounded = read_plan(
+            &json!({"reply": long, "steps": step, "why": "", "then": null}),
+            &revealed,
+            STEPS,
+        )
+        .expect("read");
+        assert_eq!(bounded.reply.unwrap().chars().count(), MAX_PLAN_REPLY_CHARS);
     }
 
-    /// An id no tool ever put in front of the model cannot be answered,
-    /// whatever it names — the property [`Revealed`] exists to hold.
+    /// The loop offers only the generic tools; `invoke` can name only what a
+    /// tool showed, and its operation comes before its arguments so text is
+    /// attributable while it streams.
     #[test]
-    fn a_plan_naming_an_address_never_revealed_is_refused_not_attempted() {
+    fn the_loop_tool_set_is_generic_and_invoke_names_only_what_was_shown() {
         let mut revealed = Revealed::new();
-        // Revealed by one call, so the check below is genuinely about the
-        // *other* address rather than an empty `Revealed` refusing anything.
-        revealed.reveal("word-processor.document#insert-table");
-
-        let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
-            "why": "", "then": null
-        });
-        let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");
+        let summary = catalogue_summary(&room(), &mut revealed, MOST_SUMMARISED);
         assert!(
-            err.contains("no listing in this conversation returned"),
-            "{err}"
+            summary.contains("word-processor.document#insert-table"),
+            "{summary}"
         );
+        assert!(summary.contains("{value: text}"), "{summary}");
+        let definitions = loop_definitions();
+        assert_eq!(
+            definitions,
+            loop_definitions(),
+            "byte-stable for prompt caching"
+        );
+        let names: Vec<&str> = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|definition| definition["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                LIST_APPLICATIONS,
+                LIST_OPERATIONS,
+                DESCRIBE_OPERATION,
+                INVOKE,
+                PLAN
+            ]
+        );
+        let invoke = &definitions[3]["input_schema"];
+        // Sorted maps on the wire: the operation still comes first.
+        let keys: Vec<&String> = invoke["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            ["operation", INVOKE_PARAMETERS, PARTS, INVOKE_REPLY, UNABLE]
+        );
+        let wire = serde_json::to_string(invoke).unwrap();
+        assert!(wire.find("\"operation\"") < wire.find(&format!("\"{INVOKE_PARAMETERS}\"")));
+        assert!(invoke["properties"]["operation"].get("enum").is_none());
+
+        let ok = read_invoke(
+            &json!({"operation": "files.entry:/home/q/harbour.png#rename", "parameters": {"value": "a.png"}}),
+            &revealed,
+        )
+        .expect("shown in the summary");
+        assert_eq!(ok.arguments["value"], "a.png");
+        let refused = read_invoke(&json!({"operation": "x#y", "arguments": {}}), &revealed)
+            .expect_err("never shown");
+        assert!(refused.contains("list_operations"), "{refused}");
         assert!(
-            err.contains("files.entry:/home/q/harbour.png#rename"),
-            "{err}"
+            read_invoke(
+                &json!({"operation": "files.entry:/home/q/harbour.png#rename", "arguments": 3}),
+                &revealed
+            )
+            .is_err()
+        );
+        assert_eq!(
+            read_finish(&json!({"reply": "  Done.  ", "done": false})),
+            Finish {
+                reply: Some("Done.".into()),
+                done: false
+            }
+        );
+    }
+
+    /// An observation is compact JSON and bounded.
+    #[test]
+    fn an_invoke_observation_is_compact_and_bounded() {
+        let report = InvokeReport {
+            succeeded: true,
+            value: Some(Value::String("x".repeat(MOST_RESULT_CHARS * 2))),
+            changed_view: Some(json!({"caret": {"block": "b1", "offset": 3}})),
+            newly_available: vec!["a#b — B".into()],
+            ..InvokeReport::default()
+        };
+        let text = invoke_result(&report);
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["result"], "succeeded");
+        assert_eq!(value["changed_view"]["caret"]["offset"], 3);
+        assert_eq!(value["newly_available"][0], "a#b — B");
+        assert!(text.len() < MOST_RESULT_CHARS + 400, "{}", text.len());
+        let skipped = invoke_result(&InvokeReport {
+            skipped: Some("an earlier invoke failed".into()),
+            ..InvokeReport::default()
+        });
+        assert_eq!(
+            serde_json::from_str::<Value>(&skipped).unwrap()["result"],
+            "not run"
         );
     }
 }

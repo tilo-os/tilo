@@ -20,9 +20,14 @@ use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 
 /// Grammars match lines without their trailing `\n`, which is how every
 /// caller already splits its text.
+/// Without `syntax-definitions` (the browser toolkit core) the set is empty
+/// and every language highlights as plain text.
 fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(two_face::syntax::extra_no_newlines)
+    #[cfg(feature = "syntax-definitions")]
+    return SET.get_or_init(two_face::syntax::extra_no_newlines);
+    #[cfg(not(feature = "syntax-definitions"))]
+    return SET.get_or_init(SyntaxSet::default);
 }
 
 /// Map a scope stack to the kind of its innermost classified scope, or `None`
@@ -226,119 +231,127 @@ mod tests {
     }
 
     #[test]
-    fn every_language_the_apps_name_has_a_grammar() {
-        for token in [
-            "rs",
-            "sql",
-            "toml",
-            "md",
-            "json",
-            "yaml",
-            "py",
-            "js",
-            "ts",
-            "html",
-            "css",
-            "sh",
-            "c",
-            "cpp",
-            "go",
-            "Dockerfile",
-            "diff",
-        ] {
-            let hl = SyntaxHighlighter::for_token(token);
-            assert!(hl.is_some(), "no grammar for {token}");
+    fn grammars_cover_app_languages_and_spans_tile_each_line() {
+        fn every_language_the_apps_name_has_a_grammar() {
+            for token in [
+                "rs",
+                "sql",
+                "toml",
+                "md",
+                "json",
+                "yaml",
+                "py",
+                "js",
+                "ts",
+                "html",
+                "css",
+                "sh",
+                "c",
+                "cpp",
+                "go",
+                "Dockerfile",
+                "diff",
+            ] {
+                let hl = SyntaxHighlighter::for_token(token);
+                assert!(hl.is_some(), "no grammar for {token}");
+            }
+            assert!(SyntaxHighlighter::for_token("no-such-language").is_none());
         }
-        assert!(SyntaxHighlighter::for_token("no-such-language").is_none());
-    }
 
-    #[test]
-    fn spans_cover_the_whole_line_in_order() {
-        let hl = SyntaxHighlighter::for_token_or_plain("rs");
-        let line = "let s = \"hi\"; // note";
-        let spans = hl.start().highlight_line(line);
-        let mut end = 0;
-        for span in &spans {
-            assert_eq!(span.range.start, end);
-            end = span.range.end;
+        fn spans_cover_the_whole_line_in_order() {
+            let hl = SyntaxHighlighter::for_token_or_plain("rs");
+            let line = "let s = \"hi\"; // note";
+            let spans = hl.start().highlight_line(line);
+            let mut end = 0;
+            for span in &spans {
+                assert_eq!(span.range.start, end);
+                end = span.range.end;
+            }
+            assert_eq!(end, line.len());
         }
-        assert_eq!(end, line.len());
-    }
 
-    #[test]
-    fn rust_categories() {
-        let hl = SyntaxHighlighter::for_token_or_plain("rust");
-        let line = "fn main() { let x = 42; let s = \"hi\"; } // done";
-        let spans = hl.spans(line, 0).spans;
-        assert!(text_of(line, TokenKind::Keyword, &spans).contains(&"fn".to_owned()));
-        assert!(text_of(line, TokenKind::Keyword, &spans).contains(&"let".to_owned()));
-        assert_eq!(text_of(line, TokenKind::Function, &spans), ["main"]);
-        assert_eq!(text_of(line, TokenKind::Number, &spans), ["42"]);
-        assert_eq!(text_of(line, TokenKind::StringLit, &spans), ["\"hi\""]);
-        assert_eq!(text_of(line, TokenKind::Comment, &spans), ["// done"]);
-        assert!(text_of(line, TokenKind::Operator, &spans).contains(&"=".to_owned()));
-    }
-
-    #[test]
-    fn block_comment_carries_across_lines() {
-        let hl = SyntaxHighlighter::for_token_or_plain("rs");
-        let first = hl.spans("code(); /* open", 0);
-        assert_ne!(first.carry, 0);
-        let second = hl.spans("still comment", first.carry);
-        assert!(second.spans.iter().all(|s| s.kind == TokenKind::Comment));
-        let third = hl.spans("*/ done();", second.carry);
-        assert_eq!(
-            third.spans.first().map(|s| s.kind),
-            Some(TokenKind::Comment)
-        );
-        assert!(third.spans.iter().any(|s| s.kind == TokenKind::Function));
-        // A fresh pass starts over rather than inheriting the comment.
-        let restart = hl.spans("still code", 0);
-        assert!(restart.spans.iter().all(|s| s.kind != TokenKind::Comment));
-    }
-
-    #[test]
-    fn unchanged_parse_state_reuses_its_carry() {
-        let hl = SyntaxHighlighter::for_token_or_plain("rs");
-        let first = hl.spans("let a = 1;", 0);
-        let second = hl.spans("let b = 2;", first.carry);
-        assert_eq!(first.carry, second.carry);
-        assert_eq!(hl.pass.borrow().len(), 1);
-    }
-
-    #[test]
-    fn sql_keywords_are_case_insensitive() {
-        let hl = SyntaxHighlighter::for_token_or_plain("sql");
-        let line = "select name from users where id = 'it''s'";
-        let spans = hl.spans(line, 0).spans;
-        let keywords = text_of(line, TokenKind::Keyword, &spans);
-        for keyword in ["select", "from", "where"] {
-            assert!(keywords.contains(&keyword.to_owned()), "{keywords:?}");
+        fn plain_text_has_no_classified_spans() {
+            let hl = SyntaxHighlighter::plain_text();
+            assert!(hl.spans("fn main() {}", 0).spans.is_empty());
+            assert_eq!(
+                hl.start().highlight_line("fn main() {}"),
+                [Span::new(0..12, TokenKind::Text)]
+            );
         }
-        assert!(spans.iter().any(|s| s.kind == TokenKind::StringLit));
+
+        fn unchanged_parse_state_reuses_its_carry() {
+            let hl = SyntaxHighlighter::for_token_or_plain("rs");
+            let first = hl.spans("let a = 1;", 0);
+            let second = hl.spans("let b = 2;", first.carry);
+            assert_eq!(first.carry, second.carry);
+            assert_eq!(hl.pass.borrow().len(), 1);
+        }
+
+        every_language_the_apps_name_has_a_grammar();
+        spans_cover_the_whole_line_in_order();
+        plain_text_has_no_classified_spans();
+        unchanged_parse_state_reuses_its_carry();
     }
 
     #[test]
-    fn toml_and_dockerfile_are_classified() {
-        let toml = SyntaxHighlighter::for_token_or_plain("toml");
-        let line = "name = \"tilo\" # comment";
-        let spans = toml.spans(line, 0).spans;
-        assert_eq!(text_of(line, TokenKind::StringLit, &spans), ["\"tilo\""]);
-        assert_eq!(text_of(line, TokenKind::Comment, &spans), ["# comment"]);
+    fn language_classifiers_categorize_tokens_and_carry_comments() {
+        fn rust_categories() {
+            let hl = SyntaxHighlighter::for_token_or_plain("rust");
+            let line = "fn main() { let x = 42; let s = \"hi\"; } // done";
+            let spans = hl.spans(line, 0).spans;
+            assert!(text_of(line, TokenKind::Keyword, &spans).contains(&"fn".to_owned()));
+            assert!(text_of(line, TokenKind::Keyword, &spans).contains(&"let".to_owned()));
+            assert_eq!(text_of(line, TokenKind::Function, &spans), ["main"]);
+            assert_eq!(text_of(line, TokenKind::Number, &spans), ["42"]);
+            assert_eq!(text_of(line, TokenKind::StringLit, &spans), ["\"hi\""]);
+            assert_eq!(text_of(line, TokenKind::Comment, &spans), ["// done"]);
+            assert!(text_of(line, TokenKind::Operator, &spans).contains(&"=".to_owned()));
+        }
 
-        let docker = SyntaxHighlighter::for_token_or_plain("Dockerfile");
-        let line = "FROM fedora:44";
-        let spans = docker.spans(line, 0).spans;
-        assert_eq!(text_of(line, TokenKind::Keyword, &spans), ["FROM"]);
-    }
+        fn block_comment_carries_across_lines() {
+            let hl = SyntaxHighlighter::for_token_or_plain("rs");
+            let first = hl.spans("code(); /* open", 0);
+            assert_ne!(first.carry, 0);
+            let second = hl.spans("still comment", first.carry);
+            assert!(second.spans.iter().all(|s| s.kind == TokenKind::Comment));
+            let third = hl.spans("*/ done();", second.carry);
+            assert_eq!(
+                third.spans.first().map(|s| s.kind),
+                Some(TokenKind::Comment)
+            );
+            assert!(third.spans.iter().any(|s| s.kind == TokenKind::Function));
+            // A fresh pass starts over rather than inheriting the comment.
+            let restart = hl.spans("still code", 0);
+            assert!(restart.spans.iter().all(|s| s.kind != TokenKind::Comment));
+        }
 
-    #[test]
-    fn plain_text_has_no_classified_spans() {
-        let hl = SyntaxHighlighter::plain_text();
-        assert!(hl.spans("fn main() {}", 0).spans.is_empty());
-        assert_eq!(
-            hl.start().highlight_line("fn main() {}"),
-            [Span::new(0..12, TokenKind::Text)]
-        );
+        fn sql_keywords_are_case_insensitive() {
+            let hl = SyntaxHighlighter::for_token_or_plain("sql");
+            let line = "select name from users where id = 'it''s'";
+            let spans = hl.spans(line, 0).spans;
+            let keywords = text_of(line, TokenKind::Keyword, &spans);
+            for keyword in ["select", "from", "where"] {
+                assert!(keywords.contains(&keyword.to_owned()), "{keywords:?}");
+            }
+            assert!(spans.iter().any(|s| s.kind == TokenKind::StringLit));
+        }
+
+        fn toml_and_dockerfile_are_classified() {
+            let toml = SyntaxHighlighter::for_token_or_plain("toml");
+            let line = "name = \"tilo\" # comment";
+            let spans = toml.spans(line, 0).spans;
+            assert_eq!(text_of(line, TokenKind::StringLit, &spans), ["\"tilo\""]);
+            assert_eq!(text_of(line, TokenKind::Comment, &spans), ["# comment"]);
+
+            let docker = SyntaxHighlighter::for_token_or_plain("Dockerfile");
+            let line = "FROM fedora:44";
+            let spans = docker.spans(line, 0).spans;
+            assert_eq!(text_of(line, TokenKind::Keyword, &spans), ["FROM"]);
+        }
+
+        rust_categories();
+        block_comment_carries_across_lines();
+        sql_keywords_are_case_insensitive();
+        toml_and_dockerfile_are_classified();
     }
 }

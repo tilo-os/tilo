@@ -211,12 +211,10 @@ impl MediaFrameSource {
             if !item.kind.is_visual() || item.kind.is_generated() {
                 continue;
             }
-            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            for b in item.id.as_bytes().iter().chain(item.path.as_bytes()) {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x1000_0000_01b3);
-            }
-            acc = acc.wrapping_add(h);
+            let mut hasher = fnv::FnvHasher::default();
+            std::hash::Hasher::write(&mut hasher, item.id.as_bytes());
+            std::hash::Hasher::write(&mut hasher, item.path.as_bytes());
+            acc = acc.wrapping_add(std::hash::Hasher::finish(&hasher));
         }
         acc
     }
@@ -378,12 +376,12 @@ impl FrameSource for MediaFrameSource {
                         if self.rolling.insert(media) {
                             s.engine().play();
                         }
-                        let deadline = std::time::Instant::now() + timeout;
+                        let deadline = ui::time::now() + timeout;
                         loop {
                             if let Some(f) = s.cached_frame_at(target_ms) {
                                 break Some(f);
                             }
-                            if std::time::Instant::now() >= deadline {
+                            if ui::time::now() >= deadline {
                                 break None;
                             }
                             s.poll_into_cache();

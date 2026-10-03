@@ -57,6 +57,10 @@ SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
 ReadOnlyPaths=/var/lib/tilo/secureboot
 ReadWritePaths=/boot
+# The ESP is mounted read-only: signed copies are staged here and
+# tilo-esp-write@secureboot-sign.service installs them.
+StateDirectory=tilo/esp-plan/secureboot-sign
+StateDirectoryMode=0700
 RestrictAddressFamilies=AF_UNIX
 # Signing is idempotent and inert until the keys are enrolled, so a failure here
 # must be loud but must not block the boot.

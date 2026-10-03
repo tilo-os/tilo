@@ -33,6 +33,16 @@ pub struct Manifest {
     /// image gate must drive the exact manifest/payload pair that was packed.
     #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
     pub accessibility: Accessibility,
+    /// `[actions]` block — what the app may do on the session's action door
+    /// under its own identity, beyond the actions it publishes itself.
+    #[serde(default, skip_serializing_if = "ActionAccess::is_empty")]
+    pub actions: ActionAccess,
+    /// `[resources]` block — the resource kinds this app's records hold,
+    /// written by `tilo-app package` from its `#[resource(kind)]`
+    /// declarations. A host creates a missing record for the app only in a
+    /// kind listed here; a manifest without the block declares none.
+    #[serde(default, skip_serializing_if = "Resources::is_empty")]
+    pub resources: Resources,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -46,6 +56,101 @@ pub struct Manifest {
     /// shim. Only meaningful when the entrypoint is `cli` or `both`.
     #[serde(default)]
     pub cli: Option<Cli>,
+    /// `[target]` block — the non-native execution target this build was
+    /// packed for. Absent for native Tilo OS packages, whose target is
+    /// `[package.isa]`. Written by the packer, never by the app author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+    /// `[capabilities]` block — the host capabilities the app uses. Signed
+    /// with the rest of the manifest so every host can check them before
+    /// launch.
+    #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
+    pub capabilities: Capabilities,
+}
+
+/// A target an app is built and published for.
+///
+/// Apps run on [`DEFAULT_PLATFORMS`] unless `package.platforms` narrows the
+/// list, which always comes with a `package.platform-reason`:
+///
+/// ```toml
+/// [package]
+/// platforms = ["linux", "macos"]
+/// platform-reason = "Hosts a pseudo-terminal for a login shell."
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Platform {
+    Linux,
+    Macos,
+    Web,
+    /// Linux, and only under Tilo OS host services.
+    TiloOs,
+}
+
+impl Platform {
+    /// The manifest spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Macos => "macos",
+            Self::Web => "web",
+            Self::TiloOs => "tilo-os",
+        }
+    }
+}
+
+/// The targets of an app that does not declare `package.platforms`.
+pub const DEFAULT_PLATFORMS: &[Platform] = &[Platform::Linux, Platform::Macos, Platform::Web];
+
+/// `[capabilities]` — host capabilities by name (`network.http`,
+/// `notifications`, `files.save`, ...). A `required` capability that a host
+/// cannot provide stops the launch; an `optional` one degrades.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+}
+
+impl Capabilities {
+    fn is_empty(&self) -> bool {
+        self.required.is_empty() && self.optional.is_empty()
+    }
+}
+
+/// `[target]` — a WebAssembly, Linux, Windows, macOS or Android build of the
+/// package.
+///
+/// For `linux`, `windows`, `macos` and `android`, `architecture` is `x86_64`
+/// or `aarch64`, `module` is the executable the GUI entrypoint names (for
+/// `android`, an `.apk` or `.aab`), and `runtime` is the toolkit release
+/// linked into it (`[package].runtime`).
+///
+/// The first four fields are exactly the registry's signed `RegistryTarget`
+/// (see `registry_types::target` for the canonical spellings):
+///
+/// ```toml
+/// [target]
+/// platform = "web"
+/// architecture = "wasm32"
+/// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
+/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
+/// module = "books.wasm"
+/// ```
+///
+/// For an app, `runtime` is the toolkit core it links against; for
+/// `kind = "runtime"` it is the core the package provides.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    pub platform: String,
+    pub architecture: String,
+    pub isa: String,
+    pub runtime: String,
+    /// Payload path of the WebAssembly module the loader instantiates.
+    pub module: String,
 }
 
 /// Optional accessibility acceptance data for an application package.
@@ -86,6 +191,17 @@ pub struct Package {
     /// produce e.g. `API` from `api-tester`.
     #[serde(default)]
     pub name: Option<String>,
+    /// The name in other languages, keyed by BCP 47 tag:
+    ///
+    /// ```toml
+    /// [package.names]
+    /// de = "Dateien"
+    /// ```
+    ///
+    /// Search matches every one of them, so an app is found by its name
+    /// in either the desktop's language or English.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<String, String>,
     /// Freedesktop-style menu category (`Office`, `Development`, ...);
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
@@ -98,6 +214,18 @@ pub struct Package {
     /// `None` for `kind = "runtime"`. Version must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Targets the app is built and published for; absent means
+    /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<Platform>>,
+    /// One-line reason the app narrows `platforms`; required exactly when
+    /// the list leaves out a default platform.
+    #[serde(
+        default,
+        rename = "platform-reason",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub platform_reason: Option<String>,
     /// Minimum CPU feature-level per architecture this build's binaries
     /// require, one entry per supported architecture:
     ///
@@ -111,6 +239,44 @@ pub struct Package {
     /// `tilo-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
+}
+
+impl Package {
+    /// The targets the app is built and published for.
+    #[must_use]
+    pub fn platforms(&self) -> &[Platform] {
+        self.platforms.as_deref().unwrap_or(DEFAULT_PLATFORMS)
+    }
+
+    /// Whether `platforms` leaves out any of [`DEFAULT_PLATFORMS`].
+    #[must_use]
+    pub fn is_platform_narrowed(&self) -> bool {
+        let platforms = self.platforms();
+        DEFAULT_PLATFORMS
+            .iter()
+            .any(|platform| !platforms.contains(platform))
+    }
+
+    /// Whether the app runs on `platform`.
+    #[must_use]
+    pub fn supports(&self, platform: Platform) -> bool {
+        self.platforms().contains(&platform)
+    }
+
+    /// Whether a build of this app may be published for a registry platform
+    /// (the registry's names are the manifest's). A Linux `.tapp` may be
+    /// published for `tilo-os` whether the app declares `linux` or
+    /// `tilo-os`; every other platform must be declared as named.
+    #[must_use]
+    pub fn publishable_as(&self, registry_platform: &str) -> bool {
+        match registry_platform {
+            "tilo-os" => self.supports(Platform::TiloOs) || self.supports(Platform::Linux),
+            "linux" => self.supports(Platform::Linux),
+            "macos" => self.supports(Platform::Macos),
+            "web" => self.supports(Platform::Web),
+            _ => false,
+        }
+    }
 }
 
 /// Per-arch minimum-feature-level requirements; every field is
@@ -451,6 +617,30 @@ impl TrustAttestation {
         let mut out = [0u8; 64];
         out.copy_from_slice(&bytes);
         Ok(Some(out))
+    }
+}
+
+/// `[actions]` — an application's own standing on the session's action door.
+///
+/// An app always reaches the actions it publishes. Everything else is
+/// declared here, signed with the manifest, and is only a ceiling: invoking
+/// another app's action additionally needs the workspace to grant it to
+/// this app, exactly as it grants a collaborator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionAccess {
+    /// Read the catalogue of actions the person using the app is offered:
+    /// labels, typed parameters and contracts, never their data.
+    #[serde(default)]
+    pub query: bool,
+    /// Invoke actions other apps publish, as this app.
+    #[serde(default)]
+    pub invoke: bool,
+}
+
+impl ActionAccess {
+    /// Whether nothing beyond the app's own actions is declared.
+    pub fn is_empty(&self) -> bool {
+        !self.query && !self.invoke
     }
 }
 
@@ -822,6 +1012,20 @@ impl serde::Serialize for SplashSegment {
     }
 }
 
+/// `[resources]` — the resource kinds an app's records hold, such as
+/// `example.note`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resources {
+    #[serde(default)]
+    pub kinds: Vec<String>,
+}
+
+impl Resources {
+    fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+}
+
 /// `[providers]` — normalized resources an app can open, or codec MIME scope
 /// for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -835,7 +1039,7 @@ pub struct Providers {
     /// URI schemes handled by the application (without `:`), such as
     /// `https`, `mailto`, or `webcal`. `file`, `data`, and `javascript` are
     /// deliberately reserved and rejected by validation.
-    #[serde(default, alias = "uri-schemes", alias = "uri_schemes")]
+    #[serde(default)]
     pub schemes: Vec<String>,
 }
 
@@ -935,6 +1139,79 @@ after_action = ["Close"]
         let recovered = Manifest::from_toml_str(&encoded).unwrap();
         assert_eq!(recovered.accessibility, manifest.accessibility);
         assert!(encoded.contains("[accessibility.atspi_acceptance]"));
+    }
+
+    #[test]
+    fn declared_action_access_survives_the_signed_manifest_round_trip() {
+        let bare = r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#;
+        let undeclared = Manifest::from_toml_str(bare).unwrap();
+        assert_eq!(undeclared.actions, ActionAccess::default());
+        assert!(!undeclared.to_toml_string().unwrap().contains("[actions]"));
+
+        let declared =
+            Manifest::from_toml_str(&format!("{bare}\n[actions]\nquery = true\n")).unwrap();
+        assert_eq!(
+            declared.actions,
+            ActionAccess {
+                query: true,
+                invoke: false
+            }
+        );
+        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+        assert_eq!(recovered.actions, declared.actions);
+    }
+
+    #[test]
+    fn declared_resource_kinds_survive_the_signed_manifest_round_trip() {
+        let bare = r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#;
+        // A manifest from before the field declares no kinds and encodes,
+        // so signs, exactly as it did.
+        let undeclared = Manifest::from_toml_str(bare).unwrap();
+        assert!(undeclared.resources.kinds.is_empty());
+        let encoded = undeclared.to_toml_string().unwrap();
+        assert!(!encoded.contains("[resources]"));
+
+        let declared = Manifest::from_toml_str(&format!(
+            "{bare}\n[resources]\nkinds = [\"example.note\", \"example.todo\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
+        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+        assert_eq!(recovered.resources, declared.resources);
     }
 }
 

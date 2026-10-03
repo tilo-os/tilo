@@ -17,14 +17,15 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+host-fs = { path = "../../crates/system/host-fs" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -34,6 +35,7 @@ walkdir.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

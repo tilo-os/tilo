@@ -220,56 +220,59 @@ mod tests {
     }
 
     #[test]
-    fn clusters_are_canonical_collections_not_zoom_dependent_representatives() {
-        let photos = vec![
-            photo("a.png", 37.7749, -122.4194, "San Francisco"),
-            photo("b.png", 37.7749, -122.4194, "San Francisco"),
-            photo("c.png", 48.8566, 2.3522, "Paris"),
-        ];
-        let clusters = clusters(&photos);
-        assert_eq!(clusters.iter().map(PlaceCluster::count).sum::<usize>(), 3);
-        let san_francisco = clusters
-            .iter()
-            .find(|cluster| cluster.key == photos[0].location.as_ref().unwrap().place_key())
-            .unwrap();
-        assert_eq!(san_francisco.count(), 2);
-        assert_eq!(
-            san_francisco.photo_ids,
-            vec![photos[0].id.clone(), photos[1].id.clone()]
-        );
-        assert!(
-            clusters
+    fn places_cluster_canonically_and_project_finitely_across_the_dateline() {
+        eprintln!("phase clusters_are_canonical_collections_not_zoom_dependent_representatives");
+        {
+            let photos = vec![
+                photo("a.png", 37.7749, -122.4194, "San Francisco"),
+                photo("b.png", 37.7749, -122.4194, "San Francisco"),
+                photo("c.png", 48.8566, 2.3522, "Paris"),
+            ];
+            let clusters = clusters(&photos);
+            assert_eq!(clusters.iter().map(PlaceCluster::count).sum::<usize>(), 3);
+            let san_francisco = clusters
                 .iter()
-                .any(|cluster| cluster.accessibility_label().contains("photographs"))
-        );
-    }
+                .find(|cluster| cluster.key == photos[0].location.as_ref().unwrap().place_key())
+                .unwrap();
+            assert_eq!(san_francisco.count(), 2);
+            assert_eq!(
+                san_francisco.photo_ids,
+                vec![photos[0].id.clone(), photos[1].id.clone()]
+            );
+            assert!(
+                clusters
+                    .iter()
+                    .any(|cluster| cluster.accessibility_label().contains("photographs"))
+            );
+        }
 
-    #[test]
-    fn pan_zoom_and_projection_are_finite_and_wrap_the_dateline() {
-        let viewport = MapViewport {
-            latitude: 0.0,
-            longitude: 179.0,
-            zoom: 4.0,
-        };
-        let location = PhotoLocation {
-            latitude: 1.0,
-            longitude: -179.0,
-            label: Some("Dateline".to_owned()),
-            provenance: LocationProvenance::default(),
-        };
-        let (x, y) = viewport.project(&location, 1000.0, 600.0).unwrap();
-        assert!(
-            x > 450.0 && x < 550.0,
-            "dateline should project nearby, got {x}"
-        );
-        assert!(y.is_finite());
-        let (latitude, longitude) = viewport.unproject(x, y, 1000.0, 600.0).unwrap();
-        assert!((latitude - location.latitude).abs() < 0.000_001);
-        assert!((longitude - location.longitude).abs() < 0.000_001);
-        let moved = viewport
-            .panned(40.0, -20.0, 1000.0, 600.0)
-            .zoomed_at(1.0, x, y, 1000.0, 600.0);
-        assert!((MIN_ZOOM..=MAX_ZOOM).contains(&moved.zoom));
-        assert!((-180.0..180.0).contains(&moved.longitude));
+        eprintln!("phase pan_zoom_and_projection_are_finite_and_wrap_the_dateline");
+        {
+            let viewport = MapViewport {
+                latitude: 0.0,
+                longitude: 179.0,
+                zoom: 4.0,
+            };
+            let location = PhotoLocation {
+                latitude: 1.0,
+                longitude: -179.0,
+                label: Some("Dateline".to_owned()),
+                provenance: LocationProvenance::default(),
+            };
+            let (x, y) = viewport.project(&location, 1000.0, 600.0).unwrap();
+            assert!(
+                x > 450.0 && x < 550.0,
+                "dateline should project nearby, got {x}"
+            );
+            assert!(y.is_finite());
+            let (latitude, longitude) = viewport.unproject(x, y, 1000.0, 600.0).unwrap();
+            assert!((latitude - location.latitude).abs() < 0.000_001);
+            assert!((longitude - location.longitude).abs() < 0.000_001);
+            let moved = viewport
+                .panned(40.0, -20.0, 1000.0, 600.0)
+                .zoomed_at(1.0, x, y, 1000.0, 600.0);
+            assert!((MIN_ZOOM..=MAX_ZOOM).contains(&moved.zoom));
+            assert!((-180.0..180.0).contains(&moved.longitude));
+        }
     }
 }

@@ -1,0 +1,83 @@
+# The app-developer documentation published at https://tilo.so/docs/developers/.
+#
+# The pages stay where they are in this repository; this file only chooses
+# which of them are published, in what order and under which address.
+# `python3 tools/docs/developer_docs.py check` renders every page, rewrites
+# links between listed pages to their site addresses and links to any other
+# file to this repository, and fails on a missing page, file or heading. The
+# repository policy suite runs it on every pull request. The site builds its
+# pages from `developer_docs.py export` and the API reference from
+# `tools/docs/build-api-reference.sh`.
+
+base = "/docs/developers/"
+repository = "https://code.tilo.so/tilo/tilo"
+
+[api]
+title = "tilo-app API reference"
+# Relative to `base`; the site serves the rustdoc output there.
+path = "api/tilo_app/"
+# A link to one of these opens the API reference instead of the source tree.
+sources = ["crates/sdk/tilo-app", "crates/sdk/tilo-app/src/lib.rs"]
+
+[[page]]
+slug = ""
+source = "docs/developers/getting-started.md"
+section = "Start"
+nav = "Getting started"
+description = "Install the tilo-app command, create an app, run it with hot reload, then package it for every platform and publish it."
+
+[[page]]
+slug = "examples"
+source = "docs/examples.md"
+section = "Start"
+nav = "Templates and examples"
+description = "The four templates an app starts from and the runnable examples that each teach one idea."
+
+[[page]]
+slug = "build-an-app"
+source = "docs/app-development.md"
+section = "Guides"
+nav = "Build an app"
+description = "The complete tilo-app workflow: templates, the Tilo-native contract, resources and actions, screens, localization, text, large collections and testing."
+
+[[page]]
+slug = "actions"
+source = "docs/action-model-recipe.md"
+section = "Guides"
+nav = "Resources and actions"
+description = "Model every change as a serializable action so undo, collaboration, the command palette, scripts and agents share one implementation."
+
+[[page]]
+slug = "interface-guidelines"
+source = "crates/sdk/ui-core/HIG.md"
+section = "Guides"
+nav = "Interface guidelines"
+description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
+
+[[page]]
+slug = "agent-action-api"
+source = "docs/agent-action-api.md"
+section = "Guides"
+nav = "Scripts and agents"
+description = "How programs and agents enumerate and invoke an app's actions without touching the screen."
+
+[[page]]
+slug = "android"
+source = "docs/android.md"
+section = "Platforms"
+nav = "Android"
+description = "Run a Tilo app as a standalone Android app with the same code and widgets."
+
+[[page]]
+slug = "publishing"
+source = "docs/publishing.md"
+section = "Ship"
+nav = "Publish an app"
+description = "Create a publisher key, prove a namespace, publish releases and build them from CI."
+
+[[page]]
+slug = "registry"
+source = "docs/registry.md"
+section = "Ship"
+nav = "The app registry"
+description = "How the Tilo app registry stores, verifies and serves packages, its REST API, and how to run your own."

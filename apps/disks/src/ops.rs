@@ -30,7 +30,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
 use std::time::Duration;
-use std::time::Instant;
 
 /// The privileged operations the app can perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +212,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
 
     let mut buf = vec![0u8; BLOCK];
-    let start = Instant::now();
+    let start = ui::time::now();
     let mut total = 0usize;
     while total < TARGET {
         match f.read(&mut buf) {
@@ -229,7 +228,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0).max(BLOCK as u64);
     let mut small = vec![0u8; 4096];
     let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
-    let seek_start = Instant::now();
+    let seek_start = ui::time::now();
     for _ in 0..SEEKS {
         rng = rng
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -287,50 +286,54 @@ pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, Strin
 mod tests {
     use super::*;
 
+    /// Mount/unmount/format target the right `UDisks2` D-Bus calls, fall back to udisksctl then raw tools, and a failed chain reports its last failure.
     #[test]
-    fn dbus_calls_target_the_right_interface_and_method() {
-        let m = mount_call("sdc1");
-        assert_eq!(m.interface, IFACE_FS);
-        assert_eq!(m.method, "Mount");
-        assert!(m.object_path.ends_with("/sdc1"));
+    fn device_commands_target_udisks_then_cli_fallbacks() {
+        // --- phase: dbus_calls_target_the_right_interface_and_method ---
+        {
+            let m = mount_call("sdc1");
+            assert_eq!(m.interface, IFACE_FS);
+            assert_eq!(m.method, "Mount");
+            assert!(m.object_path.ends_with("/sdc1"));
 
-        let u = unmount_call("sdc1");
-        assert_eq!(u.method, "Unmount");
-        assert_eq!(u.interface, IFACE_FS);
+            let u = unmount_call("sdc1");
+            assert_eq!(u.method, "Unmount");
+            assert_eq!(u.interface, IFACE_FS);
 
-        let f = format_call("sdc1", "ext4");
-        assert_eq!(f.interface, IFACE_BLOCK);
-        assert_eq!(f.method, "Format");
-        assert_eq!(f.fstype, "ext4");
-    }
+            let f = format_call("sdc1", "ext4");
+            assert_eq!(f.interface, IFACE_BLOCK);
+            assert_eq!(f.method, "Format");
+            assert_eq!(f.fstype, "ext4");
+        }
 
-    #[test]
-    fn cli_fallbacks_prefer_udisksctl_then_raw_tools() {
-        let m = mount_cli("sdc1");
-        assert_eq!(m[0].program, "udisksctl");
-        assert_eq!(m[0].args, vec!["mount", "-b", "/dev/sdc1"]);
-        assert_eq!(m[1].program, "mount");
-        assert_eq!(m[1].args, vec!["/dev/sdc1"]);
+        // --- phase: cli_fallbacks_prefer_udisksctl_then_raw_tools ---
+        {
+            let m = mount_cli("sdc1");
+            assert_eq!(m[0].program, "udisksctl");
+            assert_eq!(m[0].args, vec!["mount", "-b", "/dev/sdc1"]);
+            assert_eq!(m[1].program, "mount");
+            assert_eq!(m[1].args, vec!["/dev/sdc1"]);
 
-        let u = unmount_cli("sdc1");
-        assert_eq!(u[0].program, "udisksctl");
-        assert_eq!(u[0].args, vec!["unmount", "-b", "/dev/sdc1"]);
-        assert_eq!(u[1].program, "umount");
+            let u = unmount_cli("sdc1");
+            assert_eq!(u[0].program, "udisksctl");
+            assert_eq!(u[0].args, vec!["unmount", "-b", "/dev/sdc1"]);
+            assert_eq!(u[1].program, "umount");
 
-        let f = format_cli("sdc1", "vfat");
-        assert_eq!(f[0].program, "mkfs.vfat");
-        assert_eq!(f[0].args, vec!["-F", "/dev/sdc1"]);
-    }
+            let f = format_cli("sdc1", "vfat");
+            assert_eq!(f[0].program, "mkfs.vfat");
+            assert_eq!(f[0].args, vec!["-F", "/dev/sdc1"]);
+        }
 
-    #[test]
-    fn command_chain_reports_the_last_failure_when_nothing_runs() {
-        // Two programs that certainly do not exist → an Err carrying the last.
-        let specs = vec![
-            CommandSpec::new("tilo-no-such-tool-a", &["x"]),
-            CommandSpec::new("tilo-no-such-tool-b", &["y"]),
-        ];
-        let r = run_command_chain(&specs);
-        assert!(r.is_err());
-        assert!(r.unwrap_err().contains("tilo-no-such-tool-b"));
+        // --- phase: command_chain_reports_the_last_failure_when_nothing_runs ---
+        {
+            // Two programs that certainly do not exist → an Err carrying the last.
+            let specs = vec![
+                CommandSpec::new("tilo-no-such-tool-a", &["x"]),
+                CommandSpec::new("tilo-no-such-tool-b", &["y"]),
+            ];
+            let r = run_command_chain(&specs);
+            assert!(r.is_err());
+            assert!(r.unwrap_err().contains("tilo-no-such-tool-b"));
+        }
     }
 }

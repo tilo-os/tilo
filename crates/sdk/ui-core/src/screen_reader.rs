@@ -720,215 +720,224 @@ mod tests {
     }
 
     #[test]
-    fn describe_plain_button() {
-        let node = n(Role::Button).with_name("Save");
-        assert_eq!(describe(&node), "Save, button");
+    fn describe_speaks_role_name_value_and_content() {
+        // Case `describe_plain_button`.
+        {
+            let node = n(Role::Button).with_name("Save");
+            assert_eq!(describe(&node), "Save, button");
+        }
+
+        // Case `describe_unnamed_button_is_just_role`.
+        {
+            let node = n(Role::Button);
+            assert_eq!(describe(&node), "button");
+        }
+
+        // Case `describe_slider_with_value`.
+        {
+            let node = n(Role::Slider).with_name("Volume").with_value("50%");
+            assert_eq!(describe(&node), "Volume, slider, 50%");
+        }
+
+        // Case `describe_text_input_with_value`.
+        {
+            let node = n(Role::TextInput).with_name("Name").with_value("Ada");
+            assert_eq!(describe(&node), "Name, edit text, Ada");
+        }
+
+        // Case `describe_multiline_text_input`.
+        {
+            let node = n(Role::MultilineTextInput).with_name("Notes");
+            assert_eq!(describe(&node), "Notes, multi-line edit text");
+        }
+
+        // Case `describe_heading_includes_level`.
+        {
+            let node = n(Role::Heading { level: 2 }).with_name("Introduction");
+            assert_eq!(describe(&node), "Introduction, heading level 2");
+        }
+
+        // Case `describe_link`.
+        {
+            let node = n(Role::Link).with_name("Learn more");
+            assert_eq!(describe(&node), "Learn more, link");
+        }
+
+        // Case `describe_menu_item`.
+        {
+            let node = n(Role::MenuItem).with_name("Open");
+            assert_eq!(describe(&node), "Open, menu item");
+        }
+
+        // Case `describe_static_text_is_content_only`.
+        {
+            let node = n(Role::StaticText).with_name("Hello world");
+            assert_eq!(describe(&node), "Hello world");
+        }
+
+        // Case `describe_empty_generic_is_empty_string`.
+        {
+            let node = n(Role::Generic);
+            assert_eq!(describe(&node), "");
+        }
+
+        // Case `describe_busy_progress`.
+        {
+            let node = n(Role::ProgressBar)
+                .with_name("Loading")
+                .with_value("40%")
+                .with_state(AccessState::new().busy(true));
+            assert_eq!(describe(&node), "Loading, progress bar, 40%, busy");
+        }
     }
 
     #[test]
-    fn describe_unnamed_button_is_just_role() {
-        let node = n(Role::Button);
-        assert_eq!(describe(&node), "button");
+    fn describe_speaks_checked_toggled_expanded_and_selected_states() {
+        // Case `describe_checkbox_checked_and_unchecked`.
+        {
+            let checked = n(Role::Checkbox)
+                .with_name("Accept")
+                .with_state(AccessState::new().checked(true));
+            assert_eq!(describe(&checked), "Accept, checkbox, checked");
+
+            let unchecked = n(Role::Checkbox)
+                .with_name("Accept")
+                .with_state(AccessState::new().checked(false));
+            assert_eq!(describe(&unchecked), "Accept, checkbox, not checked");
+        }
+
+        // Case `describe_checkbox_mixed_is_partially_checked`.
+        {
+            let mut state = AccessState::new().checked(true);
+            state.mixed = true;
+            let node = n(Role::Checkbox).with_name("Toppings").with_state(state);
+            assert_eq!(describe(&node), "Toppings, checkbox, partially checked");
+        }
+
+        // Case `describe_switch_reads_on_off_not_checked`.
+        {
+            let on = n(Role::Switch)
+                .with_name("Wi-Fi")
+                .with_state(AccessState::new().checked(true));
+            assert_eq!(describe(&on), "Wi-Fi, switch, on");
+
+            let off = n(Role::Switch)
+                .with_name("Wi-Fi")
+                .with_state(AccessState::new().checked(false));
+            assert_eq!(describe(&off), "Wi-Fi, switch, off");
+        }
+
+        // Case `describe_toggle_button_reads_on_off`.
+        {
+            let node = n(Role::ToggleButton)
+                .with_name("Bold")
+                .with_state(AccessState::new().checked(true));
+            assert_eq!(describe(&node), "Bold, toggle button, on");
+        }
+
+        // Case `describe_expanded_and_collapsed`.
+        {
+            let expanded = n(Role::TreeItem)
+                .with_name("Folder")
+                .with_state(AccessState::new().expanded(true));
+            assert_eq!(describe(&expanded), "Folder, tree item, expanded");
+
+            let collapsed = n(Role::ComboBox)
+                .with_name("Country")
+                .with_state(AccessState::new().expanded(false));
+            assert_eq!(describe(&collapsed), "Country, combo box, collapsed");
+        }
+
+        // Case `describe_selected_list_item_and_tab`.
+        {
+            let item = n(Role::ListItem)
+                .with_name("Inbox")
+                .with_state(AccessState::new().selected(true));
+            assert_eq!(describe(&item), "Inbox, list item, selected");
+
+            let tab = n(Role::Tab)
+                .with_name("General")
+                .with_state(AccessState::new().selected(true));
+            assert_eq!(describe(&tab), "General, tab, selected");
+        }
     }
 
     #[test]
-    fn describe_checkbox_checked_and_unchecked() {
-        let checked = n(Role::Checkbox)
-            .with_name("Accept")
-            .with_state(AccessState::new().checked(true));
-        assert_eq!(describe(&checked), "Accept, checkbox, checked");
+    fn describe_orders_qualifiers_and_never_speaks_protected_values() {
+        // Case `describe_protected_field_never_speaks_value`.
+        {
+            let node = n(Role::TextInput)
+                .with_name("Password")
+                .with_value("hunter2")
+                .with_state(AccessState::new().protected(true));
+            let phrase = describe(&node);
+            assert!(
+                !phrase.contains("hunter2"),
+                "protected value must never be spoken, got {phrase:?}"
+            );
+            assert_eq!(phrase, "Password, edit text, protected");
+        }
 
-        let unchecked = n(Role::Checkbox)
-            .with_name("Accept")
-            .with_state(AccessState::new().checked(false));
-        assert_eq!(describe(&unchecked), "Accept, checkbox, not checked");
-    }
+        // Case `describe_disabled_checked_checkbox_full_phrase`.
+        {
+            let node = n(Role::Checkbox)
+                .with_name("Accept")
+                .with_state(AccessState::new().checked(true).disabled(true));
+            assert_eq!(describe(&node), "Accept, checkbox, checked, dimmed");
+        }
 
-    #[test]
-    fn describe_checkbox_mixed_is_partially_checked() {
-        let mut state = AccessState::new().checked(true);
-        state.mixed = true;
-        let node = n(Role::Checkbox).with_name("Toppings").with_state(state);
-        assert_eq!(describe(&node), "Toppings, checkbox, partially checked");
-    }
+        // Case `describe_disabled_is_spoken_last`.
+        {
+            let node = n(Role::Button)
+                .with_name("Go")
+                .with_state(AccessState::new().disabled(true));
+            assert_eq!(describe(&node), "Go, button, dimmed");
+        }
 
-    #[test]
-    fn describe_switch_reads_on_off_not_checked() {
-        let on = n(Role::Switch)
-            .with_name("Wi-Fi")
-            .with_state(AccessState::new().checked(true));
-        assert_eq!(describe(&on), "Wi-Fi, switch, on");
+        // Case `describe_required_and_invalid`.
+        {
+            let mut state = AccessState::new();
+            state.required = true;
+            state.invalid = true;
+            let node = n(Role::TextInput).with_name("Email").with_state(state);
+            assert_eq!(describe(&node), "Email, edit text, required, invalid entry");
+        }
 
-        let off = n(Role::Switch)
-            .with_name("Wi-Fi")
-            .with_state(AccessState::new().checked(false));
-        assert_eq!(describe(&off), "Wi-Fi, switch, off");
-    }
+        // Case `describe_read_only_only_for_editable_roles`.
+        {
+            let mut state = AccessState::new();
+            state.read_only = true;
+            let editable = n(Role::TextInput).with_name("Id").with_state(state);
+            assert_eq!(describe(&editable), "Id, edit text, read only");
+            let static_text = n(Role::StaticText).with_name("Label").with_state(state);
+            assert_eq!(describe(&static_text), "Label");
+        }
 
-    #[test]
-    fn describe_toggle_button_reads_on_off() {
-        let node = n(Role::ToggleButton)
-            .with_name("Bold")
-            .with_state(AccessState::new().checked(true));
-        assert_eq!(describe(&node), "Bold, toggle button, on");
-    }
+        // Case `describe_appends_position_in_set`.
+        {
+            let node = n(Role::Tab)
+                .with_name("Inbox")
+                .with_state(AccessState::new().selected(true))
+                .with_position(2, 4);
+            assert_eq!(describe(&node), "Inbox, tab, selected, 2 of 4");
+        }
 
-    #[test]
-    fn describe_slider_with_value() {
-        let node = n(Role::Slider).with_name("Volume").with_value("50%");
-        assert_eq!(describe(&node), "Volume, slider, 50%");
-    }
+        // Case `describe_appends_level_for_tree_depth`.
+        {
+            let node = n(Role::TreeItem)
+                .with_name("Src")
+                .with_position(3, 7)
+                .with_level(2);
+            assert_eq!(describe(&node), "Src, tree item, 3 of 7, level 2");
+        }
 
-    #[test]
-    fn describe_text_input_with_value() {
-        let node = n(Role::TextInput).with_name("Name").with_value("Ada");
-        assert_eq!(describe(&node), "Name, edit text, Ada");
-    }
-
-    #[test]
-    fn describe_protected_field_never_speaks_value() {
-        let node = n(Role::TextInput)
-            .with_name("Password")
-            .with_value("hunter2")
-            .with_state(AccessState::new().protected(true));
-        let phrase = describe(&node);
-        assert!(
-            !phrase.contains("hunter2"),
-            "protected value must never be spoken, got {phrase:?}"
-        );
-        assert_eq!(phrase, "Password, edit text, protected");
-    }
-
-    #[test]
-    fn describe_multiline_text_input() {
-        let node = n(Role::MultilineTextInput).with_name("Notes");
-        assert_eq!(describe(&node), "Notes, multi-line edit text");
-    }
-
-    #[test]
-    fn describe_disabled_checked_checkbox_full_phrase() {
-        let node = n(Role::Checkbox)
-            .with_name("Accept")
-            .with_state(AccessState::new().checked(true).disabled(true));
-        assert_eq!(describe(&node), "Accept, checkbox, checked, dimmed");
-    }
-
-    #[test]
-    fn describe_disabled_is_spoken_last() {
-        let node = n(Role::Button)
-            .with_name("Go")
-            .with_state(AccessState::new().disabled(true));
-        assert_eq!(describe(&node), "Go, button, dimmed");
-    }
-
-    #[test]
-    fn describe_required_and_invalid() {
-        let mut state = AccessState::new();
-        state.required = true;
-        state.invalid = true;
-        let node = n(Role::TextInput).with_name("Email").with_state(state);
-        assert_eq!(describe(&node), "Email, edit text, required, invalid entry");
-    }
-
-    #[test]
-    fn describe_read_only_only_for_editable_roles() {
-        let mut state = AccessState::new();
-        state.read_only = true;
-        let editable = n(Role::TextInput).with_name("Id").with_state(state);
-        assert_eq!(describe(&editable), "Id, edit text, read only");
-        let static_text = n(Role::StaticText).with_name("Label").with_state(state);
-        assert_eq!(describe(&static_text), "Label");
-    }
-
-    #[test]
-    fn describe_expanded_and_collapsed() {
-        let expanded = n(Role::TreeItem)
-            .with_name("Folder")
-            .with_state(AccessState::new().expanded(true));
-        assert_eq!(describe(&expanded), "Folder, tree item, expanded");
-
-        let collapsed = n(Role::ComboBox)
-            .with_name("Country")
-            .with_state(AccessState::new().expanded(false));
-        assert_eq!(describe(&collapsed), "Country, combo box, collapsed");
-    }
-
-    #[test]
-    fn describe_selected_list_item_and_tab() {
-        let item = n(Role::ListItem)
-            .with_name("Inbox")
-            .with_state(AccessState::new().selected(true));
-        assert_eq!(describe(&item), "Inbox, list item, selected");
-
-        let tab = n(Role::Tab)
-            .with_name("General")
-            .with_state(AccessState::new().selected(true));
-        assert_eq!(describe(&tab), "General, tab, selected");
-    }
-
-    #[test]
-    fn describe_heading_includes_level() {
-        let node = n(Role::Heading { level: 2 }).with_name("Introduction");
-        assert_eq!(describe(&node), "Introduction, heading level 2");
-    }
-
-    #[test]
-    fn describe_link() {
-        let node = n(Role::Link).with_name("Learn more");
-        assert_eq!(describe(&node), "Learn more, link");
-    }
-
-    #[test]
-    fn describe_menu_item() {
-        let node = n(Role::MenuItem).with_name("Open");
-        assert_eq!(describe(&node), "Open, menu item");
-    }
-
-    #[test]
-    fn describe_static_text_is_content_only() {
-        let node = n(Role::StaticText).with_name("Hello world");
-        assert_eq!(describe(&node), "Hello world");
-    }
-
-    #[test]
-    fn describe_busy_progress() {
-        let node = n(Role::ProgressBar)
-            .with_name("Loading")
-            .with_value("40%")
-            .with_state(AccessState::new().busy(true));
-        assert_eq!(describe(&node), "Loading, progress bar, 40%, busy");
-    }
-
-    #[test]
-    fn describe_empty_generic_is_empty_string() {
-        let node = n(Role::Generic);
-        assert_eq!(describe(&node), "");
-    }
-
-    #[test]
-    fn describe_appends_position_in_set() {
-        let node = n(Role::Tab)
-            .with_name("Inbox")
-            .with_state(AccessState::new().selected(true))
-            .with_position(2, 4);
-        assert_eq!(describe(&node), "Inbox, tab, selected, 2 of 4");
-    }
-
-    #[test]
-    fn describe_appends_level_for_tree_depth() {
-        let node = n(Role::TreeItem)
-            .with_name("Src")
-            .with_position(3, 7)
-            .with_level(2);
-        assert_eq!(describe(&node), "Src, tree item, 3 of 7, level 2");
-    }
-
-    #[test]
-    fn describe_position_requires_both_pos_and_size() {
-        // "N of M" is only spoken when both are present.
-        let mut node = n(Role::ListItem).with_name("Item");
-        node.pos_in_set = Some(2);
-        assert_eq!(describe(&node), "Item, list item");
+        // Case `describe_position_requires_both_pos_and_size`.
+        {
+            // "N of M" is only spoken when both are present.
+            let mut node = n(Role::ListItem).with_name("Item");
+            node.pos_in_set = Some(2);
+            assert_eq!(describe(&node), "Item, list item");
+        }
     }
 
     fn null_reader() -> ScreenReader {
@@ -981,117 +990,123 @@ mod tests {
     }
 
     #[test]
-    fn null_reader_constructs_and_is_silent_safe() {
-        let mut r = ScreenReader::new();
-        r.announce_focus(&n(Role::Button).with_name("Ok"));
-        // Contract under test is "does not panic" (output may be a real backend).
-        let _ = null_reader();
-    }
-
-    #[test]
-    fn announce_focus_speaks_described_phrase() {
-        let (mut r, rec) = recording_reader();
-        r.announce_focus(&n(Role::Button).with_name("Save"));
-        assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
-    }
-
-    #[test]
-    fn announce_focus_skips_empty_phrase() {
-        let (mut r, rec) = recording_reader();
-        r.announce_focus(&n(Role::Generic)); // describes to ""
-        assert!(rec.0.borrow().spoken().is_empty());
-    }
-
-    #[test]
-    fn focus_storm_coalesces_to_latest() {
-        // Drains immediately, so every focus is recorded, but each
-        // interrupting push first issues a stop().
-        let (mut r, rec) = recording_reader();
-        for name in ["New", "Open", "Save", "Print", "Close"] {
-            r.announce_focus(&n(Role::Button).with_name(name));
+    fn announcements_coalesce_interrupt_and_reach_the_speaker() {
+        // Case `null_reader_constructs_and_is_silent_safe`.
+        {
+            let mut r = ScreenReader::new();
+            r.announce_focus(&n(Role::Button).with_name("Ok"));
+            // Contract under test is "does not panic" (output may be a real backend).
+            let _ = null_reader();
         }
-        let recref = rec.0.borrow();
-        assert_eq!(recref.last(), Some("Close, button"));
-        assert!(
-            recref.stop_count() >= 4,
-            "interrupts should stop in-flight speech"
-        );
+
+        // Case `announce_focus_speaks_described_phrase`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.announce_focus(&n(Role::Button).with_name("Save"));
+            assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
+        }
+
+        // Case `announce_focus_skips_empty_phrase`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.announce_focus(&n(Role::Generic)); // describes to ""
+            assert!(rec.0.borrow().spoken().is_empty());
+        }
+
+        // Case `focus_storm_coalesces_to_latest`.
+        {
+            // Drains immediately, so every focus is recorded, but each
+            // interrupting push first issues a stop().
+            let (mut r, rec) = recording_reader();
+            for name in ["New", "Open", "Save", "Print", "Close"] {
+                r.announce_focus(&n(Role::Button).with_name(name));
+            }
+            let recref = rec.0.borrow();
+            assert_eq!(recref.last(), Some("Close, button"));
+            assert!(
+                recref.stop_count() >= 4,
+                "interrupts should stop in-flight speech"
+            );
+        }
+
+        // Case `interrupt_replaces_pending_in_queue`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("First, button"));
+            q.push(Utterance::new("Second, button"));
+            assert_eq!(q.len(), 1, "newer focus must replace pending older focus");
+            assert_eq!(q.peek().unwrap().text, "Second, button");
+        }
+
+        // Case `announce_value_change_is_spoken`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.announce_value_change("75%");
+            assert_eq!(rec.0.borrow().spoken(), &["75%".to_string()]);
+        }
+
+        // Case `announce_live_region_important_survives_focus_interrupt`.
+        {
+            // Strictly higher priority survives a focus interrupt.
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
+            q.push(Utterance::new("Allow, button")); // Message, interrupt
+            assert_eq!(q.len(), 2);
+            assert_eq!(q.pop().unwrap().text, "Permission denied");
+            assert_eq!(q.pop().unwrap().text, "Allow, button");
+        }
+
+        // Case `stop_clears_and_silences`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.announce_focus(&n(Role::Button).with_name("Go"));
+            assert!(rec.0.borrow().is_speaking());
+            r.stop();
+            assert!(!rec.0.borrow().is_speaking());
+            assert!(rec.0.borrow().stop_count() >= 1);
+        }
+
+        // Case `set_rate_and_voice_reach_speaker`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.set_rate(1.5);
+            r.set_voice("en-us");
+            assert_eq!(rec.0.borrow().rate(), 1.5);
+            assert_eq!(rec.0.borrow().voice(), Some("en-us"));
+        }
     }
 
     #[test]
-    fn interrupt_replaces_pending_in_queue() {
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("First, button"));
-        q.push(Utterance::new("Second, button"));
-        assert_eq!(q.len(), 1, "newer focus must replace pending older focus");
-        assert_eq!(q.peek().unwrap().text, "Second, button");
-    }
+    fn typing_echo_speaks_chars_words_and_deletions() {
+        // Case `echo_char_records_typed_char`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.echo_char('a');
+            r.echo_char(' ');
+            let recref = rec.0.borrow();
+            assert_eq!(recref.spoken(), &["a".to_string(), "space".to_string()]);
+            // Echo is Text priority.
+            assert_eq!(recref.utterances()[0].priority, Priority::Text);
+        }
 
-    #[test]
-    fn announce_value_change_is_spoken() {
-        let (mut r, rec) = recording_reader();
-        r.announce_value_change("75%");
-        assert_eq!(rec.0.borrow().spoken(), &["75%".to_string()]);
-    }
+        // Case `echo_word_records_word`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.echo_word("hello");
+            assert_eq!(rec.0.borrow().spoken(), &["hello".to_string()]);
+        }
 
-    #[test]
-    fn echo_char_records_typed_char() {
-        let (mut r, rec) = recording_reader();
-        r.echo_char('a');
-        r.echo_char(' ');
-        let recref = rec.0.borrow();
-        assert_eq!(recref.spoken(), &["a".to_string(), "space".to_string()]);
-        // Echo is Text priority.
-        assert_eq!(recref.utterances()[0].priority, Priority::Text);
-    }
-
-    #[test]
-    fn echo_word_records_word() {
-        let (mut r, rec) = recording_reader();
-        r.echo_word("hello");
-        assert_eq!(rec.0.borrow().spoken(), &["hello".to_string()]);
-    }
-
-    #[test]
-    fn echo_deletion_speaks_char_and_deleted() {
-        let (mut r, rec) = recording_reader();
-        r.echo_deletion("x");
-        r.echo_deletion("multiple chars");
-        let recref = rec.0.borrow();
-        assert_eq!(
-            recref.spoken(),
-            &["x deleted".to_string(), "deleted".to_string()]
-        );
-    }
-
-    #[test]
-    fn announce_live_region_important_survives_focus_interrupt() {
-        // Strictly higher priority survives a focus interrupt.
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
-        q.push(Utterance::new("Allow, button")); // Message, interrupt
-        assert_eq!(q.len(), 2);
-        assert_eq!(q.pop().unwrap().text, "Permission denied");
-        assert_eq!(q.pop().unwrap().text, "Allow, button");
-    }
-
-    #[test]
-    fn stop_clears_and_silences() {
-        let (mut r, rec) = recording_reader();
-        r.announce_focus(&n(Role::Button).with_name("Go"));
-        assert!(rec.0.borrow().is_speaking());
-        r.stop();
-        assert!(!rec.0.borrow().is_speaking());
-        assert!(rec.0.borrow().stop_count() >= 1);
-    }
-
-    #[test]
-    fn set_rate_and_voice_reach_speaker() {
-        let (mut r, rec) = recording_reader();
-        r.set_rate(1.5);
-        r.set_voice("en-us");
-        assert_eq!(rec.0.borrow().rate(), 1.5);
-        assert_eq!(rec.0.borrow().voice(), Some("en-us"));
+        // Case `echo_deletion_speaks_char_and_deleted`.
+        {
+            let (mut r, rec) = recording_reader();
+            r.echo_deletion("x");
+            r.echo_deletion("multiple chars");
+            let recref = rec.0.borrow();
+            assert_eq!(
+                recref.spoken(),
+                &["x deleted".to_string(), "deleted".to_string()]
+            );
+        }
     }
 
     // Configurable accessibility + children, no layout machinery.
@@ -1116,7 +1131,6 @@ mod tests {
         }
     }
     impl Widget for TW {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1143,12 +1157,6 @@ mod tests {
             _tr: &mut crate::text_render::TextRenderer,
             _th: &Theme,
             _p: &crate::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -1182,122 +1190,125 @@ mod tests {
     }
 
     #[test]
-    fn flatten_reading_order_is_dfs_with_presentational_collapsed() {
-        let root = sample_tree();
-        let order = flatten_reading_order(&root);
-        let roles: Vec<Role> = order.iter().map(|n| n.role).collect();
-        // Presentational root + wrapper produce no node; everything else in DFS.
-        assert_eq!(
-            roles,
-            vec![
-                Role::Heading { level: 1 },
-                Role::Group,
-                Role::TextInput,
-                Role::Button,
-                Role::Link,
-            ]
-        );
-    }
-
-    #[test]
-    fn read_next_walks_forward_in_order() {
-        let root = sample_tree();
-        let (mut r, rec) = recording_reader();
-        let a = r.read_next(&root).unwrap();
-        assert_eq!(a.role, Role::Heading { level: 1 });
-        let b = r.read_next(&root).unwrap();
-        assert_eq!(b.role, Role::Group);
-        let c = r.read_next(&root).unwrap();
-        assert_eq!(c.role, Role::TextInput);
-        let recref = rec.0.borrow();
-        assert_eq!(
-            recref.spoken(),
-            &[
-                "Title, heading level 1".to_string(),
-                "Form, group".to_string(),
-                "Name, edit text".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn read_next_stops_at_end() {
-        let root = sample_tree();
-        let mut r = recording_reader().0;
-        for _ in 0..5 {
-            assert!(r.read_next(&root).is_some());
+    fn reading_cursor_walks_the_flattened_order() {
+        // Case `flatten_reading_order_is_dfs_with_presentational_collapsed`.
+        {
+            let root = sample_tree();
+            let order = flatten_reading_order(&root);
+            let roles: Vec<Role> = order.iter().map(|n| n.role).collect();
+            // Presentational root + wrapper produce no node; everything else in DFS.
+            assert_eq!(
+                roles,
+                vec![
+                    Role::Heading { level: 1 },
+                    Role::Group,
+                    Role::TextInput,
+                    Role::Button,
+                    Role::Link,
+                ]
+            );
         }
-        assert!(
-            r.read_next(&root).is_none(),
-            "cursor must not run off the end"
-        );
-        assert_eq!(r.cursor(), Some(4));
-    }
 
-    #[test]
-    fn read_prev_walks_backward() {
-        let root = sample_tree();
-        let mut r = recording_reader().0;
-        r.read_next(&root); // Heading (0)
-        r.read_next(&root); // Group (1)
-        let back = r.read_prev(&root).unwrap();
-        assert_eq!(back.role, Role::Heading { level: 1 });
-        assert_eq!(r.cursor(), Some(0));
-        assert!(r.read_prev(&root).is_none());
-    }
+        // Case `read_next_walks_forward_in_order`.
+        {
+            let root = sample_tree();
+            let (mut r, rec) = recording_reader();
+            let a = r.read_next(&root).unwrap();
+            assert_eq!(a.role, Role::Heading { level: 1 });
+            let b = r.read_next(&root).unwrap();
+            assert_eq!(b.role, Role::Group);
+            let c = r.read_next(&root).unwrap();
+            assert_eq!(c.role, Role::TextInput);
+            let recref = rec.0.borrow();
+            assert_eq!(
+                recref.spoken(),
+                &[
+                    "Title, heading level 1".to_string(),
+                    "Form, group".to_string(),
+                    "Name, edit text".to_string(),
+                ]
+            );
+        }
 
-    #[test]
-    fn read_prev_from_unset_starts_at_last() {
-        let root = sample_tree();
-        let mut r = recording_reader().0;
-        let last = r.read_prev(&root).unwrap();
-        assert_eq!(last.role, Role::Link);
-        assert_eq!(r.cursor(), Some(4));
-    }
+        // Case `read_next_stops_at_end`.
+        {
+            let root = sample_tree();
+            let mut r = recording_reader().0;
+            for _ in 0..5 {
+                assert!(r.read_next(&root).is_some());
+            }
+            assert!(
+                r.read_next(&root).is_none(),
+                "cursor must not run off the end"
+            );
+            assert_eq!(r.cursor(), Some(4));
+        }
 
-    #[test]
-    fn read_all_speaks_every_node_then_seeds_cursor() {
-        let root = sample_tree();
-        let (mut r, rec) = recording_reader();
-        r.read_all(&root);
-        let recref = rec.0.borrow();
-        assert_eq!(
-            recref.spoken(),
-            &[
-                "Title, heading level 1".to_string(),
-                "Form, group".to_string(),
-                "Name, edit text".to_string(),
-                "OK, button".to_string(),
-                "Help, link".to_string(),
-            ]
-        );
-        drop(recref);
-        assert_eq!(r.cursor(), Some(0));
-        let recref = rec.0.borrow();
-        assert!(recref.utterances()[0].interrupt);
-        assert!(!recref.utterances()[1].interrupt);
-    }
+        // Case `read_prev_walks_backward`.
+        {
+            let root = sample_tree();
+            let mut r = recording_reader().0;
+            r.read_next(&root); // Heading (0)
+            r.read_next(&root); // Group (1)
+            let back = r.read_prev(&root).unwrap();
+            assert_eq!(back.role, Role::Heading { level: 1 });
+            assert_eq!(r.cursor(), Some(0));
+            assert!(r.read_prev(&root).is_none());
+        }
 
-    #[test]
-    fn announce_focus_resets_reading_cursor() {
-        let root = sample_tree();
-        let mut r = recording_reader().0;
-        r.read_next(&root);
-        r.read_next(&root);
-        assert_eq!(r.cursor(), Some(1));
-        r.announce_focus(&n(Role::Button).with_name("Elsewhere"));
-        assert_eq!(
-            r.cursor(),
-            None,
-            "focus change re-anchors the reading cursor"
-        );
-    }
+        // Case `read_prev_from_unset_starts_at_last`.
+        {
+            let root = sample_tree();
+            let mut r = recording_reader().0;
+            let last = r.read_prev(&root).unwrap();
+            assert_eq!(last.role, Role::Link);
+            assert_eq!(r.cursor(), Some(4));
+        }
 
-    #[test]
-    fn seed_reading_order_counts_accessible_nodes() {
-        let root = sample_tree();
-        let mut r = recording_reader().0;
-        assert_eq!(r.seed_reading_order(&root), 5);
+        // Case `read_all_speaks_every_node_then_seeds_cursor`.
+        {
+            let root = sample_tree();
+            let (mut r, rec) = recording_reader();
+            r.read_all(&root);
+            let recref = rec.0.borrow();
+            assert_eq!(
+                recref.spoken(),
+                &[
+                    "Title, heading level 1".to_string(),
+                    "Form, group".to_string(),
+                    "Name, edit text".to_string(),
+                    "OK, button".to_string(),
+                    "Help, link".to_string(),
+                ]
+            );
+            drop(recref);
+            assert_eq!(r.cursor(), Some(0));
+            let recref = rec.0.borrow();
+            assert!(recref.utterances()[0].interrupt);
+            assert!(!recref.utterances()[1].interrupt);
+        }
+
+        // Case `announce_focus_resets_reading_cursor`.
+        {
+            let root = sample_tree();
+            let mut r = recording_reader().0;
+            r.read_next(&root);
+            r.read_next(&root);
+            assert_eq!(r.cursor(), Some(1));
+            r.announce_focus(&n(Role::Button).with_name("Elsewhere"));
+            assert_eq!(
+                r.cursor(),
+                None,
+                "focus change re-anchors the reading cursor"
+            );
+        }
+
+        // Case `seed_reading_order_counts_accessible_nodes`.
+        {
+            let root = sample_tree();
+            let mut r = recording_reader().0;
+            assert_eq!(r.seed_reading_order(&root), 5);
+        }
     }
 
     /// root(None) -> [ H1 "Top", para "intro", H2 "Body", button "Go",
@@ -1323,81 +1334,85 @@ mod tests {
     }
 
     #[test]
-    fn read_next_heading_lands_on_each_heading() {
-        let root = quicknav_tree();
-        let mut r = recording_reader().0;
-        let a = r.read_next_heading(&root).unwrap();
-        assert_eq!(a.role, Role::Heading { level: 1 });
-        assert_eq!(a.name.as_deref(), Some("Top"));
-        // Skips the paragraph and the controls, landing on the next H2.
-        let b = r.read_next_heading(&root).unwrap();
-        assert_eq!(b.role, Role::Heading { level: 2 });
-        assert_eq!(b.name.as_deref(), Some("Body"));
-        let c = r.read_next_heading(&root).unwrap();
-        assert_eq!(c.name.as_deref(), Some("Footer"));
-        assert!(r.read_next_heading(&root).is_none());
-    }
-
-    #[test]
-    fn read_prev_heading_walks_backward() {
-        let root = quicknav_tree();
-        let mut r = recording_reader().0;
-        let last = r.read_prev_heading(&root).unwrap();
-        assert_eq!(last.name.as_deref(), Some("Footer"));
-        let mid = r.read_prev_heading(&root).unwrap();
-        assert_eq!(mid.name.as_deref(), Some("Body"));
-        let first = r.read_prev_heading(&root).unwrap();
-        assert_eq!(first.name.as_deref(), Some("Top"));
-        assert!(r.read_prev_heading(&root).is_none());
-    }
-
-    #[test]
-    fn read_next_control_skips_non_interactive() {
-        let root = quicknav_tree();
-        let mut r = recording_reader().0;
-        let a = r.read_next_control(&root).unwrap();
-        assert_eq!(a.role, Role::Button);
-        assert_eq!(a.name.as_deref(), Some("Go"));
-        let b = r.read_next_control(&root).unwrap();
-        assert_eq!(b.role, Role::TextInput);
-        assert!(r.read_next_control(&root).is_none());
-    }
-
-    #[test]
-    fn read_prev_control_from_end_walks_backward() {
-        let root = quicknav_tree();
-        let mut r = recording_reader().0;
-        let last = r.read_prev_control(&root).unwrap();
-        assert_eq!(last.role, Role::TextInput);
-        let prev = r.read_prev_control(&root).unwrap();
-        assert_eq!(prev.role, Role::Button);
-        assert!(r.read_prev_control(&root).is_none());
-    }
-
-    #[test]
-    fn quick_nav_speaks_a_no_more_cue_when_nothing_matches() {
-        let root = TW::new(None).child(Box::new(TW::new(Some(n(Role::Button).with_name("Solo")))));
-        let (mut r, rec) = recording_reader();
-        assert!(r.read_next_heading(&root).is_none());
-        assert_eq!(rec.0.borrow().last(), Some(phrase::no_next().as_str()));
-    }
-
-    #[test]
-    fn is_heading_and_is_form_field_predicates() {
-        assert!(is_heading(&n(Role::Heading { level: 1 })));
-        assert!(!is_heading(&n(Role::Button)));
-        for role in [
-            Role::Button,
-            Role::Checkbox,
-            Role::Switch,
-            Role::Slider,
-            Role::ComboBox,
-            Role::TextInput,
-            Role::Link,
-        ] {
-            assert!(is_form_field(&n(role)), "{role:?} should be a form field");
+    fn quick_nav_jumps_between_headings_and_controls() {
+        // Case `read_next_heading_lands_on_each_heading`.
+        {
+            let root = quicknav_tree();
+            let mut r = recording_reader().0;
+            let a = r.read_next_heading(&root).unwrap();
+            assert_eq!(a.role, Role::Heading { level: 1 });
+            assert_eq!(a.name.as_deref(), Some("Top"));
+            // Skips the paragraph and the controls, landing on the next H2.
+            let b = r.read_next_heading(&root).unwrap();
+            assert_eq!(b.role, Role::Heading { level: 2 });
+            assert_eq!(b.name.as_deref(), Some("Body"));
+            let c = r.read_next_heading(&root).unwrap();
+            assert_eq!(c.name.as_deref(), Some("Footer"));
+            assert!(r.read_next_heading(&root).is_none());
         }
-        assert!(!is_form_field(&n(Role::StaticText)));
-        assert!(!is_form_field(&n(Role::Group)));
+
+        // Case `read_prev_heading_walks_backward`.
+        {
+            let root = quicknav_tree();
+            let mut r = recording_reader().0;
+            let last = r.read_prev_heading(&root).unwrap();
+            assert_eq!(last.name.as_deref(), Some("Footer"));
+            let mid = r.read_prev_heading(&root).unwrap();
+            assert_eq!(mid.name.as_deref(), Some("Body"));
+            let first = r.read_prev_heading(&root).unwrap();
+            assert_eq!(first.name.as_deref(), Some("Top"));
+            assert!(r.read_prev_heading(&root).is_none());
+        }
+
+        // Case `read_next_control_skips_non_interactive`.
+        {
+            let root = quicknav_tree();
+            let mut r = recording_reader().0;
+            let a = r.read_next_control(&root).unwrap();
+            assert_eq!(a.role, Role::Button);
+            assert_eq!(a.name.as_deref(), Some("Go"));
+            let b = r.read_next_control(&root).unwrap();
+            assert_eq!(b.role, Role::TextInput);
+            assert!(r.read_next_control(&root).is_none());
+        }
+
+        // Case `read_prev_control_from_end_walks_backward`.
+        {
+            let root = quicknav_tree();
+            let mut r = recording_reader().0;
+            let last = r.read_prev_control(&root).unwrap();
+            assert_eq!(last.role, Role::TextInput);
+            let prev = r.read_prev_control(&root).unwrap();
+            assert_eq!(prev.role, Role::Button);
+            assert!(r.read_prev_control(&root).is_none());
+        }
+
+        // Case `quick_nav_speaks_a_no_more_cue_when_nothing_matches`.
+        {
+            let root =
+                TW::new(None).child(Box::new(TW::new(Some(n(Role::Button).with_name("Solo")))));
+            let (mut r, rec) = recording_reader();
+            assert!(r.read_next_heading(&root).is_none());
+            assert_eq!(rec.0.borrow().last(), Some(phrase::no_next().as_str()));
+        }
+
+        // Case `is_heading_and_is_form_field_predicates`.
+        {
+            assert!(is_heading(&n(Role::Heading { level: 1 })));
+            assert!(!is_heading(&n(Role::Button)));
+            for role in [
+                Role::Button,
+                Role::Checkbox,
+                Role::Switch,
+                Role::Slider,
+                Role::ComboBox,
+                Role::TextInput,
+                Role::Link,
+            ] {
+                assert!(is_form_field(&n(role)), "{role:?} should be a form field");
+            }
+            assert!(!is_form_field(&n(Role::StaticText)));
+            assert!(!is_form_field(&n(Role::Group)));
+        }
     }
 }

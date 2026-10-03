@@ -63,7 +63,7 @@
 //!
 //! ## Consequence
 //!
-//! [`Widget::resources`](ui::widget::Widget::resources) publishes a storage
+//! [`Widget::resources`](ui::resources::resources) publishes a storage
 //! root, a resource for every drive and child resources for every partition.
 //! Each meaningful operation is an `OperationKind::Effect` handled by
 //! `disks.operation`: format and benchmark for disks/partitions, eject for a
@@ -72,7 +72,7 @@
 //! and an exact typed phrase for destructive formatting. Before an operation
 //! starts, `DisksApp` revalidates the resource leaf against its latest local
 //! probe and derives the filesystem type from that probe, rejecting stale or
-//! forged remote payloads. [`take_committed_action`](ui::widget::Widget::take_committed_action)
+//! forged remote payloads. [`take_committed_action`](ui::undo::CommittedActions::take_committed_action)
 //! remains `None` because none of these effects may be replayed as a CRDT
 //! mutation; the tests below prove both halves of that boundary.
 
@@ -110,14 +110,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -136,239 +138,253 @@ mod tests {
     fn resources_for(doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         let mut app = DisksApp::new();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
-    // Disks publishes only effect operations, so the registry decodes nothing.
-    // Without live disk access (as in tests) every effect is published as
-    // unavailable, which the palette rightly hides, so there is no `palette`
-    // section: the sweep checks the published surface and its contracts.
+    // Select is a document action; effects stay unpublished without live disks
+    // so the palette section is empty. The sweep still needs the disks decoder.
     ui::action_contract_tests! {
         seed: synced().1,
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        registry: {
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            <crate::resource::Disks as ui::tilo_resource::Resource>::register(&mut registry);
+            registry
+        },
         resources: |doc| resources_for(doc),
     }
 
-    /// The whole CRDT footprint is a system projection (`topology`) plus per-peer
-    /// view state (`selected`, `selected_part`, `tab`, `pending`, `status`).
-    /// There is no user-authored record collection anywhere — no saved presets,
-    /// scheduled jobs, benchmark history, bookmarks or settings map — so there is
-    /// nothing for an action to mutate. Driven through the real `Widget::sync`.
+    /// The CRDT holds only a verbatim, wholesale-reconciled topology projection plus view state, and round-trips byte-identically.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn document_holds_only_projected_topology_and_view_state() {
-        let (_app, doc) = synced();
+    fn document_is_a_durable_projection_of_topology_and_view_state() {
+        // --- phase: document_holds_only_projected_topology_and_view_state ---
+        // The whole CRDT footprint is a system projection (`topology`) plus per-peer
+        // view state (`selected`, `selected_part`, `tab`, `pending`, `status`).
+        // There is no user-authored record collection anywhere — no saved presets,
+        // scheduled jobs, benchmark history, bookmarks or settings map — so there is
+        // nothing for an action to mutate. Driven through the real `Widget::sync`.
+        {
+            let (_app, doc) = synced();
 
-        // Exactly the six keys the app seeds — nothing structural besides them.
-        let mut root_keys: Vec<String> = doc.keys(&ROOT).collect();
-        root_keys.sort();
-        assert_eq!(
-            root_keys,
-            vec![
-                "pending".to_string(),
-                "selected".to_string(),
-                "selected_part".to_string(),
-                "status".to_string(),
-                "tab".to_string(),
-                "topology".to_string(),
-            ],
-            "the document holds only the projected topology + view state: {root_keys:?}",
-        );
+            // Exactly the six keys the app seeds — nothing structural besides them.
+            let mut root_keys: Vec<String> = doc.keys(&ROOT).collect();
+            root_keys.sort();
+            assert_eq!(
+                root_keys,
+                vec![
+                    "pending".to_string(),
+                    "selected".to_string(),
+                    "selected_part".to_string(),
+                    "status".to_string(),
+                    "tab".to_string(),
+                    "topology".to_string(),
+                ],
+                "the document holds only the projected topology + view state: {root_keys:?}",
+            );
 
-        // `topology` is a JSON string scalar — a machine-derived projection, not a
-        // collaboratively authored structure.
-        match doc.get(&ROOT, "topology").unwrap() {
-            Some((Value::Scalar(v), _)) => assert!(
-                matches!(v.as_ref(), ScalarValue::Str(_)),
-                "topology is a serialised projection string, got {v:?}",
-            ),
-            other => panic!("topology must be a scalar string, got {other:?}"),
-        }
-
-        // The remaining keys are plain view-state scalars: two Ints (selection)
-        // and three Strs (tab / pending / status) — the recipe's "presentation".
-        for key in ["selected", "selected_part"] {
-            assert!(
-                matches!(
-                    doc.get(&ROOT, key).unwrap(),
-                    Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Int(_))
+            // `topology` is a JSON string scalar — a machine-derived projection, not a
+            // collaboratively authored structure.
+            match doc.get(&ROOT, "topology").unwrap() {
+                Some((Value::Scalar(v), _)) => assert!(
+                    matches!(v.as_ref(), ScalarValue::Str(_)),
+                    "topology is a serialised projection string, got {v:?}",
                 ),
-                "`{key}` is an integer view-state scalar",
+                other => panic!("topology must be a scalar string, got {other:?}"),
+            }
+
+            // The remaining keys are plain view-state scalars: two Ints (selection)
+            // and three Strs (tab / pending / status) — the recipe's "presentation".
+            for key in ["selected", "selected_part"] {
+                assert!(
+                    matches!(
+                        doc.get(&ROOT, key).unwrap(),
+                        Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Int(_))
+                    ),
+                    "`{key}` is an integer view-state scalar",
+                );
+            }
+            for key in ["tab", "pending", "status"] {
+                assert!(
+                    matches!(
+                        doc.get(&ROOT, key).unwrap(),
+                        Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Str(_))
+                    ),
+                    "`{key}` is a string view-state scalar",
+                );
+            }
+
+            // No durable, user-authored record collection exists to hang an action
+            // off — proving this isn't a "saved presets are actions" case and that we
+            // did not fabricate a saved-configs model.
+            for forbidden in [
+                "presets",
+                "preset",
+                "saved",
+                "configs",
+                "config",
+                "jobs",
+                "schedule",
+                "benchmarks",
+                "history",
+                "bookmarks",
+                "favourites",
+                "favorites",
+                "settings",
+                "prefs",
+            ] {
+                assert!(
+                    doc.get(&ROOT, forbidden).unwrap().is_none(),
+                    "document must not carry a `{forbidden}` record collection",
+                );
+            }
+        }
+
+        // --- phase: topology_is_a_verbatim_projection_reconciled_wholesale ---
+        // `topology` is a *verbatim projection* of the probed inventory, reconciled
+        // wholesale — exactly how the store keeps a mirror of external system state
+        // rather than a user-authored record. The real `Widget::sync` serialises the
+        // sample topology into the doc byte-for-byte; a subsequent re-probe (the same
+        // `write_topology` call `sync` makes after a mount changes the layout)
+        // *replaces* the scalar rather than editing it, which is what marks it a
+        // mirror and not a collaborative document.
+        {
+            let mut app = DisksApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &ROOT);
+
+            let stored = DisksDoc::topology_json(&doc).expect("topology projected into the doc");
+            assert_eq!(
+                stored,
+                serde_json::to_string(&Topology::sample()).unwrap(),
+                "the doc holds a verbatim serialisation of the probed inventory",
+            );
+
+            // Re-probing to a different inventory overwrites the projection wholesale
+            // (the production reconciliation path used by `Widget::sync`).
+            DisksDoc::write_topology(&mut doc, &Topology::default());
+            let after = DisksDoc::topology_json(&doc).unwrap();
+            assert_eq!(
+                after,
+                serde_json::to_string(&Topology::default()).unwrap(),
+                "re-probing replaces the projection wholesale",
+            );
+            assert_ne!(
+                after, stored,
+                "the mirror tracks the live system, not a user edit",
             );
         }
-        for key in ["tab", "pending", "status"] {
+
+        // --- phase: projected_state_round_trips_byte_identically ---
+        // The projected + view state is durable and converges for free through the
+        // toolkit's native CRDT path — save/load lands a peer on the byte-identical
+        // document (same head hashes, not merely the same values). This is precisely
+        // the persistence + convergence an action executor would provide, so wrapping
+        // the projection in an action would add nothing: no action is needed.
+        {
+            let (_app, mut doc) = synced();
+            doc.commit();
+            let bytes = doc.save();
+
+            let mut peer = AutoCommit::load(&bytes).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "byte-identical document on load",
+            );
+
+            let here = DisksDoc::topology_json(&doc).expect("topology present here");
+            let there = DisksDoc::topology_json(&peer).expect("topology present on the peer");
             assert!(
-                matches!(
-                    doc.get(&ROOT, key).unwrap(),
-                    Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Str(_))
-                ),
-                "`{key}` is a string view-state scalar",
+                !here.is_empty() && here != serde_json::to_string(&Topology::default()).unwrap(),
+                "the seed produced a real projected topology",
             );
+            assert_eq!(here, there, "the peer sees the same projected inventory");
         }
+    }
 
-        // No durable, user-authored record collection exists to hang an action
-        // off — proving this isn't a "saved presets are actions" case and that we
-        // did not fabricate a saved-configs model.
-        for forbidden in [
-            "presets",
-            "preset",
-            "saved",
-            "configs",
-            "config",
-            "jobs",
-            "schedule",
-            "benchmarks",
-            "history",
-            "bookmarks",
-            "favourites",
-            "favorites",
-            "settings",
-            "prefs",
-        ] {
+    /// Device operations are external effects exported as resource actions; they never write the shared document.
+    #[test]
+    fn device_operations_are_external_resource_actions() {
+        // --- phase: device_operations_are_external_and_never_touch_the_document ---
+        // A device operation is **external**: `ops::run` — the exact call the live
+        // worker thread makes — opens/commands the real device and returns a
+        // device-level `Result`, while the shared document's heads stay **unchanged**.
+        // The execution boundary takes no `AutoCommit`, so it writes nothing to the
+        // CRDT; hence mount/unmount/format/eject/benchmark are not actions. Uses a
+        // device name that cannot exist, so nothing on the machine is touched.
+        {
+            let (_app, mut doc) = synced();
+            doc.commit();
+            let heads_before = doc.get_heads();
+
+            // The production execution path (`DisksApp`'s worker calls `ops::run`).
+            // Benchmark opens `/dev/<leaf>` directly; a bogus leaf fails immediately
+            // with no side effect and no subprocess.
+            let bench = ops::run(Op::Benchmark, "tilo-nonexistent-block-device", None);
             assert!(
-                doc.get(&ROOT, forbidden).unwrap().is_none(),
-                "document must not carry a `{forbidden}` record collection",
+                bench.is_err(),
+                "the external op ran against the device and reported a device-level result",
             );
-        }
-    }
 
-    /// `topology` is a *verbatim projection* of the probed inventory, reconciled
-    /// wholesale — exactly how the store keeps a mirror of external system state
-    /// rather than a user-authored record. The real `Widget::sync` serialises the
-    /// sample topology into the doc byte-for-byte; a subsequent re-probe (the same
-    /// `write_topology` call `sync` makes after a mount changes the layout)
-    /// *replaces* the scalar rather than editing it, which is what marks it a
-    /// mirror and not a collaborative document.
-    #[test]
-    fn topology_is_a_verbatim_projection_reconciled_wholesale() {
-        let mut app = DisksApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-
-        let stored = DisksDoc::topology_json(&doc).expect("topology projected into the doc");
-        assert_eq!(
-            stored,
-            serde_json::to_string(&Topology::sample()).unwrap(),
-            "the doc holds a verbatim serialisation of the probed inventory",
-        );
-
-        // Re-probing to a different inventory overwrites the projection wholesale
-        // (the production reconciliation path used by `Widget::sync`).
-        DisksDoc::write_topology(&mut doc, &Topology::default());
-        let after = DisksDoc::topology_json(&doc).unwrap();
-        assert_eq!(
-            after,
-            serde_json::to_string(&Topology::default()).unwrap(),
-            "re-probing replaces the projection wholesale",
-        );
-        assert_ne!(
-            after, stored,
-            "the mirror tracks the live system, not a user edit",
-        );
-    }
-
-    /// A device operation is **external**: `ops::run` — the exact call the live
-    /// worker thread makes — opens/commands the real device and returns a
-    /// device-level `Result`, while the shared document's heads stay **unchanged**.
-    /// The execution boundary takes no `AutoCommit`, so it writes nothing to the
-    /// CRDT; hence mount/unmount/format/eject/benchmark are not actions. Uses a
-    /// device name that cannot exist, so nothing on the machine is touched.
-    #[test]
-    fn device_operations_are_external_and_never_touch_the_document() {
-        let (_app, mut doc) = synced();
-        doc.commit();
-        let heads_before = doc.get_heads();
-
-        // The production execution path (`DisksApp`'s worker calls `ops::run`).
-        // Benchmark opens `/dev/<leaf>` directly; a bogus leaf fails immediately
-        // with no side effect and no subprocess.
-        let bench = ops::run(Op::Benchmark, "tilo-nonexistent-block-device", None);
-        assert!(
-            bench.is_err(),
-            "the external op ran against the device and reported a device-level result",
-        );
-
-        // The CLI fallback chain is likewise a pure process effect — run it
-        // against a tool that does not exist so nothing on the host is mutated.
-        let chain = ops::run_command_chain(&[CommandSpec {
-            program: "tilo-no-such-disk-tool".to_string(),
-            args: Vec::new(),
-        }]);
-        assert!(
-            chain.is_err(),
-            "the CLI fallback is a process effect, not a doc write"
-        );
-
-        assert_eq!(
-            doc.get_heads(),
-            heads_before,
-            "device operations mutate the system, never the shared document",
-        );
-    }
-
-    /// The projected + view state is durable and converges for free through the
-    /// toolkit's native CRDT path — save/load lands a peer on the byte-identical
-    /// document (same head hashes, not merely the same values). This is precisely
-    /// the persistence + convergence an action executor would provide, so wrapping
-    /// the projection in an action would add nothing: no action is needed.
-    #[test]
-    fn projected_state_round_trips_byte_identically() {
-        let (_app, mut doc) = synced();
-        doc.commit();
-        let bytes = doc.save();
-
-        let mut peer = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "byte-identical document on load",
-        );
-
-        let here = DisksDoc::topology_json(&doc).expect("topology present here");
-        let there = DisksDoc::topology_json(&peer).expect("topology present on the peer");
-        assert!(
-            !here.is_empty() && here != serde_json::to_string(&Topology::default()).unwrap(),
-            "the seed produced a real projected topology",
-        );
-        assert_eq!(here, there, "the peer sees the same projected inventory");
-    }
-
-    /// Device operations are exported as external resource actions while the
-    /// projected document remains action-free.
-    #[test]
-    fn exports_external_operations_without_document_actions() {
-        let (mut app, mut doc) = synced();
-
-        // Real event path: move the pointer over the surface.
-        send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
-
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one storage-system root");
-        let system = &resources[0];
-        assert_eq!(system.kind, "disks.system");
-        let partition = system
-            .children
-            .iter()
-            .flat_map(|drive| &drive.children)
-            .find(|resource| resource.kind == "disks.partition")
-            .expect("a partition resource");
-        let actions: Vec<&str> = partition
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for expected in ["benchmark", "format"] {
+            // The CLI fallback chain is likewise a pure process effect — run it
+            // against a tool that does not exist so nothing on the host is mutated.
+            let chain = ops::run_command_chain(&[CommandSpec {
+                program: "tilo-no-such-disk-tool".to_string(),
+                args: Vec::new(),
+            }]);
             assert!(
-                actions.contains(&expected),
-                "partition publishes {expected}: {actions:?}",
+                chain.is_err(),
+                "the CLI fallback is a process effect, not a doc write"
+            );
+
+            assert_eq!(
+                doc.get_heads(),
+                heads_before,
+                "device operations mutate the system, never the shared document",
             );
         }
-        assert!(
-            actions.iter().any(|id| matches!(*id, "mount" | "unmount")),
-            "partition publishes the mount action appropriate to its state: {actions:?}",
-        );
-        assert!(
-            app.take_committed_action().is_none(),
-            "no action is dispatched, so no action-host undo boundary is recorded",
-        );
+
+        // --- phase: exports_external_operations_without_document_actions ---
+        // Device operations are exported as external resource actions while the
+        // projected document remains action-free.
+        {
+            let (mut app, mut doc) = synced();
+
+            // Real event path: move the pointer over the surface.
+            send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
+
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one storage-system root");
+            let system = &resources[0];
+            assert_eq!(system.kind, "disks.system");
+            let partition = system
+                .children
+                .iter()
+                .flat_map(|drive| &drive.children)
+                .find(|resource| resource.kind == "disks.partition")
+                .expect("a partition resource");
+            let actions: Vec<&str> = partition
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for expected in ["benchmark", "format"] {
+                assert!(
+                    actions.contains(&expected),
+                    "partition publishes {expected}: {actions:?}",
+                );
+            }
+            assert!(
+                actions.iter().any(|id| matches!(*id, "mount" | "unmount")),
+                "partition publishes the mount action appropriate to its state: {actions:?}",
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_none(),
+                "no action is dispatched, so no action-host undo boundary is recorded",
+            );
+        }
     }
 }

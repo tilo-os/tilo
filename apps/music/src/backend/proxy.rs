@@ -203,10 +203,10 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
         .user_agent(BROWSER_UA)
         .build()
         .ok()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(5);
     for instance in instances() {
         for &(itag, mime, codec, format, bitrate) in KNOWN_AUDIO_ITAGS {
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 tracing::debug!(target: "music::proxy", "resolve_rangeable: deadline reached, no working instance");
                 return None;
             }
@@ -314,51 +314,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proxy_url_is_local_and_carries_id_and_itag() {
-        let url = proxy_media_url("https://yewtu.be/", "dQw4w9WgXcQ", 140);
-        assert_eq!(
-            url,
-            "https://yewtu.be/latest_version?id=dQw4w9WgXcQ&itag=140&local=true"
-        );
-        // The `local=true` flag is what makes the instance proxy the bytes (and
-        // thus serve arbitrary ranges over the whole file).
-        assert!(url.contains("local=true"), "must proxy locally: {url}");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn proxy_urls_format_selection_and_content_sniffing() {
+        // Phase `proxy_url_is_local_and_carries_id_and_itag`.
+        {
+            let url = proxy_media_url("https://yewtu.be/", "dQw4w9WgXcQ", 140);
+            assert_eq!(
+                url,
+                "https://yewtu.be/latest_version?id=dQw4w9WgXcQ&itag=140&local=true"
+            );
+            // The `local=true` flag is what makes the instance proxy the bytes (and
+            // thus serve arbitrary ranges over the whole file).
+            assert!(url.contains("local=true"), "must proxy locally: {url}");
+        }
 
-    #[test]
-    fn video_info_url_builds_api_path() {
-        assert_eq!(
-            video_info_url("https://inv.nadeko.net", "abc123"),
-            "https://inv.nadeko.net/api/v1/videos/abc123"
-        );
-    }
+        // Phase `video_info_url_builds_api_path`.
+        {
+            assert_eq!(
+                video_info_url("https://inv.nadeko.net", "abc123"),
+                "https://inv.nadeko.net/api/v1/videos/abc123"
+            );
+        }
 
-    #[test]
-    fn parse_and_pick_best_prefers_m4a_then_bitrate() {
-        // Mirrors an Invidious `/api/v1/videos/{id}` body: mixed video + audio
-        // adaptive formats, bitrate as a string (as Invidious sends it).
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{
-                "lengthSeconds": 329,
-                "adaptiveFormats": [
-                    {"itag":"137","type":"video/mp4; codecs=\"avc1\"","bitrate":"2500000"},
-                    {"itag":"251","type":"audio/webm; codecs=\"opus\"","bitrate":"160000","clen":"6000000"},
-                    {"itag":"140","type":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":"128000","clen":"5200000"},
-                    {"itag":"139","type":"audio/mp4; codecs=\"mp4a.40.5\"","bitrate":"48000","clen":"2000000"}
-                ]
-            }"#,
-        )
-        .unwrap();
-        let audios = parse_adaptive_audio(&json);
-        // Only the three audio formats are kept (the video one is dropped).
-        assert_eq!(audios.len(), 3, "only audio-only formats: {audios:?}");
-        let best = best_audio(&audios).expect("a best audio format");
-        // M4A is preferred over the higher-bitrate Opus for decodability, and
-        // within M4A the higher (128k) bitrate wins over 48k.
-        assert_eq!(best.itag, 140, "prefers the 128k M4A stream");
-        assert_eq!(best.format(), "m4a");
-        assert_eq!(best.codec(), "mp4a");
-        assert_eq!(best.clen, 5_200_000);
+        // Phase `parse_and_pick_best_prefers_m4a_then_bitrate`.
+        {
+            // Mirrors an Invidious `/api/v1/videos/{id}` body: mixed video + audio
+            // adaptive formats, bitrate as a string (as Invidious sends it).
+            let json: serde_json::Value = serde_json::from_str(
+                r#"{
+                    "lengthSeconds": 329,
+                    "adaptiveFormats": [
+                        {"itag":"137","type":"video/mp4; codecs=\"avc1\"","bitrate":"2500000"},
+                        {"itag":"251","type":"audio/webm; codecs=\"opus\"","bitrate":"160000","clen":"6000000"},
+                        {"itag":"140","type":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":"128000","clen":"5200000"},
+                        {"itag":"139","type":"audio/mp4; codecs=\"mp4a.40.5\"","bitrate":"48000","clen":"2000000"}
+                    ]
+                }"#,
+            )
+            .unwrap();
+            let audios = parse_adaptive_audio(&json);
+            // Only the three audio formats are kept (the video one is dropped).
+            assert_eq!(audios.len(), 3, "only audio-only formats: {audios:?}");
+            let best = best_audio(&audios).expect("a best audio format");
+            // M4A is preferred over the higher-bitrate Opus for decodability, and
+            // within M4A the higher (128k) bitrate wins over 48k.
+            assert_eq!(best.itag, 140, "prefers the 128k M4A stream");
+            assert_eq!(best.format(), "m4a");
+            assert_eq!(best.codec(), "mp4a");
+            assert_eq!(best.clen, 5_200_000);
+        }
+
+        // Phase `best_audio_falls_back_to_opus_when_no_m4a`.
+        {
+            let json: serde_json::Value = serde_json::from_str(
+                r#"{"adaptiveFormats":[
+                    {"itag":"251","type":"audio/webm; codecs=\"opus\"","bitrate":"160000"},
+                    {"itag":"250","type":"audio/webm; codecs=\"opus\"","bitrate":"70000"}
+                ]}"#,
+            )
+            .unwrap();
+            let audios = parse_adaptive_audio(&json);
+            let best = best_audio(&audios).expect("best audio");
+            assert_eq!(best.itag, 251, "highest-bitrate Opus when no M4A exists");
+            assert_eq!(best.format(), "webm");
+        }
+
+        // Phase `media_content_type_accepts_audio_rejects_html`.
+        {
+            // Real proxied media.
+            assert!(content_type_is_media("audio/mp4"));
+            assert!(content_type_is_media("audio/webm; codecs=\"opus\""));
+            assert!(content_type_is_media("application/octet-stream"));
+            assert!(content_type_is_media("video/mp4"));
+            // Anti-bot / error pages an Invidious instance actually returns as 2xx.
+            assert!(!content_type_is_media("text/html; charset=utf-8"));
+            assert!(!content_type_is_media("text/plain; charset=utf-8"));
+            assert!(!content_type_is_media("application/json"));
+            assert!(!content_type_is_media(""));
+        }
+
+        // Phase `html_body_is_sniffed_and_rejected`.
+        {
+            // The exact shapes observed from public instances (gandalf challenge /
+            // Cloudflare / "500 Internal Server Error" HTML).
+            assert!(body_sniffs_as_html(b"<html>\r\n<head><title>gandalf"));
+            assert!(body_sniffs_as_html(b"<!DOCTYPE html>\n<html lang=\"en\">"));
+            assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
+            // A real m4a fragment begins with an ISO-BMFF box (`....ftyp`/`....moov`)
+            // or arbitrary binary — never HTML.
+            assert!(!body_sniffs_as_html(&[
+                0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'
+            ]));
+            assert!(!body_sniffs_as_html(b"OggS\x00\x02"));
+        }
     }
 
     /// `live`-gated integration check: resolve a real track and prove the
@@ -408,49 +459,5 @@ mod tests {
             ),
             Err(_) => eprintln!("[proxy test] skipped — body read failed"),
         }
-    }
-
-    #[test]
-    fn media_content_type_accepts_audio_rejects_html() {
-        // Real proxied media.
-        assert!(content_type_is_media("audio/mp4"));
-        assert!(content_type_is_media("audio/webm; codecs=\"opus\""));
-        assert!(content_type_is_media("application/octet-stream"));
-        assert!(content_type_is_media("video/mp4"));
-        // Anti-bot / error pages an Invidious instance actually returns as 2xx.
-        assert!(!content_type_is_media("text/html; charset=utf-8"));
-        assert!(!content_type_is_media("text/plain; charset=utf-8"));
-        assert!(!content_type_is_media("application/json"));
-        assert!(!content_type_is_media(""));
-    }
-
-    #[test]
-    fn html_body_is_sniffed_and_rejected() {
-        // The exact shapes observed from public instances (gandalf challenge /
-        // Cloudflare / "500 Internal Server Error" HTML).
-        assert!(body_sniffs_as_html(b"<html>\r\n<head><title>gandalf"));
-        assert!(body_sniffs_as_html(b"<!DOCTYPE html>\n<html lang=\"en\">"));
-        assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
-        // A real m4a fragment begins with an ISO-BMFF box (`....ftyp`/`....moov`)
-        // or arbitrary binary — never HTML.
-        assert!(!body_sniffs_as_html(&[
-            0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'
-        ]));
-        assert!(!body_sniffs_as_html(b"OggS\x00\x02"));
-    }
-
-    #[test]
-    fn best_audio_falls_back_to_opus_when_no_m4a() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"adaptiveFormats":[
-                {"itag":"251","type":"audio/webm; codecs=\"opus\"","bitrate":"160000"},
-                {"itag":"250","type":"audio/webm; codecs=\"opus\"","bitrate":"70000"}
-            ]}"#,
-        )
-        .unwrap();
-        let audios = parse_adaptive_audio(&json);
-        let best = best_audio(&audios).expect("best audio");
-        assert_eq!(best.itag, 251, "highest-bitrate Opus when no M4A exists");
-        assert_eq!(best.format(), "webm");
     }
 }

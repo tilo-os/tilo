@@ -4,9 +4,11 @@ autotests = false
 name = "package-store"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "The device's installed packages: one registry of installed and preinstalled packages, and installs whose payload bytes live in the fs content store and are materialised once by reflink."
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 # Readers (the launcher, the shell, settings) need only the registry and the
@@ -18,10 +20,10 @@ default = []
 # shipped images never enable this.
 dev-overrides = []
 store = [
-    "dep:advisory-lock",
-    "dep:atomic-file",
+    "dep:tilo-advisory-lock",
+    "dep:tilo-files",
     "dep:bytes",
-    "dep:fs",
+    "dep:tilo-fs",
     "dep:iroh-blobs",
     "dep:tempfile",
     "dep:tilo-clock",
@@ -29,7 +31,8 @@ store = [
 ]
 
 [dependencies]
-tilo-app-package = { path = "../tilo-app-package" }
+tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 serde.workspace = true
@@ -37,15 +40,15 @@ thiserror.workspace = true
 toml.workspace = true
 
 # The store's exclusive lock across processes.
-advisory-lock = { path = "../../system/advisory-lock", optional = true }
-atomic-file = { path = "../../system/atomic-file", optional = true }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 bytes = { workspace = true, optional = true }
 # The content store. Only its portable content plane is used here; the
 # filesystem daemon stays out of the dependency graph.
-fs = { path = "../../system/fs", default-features = false, optional = true }
+tilo-fs = { version = "0.1.0", path = "../../system/fs", default-features = false, optional = true }
 iroh-blobs = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
-tilo-clock = { path = "../../system/tilo-clock", optional = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 
 [dev-dependencies]
@@ -60,3 +63,7 @@ required-features = ["store"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

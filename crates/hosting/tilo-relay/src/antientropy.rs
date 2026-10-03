@@ -27,7 +27,7 @@
 //! - Or call [`reconcile`] for a self-contained round trip on a client
 //!   whose inbound stream you are not otherwise draining.
 
-use std::time::{Duration, Instant};
+use n0_future::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
@@ -140,7 +140,7 @@ pub async fn reconcile(
         if remaining.is_zero() {
             return Err(SyncError::Timeout);
         }
-        match tokio::time::timeout(remaining, client.recv()).await {
+        match n0_future::time::timeout(remaining, client.recv()).await {
             Ok(Some(Envelope::SyncResponse {
                 workspace_id: ws,
                 delta_since,
@@ -163,36 +163,37 @@ mod tests {
     use automerge::transaction::Transactable;
 
     #[test]
-    fn heads_wire_round_trips_through_changehash() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "k", "v").unwrap();
-        let wire = heads_wire(&mut doc);
-        assert_eq!(wire.len(), 1);
-        // The wire hash equals the doc's ChangeHash inner bytes.
-        assert_eq!(wire[0], doc.get_heads()[0].0);
-    }
+    fn sync_heads_and_responses_converge_a_lagging_doc() {
+        // Phase `heads_wire_round_trips_through_changehash`.
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "k", "v").unwrap();
+            let wire = heads_wire(&mut doc);
+            assert_eq!(wire.len(), 1);
+            // The wire hash equals the doc's ChangeHash inner bytes.
+            assert_eq!(wire[0], doc.get_heads()[0].0);
+        }
+        // Phase `apply_sync_response_empty_is_noop`.
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "k", "v").unwrap();
+            let before = doc.get_heads();
+            assert_eq!(apply_sync_response(&mut doc, &[]).unwrap(), 0);
+            assert_eq!(doc.get_heads(), before);
+        }
+        // Phase `apply_sync_response_converges_a_lagging_doc`.
+        {
+            // A "host" doc with two edits; a lagging peer with none. The
+            // bytes save_after([]) produces must load the peer to identical
+            // heads — the exact wire contract SyncResponse carries.
+            let mut host = AutoCommit::new();
+            host.put(ROOT, "a", 1).unwrap();
+            host.put(ROOT, "b", 2).unwrap();
+            let delta_since = host.save_after(&[]);
 
-    #[test]
-    fn apply_sync_response_empty_is_noop() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "k", "v").unwrap();
-        let before = doc.get_heads();
-        assert_eq!(apply_sync_response(&mut doc, &[]).unwrap(), 0);
-        assert_eq!(doc.get_heads(), before);
-    }
-
-    #[test]
-    fn apply_sync_response_converges_a_lagging_doc() {
-        // A "host" doc with two edits; a lagging peer with none. The
-        // bytes save_after([]) produces must load the peer to identical
-        // heads — the exact wire contract SyncResponse carries.
-        let mut host = AutoCommit::new();
-        host.put(ROOT, "a", 1).unwrap();
-        host.put(ROOT, "b", 2).unwrap();
-        let delta_since = host.save_after(&[]);
-
-        let mut peer = AutoCommit::new();
-        assert!(apply_sync_response(&mut peer, &delta_since).unwrap() > 0);
-        assert_eq!(peer.get_heads(), host.get_heads());
+            let mut peer = AutoCommit::new();
+            assert!(apply_sync_response(&mut peer, &delta_since).unwrap() > 0);
+            assert_eq!(peer.get_heads(), host.get_heads());
+        }
     }
 }

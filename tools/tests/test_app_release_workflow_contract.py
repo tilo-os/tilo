@@ -21,108 +21,129 @@ def bash_path(path: Path) -> str:
 
 
 class AppReleaseWorkflowContract(unittest.TestCase):
-    def test_each_job_checks_out_only_the_exact_event_commit(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        checkouts = source.split('uses: actions/checkout@')[1:]
-        self.assertEqual(len(checkouts), 5)
-        for checkout in checkouts:
-            block = checkout.split('\n      - ', 1)[0]
-            self.assertIn('fetch-depth: 1', block)
-            self.assertNotIn('fetch-depth: 0', block)
-            self.assertIn('persist-credentials: false', block)
-            self.assertIn('ref: ${{ github.sha }}', block)
-            self.assertNotIn('ref: main', block)
+    def test_jobs_check_out_the_exact_commit_with_complete_shell_steps(self):
+        with self.subTest(phase='each job checks out only the exact event commit'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            checkouts = source.split('uses: actions/checkout@')[1:]
+            self.assertEqual(len(checkouts), 5)
+            for checkout in checkouts:
+                block = checkout.split('\n      - ', 1)[0]
+                self.assertIn('fetch-depth: 1', block)
+                self.assertNotIn('fetch-depth: 0', block)
+                self.assertIn('persist-credentials: false', block)
+                self.assertIn('ref: ${{ github.sha }}', block)
+                self.assertNotIn('ref: main', block)
 
-        plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
-        self.assertIn('    needs: coordinator-preguard', plan)
-        self.assertIn('app_release_history.py \\\n              fetch-base "$1" "$GITHUB_SHA"', plan)
-        self.assertNotIn('require-main-tip "$GITHUB_SHA"', plan)
-        self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
-        builder = plan.index('      - name: Resolve one immutable builder for every architecture\n')
-        preparation = plan.index('      - name: Prepare exact release comparison history\n')
-        guard = plan.index('      - name: Validate prepared nonpublishing coordinator qualification\n')
-        selection = plan.index('      - name: Select only the affected apps or requested collection\n')
-        self.assertLess(builder, preparation)
-        self.assertLess(preparation, guard)
-        self.assertLess(guard, selection)
-        preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
-        self.assertIn('app_packaging_qualification.py --preflight', preguard)
-        self.assertIn(
-            'image: docker.io/library/python:3.13-alpine@sha256:'
-            '1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e',
-            preguard,
-        )
-        self.assertNotIn('public/runner-image', preguard)
-        self.assertNotRegex(preguard, r'(?m)^\s+image: [^@\n]+:[^@\n]+$')
-        self.assertNotRegex(preguard, r'(?m)^\s+credentials:\s*$')
-        self.assertNotIn('REGISTRY_TOKEN', preguard)
-        self.assertNotIn('secrets.', preguard)
-        self.assertNotIn('fetch-base', preguard)
-        self.assertNotIn('actions/checkout', preguard)
-        self.assertNotIn('persist-credentials:', preguard)
-        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preguard)
-        self.assertEqual(preguard.count('\n      - name:'), 1)
-        sanitized = preguard.split('          exec env -i \\\n', 1)[1]
-        self.assertIn('app_packaging_qualification.py --preflight', sanitized)
-        self.assertNotIn('SOURCE_TOKEN', sanitized)
-        self.assertNotIn('github.token', sanitized)
-        preparation_step = plan[preparation:guard]
-        self.assertIn("if: \"github.event_name != 'workflow_dispatch'", preparation_step)
-        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preparation_step)
-        self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
-        self.assertNotIn('tools/', preparation_step)
-        self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
-        self.assertIn('GIT_CONFIG_KEY_0=http.https://code.tilo.so/.extraheader', preparation_step)
-        selection_step = plan[selection:]
-        self.assertNotIn('SOURCE_TOKEN', selection_step)
-        self.assertNotIn('github.token', selection_step)
-        self.assertNotIn('if [[ $GITHUB_REF != refs/heads/main ]]; then', plan)
-        publishing = plan.split('          if [[ ( $GITHUB_EVENT_NAME == push', 1)[1].split(
-            "          else\n", 1
-        )[0]
-        self.assertNotIn('refs/tags/*', publishing)
-        tag_validation = source.split('\n  tag-validation:\n', 1)[1].split(
-            '\n  coordinator-preguard:\n', 1
-        )[0]
-        self.assertIn("if: startsWith(github.ref, 'refs/tags/')", tag_validation)
-        self.assertIn('app tag publication is disabled', tag_validation)
-        self.assertNotIn('actions/checkout', tag_validation)
-        self.assertNotIn('tools/', tag_validation)
-        self.assertNotIn('python', tag_validation)
-        self.assertNotIn('secrets.', tag_validation)
-        self.assertNotIn('enable-openid-connect', tag_validation)
-        self.assertNotIn('container:', tag_validation)
-        self.assertIn("  plan:\n    if: \"!startsWith(github.ref, 'refs/tags/')\"", source)
-        authorization = source.split('\n  authorize-publish:\n', 1)[1].split(
-            '\n  build:\n', 1
-        )[0]
-        self.assertIn("if: needs.plan.outputs.publish == 'true'", authorization)
-        self.assertNotIn('secrets.', authorization)
-        self.assertNotIn('enable-openid-connect', authorization)
-        self.assertNotIn('container:', authorization)
-        self.assertNotIn('tools/', authorization)
-        self.assertIn('persist-credentials: false', authorization)
-        self.assertIn('ref: ${{ github.sha }}', authorization)
-        self.assertIn('[[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]', authorization)
-        self.assertIn('[[ $GITHUB_REF == refs/heads/main ]]', authorization)
-        self.assertIn('[[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]', authorization)
-        self.assertNotIn('authorize-publish-final:', source)
-        build = source.split('\n  build:\n', 1)[1].split(
-            '\n  final-collection:\n', 1
-        )[0]
-        self.assertNotIn('Revalidate publication source', build)
-        self.assertNotIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build)
-        self.assertIn("TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}", build)
-        self.assertIn("TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}", build)
-        history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
-        self.assertNotIn('SOURCE_TOKEN', history_helper)
-        self.assertNotIn('extraheader', history_helper)
-        publish = source.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [plan, authorize-publish, build]', publish)
-        self.assertIn('persist-credentials: false', publish)
-        self.assertNotIn('TAG_AUDIENCE', publish)
-        self.assertIn('audience=$MAIN_AUDIENCE', publish)
-        self.assertIn('git show -s --format=%ct "$GITHUB_SHA"', publish)
+            plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
+            self.assertIn('    needs: coordinator-preguard', plan)
+            self.assertIn('app_release_history.py \\\n              fetch-base "$1" "$GITHUB_SHA"', plan)
+            self.assertNotIn('require-main-tip "$GITHUB_SHA"', plan)
+            self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
+            builder = plan.index('      - name: Resolve one immutable builder for every architecture\n')
+            preparation = plan.index('      - name: Prepare exact release comparison history\n')
+            guard = plan.index('      - name: Validate prepared nonpublishing coordinator qualification\n')
+            selection = plan.index('      - name: Select only the affected apps or requested collection\n')
+            self.assertLess(builder, preparation)
+            self.assertLess(preparation, guard)
+            self.assertLess(guard, selection)
+            preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
+            self.assertIn('app_packaging_qualification.py --preflight', preguard)
+            self.assertIn(
+                'image: docker.io/library/python:3.13-alpine@sha256:'
+                '1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e',
+                preguard,
+            )
+            self.assertNotIn('public/runner-image', preguard)
+            self.assertNotRegex(preguard, r'(?m)^\s+image: [^@\n]+:[^@\n]+$')
+            self.assertNotRegex(preguard, r'(?m)^\s+credentials:\s*$')
+            self.assertNotIn('REGISTRY_TOKEN', preguard)
+            self.assertNotIn('secrets.', preguard)
+            self.assertNotIn('fetch-base', preguard)
+            self.assertNotIn('actions/checkout', preguard)
+            self.assertNotIn('persist-credentials:', preguard)
+            self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preguard)
+            self.assertEqual(preguard.count('\n      - name:'), 1)
+            sanitized = preguard.split('          exec env -i \\\n', 1)[1]
+            self.assertIn('app_packaging_qualification.py --preflight', sanitized)
+            self.assertNotIn('SOURCE_TOKEN', sanitized)
+            self.assertNotIn('github.token', sanitized)
+            preparation_step = plan[preparation:guard]
+            self.assertIn("if: \"github.event_name != 'workflow_dispatch'", preparation_step)
+            self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preparation_step)
+            self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
+            self.assertNotIn('tools/', preparation_step)
+            self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
+            # The token is scoped to the job's own, validated server, and the
+            # checkout must come from that server's copy of this repository.
+            self.assertIn('[[ $GITHUB_SERVER_URL =~ ^https://[a-z0-9.-]+$ ]]', preparation_step)
+            self.assertIn('$origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"', preparation_step)
+            self.assertIn('GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader"', preparation_step)
+            selection_step = plan[selection:]
+            self.assertNotIn('SOURCE_TOKEN', selection_step)
+            self.assertNotIn('github.token', selection_step)
+            self.assertNotIn('if [[ $GITHUB_REF != refs/heads/main ]]; then', plan)
+            publishing = plan.split('          if [[ ( $GITHUB_EVENT_NAME == push', 1)[1].split(
+                "          else\n", 1
+            )[0]
+            self.assertNotIn('refs/tags/*', publishing)
+            tag_validation = source.split('\n  tag-validation:\n', 1)[1].split(
+                '\n  coordinator-preguard:\n', 1
+            )[0]
+            self.assertIn("if: startsWith(github.ref, 'refs/tags/')", tag_validation)
+            self.assertIn('app tag publication is disabled', tag_validation)
+            self.assertNotIn('actions/checkout', tag_validation)
+            self.assertNotIn('tools/', tag_validation)
+            self.assertNotIn('python', tag_validation)
+            self.assertNotIn('secrets.', tag_validation)
+            self.assertNotIn('enable-openid-connect', tag_validation)
+            self.assertNotIn('container:', tag_validation)
+            self.assertIn("  plan:\n    if: \"!startsWith(github.ref, 'refs/tags/')\"", source)
+            authorization = source.split('\n  authorize-publish:\n', 1)[1].split(
+                '\n  build:\n', 1
+            )[0]
+            self.assertIn("if: needs.plan.outputs.publish == 'true'", authorization)
+            self.assertNotIn('secrets.', authorization)
+            self.assertNotIn('enable-openid-connect', authorization)
+            self.assertNotIn('container:', authorization)
+            self.assertNotIn('tools/', authorization)
+            self.assertIn('persist-credentials: false', authorization)
+            self.assertIn('ref: ${{ github.sha }}', authorization)
+            self.assertIn('[[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]', authorization)
+            self.assertIn('[[ $GITHUB_REF == refs/heads/main ]]', authorization)
+            self.assertIn('[[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]', authorization)
+            self.assertNotIn('authorize-publish-final:', source)
+            build = source.split('\n  build:\n', 1)[1].split(
+                '\n  final-collection:\n', 1
+            )[0]
+            self.assertNotIn('Revalidate publication source', build)
+            self.assertNotIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build)
+            self.assertIn("TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}", build)
+            self.assertIn("TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}", build)
+            history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
+            self.assertNotIn('SOURCE_TOKEN', history_helper)
+            self.assertNotIn('extraheader', history_helper)
+            publish = source.split('\n  publish:\n', 1)[1]
+            self.assertIn('needs: [plan, authorize-publish, build]', publish)
+            self.assertIn('persist-credentials: false', publish)
+            self.assertNotIn('TAG_AUDIENCE', publish)
+            self.assertIn('audience=$MAIN_AUDIENCE', publish)
+            self.assertIn('git show -s --format=%ct "$GITHUB_SHA"', publish)
+        with self.subTest(phase='coordinator preguard shell is syntactically complete'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
+            script = textwrap.dedent(preguard.split('        run: |\n', 1)[1])
+            subprocess.run(['bash', '-n'], input=script, text=True, check=True)
+        with self.subTest(phase='token scoped git steps are syntactically complete'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            for name in ('Prepare exact release comparison history',):
+                with self.subTest(name=name):
+                    step = source.split(f'      - name: {name}\n', 1)[1].split(
+                        '\n      - name:', 1
+                    )[0]
+                    script = textwrap.dedent(
+                        step.split('        run: |\n', 1)[1]
+                    ).replace('\r', '')
+                    subprocess.run(['bash', '-n'], input=script.encode(), check=True)
 
     def coordinator_bootstrap(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
@@ -131,24 +152,6 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         namespace = {'__name__': 'contract_test'}
         exec(compile(textwrap.dedent(script), '<coordinator-bootstrap>', 'exec'), namespace)
         return namespace
-
-    def test_coordinator_preguard_shell_is_syntactically_complete(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
-        script = textwrap.dedent(preguard.split('        run: |\n', 1)[1])
-        subprocess.run(['bash', '-n'], input=script, text=True, check=True)
-
-    def test_token_scoped_git_steps_are_syntactically_complete(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        for name in ('Prepare exact release comparison history',):
-            with self.subTest(name=name):
-                step = source.split(f'      - name: {name}\n', 1)[1].split(
-                    '\n      - name:', 1
-                )[0]
-                script = textwrap.dedent(
-                    step.split('        run: |\n', 1)[1]
-                ).replace('\r', '')
-                subprocess.run(['bash', '-n'], input=script.encode(), check=True)
 
     class Response:
         status = 200
@@ -180,143 +183,144 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             return AppReleaseWorkflowContract.Response(
                 self.response_url or request.full_url, self.payload)
 
-    def test_coordinator_bootstrap_manifest_matches_exact_runtime_closure(self):
-        bootstrap = self.coordinator_bootstrap()
-        self.assertEqual(
-            [entry[0] for entry in bootstrap['FILES']],
-            [
-                'tools/app_packaging_qualification.py',
-                'tools/app_packaging_contract.py',
-                'tools/ci/__init__.py',
-                'tools/ci/python.py',
-                'tools/ci/resolve_builder.py',
-            ],
-        )
-        for relative, size, digest in bootstrap['FILES']:
-            payload = (ROOT / relative).read_bytes()
-            self.assertEqual(len(payload), size, relative)
-            self.assertEqual(hashlib.sha256(payload).hexdigest(), digest, relative)
+    def test_coordinator_bootstrap_fetches_only_the_exact_bounded_closure(self):
+        with self.subTest(phase='coordinator bootstrap manifest matches exact runtime closure'):
+            bootstrap = self.coordinator_bootstrap()
+            self.assertEqual(
+                [entry[0] for entry in bootstrap['FILES']],
+                [
+                    'tools/app_packaging_qualification.py',
+                    'tools/app_packaging_contract.py',
+                    'tools/ci/__init__.py',
+                    'tools/ci/python.py',
+                    'tools/ci/resolve_builder.py',
+                ],
+            )
+            for relative, size, digest in bootstrap['FILES']:
+                payload = (ROOT / relative).read_bytes()
+                self.assertEqual(len(payload), size, relative)
+                self.assertEqual(hashlib.sha256(payload).hexdigest(), digest, relative)
+        with self.subTest(phase='coordinator bootstrap rejects redirects'):
+            bootstrap = self.coordinator_bootstrap()
+            with self.assertRaisesRegex(ValueError, 'redirects are forbidden'):
+                bootstrap['NoRedirect']().redirect_request(None, None, 302, '', {}, 'https://elsewhere.invalid')
+        with self.subTest(phase='coordinator bootstrap rejects oversize source'):
+            bootstrap = self.coordinator_bootstrap()
+            with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'size or hash'):
+                bootstrap['fetch_one'](
+                    self.Opener(b'ab'), Path(directory), 'a' * 40, 'token',
+                    'tools/example.py', 1, hashlib.sha256(b'a').hexdigest())
+        with self.subTest(phase='coordinator bootstrap rejects hash mismatch'):
+            bootstrap = self.coordinator_bootstrap()
+            with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'size or hash'):
+                bootstrap['fetch_one'](
+                    self.Opener(b'a'), Path(directory), 'a' * 40, 'token',
+                    'tools/example.py', 1, hashlib.sha256(b'b').hexdigest())
+        with self.subTest(phase='coordinator bootstrap rejects path escape'):
+            bootstrap = self.coordinator_bootstrap()
+            with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'invalid.*path'):
+                bootstrap['fetch_one'](
+                    self.Opener(b'a'), Path(directory), 'a' * 40, 'token',
+                    'tools/../escape.py', 1, hashlib.sha256(b'a').hexdigest())
+        with self.subTest(phase='coordinator bootstrap requests only the exact ref'):
+            bootstrap = self.coordinator_bootstrap()
+            payload = b'exact source'
+            opener = self.Opener(payload)
+            with tempfile.TemporaryDirectory() as directory:
+                bootstrap['fetch_one'](
+                    opener, Path(directory), 'a' * 40, 'scoped-token',
+                    'tools/example.py', len(payload), hashlib.sha256(payload).hexdigest())
+                parsed = urlparse(opener.request.full_url)
+                self.assertEqual(parse_qs(parsed.query), {'ref': ['a' * 40]})
+                self.assertEqual(opener.request.get_header('Authorization'), 'token scoped-token')
+                self.assertEqual((Path(directory) / 'tools/example.py').read_bytes(), payload)
 
-    def test_coordinator_bootstrap_rejects_redirects(self):
-        bootstrap = self.coordinator_bootstrap()
-        with self.assertRaisesRegex(ValueError, 'redirects are forbidden'):
-            bootstrap['NoRedirect']().redirect_request(None, None, 302, '', {}, 'https://elsewhere.invalid')
-
-    def test_coordinator_bootstrap_rejects_oversize_source(self):
-        bootstrap = self.coordinator_bootstrap()
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'size or hash'):
-            bootstrap['fetch_one'](
-                self.Opener(b'ab'), Path(directory), 'a' * 40, 'token',
-                'tools/example.py', 1, hashlib.sha256(b'a').hexdigest())
-
-    def test_coordinator_bootstrap_rejects_hash_mismatch(self):
-        bootstrap = self.coordinator_bootstrap()
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'size or hash'):
-            bootstrap['fetch_one'](
-                self.Opener(b'a'), Path(directory), 'a' * 40, 'token',
-                'tools/example.py', 1, hashlib.sha256(b'b').hexdigest())
-
-    def test_coordinator_bootstrap_rejects_path_escape(self):
-        bootstrap = self.coordinator_bootstrap()
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'invalid.*path'):
-            bootstrap['fetch_one'](
-                self.Opener(b'a'), Path(directory), 'a' * 40, 'token',
-                'tools/../escape.py', 1, hashlib.sha256(b'a').hexdigest())
-
-    def test_coordinator_bootstrap_requests_only_the_exact_ref(self):
-        bootstrap = self.coordinator_bootstrap()
-        payload = b'exact source'
-        opener = self.Opener(payload)
-        with tempfile.TemporaryDirectory() as directory:
-            bootstrap['fetch_one'](
-                opener, Path(directory), 'a' * 40, 'scoped-token',
-                'tools/example.py', len(payload), hashlib.sha256(payload).hexdigest())
-            parsed = urlparse(opener.request.full_url)
-            self.assertEqual(parse_qs(parsed.query), {'ref': ['a' * 40]})
-            self.assertEqual(opener.request.get_header('Authorization'), 'token scoped-token')
-            self.assertEqual((Path(directory) / 'tools/example.py').read_bytes(), payload)
-
-    def test_every_main_pr_plans_but_never_packages(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        self.assertIn('- "tools/apps/**"', source)
-        pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
-        self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
-        self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
-        plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
-        self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/')\"", plan)
-        self.assertIn('python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', plan)
-        build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
-        condition = re.search(r'(?m)^    if: (.+)$', build).group(1).strip('"')
-        # Execute the production predicate, including both nonzero/zero plans.
-        for event, ref_type, count, allowed in [
-            ('pull_request', 'branch', '51', False), ('pull_request', 'branch', '0', False),
-            ('workflow_dispatch', 'branch', '51', True), ('push', 'branch', '51', True),
-            ('push', 'tag', '51', False), ('workflow_dispatch', 'branch', '0', False),
-        ]:
-            with self.subTest(event=event, ref_type=ref_type, count=count):
-                predicate = condition.replace(
-                    'github.event_name', shlex.quote(event)
-                ).replace(
-                    "!startsWith(github.ref, 'refs/tags/')",
-                    shlex.quote(ref_type) + ' != "tag"',
-                ).replace('needs.plan.outputs.count', shlex.quote(count))
-                with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-                    script = Path(directory) / 'predicate.sh'
-                    script.write_text(
-                        '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
+    def test_pull_requests_plan_without_packaging_or_signing_secrets(self):
+        with self.subTest(phase='every main pr plans but never packages'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            self.assertIn('- "tools/apps/**"', source)
+            pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
+            self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
+            self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
+            plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
+            self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/')\"", plan)
+            self.assertIn('python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', plan)
+            build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
+            condition = re.search(r'(?m)^    if: (.+)$', build).group(1).strip('"')
+            # Execute the production predicate, including both nonzero/zero plans.
+            for event, ref_type, count, allowed in [
+                ('pull_request', 'branch', '51', False), ('pull_request', 'branch', '0', False),
+                ('workflow_dispatch', 'branch', '51', True), ('push', 'branch', '51', True),
+                ('push', 'tag', '51', False), ('workflow_dispatch', 'branch', '0', False),
+            ]:
+                with self.subTest(event=event, ref_type=ref_type, count=count):
+                    predicate = condition.replace(
+                        'github.event_name', shlex.quote(event)
+                    ).replace(
+                        "!startsWith(github.ref, 'refs/tags/')",
+                        shlex.quote(ref_type) + ' != "tag"',
+                    ).replace('needs.plan.outputs.count', shlex.quote(count))
+                    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                        script = Path(directory) / 'predicate.sh'
+                        script.write_text(
+                            '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
+                        )
+                        result = subprocess.run(['bash', bash_path(script)])
+                    self.assertEqual(0 if allowed else 1, result.returncode)
+            push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
+            self.assertRegex(push, r'(?m)^    branches: \[main\]$')
+            self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
+        with self.subTest(phase='pr plan skips builder resolution but release events resolve'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
+            builder = plan.split('        id: builder\n', 1)[1].split('\n      - ', 1)[0]
+            self.assertIn('run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', builder)
+            condition = re.search(r'(?m)^        if: (.+)$', builder).group(1).strip('"')
+            # Execute the actual step predicate. Both publishing releases and the
+            # nonpublishing coordinator dispatch still require immutable resolution.
+            for event, ref_type, allowed in [('pull_request', 'branch', False),
+                                             ('push', 'branch', True),
+                                             ('push', 'tag', False),
+                                             ('workflow_dispatch', 'branch', True)]:
+                with self.subTest(event=event, ref_type=ref_type):
+                    predicate = condition.replace(
+                        'github.event_name', shlex.quote(event)
+                    ).replace(
+                        "!startsWith(github.ref, 'refs/tags/')",
+                        shlex.quote(ref_type) + ' != "tag"',
                     )
-                    result = subprocess.run(['bash', bash_path(script)])
-                self.assertEqual(0 if allowed else 1, result.returncode)
-        push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
-        self.assertRegex(push, r'(?m)^    branches: \[main\]$')
-        self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
-
-    def test_pr_plan_skips_builder_resolution_but_release_events_resolve(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
-        builder = plan.split('        id: builder\n', 1)[1].split('\n      - ', 1)[0]
-        self.assertIn('run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', builder)
-        condition = re.search(r'(?m)^        if: (.+)$', builder).group(1).strip('"')
-        # Execute the actual step predicate. Both publishing releases and the
-        # nonpublishing coordinator dispatch still require immutable resolution.
-        for event, ref_type, allowed in [('pull_request', 'branch', False),
-                                         ('push', 'branch', True),
-                                         ('push', 'tag', False),
-                                         ('workflow_dispatch', 'branch', True)]:
-            with self.subTest(event=event, ref_type=ref_type):
-                predicate = condition.replace(
-                    'github.event_name', shlex.quote(event)
-                ).replace(
-                    "!startsWith(github.ref, 'refs/tags/')",
-                    shlex.quote(ref_type) + ' != "tag"',
-                )
-                with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-                    script = Path(directory) / 'predicate.sh'
-                    script.write_text(
-                        '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
-                    )
-                    result = subprocess.run(['bash', bash_path(script)])
-                self.assertEqual(0 if allowed else 1, result.returncode)
-        selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
-        self.assertNotIn('steps.builder.outputs', selection)
-        provenance = plan.split('      - name: Retain trusted coordinator plan provenance\n', 1)[1]
-        self.assertIn("if: github.event.inputs.coordinator_intent != ''", provenance)
-        self.assertIn('RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}', provenance)
-
-    def test_signing_secrets_exist_only_on_publishing_builds(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
-        self.assertIn(
-            "TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}",
-            build,
-        )
-        self.assertIn(
-            "RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}",
-            build,
-        )
-        self.assertNotIn(
-            '/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build
-        )
+                    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                        script = Path(directory) / 'predicate.sh'
+                        script.write_text(
+                            '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
+                        )
+                        result = subprocess.run(['bash', bash_path(script)])
+                    self.assertEqual(0 if allowed else 1, result.returncode)
+            selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
+            # Only main pushes, which always resolve a builder, compare it with
+            # the prior collection's builder; PR selection never reads it.
+            self.assertEqual(1, selection.count('steps.builder.outputs'))
+            self.assertIn('BUILDER: ${{ steps.builder.outputs.image }}', selection)
+            pushed = selection.split('if [[ $GITHUB_EVENT_NAME == push ]]', 1)
+            self.assertEqual(2, len(pushed))
+            self.assertNotIn('"${BUILDER:-}"', pushed[0])
+            provenance = plan.split('      - name: Retain trusted coordinator plan provenance\n', 1)[1]
+            self.assertIn("if: github.event.inputs.coordinator_intent != ''", provenance)
+            self.assertIn('RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}', provenance)
+        with self.subTest(phase='signing secrets exist only on publishing builds'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
+            self.assertIn(
+                "TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}",
+                build,
+            )
+            self.assertIn(
+                "RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}",
+                build,
+            )
+            self.assertNotIn(
+                '/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build
+            )
 
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
@@ -335,102 +339,100 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                 ['bash', bash_path(contract)], capture_output=True
             ).returncode
 
-    def test_actual_immutable_builder_contract_passes(self):
-        self.assertEqual(self.check((ROOT / '.forgejo/workflows/release-apps.yml').read_text()), 0)
+    def test_builder_contract_requires_a_connected_immutable_image_input(self):
+        with self.subTest(phase='actual immutable builder contract passes'):
+            self.assertEqual(self.check((ROOT / '.forgejo/workflows/release-apps.yml').read_text()), 0)
+        with self.subTest(phase='crlf and large job do not create false failures'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            source = source.replace('    outputs:\n', '    # ' + 'x' * 131072 + '\n    outputs:\n', 1)
+            self.assertEqual(self.check(source), 0)
+            self.assertEqual(self.check(source.replace('\n', '\r\n')), 0)
+        with self.subTest(phase='disconnected or mutable builder fails'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            for before, after in (
+                ('      builder_image: ${{ steps.builder.outputs.image }}', '      other: unused'),
+                ('        id: builder', '        id: different'),
+                ('        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', '        run: echo skipped'),
+                ('        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py',
+                 '        run: python3 tools/ci/resolve_builder.py'),
+                ('    needs: [plan, authorize-publish]', '    needs: other'),
+                ('      image: ${{ needs.plan.outputs.builder_image }}',
+                 '      image: registry.tilo.so/tilo/tilo-builder:latest'),
+            ):
+                with self.subTest(before=before):
+                    self.assertIn(before, source)
+                    self.assertNotEqual(self.check(source.replace(before, after, 1)), 0)
+        with self.subTest(phase='required image reference in comment cannot replace build input'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            reference = '      image: ${{ needs.plan.outputs.builder_image }}'
+            self.assertNotEqual(self.check(source.replace(reference, '# ' + reference)), 0)
 
-    def test_crlf_and_large_job_do_not_create_false_failures(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        source = source.replace('    outputs:\n', '    # ' + 'x' * 131072 + '\n    outputs:\n', 1)
-        self.assertEqual(self.check(source), 0)
-        self.assertEqual(self.check(source.replace('\n', '\r\n')), 0)
-
-    def test_publisher_does_not_receive_registry_token_in_steps(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        before, publish = source.split('\n  publish:\n', 1)
-        publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
-        self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
-
-    def test_persisted_collection_urls_use_the_configured_public_origin(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        publish = source.split('\n  publish:\n', 1)[1]
-        self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
-        self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
-        self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
-        self.assertIn('bundle_upload_url="$package_api/tilo-app-collections/', publish)
-        self.assertIn('channel_url=$bundle_url', publish)
-        self.assertIn('update_variable TILO_APP_COLLECTION_URL "$channel_url"', publish)
-        self.assertNotIn('channel_url=$bundle_upload_url', publish)
-        self.assertIn("$package_public_api != *'.svc.cluster.local'*", publish)
-
-    def test_published_tapps_are_submitted_to_the_signed_registry(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        build, publish = source.split('\n  publish:\n', 1)
-        self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
-        self.assertIn('dist/app-release/tilo-app-package', build)
-        self.assertIn(
-            "TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}",
-            publish,
-        )
-        self.assertIn('TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}', publish)
-        self.assertIn('publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"', publish)
-        self.assertIn("sort -t $'\\t' -k1,1 -k4,4", publish)
-        self.assertIn("done < <(cut -f1 \"$publication_plan\" | uniq)", publish)
-        self.assertIn('--metadata "$metadata" --action "$action" --url "$tapp_url"', publish)
-        self.assertIn('args+=(--previous-entry "$aggregate")', publish)
-        self.assertIn("jq -e -s '.[0] == .[1]'", publish)
-        self.assertIn('tools/apps/registry_metadata.py build', publish)
-        self.assertIn('tilo-app-metadata/$VERSION/$media', publish)
-        self.assertIn('registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"', publish)
-        self.assertIn('tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"', publish)
-        self.assertIn('public registry media is unavailable or has the wrong type', publish)
-        self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
-        self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
-        self.assertIn("*.webp) expected_type='image/webp'", publish)
-        self.assertIn('done < "$registry_media_urls"', publish)
-        self.assertIn('metadata="$registry_metadata/$name.json"', publish)
-        self.assertIn('--metadata "$metadata"', publish)
-        self.assertIn('--data-binary "@$request"', publish)
-        self.assertIn('[[ $status == 202 ]]', publish)
-        self.assertIn('$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file', publish)
-
-    def test_verifier_package_secret_is_narrow_and_artifact_token_stays_job_scoped(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
-        self.assertEqual(source.count(binding), 2)
-        for occurrence in (0, 1):
-            for replacement in ('${{ github.token }}', '${{ secrets.REGISTRY_TOKEN }}',
-                                '${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN || secrets.REGISTRY_TOKEN }}'):
-                with self.subTest(occurrence=occurrence, replacement=replacement):
-                    parts = source.split(binding)
-                    changed = binding.join(parts[:occurrence + 1]) + (
-                        '          VERIFIER_BUNDLE_READ_TOKEN: ' + replacement
-                    ) + binding.join(parts[occurrence + 1:])
-                    self.assertNotEqual(self.check(changed), 0)
-        artifact = '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}'
-        self.assertIn(artifact, source)
-        self.assertNotEqual(self.check(source.replace(artifact,
-            '          FORGEJO_ARTIFACT_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}')), 0)
-
-    def test_disconnected_or_mutable_builder_fails(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        for before, after in (
-            ('      builder_image: ${{ steps.builder.outputs.image }}', '      other: unused'),
-            ('        id: builder', '        id: different'),
-            ('        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', '        run: echo skipped'),
-            ('        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py',
-             '        run: python3 tools/ci/resolve_builder.py'),
-            ('    needs: [plan, authorize-publish]', '    needs: other'),
-            ('      image: ${{ needs.plan.outputs.builder_image }}',
-             '      image: registry.tilo.so/tilo/tilo-builder:latest'),
-        ):
-            with self.subTest(before=before):
-                self.assertIn(before, source)
-                self.assertNotEqual(self.check(source.replace(before, after, 1)), 0)
-
-    def test_required_image_reference_in_comment_cannot_replace_build_input(self):
-        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        reference = '      image: ${{ needs.plan.outputs.builder_image }}'
-        self.assertNotEqual(self.check(source.replace(reference, '# ' + reference)), 0)
+    def test_publication_uses_narrow_secrets_public_origin_and_signed_registry(self):
+        with self.subTest(phase='publisher does not receive registry token in steps'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            before, publish = source.split('\n  publish:\n', 1)
+            publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
+            self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
+        with self.subTest(phase='persisted collection urls use the configured public origin'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            publish = source.split('\n  publish:\n', 1)[1]
+            self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
+            self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
+            self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
+            self.assertIn('bundle_upload_url="$package_api/tilo-app-collections/', publish)
+            self.assertIn('channel_url=$bundle_url', publish)
+            self.assertIn('update_variable TILO_APP_COLLECTION_URL "$channel_url"', publish)
+            self.assertNotIn('channel_url=$bundle_upload_url', publish)
+            self.assertIn("$package_public_api != *'.svc.cluster.local'*", publish)
+        with self.subTest(phase='published tapps are submitted to the signed registry'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            build, publish = source.split('\n  publish:\n', 1)
+            self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
+            self.assertIn('dist/app-release/tilo-app-package', build)
+            self.assertIn(
+                "TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}",
+                publish,
+            )
+            self.assertIn('TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}', publish)
+            self.assertIn('publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"', publish)
+            self.assertIn("sort -t $'\\t' -k1,1 -k4,4", publish)
+            self.assertIn("done < <(cut -f1 \"$publication_plan\" | uniq)", publish)
+            self.assertIn('--metadata "$metadata" --action "$action" --url "$tapp_url"', publish)
+            self.assertIn('args+=(--previous-entry "$aggregate")', publish)
+            self.assertIn("jq -e -s '.[0] == .[1]'", publish)
+            self.assertIn('tools/apps/registry_metadata.py build', publish)
+            self.assertIn('tilo-app-metadata/$VERSION/$media', publish)
+            self.assertIn('registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"', publish)
+            self.assertIn('tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"', publish)
+            self.assertIn('public registry media is unavailable or has the wrong type', publish)
+            self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
+            self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
+            self.assertIn("*.webp) expected_type='image/webp'", publish)
+            # Every media URL is checked, eight at a time, and any failure fails.
+            self.assertIn('tr \'\\t\' \'\\n\' < "$registry_media_urls"', publish)
+            self.assertIn("| xargs -d '\\n' -n 2 -P 8 bash -c 'check_media \"$1\" \"$2\"' _", publish)
+            self.assertIn('metadata="$registry_metadata/$name.json"', publish)
+            self.assertIn('--metadata "$metadata"', publish)
+            self.assertIn('--data-binary "@$request"', publish)
+            self.assertIn('[[ $status == 202 ]]', publish)
+            self.assertIn('$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file', publish)
+        with self.subTest(phase='verifier package secret is narrow and artifact token stays job scoped'):
+            source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+            binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
+            self.assertEqual(source.count(binding), 2)
+            for occurrence in (0, 1):
+                for replacement in ('${{ github.token }}', '${{ secrets.REGISTRY_TOKEN }}',
+                                    '${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN || secrets.REGISTRY_TOKEN }}'):
+                    with self.subTest(occurrence=occurrence, replacement=replacement):
+                        parts = source.split(binding)
+                        changed = binding.join(parts[:occurrence + 1]) + (
+                            '          VERIFIER_BUNDLE_READ_TOKEN: ' + replacement
+                        ) + binding.join(parts[occurrence + 1:])
+                        self.assertNotEqual(self.check(changed), 0)
+            artifact = '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}'
+            self.assertIn(artifact, source)
+            self.assertNotEqual(self.check(source.replace(artifact,
+                '          FORGEJO_ARTIFACT_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}')), 0)
 
 
 if __name__ == '__main__':

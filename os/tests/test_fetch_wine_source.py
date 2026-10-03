@@ -17,6 +17,18 @@ F = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(F)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class FetchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -47,95 +59,98 @@ class FetchTests(unittest.TestCase):
                 patch.object(F.contract, 'run', return_value=rpmkeys):
             return F.acquire(self.out, self.pin_file, self.key)
 
-    def test_success_verifies_bytes_and_publishes_logs(self):
-        self.fetch()
-        self.assertEqual((self.out / self.pin['filename']).read_bytes(), self.rpm)
-        self.assertIn('Signature', (self.out / 'signature.log').read_text())
-        self.assertIn('DNF downloaded', (self.out / 'download.log').read_text())
-        self.assertTrue(json.loads((self.out / 'acquisition.json').read_text())['signature_verified'])
-        self.assertFalse(list(self.root.glob('output.fetch-*')))
-
-    def test_wrong_key_never_downloads(self):
-        self.key.write_bytes(b'wrong')
-        with patch.object(F.subprocess, 'run') as run, self.assertRaises(ValueError):
-            F.acquire(self.out, self.pin_file, self.key)
-        run.assert_not_called()
-        self.assertFalse(self.out.exists())
-
-    def test_rpm6_lowercase_signature_is_authenticated(self):
-        result = '    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK'
-        self.fetch(result)
-        self.assertEqual((self.out / 'signature.log').read_text(), result + '\n')
-
-    def test_unsigned_and_nonpositive_results_never_publish(self):
-        for result in (
-                '    Header SHA256 digest: OK\n    Payload SHA256 digest: OK',
-                '    Header OpenPGP V4 RSA/SHA256 signature: NOT OK',
-                '    Header OpenPGP V4 RSA/SHA256 signature: NOKEY',
-                '    Header OpenPGP V4 RSA/SHA256 signature: OK\n    Payload SHA256 digest: NOT OK',
-                '/path/Signature: OK'):
-            with self.subTest(result=result), self.assertRaises(RuntimeError):
-                self.fetch(result)
+    def test_verified_fetch_publishes(self):
+        with self.subTest(phase="success_verifies_bytes_and_publishes_logs"):
+            self.fetch()
+            self.assertEqual((self.out / self.pin['filename']).read_bytes(), self.rpm)
+            self.assertIn('Signature', (self.out / 'signature.log').read_text())
+            self.assertIn('DNF downloaded', (self.out / 'download.log').read_text())
+            self.assertTrue(json.loads((self.out / 'acquisition.json').read_text())['signature_verified'])
+            self.assertFalse(list(self.root.glob('output.fetch-*')))
+        restart_fixture(self)
+        with self.subTest(phase="rpm6_lowercase_signature_is_authenticated"):
+            result = '    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK'
+            self.fetch(result)
+            self.assertEqual((self.out / 'signature.log').read_text(), result + '\n')
+        restart_fixture(self)
+        with self.subTest(phase="download_failure_retains_log"):
+            def fail(argv, **kwargs):
+                kwargs['stdout'].write(b'repository unavailable\n')
+                raise subprocess.CalledProcessError(1, argv)
+            with patch.object(F.subprocess, 'run', side_effect=fail), self.assertRaises(RuntimeError):
+                F.acquire(self.out, self.pin_file, self.key)
+            stage = next(self.root.glob('output.fetch-*'))
+            self.assertIn('repository unavailable', (stage / 'download.log').read_text())
             self.assertFalse(self.out.exists())
-        self.assertTrue(all(not p.name.startswith('.') for p in self.root.glob('output.fetch-*')))
 
-    def test_tampered_rpm_rejected_before_rpmkeys(self):
-        self.rpm = b'tampered RPM'
-        with patch.object(F.subprocess, 'run', side_effect=self.download), \
-                patch.object(F.contract, 'run') as rpmkeys, self.assertRaises(RuntimeError):
-            F.acquire(self.out, self.pin_file, self.key)
-        rpmkeys.assert_not_called()
-        self.assertFalse(self.out.exists())
-        self.assertTrue(next(self.root.glob('output.fetch-*')).joinpath('failure.log').is_file())
+    def test_signature_rejections(self):
+        with self.subTest(phase="wrong_key_never_downloads"):
+            self.key.write_bytes(b'wrong')
+            with patch.object(F.subprocess, 'run') as run, self.assertRaises(ValueError):
+                F.acquire(self.out, self.pin_file, self.key)
+            run.assert_not_called()
+            self.assertFalse(self.out.exists())
+        restart_fixture(self)
+        with self.subTest(phase="unsigned_and_nonpositive_results_never_publish"):
+            for result in (
+                    '    Header SHA256 digest: OK\n    Payload SHA256 digest: OK',
+                    '    Header OpenPGP V4 RSA/SHA256 signature: NOT OK',
+                    '    Header OpenPGP V4 RSA/SHA256 signature: NOKEY',
+                    '    Header OpenPGP V4 RSA/SHA256 signature: OK\n    Payload SHA256 digest: NOT OK',
+                    '/path/Signature: OK'):
+                with self.subTest(result=result), self.assertRaises(RuntimeError):
+                    self.fetch(result)
+                self.assertFalse(self.out.exists())
+            self.assertTrue(all(not p.name.startswith('.') for p in self.root.glob('output.fetch-*')))
+        restart_fixture(self)
+        with self.subTest(phase="tampered_rpm_rejected_before_rpmkeys"):
+            self.rpm = b'tampered RPM'
+            with patch.object(F.subprocess, 'run', side_effect=self.download), \
+                    patch.object(F.contract, 'run') as rpmkeys, self.assertRaises(RuntimeError):
+                F.acquire(self.out, self.pin_file, self.key)
+            rpmkeys.assert_not_called()
+            self.assertFalse(self.out.exists())
+            self.assertTrue(next(self.root.glob('output.fetch-*')).joinpath('failure.log').is_file())
+        restart_fixture(self)
+        with self.subTest(phase="bad_signature_never_publishes"):
+            with self.assertRaises(RuntimeError):
+                self.fetch('Header V4 RSA/SHA256 Signature: NOKEY')
+            self.assertFalse(self.out.exists())
+        restart_fixture(self)
+        with self.subTest(phase="unexpected_second_rpm_rejected"):
+            def extra(argv, **kwargs):
+                self.download(argv, **kwargs)
+                stage = Path(argv[3].removeprefix('--destdir='))
+                (stage / 'unexpected.src.rpm').write_bytes(b'extra')
+            with patch.object(F.subprocess, 'run', side_effect=extra), \
+                    patch.object(F.contract, 'run') as rpmkeys, self.assertRaises(RuntimeError):
+                F.acquire(self.out, self.pin_file, self.key)
+            rpmkeys.assert_not_called()
+            self.assertFalse(self.out.exists())
 
-    def test_bad_signature_never_publishes(self):
-        with self.assertRaises(RuntimeError):
-            self.fetch('Header V4 RSA/SHA256 Signature: NOKEY')
-        self.assertFalse(self.out.exists())
-
-    def test_unexpected_second_rpm_rejected(self):
-        def extra(argv, **kwargs):
-            self.download(argv, **kwargs)
-            stage = Path(argv[3].removeprefix('--destdir='))
-            (stage / 'unexpected.src.rpm').write_bytes(b'extra')
-        with patch.object(F.subprocess, 'run', side_effect=extra), \
-                patch.object(F.contract, 'run') as rpmkeys, self.assertRaises(RuntimeError):
-            F.acquire(self.out, self.pin_file, self.key)
-        rpmkeys.assert_not_called()
-        self.assertFalse(self.out.exists())
-
-    def test_pin_filename_cannot_escape_output(self):
-        self.pin['filename'] = '../wine-11.0-3.fc44.src.rpm'
-        self.pin_file.write_text(json.dumps(self.pin))
-        with self.assertRaises(ValueError):
-            self.fetch()
-        self.assertFalse(list(self.root.glob('output.fetch-*')))
-
-    def test_download_failure_retains_log(self):
-        def fail(argv, **kwargs):
-            kwargs['stdout'].write(b'repository unavailable\n')
-            raise subprocess.CalledProcessError(1, argv)
-        with patch.object(F.subprocess, 'run', side_effect=fail), self.assertRaises(RuntimeError):
-            F.acquire(self.out, self.pin_file, self.key)
-        stage = next(self.root.glob('output.fetch-*'))
-        self.assertIn('repository unavailable', (stage / 'download.log').read_text())
-        self.assertFalse(self.out.exists())
-
-    def test_existing_output_unchanged(self):
-        self.out.mkdir()
-        with self.assertRaises(FileExistsError):
-            self.fetch()
-        self.assertEqual(list(self.out.iterdir()), [])
-
-    def test_publication_race_cannot_replace_empty_directory(self):
-        stage = self.root / 'stage'
-        stage.mkdir()
-        (stage / 'marker').write_text('retained')
-        self.out.mkdir()
-        with self.assertRaises(FileExistsError):
-            F.publish(stage, self.out)
-        self.assertEqual(list(self.out.iterdir()), [])
-        self.assertTrue((stage / 'marker').exists())
+    def test_output_safety(self):
+        with self.subTest(phase="pin_filename_cannot_escape_output"):
+            self.pin['filename'] = '../wine-11.0-3.fc44.src.rpm'
+            self.pin_file.write_text(json.dumps(self.pin))
+            with self.assertRaises(ValueError):
+                self.fetch()
+            self.assertFalse(list(self.root.glob('output.fetch-*')))
+        restart_fixture(self)
+        with self.subTest(phase="existing_output_unchanged"):
+            self.out.mkdir()
+            with self.assertRaises(FileExistsError):
+                self.fetch()
+            self.assertEqual(list(self.out.iterdir()), [])
+        restart_fixture(self)
+        with self.subTest(phase="publication_race_cannot_replace_empty_directory"):
+            stage = self.root / 'stage'
+            stage.mkdir()
+            (stage / 'marker').write_text('retained')
+            self.out.mkdir()
+            with self.assertRaises(FileExistsError):
+                F.publish(stage, self.out)
+            self.assertEqual(list(self.out.iterdir()), [])
+            self.assertTrue((stage / 'marker').exists())
 
 
 if __name__ == '__main__':

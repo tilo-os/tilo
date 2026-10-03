@@ -164,81 +164,81 @@ mod tests {
     }
 
     #[test]
-    fn every_role_is_legible_on_every_preset() {
-        for name in Theme::ALL {
-            let theme = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
-            let colors = &theme.tokens.colors;
-            let floor =
-                if contrast_ratio(colors.text_primary, colors.surfaces.base) >= MAX_CONTRAST_TEXT {
+    fn syntax_roles_are_legible_distinct_and_track_the_theme() {
+        // phase: every_role_is_legible_on_every_preset
+        {
+            for name in Theme::ALL {
+                let theme = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
+                let colors = &theme.tokens.colors;
+                let floor = if contrast_ratio(colors.text_primary, colors.surfaces.base)
+                    >= MAX_CONTRAST_TEXT
+                {
                     AAA
                 } else {
                     AA
                 };
+                for kind in ROLES {
+                    let color = theme.tokens.syntax.color(kind);
+                    for ground in [colors.surfaces.base, colors.surfaces.raised] {
+                        let ratio = contrast_ratio(color, ground);
+                        assert!(
+                            ratio >= floor - 0.05,
+                            "{name}: {kind:?} measures {ratio:.2}:1 on {:?}",
+                            rgb(ground)
+                        );
+                    }
+                }
+            }
+        }
+        // phase: high_contrast_syntax_clears_aaa
+        {
+            let theme = Theme::high_contrast();
             for kind in ROLES {
-                let color = theme.tokens.syntax.color(kind);
-                for ground in [colors.surfaces.base, colors.surfaces.raised] {
-                    let ratio = contrast_ratio(color, ground);
-                    assert!(
-                        ratio >= floor - 0.05,
-                        "{name}: {kind:?} measures {ratio:.2}:1 on {:?}",
-                        rgb(ground)
-                    );
+                let ratio = contrast_ratio(
+                    theme.tokens.syntax.color(kind),
+                    theme.tokens.colors.surfaces.base,
+                );
+                assert!(ratio >= AAA, "{kind:?} measures {ratio:.2}:1");
+            }
+        }
+        // phase: keywords_step_away_from_the_ground
+        {
+            let dark = Theme::dark();
+            let light = Theme::light();
+            let luminance = |theme: &Theme| relative_luminance(theme.tokens.syntax.keyword);
+            let accent =
+                |theme: &Theme| relative_luminance(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]);
+            assert!(luminance(&dark) > accent(&dark), "dark keywords lighten");
+            assert!(luminance(&light) < accent(&light), "light keywords darken");
+        }
+        // phase: roles_that_carry_meaning_stay_distinct
+        {
+            for name in Theme::ALL {
+                let syntax = Theme::named(name)
+                    .unwrap_or_else(|| panic!("named({name}) resolves"))
+                    .tokens
+                    .syntax;
+                let distinct = [
+                    syntax.keyword,
+                    syntax.string,
+                    syntax.comment,
+                    syntax.number,
+                    syntax.function,
+                ]
+                .map(rgb);
+                for (i, a) in distinct.iter().enumerate() {
+                    for b in distinct.iter().skip(i + 1) {
+                        assert_ne!(a, b, "{name}: two syntax roles collapsed onto one colour");
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn high_contrast_syntax_clears_aaa() {
-        let theme = Theme::high_contrast();
-        for kind in ROLES {
-            let ratio = contrast_ratio(
-                theme.tokens.syntax.color(kind),
-                theme.tokens.colors.surfaces.base,
+        // phase: the_palette_tracks_the_theme
+        {
+            assert_ne!(
+                rgb(Theme::dark().tokens.syntax.keyword),
+                rgb(Theme::light().tokens.syntax.keyword)
             );
-            assert!(ratio >= AAA, "{kind:?} measures {ratio:.2}:1");
         }
-    }
-
-    #[test]
-    fn keywords_step_away_from_the_ground() {
-        let dark = Theme::dark();
-        let light = Theme::light();
-        let luminance = |theme: &Theme| relative_luminance(theme.tokens.syntax.keyword);
-        let accent =
-            |theme: &Theme| relative_luminance(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]);
-        assert!(luminance(&dark) > accent(&dark), "dark keywords lighten");
-        assert!(luminance(&light) < accent(&light), "light keywords darken");
-    }
-
-    #[test]
-    fn roles_that_carry_meaning_stay_distinct() {
-        for name in Theme::ALL {
-            let syntax = Theme::named(name)
-                .unwrap_or_else(|| panic!("named({name}) resolves"))
-                .tokens
-                .syntax;
-            let distinct = [
-                syntax.keyword,
-                syntax.string,
-                syntax.comment,
-                syntax.number,
-                syntax.function,
-            ]
-            .map(rgb);
-            for (i, a) in distinct.iter().enumerate() {
-                for b in distinct.iter().skip(i + 1) {
-                    assert_ne!(a, b, "{name}: two syntax roles collapsed onto one colour");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_palette_tracks_the_theme() {
-        assert_ne!(
-            rgb(Theme::dark().tokens.syntax.keyword),
-            rgb(Theme::light().tokens.syntax.keyword)
-        );
     }
 }

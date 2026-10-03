@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: false
+      installer_rootfs:
+        description: "Live installer root filesystem: btrfs (default) or ext4. Use ext4 for WHPX diagnostics with a matching OS image."
+        type: string
+        required: false
+        default: "btrfs"
       published_os_image:
         description: "Optional signed Tilo manifest-list digest; empty uses vars.TILO_INSTALLER_OS_IMAGE."
         type: string
@@ -70,8 +75,13 @@ jobs:
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
           GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
+          INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs }}
           PUBLISHED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision }}
         run: |
+          case "${INSTALLER_ROOTFS:-btrfs}" in
+            btrfs|ext4) ;;
+            *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
+          esac
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
@@ -81,12 +91,14 @@ jobs:
               echo '::error::offline medium requires main, installer_only, an immutable signed target, and a full source revision'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            # No runner carries the imager fleet's labels any more; the large
+            # ARM runners have nested KVM and the disk these media need.
             if [[ -n ${LENOVO_TARGET_IMAGE:-} && ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"},{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"},{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             elif [[ ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
             else
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             fi
             exit 0
           fi
@@ -123,7 +135,7 @@ jobs:
           }
 
   medium:
-    timeout-minutes: 240
+    timeout-minutes: 180
     # Build and boot-test install media only on architecture-matched native
     # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
     # the isolated large-disk fleet with Podman plus software QEMU installed
@@ -139,12 +151,13 @@ jobs:
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
       TILO_LENOVO_TARGET_IMAGE: ${{ matrix.target_profile == 'lenovo-83ed' && github.event.inputs.lenovo_target_image || '' }}
       TILO_GENERIC_TARGET: ${{ matrix.target_profile == 'generic' && 'true' || 'false' }}
+      TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
       # The live medium must boot QEMU virt; the separately signed Lenovo
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
       # A release tag must use an OS release from the identical source commit.
-      # Offline media use the explicitly pinned signed OS source. Other manual
-      # rehearsals may still layer current installer code onto a published OS.
+      # Offline media verify the explicitly pinned signed OS source while
+      # layering the dispatched main installer code onto that immutable image.
       TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
@@ -155,12 +168,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}
-      - name: Verify checked out source revision
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Verify installer source descends from signed OS source
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: |
-          test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION" || {
-            echo '::error::offline medium checkout differs from signed OS source pin'; exit 1;
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" \
+            && git merge-base --is-ancestor "$TILO_EXPECTED_OS_SOURCE_REVISION" HEAD || {
+            echo '::error::offline installer source is not a descendant of the signed OS source'; exit 1;
           }
       - name: Require the native medium architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
@@ -271,7 +287,7 @@ jobs:
                 | tee "$target_verification_log"
             fi
             grep -Fq "verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation " "$target_verification_log" || {
-              echo '::error::signed offline target source differs from pinned installer source'; exit 1;
+              echo '::error::signed offline target source differs from pinned OS source'; exit 1;
             }
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
             printf 'TILO_OFFLINE_TARGET_IMAGE=%s\nTILO_OFFLINE_TARGET_PROFILE=%s\n' "$target_image" "$target_profile" >> "${GITHUB_ENV:?}"
@@ -434,18 +450,20 @@ jobs:
             > "dist/tilo-installer/$stem.qcow2.sha256"
           test "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" = \
             "$(sha256sum os/output/installer/qcow2/disk.qcow2 | awk '{print $1}')"
-          jq -n --arg schema tilo.whpx-ci-installer-medium.v1 \
+          jq -n --arg schema tilo.whpx-ci-installer-medium.v2 \
             --arg profile "$TILO_OFFLINE_TARGET_PROFILE" \
             --arg target "$TILO_OFFLINE_TARGET_IMAGE" \
             --arg live_base "$TILO_PUBLISHED_OS_IMAGE" \
             --arg build_revision "$(git rev-parse HEAD)" \
+            --arg os_source_revision "${TILO_EXPECTED_OS_SOURCE_REVISION:-$(git rev-parse HEAD)}" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg qcow2_sha256 "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" \
             --arg archive_sha256 "$(awk '{print $1}' "$output.sha256")" \
             --arg guest_proof_sha256 "$(sha256sum dist/installer-guided-alongside-cycle/guest-install-proof.json | awk '{print $1}')" \
             '{schema:$schema,target_profile:$profile,target_image:$target,live_base_image:$live_base,
-              build_revision:$build_revision,run_id:$run_id,run_attempt:$run_attempt,
+              build_revision:$build_revision,os_source_revision:$os_source_revision,
+              run_id:$run_id,run_attempt:$run_attempt,
               qcow2_sha256:$qcow2_sha256,archive_sha256:$archive_sha256,
               guest_proof_sha256:$guest_proof_sha256}' \
             > "dist/tilo-installer/$stem.whpx-source.json"
@@ -551,10 +569,9 @@ jobs:
 
   # USB-free installation VM round trip on the x86_64 medium this run just
   # built and boot-tested (design spec §9). Opt-in with the same repository
-  # variable as the bundle export. The same os/dev/ci-internal-install-cycle.sh
-  # backs the manual internal-install-cycle.yml workflow.
+  # variable as the bundle export.
   internal-install-cycle:
-    timeout-minutes: 480
+    timeout-minutes: 180
     needs: medium
     # Needs the dedicated KVM release host, which installer-only rehearsals
     # deliberately do not use.
@@ -648,7 +665,7 @@ jobs:
           path: dist/tilo-installer-catalog/*
 
   linux:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true'
     needs: catalog
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
@@ -802,7 +819,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
@@ -819,6 +836,11 @@ jobs:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check Windows scenario tool overrides
+        shell: powershell
+        run: |
+          powershell -NoProfile -File os/tests/vm-windows-tool-resolver-test.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows scenario tool resolution failed" }
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           name: tilo-installer-catalog
@@ -915,7 +937,7 @@ jobs:
           if-no-files-found: error
 
   macos:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true

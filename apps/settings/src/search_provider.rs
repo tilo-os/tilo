@@ -10,7 +10,7 @@
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
 //! already exported to Ctrl+K as *actions* through the app's
-//! [`ResourceProvider`](tilo_actions::ResourceProvider); giving pane results a
+//! [`PublishesResources`](ui::resources::PublishesResources); giving pane results a
 //! distinct `Settings` kind keeps the two groups apart in the palette.
 
 use tilo_actions::{ActionAddress, Resource};
@@ -48,17 +48,19 @@ impl SettingsSearchProvider {
             // The index contains every phrase people can use to find the
             // destination.  The materialised hit stays intentionally lean;
             // it resolves through the canonical `open` action below.
-            let searchable = std::iter::once(category.label())
-                .chain(std::iter::once(category.subtitle()))
+            let label = category.label();
+            let subtitle = category.subtitle();
+            let searchable = [label.as_str(), subtitle.as_str()]
+                .into_iter()
                 .chain(category.keywords().iter().copied())
                 .collect::<Vec<_>>()
                 .join(" ");
             let result = SearchResult::for_action(
                 SETTINGS_KIND,
-                category.label(),
+                &label,
                 crate::actions::open_pane_address(category),
             )
-            .with_subtitle(category.subtitle())
+            .with_subtitle(&subtitle)
             .with_icon(category.icon());
             // Every input above is static, and the result uses precisely the
             // same stable resource id, so this can only fail if a future
@@ -111,8 +113,9 @@ mod tests {
     use super::*;
     use ui::search::{SearchProvider, SearchRegistry};
 
+    /// Keyword synonyms, browsing and budgeted paging over one provider.
     #[test]
-    fn provider_finds_a_pane_by_keyword() {
+    fn pane_search_finds_keywords_browses_and_pages_every_pane() {
         let provider = SettingsSearchProvider::new();
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
@@ -123,12 +126,34 @@ mod tests {
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
         assert!(hits.iter().all(|r| r.kind == SETTINGS_KIND));
-    }
 
-    #[test]
-    fn empty_query_browses_every_pane() {
-        let provider = SettingsSearchProvider::new();
+        // The empty query browses every pane.
         assert_eq!(provider.search("").len(), Category::ALL.len());
+
+        // Paging reaches the complete corpus with a hard per-page budget.
+        let mut cursor = None;
+        let mut titles = Vec::new();
+        loop {
+            let page = provider.search_page("", cursor.as_ref(), 1, 1);
+            assert!(page.inspected <= 1, "a page must respect its work budget");
+            assert!(
+                page.results.len() <= 1,
+                "a page must respect its result limit"
+            );
+            titles.extend(page.results.into_iter().map(|result| result.title));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            titles,
+            Category::ALL
+                .iter()
+                .map(|category| category.label())
+                .collect::<Vec<_>>(),
+            "a continuation reaches late categories instead of truncating browse discovery"
+        );
     }
 
     #[test]
@@ -155,13 +180,13 @@ mod tests {
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let mut app = config.app();
-        let providers = app.search_providers();
+        let providers = ui::search::capability::search_providers(&app);
         assert!(
             !providers.is_empty(),
             "settings publishes a search provider"
         );
-        let doc = AutoCommit::new();
-        let resources = app.resources(&doc);
+        let mut doc = AutoCommit::new();
+        let resources = ui::resources::resources(&app, &doc);
         let hits = providers[0].search("");
         assert_eq!(hits.len(), Category::ALL.len());
 
@@ -175,16 +200,20 @@ mod tests {
             let kind = spec.kind;
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("the exported operation encodes");
-            assert!(
-                app.invoke_resource_operation(
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("the brokered operation succeeds")
-            );
+                .expect("the brokered operation succeeds"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.selected(),
                 category,
@@ -194,43 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn paging_reaches_the_complete_corpus_with_a_hard_per_page_budget() {
-        let provider = SettingsSearchProvider::new();
-        let mut cursor = None;
-        let mut titles = Vec::new();
-        loop {
-            let page = provider.search_page("", cursor.as_ref(), 1, 1);
-            assert!(page.inspected <= 1, "a page must respect its work budget");
-            assert!(
-                page.results.len() <= 1,
-                "a page must respect its result limit"
-            );
-            titles.extend(page.results.into_iter().map(|result| result.title));
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        assert_eq!(
-            titles,
-            Category::ALL
-                .iter()
-                .map(|category| category.label().to_string())
-                .collect::<Vec<_>>(),
-            "a continuation reaches late categories instead of truncating browse discovery"
-        );
-    }
-
-    #[test]
     fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
         use automerge::AutoCommit;
-        use ui::widget::Widget;
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let app = config.app();
         let doc = AutoCommit::new();
         let address = crate::actions::open_pane_address(Category::Accessibility);
-        let resource = Widget::resource(&app, &doc, &address.resource)
+        let resource = ui::resources::resource(&app, &doc, &address.resource)
             .expect("the widget resolves a current canonical resource at activation time");
         assert_eq!(resource.id.as_str(), address.resource);
         let resources = [resource];
@@ -243,8 +243,8 @@ mod tests {
             crate::actions::pane_resource_id(Category::Accessibility),
             "removed-action",
         );
-        assert!(Widget::resource(&app, &doc, &stale_resource.resource).is_none());
-        let current_resource = Widget::resource(&app, &doc, &stale_action.resource)
+        assert!(ui::resources::resource(&app, &doc, &stale_resource.resource).is_none());
+        let current_resource = ui::resources::resource(&app, &doc, &stale_action.resource)
             .expect("the current resource remains resolvable");
         assert!(tilo_actions::door::resolve(&[current_resource], &stale_action).is_none());
     }

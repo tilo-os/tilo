@@ -18,9 +18,7 @@ use vello::Scene;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-#[cfg(test)]
-use winit::keyboard::NamedKey;
-use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
 #[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
@@ -83,10 +81,32 @@ impl ShellDriver {
         // paints (`compositor::hosted`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
         // real machine are yours.
+        // The driver then acts as that same owner in every room: the
+        // identity registry of the machine rendering would otherwise pick
+        // who "you" are, and a roster whose viewer is not the room's owner
+        // offers no Invite.
+        let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+        tree.adopt_ownerless_workspaces(&owner);
+        let hosted_tabs = hosted_app_tabs(&tree);
+        let mut fb = FrameBuilder::with_tree(tree, viewport);
+        fb.with_chrome(|st| st.act_as(owner));
+        // Binding a tab never creates its document: the action that opens
+        // an app does. This driver opens every tab of the tree it is handed
+        // into its own fresh record store, so it is that action here —
+        // without it every in-process app renders "record does not exist".
+        let records = fb.chrome().records().clone();
+        for tab in hosted_tabs {
+            // A refusal stays on screen as that tile's unavailable card;
+            // the line here says which tab and why.
+            if let Err(error) =
+                shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
+            {
+                eprintln!("shots: tab {tab} has no document: {error}");
+            }
+        }
         Self {
-            fb: FrameBuilder::with_tree(tree, viewport),
+            fb,
             state: AutoCommit::new(),
             root_obj: automerge::ROOT.clone(),
             modifiers: Modifiers::default(),
@@ -581,6 +601,27 @@ impl ShellDriver {
         self.fb.pump_apps(&mut self.state, &root);
         self.fb.paint_settled()
     }
+}
+
+/// Every tab in `tree` whose tile is an in-process app — the tabs that
+/// the production open-app actions give a scratch document when they
+/// mint them (`window_actions`).
+fn hosted_app_tabs(tree: &WorkspaceTree) -> Vec<u64> {
+    use shell::shell::state::TileContent;
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter(|tab| {
+            matches!(
+                tab.tile,
+                TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
+            )
+        })
+        .map(|tab| tab.id)
+        .collect()
 }
 
 /// Append a tab to the first window group of the first workspace, straight
@@ -1084,7 +1125,7 @@ impl ShellDriver {
                 let mut tree = st.tree_mut();
                 self.host_mut()
                     .room_activity_mut()
-                    .revert_to(&mut tree, &id)
+                    .revert_to(&mut *tree, &id)
             };
             if changed {
                 self.with_chrome(|state| {
@@ -1244,6 +1285,9 @@ impl ShellDriver {
             "launchpad" => self.scene_launchpad(),
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
+            "window-switcher" => self.scene_window_switcher(),
+            "emoji-picker" => self.scene_emoji_picker(),
+            "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
@@ -1643,6 +1687,27 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
+    /// The Alt+Tab switcher (`window_switcher.rs`): Alt held past the
+    /// reveal delay over the demo desktop's windows.
+    fn scene_window_switcher(&mut self) {
+        self.set_modifiers(ModifiersState::ALT);
+        self.press_key(&Key::Named(NamedKey::Tab));
+        self.step_frames(12);
+    }
+
+    /// The emoji picker with no focused field reporting a caret, so it opens
+    /// centred on the display.
+    fn scene_emoji_picker(&mut self) {
+        self.host_mut().toggle_emoji_picker();
+        self.step_frames(2);
+    }
+
+    /// The keep-or-revert prompt a layout tool's display change raises. No
+    /// staged transaction carries a deadline here, so it shows no countdown.
+    fn scene_display_confirm(&mut self) {
+        self.host_mut().show_display_confirmation(1, None);
+    }
+
     /// The display sheet (`projection_overlay.rs`, Win+P), settled
     /// past its 220 ms slide-in by stepping the frames a live session would.
     fn scene_projection(&mut self) {
@@ -1744,12 +1809,20 @@ impl ShellDriver {
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {
                     if peer_append_tab(&mut peer, title) {
-                        qdoc::history::commit_stamped_at(
+                        tilo_resource::history::commit_stamped_at(
                             &mut peer,
                             now.saturating_sub(days_ago.saturating_mul(DAY)),
                         );
                     }
                 }
+                // Tab appends are layout and omitted from the explorer feed;
+                // rename so Ada still authors a Change row and stays filterable.
+                let mut ada_desktop = tree.desktop.clone();
+                if let Some(ws) = ada_desktop.active_workspace_mut() {
+                    ws.name = "Ada's desk".into();
+                }
+                tilo_desktop_model::desktop_doc::seed(&mut peer, &ada_desktop);
+                tilo_resource::history::commit_stamped_at(&mut peer, now.saturating_sub(DAY));
                 // Synchronise through the same dependency-closed delta path
                 // used by ordinary peers. Merging the synthetic full replica
                 // directly can leave a parked dependency that only surfaces
@@ -1775,7 +1848,7 @@ impl ShellDriver {
         if !explore {
             use collab_types::{ArtifactKind, OpClass};
             use ui::tilo_actions::ActionContext;
-            use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+            use ui::widget::history::{HistoryEntry, HistoryEntryId};
 
             let local = shell::shell::state::local_user_id();
             self.fb
@@ -1783,11 +1856,7 @@ impl ShellDriver {
                 .room_activity_mut()
                 .open_external_entry(HistoryEntry {
                     id: HistoryEntryId([0x51; 16]),
-                    author: HistoryAuthor::new(
-                        local.clone(),
-                        ui::history_source::stable_hue(&local),
-                        ui::history_source::short_id(&local),
-                    ),
+                    author: ui::history_source::author_for_identity(local.clone(), &local),
                     op_class: OpClass::Splice,
                     artifact_kind: ArtifactKind::File,
                     timestamp: std::time::SystemTime::now(),
@@ -1826,7 +1895,7 @@ impl ShellDriver {
                     let last = entries.len().saturating_sub(1);
                     let pane = self.fb.host_mut().room_activity_mut();
                     pane.apply_name(
-                        &mut tree,
+                        &mut *tree,
                         &ui::GroupNameRequest {
                             record_id: None,
                             start: entries[0].id,
@@ -1835,7 +1904,7 @@ impl ShellDriver {
                         },
                     );
                     pane.apply_name(
-                        &mut tree,
+                        &mut *tree,
                         &ui::GroupNameRequest {
                             record_id: None,
                             start: entries[split].id,
@@ -1848,7 +1917,7 @@ impl ShellDriver {
             self.fb
                 .host_mut()
                 .room_activity_mut()
-                .prepare_away_recap_for_shots(&mut tree);
+                .prepare_away_recap_for_shots(&mut *tree);
             drop(tree);
             drop(state);
         }
@@ -1950,7 +2019,7 @@ impl ShellDriver {
             .fb
             .host_mut()
             .room_activity_mut()
-            .move_work_session_boundary_for_shots(&mut tree, 1, 0, true);
+            .move_work_session_boundary_for_shots(&mut *tree, 1, 0, true);
         drop(tree);
         drop(state);
         self.fb.host_mut().force_room_activity_settled();
@@ -1991,6 +2060,10 @@ impl ShellDriver {
         true
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn select_room_activity_entry(&mut self, index: usize) {
         let (start, len) = {
             let activity = self.fb.host().room_activity();
@@ -2014,7 +2087,7 @@ impl ShellDriver {
                 .fb
                 .host()
                 .room_activity()
-                .compare_selection(&mut tree, None)
+                .compare_selection(&mut *tree, None)
                 .is_some()
             {
                 break;
@@ -2045,14 +2118,14 @@ impl ShellDriver {
                     Some(&end_entry.id),
                     "Reading week",
                 );
-                qdoc::history::commit_stamped(&mut peer);
+                tilo_resource::history::commit_stamped(&mut peer);
                 let _ = tree.doc.merge_incoming(&mut peer);
             }
 
             if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
                 let pane = self.fb.host_mut().room_activity_mut();
                 pane.apply_name(
-                    &mut tree,
+                    &mut *tree,
                     &ui::GroupNameRequest {
                         record_id: None,
                         start: first.id,
@@ -2074,10 +2147,10 @@ impl ShellDriver {
         let handle = self.chrome_handle();
         let st = handle.borrow();
         let tree = st.tree();
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_scope(shell::shell::room_activity::RoomScope::AllWorkspaces, &tree);
+        self.fb.host_mut().room_activity_mut().set_scope(
+            shell::shell::room_activity::RoomScope::AllWorkspaces,
+            &*tree,
+        );
     }
 
     fn scene_ws_settings_permissions(&mut self) {
@@ -2090,7 +2163,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         // Backdate `created_at` past the slide-in window: at t=0 a
         // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
         // pushes it entirely off-screen-right.
@@ -2122,7 +2195,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications_one(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2137,7 +2210,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications_dnd(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2391,6 +2464,9 @@ impl ShellDriver {
         "launchpad",
         "peer-sync",
         "projection",
+        "window-switcher",
+        "emoji-picker",
+        "display-confirm",
         "portal-permission",
         "notifications",
         "notifications-one",
@@ -2506,269 +2582,358 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
 // Tests
 // =====================================================================
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
 
     #[test]
-    fn collaboration_fixture_keeps_pending_invite_out_of_live_presence() {
-        let mut d = ShellDriver::new((1600, 900));
-        d.seed_invite_pending_for_shots();
-        let invited = d
-            .chrome()
-            .tree()
-            .desktop
-            .active_workspace()
-            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
-            .cloned()
-            .expect("pending invitation creates Ada's durable row");
-        assert!(invited.invited);
-        assert_eq!(invited.active_tab, None);
+    fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+        // Phase `driver_scene_setup_covers_catalogue`.
+        // Smoke for `scene_setup` — drive every named scene and verify it
+        // returns Ok, then verify a fresh driver returns Err for an
+        // unknown name.
+        {
+            for &name in ShellDriver::ALL_SCENES {
+                let mut d = ShellDriver::new((1600, 900));
+                d.scene_setup(name)
+                    .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+                let _ = d.paint_settled();
+            }
+            let mut d = ShellDriver::new((1600, 900));
+            assert!(d.scene_setup("nope").is_err());
+        }
+        // Phase `collaboration_fixture_keeps_pending_invite_out_of_live_presence`.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            d.seed_invite_pending_for_shots();
+            let invited = d
+                .chrome()
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+                .cloned()
+                .expect("pending invitation creates Ada's durable row");
+            assert!(invited.invited);
+            assert_eq!(invited.active_tab, None);
 
-        assert!(d.admit_invited_collaborator_for_shots());
-        let live = d
-            .chrome()
-            .tree()
-            .desktop
-            .active_workspace()
-            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
-            .cloned()
-            .expect("acceptance retains the same identity");
-        assert!(!live.invited);
-        let notes = d.chrome().tree().desktop.active_workspace().and_then(|ws| {
-            ws.strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|tab| tab.title == "Notes")
-                .map(|tab| tab.id)
-        });
-        assert_eq!(live.active_tab, notes);
+            assert!(d.admit_invited_collaborator_for_shots());
+            let live = d
+                .chrome()
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+                .cloned()
+                .expect("acceptance retains the same identity");
+            assert!(!live.invited);
+            let notes = d.chrome().tree().desktop.active_workspace().and_then(|ws| {
+                ws.strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| tab.title == "Notes")
+                    .map(|tab| tab.id)
+            });
+            assert_eq!(live.active_tab, notes);
+        }
     }
 
-    /// Drive Cmd+Tab through `dispatch` and verify the chrome's
-    /// `overlays.overview` flag flips. Mirrors the live binary's
-    /// hotkey path through real `handle_event` dispatch on the host
-    /// — exercises the full `dispatch → ShellOverlayHost::handle_event
-    /// → chrome.borrow_mut()` chain.
     #[test]
-    fn driver_dispatch_routes_click_to_chrome() {
-        let mut d = ShellDriver::new((1600, 900));
-        let _ = d.paint();
-        assert!(!d.chrome().overlays.overview);
-        d.set_modifiers(ModifiersState::SUPER);
-        d.press_key(&Key::Named(NamedKey::Tab));
-        assert!(
-            d.chrome().overlays.overview,
-            "Cmd+Tab should toggle the overview overlay on through driver dispatch"
-        );
-    }
-
-    /// Toggle the palette open via the public host API, step a few
-    /// frames so the palette open animation can register, then assert
-    /// the palette is still visible. Pinned smoke for `step_frames`
-    /// not panicking and not nuking visibility flags.
-    #[test]
-    fn driver_step_frames_advances_palette_fade() {
-        let mut d = ShellDriver::new((1600, 900));
-        assert!(!d.host().palette_visible());
-        d.host_mut().set_palette_visible(true);
-        d.step_frames(6);
-        assert!(
-            d.host().palette_visible(),
-            "step_frames should advance animation timers without flipping visibility"
-        );
-        let _ = d.paint();
-    }
-
-    /// Paint the overview, then verify the named-rect resolver can pick
-    /// out the "+ Add workspace" tile (which `draw_overview` populates
-    /// each visible frame).
-    #[test]
-    fn driver_resolve_named_rect_for_overview_add_workspace() {
-        let mut d = ShellDriver::new((1600, 900));
-        d.with_chrome(|st| st.overlays.overview = true);
-        d.host_mut().force_overview_settled(true);
-        let _ = d.paint_settled();
-        let rect = d.resolve_named_rect("add_workspace");
-        assert!(
-            rect.is_some(),
-            "overview should populate the add_workspace rect after a settled paint"
-        );
-    }
-
-    /// Dragging the second tab pill (Files) out of the bootstrap default's
-    /// 4-tab Wide group, past its right edge into the empty strip area,
-    /// must produce TWO groups (3-tab source + 1-tab sibling), not a
-    /// replace. Reads the live `tab_rects()` off the bar so the press
-    /// lands on the pill regardless of layout drift.
-    #[test]
-    fn driver_drag_tab_out_creates_sibling_group() {
-        let mut d = ShellDriver::new((1600, 900));
-        let _ = d.paint(); // seed any draw-only caches the layout missed
-        d.relayout();
-
-        // Snapshot pre-drag layout: bootstrap default seeds one strip
-        // with one Wide group carrying Notes/Files/Terminal/Browser.
-        let strip_id = {
-            let st = d.chrome();
-            let tree = st.tree();
-            let ws_id = tree.desktop.active;
-            *tree.desktop.active_strip.get(&ws_id).expect("active strip")
-        };
-        let pre = d.host().groups_per_strip();
-        let pre_strip = pre
-            .iter()
-            .find(|(s, _)| *s == strip_id)
-            .expect("strip in groups_per_strip");
-        assert_eq!(
-            pre_strip.1.len(),
-            1,
-            "precondition: bootstrap default has exactly one group"
-        );
-        assert_eq!(
-            pre_strip.1[0].1.len(),
-            4,
-            "precondition: that group has four tabs"
-        );
-
-        // Read the second pill's rect off the live bar so the press
-        // hit-tests against the pill the layout actually painted.
-        let (from, to) = {
-            let group = d
-                .host_mut()
-                .group_at_for_tests(strip_id, 0)
-                .expect("group at idx 0");
-            let group_rect = group.get_rect();
-            let rects = group.tab_rects().to_vec();
-            assert_eq!(rects.len(), 4, "bar must have 4 pill rects after layout");
-            // Pill 1 (Files) — non-active source.
-            let pill = rects[1];
-            let from = pill.center();
-            // Release inside the generous right body-edge band. The bootstrap
-            // group fills the viewport, so an apparent gap beyond x1 is not a
-            // reachable pointer target.
-            let to = Point::new(
-                group_rect.x1 - 24.0,
-                f64::midpoint(group.bar_rect().y1, group_rect.y1),
+    fn driver_dispatches_steps_and_resolves_named_targets() {
+        // Phase `driver_dispatch_routes_click_to_chrome`.
+        // Drive Cmd+Tab through `dispatch` and verify the chrome's
+        // `overlays.overview` flag flips. Mirrors the live binary's
+        // hotkey path through real `handle_event` dispatch on the host
+        // — exercises the full `dispatch → ShellOverlayHost::handle_event
+        // → chrome.borrow_mut()` chain.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            let _ = d.paint();
+            assert!(!d.chrome().overlays.overview);
+            d.set_modifiers(ModifiersState::SUPER);
+            d.press_key(&Key::Named(NamedKey::Tab));
+            assert!(
+                d.chrome().overlays.overview,
+                "Cmd+Tab should toggle the overview overlay on through driver dispatch"
             );
-            (from, to)
-        };
+        }
+        // Phase `driver_step_frames_advances_palette_fade`.
+        // Toggle the palette open via the public host API, step a few
+        // frames so the palette open animation can register, then assert
+        // the palette is still visible. Pinned smoke for `step_frames`
+        // not panicking and not nuking visibility flags.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            assert!(!d.host().palette_visible());
+            d.host_mut().set_palette_visible(true);
+            d.step_frames(6);
+            assert!(
+                d.host().palette_visible(),
+                "step_frames should advance animation timers without flipping visibility"
+            );
+            let _ = d.paint();
+        }
+        // Phase `driver_resolve_named_rect_for_overview_add_workspace`.
+        // Paint the overview, then verify the named-rect resolver can pick
+        // out the "+ Add workspace" tile (which `draw_overview` populates
+        // each visible frame).
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            d.with_chrome(|st| st.overlays.overview = true);
+            d.host_mut().force_overview_settled(true);
+            let _ = d.paint_settled();
+            let rect = d.resolve_named_rect("add_workspace");
+            assert!(
+                rect.is_some(),
+                "overview should populate the add_workspace rect after a settled paint"
+            );
+        }
+        // Phase `widget_registry_finds_topbar_buttons`.
+        // `widget_registry` must enumerate the live widget tree after a
+        // paint, surfacing a `TopBarChrome` entry from the bootstrap default —
+        // pinned so a regression in `ShellOverlayHost::children()` fails here
+        // rather than silently returning an empty registry.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            let _ = d.paint();
+            d.relayout();
+            let _ = d.paint();
+            let registry = d.widget_registry();
+            assert!(
+                !registry.is_empty(),
+                "registry must not be empty after paint"
+            );
+            assert!(
+                registry.keys().any(|k| k.contains("ShellOverlayHost")),
+                "registry should contain ShellOverlayHost; keys={:?}",
+                registry.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                registry.keys().any(|k| k.contains("TopBarChrome")),
+                "registry should contain TopBarChrome; keys={:?}",
+                registry.keys().collect::<Vec<_>>()
+            );
+        }
+        // Phase `resolve_named_rect_falls_back_to_registry`.
+        // `resolve_named_rect` must fall through to the widget tree when the
+        // hand-curated table misses: `command_palette_input` isn't in that
+        // table, but the `CommandPalette` widget opts in via `test_id()`.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            // Open the palette — drives the same code path scenarios use,
+            // so the palette's rect gets populated on the subsequent paint.
+            d.host_mut().set_palette_visible(true);
+            let _ = d.paint();
+            d.relayout();
+            let _ = d.paint();
 
-        d.drag(from, to, 16);
-        d.relayout();
-
-        let post = d.host().groups_per_strip();
-        let post_strip = post
-            .iter()
-            .find(|(s, _)| *s == strip_id)
-            .expect("strip still present after drag");
-        assert_eq!(
-            post_strip.1.len(),
-            2,
-            "drag-out from a 4-tab group must produce exactly two groups \
-             (3-tab source + 1-tab sibling), not one (the 'replace' bug). \
-             post = {:?}",
-            post_strip.1,
-        );
-        let counts: Vec<usize> = post_strip.1.iter().map(|(_, t)| t.len()).collect();
-        assert!(
-            counts.contains(&3) && counts.contains(&1),
-            "expected one group with 3 tabs and one with 1 tab; got {counts:?}",
-        );
-
-        // Both groups must be laid out: a `structure_dirty` that fails to
-        // bubble up to a `relayout` leaves the new group at `Rect::ZERO`,
-        // silently invisible rather than failing here.
-        for i in 0..2 {
-            let g = d
-                .host_mut()
-                .group_at_for_tests(strip_id, i)
-                .expect("group laid out");
-            let r = g.get_rect();
+            // Sanity: hand-curated table doesn't know this key.
+            // (No direct assertion — we can't call the private inner match —
+            // but the registry-fallback path is what makes the next assertion
+            // pass; if a future edit accidentally adds this key to the
+            // curated table, the test still passes.)
+            let rect = d.resolve_named_rect("command_palette_input");
+            assert!(
+                rect.is_some(),
+                "command_palette_input must resolve through the registry once \
+                 the palette is visible; registry keys: {:?}",
+                d.widget_registry().keys().collect::<Vec<_>>()
+            );
+            let r = rect.unwrap();
             assert!(
                 r.area() > 0.0,
-                "group[{i}] must have a non-zero rect after relayout; got {r:?}",
+                "resolved command_palette_input rect must be non-zero; got {r:?}"
             );
         }
     }
 
-    /// Smoke for `scene_setup` — drive every named scene and verify it
-    /// returns Ok, then verify a fresh driver returns Err for an
-    /// unknown name.
     #[test]
-    fn driver_scene_setup_covers_catalogue() {
-        for &name in ShellDriver::ALL_SCENES {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn driver_tab_drag_and_detach_scope_to_the_right_group() {
+        // Phase `driver_drag_tab_out_creates_sibling_group`.
+        // Dragging the second tab pill (Files) out of the bootstrap default's
+        // 4-tab Wide group, past its right edge into the empty strip area,
+        // must produce TWO groups (3-tab source + 1-tab sibling), not a
+        // replace. Reads the live `tab_rects()` off the bar so the press
+        // lands on the pill regardless of layout drift.
+        {
             let mut d = ShellDriver::new((1600, 900));
-            d.scene_setup(name)
-                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
-            let _ = d.paint_settled();
+            let _ = d.paint(); // seed any draw-only caches the layout missed
+            d.relayout();
+
+            // Snapshot pre-drag layout: bootstrap default seeds one strip
+            // with one Wide group carrying Notes/Files/Terminal/Browser.
+            let strip_id = {
+                let st = d.chrome();
+                let tree = st.tree();
+                let ws_id = tree.desktop.active;
+                *tree.desktop.active_strip.get(&ws_id).expect("active strip")
+            };
+            let pre = d.host().groups_per_strip();
+            let pre_strip = pre
+                .iter()
+                .find(|(s, _)| *s == strip_id)
+                .expect("strip in groups_per_strip");
+            assert_eq!(
+                pre_strip.1.len(),
+                1,
+                "precondition: bootstrap default has exactly one group"
+            );
+            assert_eq!(
+                pre_strip.1[0].1.len(),
+                4,
+                "precondition: that group has four tabs"
+            );
+
+            // Read the second pill's rect off the live bar so the press
+            // hit-tests against the pill the layout actually painted.
+            let (from, to) = {
+                let group = d
+                    .host_mut()
+                    .group_at_for_tests(strip_id, 0)
+                    .expect("group at idx 0");
+                let group_rect = group.get_rect();
+                let rects = group.tab_rects().to_vec();
+                assert_eq!(rects.len(), 4, "bar must have 4 pill rects after layout");
+                // Pill 1 (Files) — non-active source.
+                let pill = rects[1];
+                let from = pill.center();
+                // Release inside the generous right body-edge band. The bootstrap
+                // group fills the viewport, so an apparent gap beyond x1 is not a
+                // reachable pointer target.
+                let to = Point::new(
+                    group_rect.x1 - 24.0,
+                    f64::midpoint(group.bar_rect().y1, group_rect.y1),
+                );
+                (from, to)
+            };
+
+            d.drag(from, to, 16);
+            d.relayout();
+
+            let post = d.host().groups_per_strip();
+            let post_strip = post
+                .iter()
+                .find(|(s, _)| *s == strip_id)
+                .expect("strip still present after drag");
+            assert_eq!(
+                post_strip.1.len(),
+                2,
+                "drag-out from a 4-tab group must produce exactly two groups \
+                 (3-tab source + 1-tab sibling), not one (the 'replace' bug). \
+                 post = {:?}",
+                post_strip.1,
+            );
+            let counts: Vec<usize> = post_strip.1.iter().map(|(_, t)| t.len()).collect();
+            assert!(
+                counts.contains(&3) && counts.contains(&1),
+                "expected one group with 3 tabs and one with 1 tab; got {counts:?}",
+            );
+
+            // Both groups must be laid out: a `structure_dirty` that fails to
+            // bubble up to a `relayout` leaves the new group at `Rect::ZERO`,
+            // silently invisible rather than failing here.
+            for i in 0..2 {
+                let g = d
+                    .host_mut()
+                    .group_at_for_tests(strip_id, i)
+                    .expect("group laid out");
+                let r = g.get_rect();
+                assert!(
+                    r.area() > 0.0,
+                    "group[{i}] must have a non-zero rect after relayout; got {r:?}",
+                );
+            }
         }
-        let mut d = ShellDriver::new((1600, 900));
-        assert!(d.scene_setup("nope").is_err());
-    }
+        // Phase `detach_click_body_ctrl_k_scopes_to_clicked_tab`.
+        // Drag a tab into its own group, click that group's window body, then
+        // press Ctrl+K. The palette must not make the sibling group disappear,
+        // and must scope to the CLICKED group's tab, not whichever group was
+        // active before the detach. Extends
+        // the `driver_drag_tab_out_creates_sibling_group` phase's setup.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            let _ = d.paint();
+            d.relayout();
 
-    /// `widget_registry` must enumerate the live widget tree after a
-    /// paint, surfacing a `TopBarChrome` entry from the bootstrap default —
-    /// pinned so a regression in `ShellOverlayHost::children()` fails here
-    /// rather than silently returning an empty registry.
-    #[test]
-    fn widget_registry_finds_topbar_buttons() {
-        let mut d = ShellDriver::new((1600, 900));
-        let _ = d.paint();
-        d.relayout();
-        let _ = d.paint();
-        let registry = d.widget_registry();
-        assert!(
-            !registry.is_empty(),
-            "registry must not be empty after paint"
-        );
-        assert!(
-            registry.keys().any(|k| k.contains("ShellOverlayHost")),
-            "registry should contain ShellOverlayHost; keys={:?}",
-            registry.keys().collect::<Vec<_>>()
-        );
-        assert!(
-            registry.keys().any(|k| k.contains("TopBarChrome")),
-            "registry should contain TopBarChrome; keys={:?}",
-            registry.keys().collect::<Vec<_>>()
-        );
-    }
+            let strip_id = detach_files_tab_into_sibling_group(&mut d);
+            let (files_tab_id, files_rect) = assert_detached_into_two_groups(&mut d, strip_id);
 
-    /// `resolve_named_rect` must fall through to the widget tree when the
-    /// hand-curated table misses: `command_palette_input` isn't in that
-    /// table, but the `CommandPalette` widget opts in via `test_id()`.
-    #[test]
-    fn resolve_named_rect_falls_back_to_registry() {
-        let mut d = ShellDriver::new((1600, 900));
-        // Open the palette — drives the same code path scenarios use,
-        // so the palette's rect gets populated on the subsequent paint.
-        d.host_mut().set_palette_visible(true);
-        let _ = d.paint();
-        d.relayout();
-        let _ = d.paint();
+            // Well below the tab bar so we don't hit a pill.
+            let body_click = Point::new(
+                f64::midpoint(files_rect.x0, files_rect.x1),
+                files_rect.y0 + files_rect.height() * 0.6,
+            );
+            d.click_at(body_click);
+            d.relayout();
+            let _ = d.paint();
+            d.relayout();
 
-        // Sanity: hand-curated table doesn't know this key.
-        // (No direct assertion — we can't call the private inner match —
-        // but the registry-fallback path is what makes the next assertion
-        // pass; if a future edit accidentally adds this key to the
-        // curated table, the test still passes.)
-        let rect = d.resolve_named_rect("command_palette_input");
-        assert!(
-            rect.is_some(),
-            "command_palette_input must resolve through the registry once \
-             the palette is visible; registry keys: {:?}",
-            d.widget_registry().keys().collect::<Vec<_>>()
-        );
-        let r = rect.unwrap();
-        assert!(
-            r.area() > 0.0,
-            "resolved command_palette_input rect must be non-zero; got {r:?}"
-        );
+            let after_click = d.host().groups_per_strip();
+            let found = after_click
+                .iter()
+                .find(|(s, _)| *s == strip_id)
+                .expect("strip present after body click");
+            assert_eq!(
+                found.1.len(),
+                2,
+                "body click alone should not drop a group; got {:?}",
+                found.1
+            );
+
+            d.set_modifiers(ModifiersState::CONTROL);
+            d.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
+            d.set_modifiers(ModifiersState::empty());
+            let _ = d.paint();
+            d.relayout();
+
+            // Sibling group must still exist with a non-zero rect.
+            let post2 = d.host().groups_per_strip();
+            let strip2 = post2
+                .iter()
+                .find(|(s, _)| *s == strip_id)
+                .expect("strip present after ctrl+k");
+            assert_eq!(
+                strip2.1.len(),
+                2,
+                "sibling group must survive Ctrl+K (got groups={:?})",
+                strip2.1
+            );
+            for i in 0..2 {
+                let r = d
+                    .host_mut()
+                    .group_at_for_tests(strip_id, i)
+                    .expect("group laid out post ctrl+k")
+                    .get_rect();
+                assert!(r.area() > 0.0, "group[{i}] must still render (rect={r:?})");
+            }
+
+            let active_tab = d.chrome().active_tab_id();
+            assert_eq!(
+                active_tab,
+                Some(files_tab_id),
+                "Ctrl+K must scope to the tab in the CLICKED group; \
+                 expected files_tab_id={files_tab_id}, got {active_tab:?}"
+            );
+        }
     }
 
     /// Drag the Files tab into its own sibling group. Split out of
-    /// [`detach_click_body_ctrl_k_scopes_to_clicked_tab`] to keep that test
+    /// [`driver_tab_drag_and_detach_scope_to_the_right_group`] to keep that test
     /// short.
     fn detach_files_tab_into_sibling_group(d: &mut ShellDriver) -> shell::shell::state::StripId {
         let strip_id = {
@@ -2802,7 +2967,7 @@ mod tests {
 
     /// Assert the detach left exactly two groups in `strip_id`, and return
     /// the detached (singleton) group's tab id and rect. Split out of
-    /// [`detach_click_body_ctrl_k_scopes_to_clicked_tab`] to keep that test
+    /// [`driver_tab_drag_and_detach_scope_to_the_right_group`] to keep that test
     /// short.
     fn assert_detached_into_two_groups(
         d: &mut ShellDriver,
@@ -2840,77 +3005,5 @@ mod tests {
             "both groups laid out before body click"
         );
         (files_tab_id, files_rect)
-    }
-
-    /// Drag a tab into its own group, click that group's window body, then
-    /// press Ctrl+K. The palette must not make the sibling group disappear,
-    /// and must scope to the CLICKED group's tab, not whichever group was
-    /// active before the detach. Extends
-    /// [`driver_drag_tab_out_creates_sibling_group`]'s setup.
-    #[test]
-    fn detach_click_body_ctrl_k_scopes_to_clicked_tab() {
-        let mut d = ShellDriver::new((1600, 900));
-        let _ = d.paint();
-        d.relayout();
-
-        let strip_id = detach_files_tab_into_sibling_group(&mut d);
-        let (files_tab_id, files_rect) = assert_detached_into_two_groups(&mut d, strip_id);
-
-        // Well below the tab bar so we don't hit a pill.
-        let body_click = Point::new(
-            f64::midpoint(files_rect.x0, files_rect.x1),
-            files_rect.y0 + files_rect.height() * 0.6,
-        );
-        d.click_at(body_click);
-        d.relayout();
-        let _ = d.paint();
-        d.relayout();
-
-        let after_click = d.host().groups_per_strip();
-        let found = after_click
-            .iter()
-            .find(|(s, _)| *s == strip_id)
-            .expect("strip present after body click");
-        assert_eq!(
-            found.1.len(),
-            2,
-            "body click alone should not drop a group; got {:?}",
-            found.1
-        );
-
-        d.set_modifiers(ModifiersState::CONTROL);
-        d.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
-        d.set_modifiers(ModifiersState::empty());
-        let _ = d.paint();
-        d.relayout();
-
-        // Sibling group must still exist with a non-zero rect.
-        let post2 = d.host().groups_per_strip();
-        let strip2 = post2
-            .iter()
-            .find(|(s, _)| *s == strip_id)
-            .expect("strip present after ctrl+k");
-        assert_eq!(
-            strip2.1.len(),
-            2,
-            "sibling group must survive Ctrl+K (got groups={:?})",
-            strip2.1
-        );
-        for i in 0..2 {
-            let r = d
-                .host_mut()
-                .group_at_for_tests(strip_id, i)
-                .expect("group laid out post ctrl+k")
-                .get_rect();
-            assert!(r.area() > 0.0, "group[{i}] must still render (rect={r:?})");
-        }
-
-        let active_tab = d.chrome().active_tab_id();
-        assert_eq!(
-            active_tab,
-            Some(files_tab_id),
-            "Ctrl+K must scope to the tab in the CLICKED group; \
-             expected files_tab_id={files_tab_id}, got {active_tab:?}"
-        );
     }
 }

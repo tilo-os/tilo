@@ -8,8 +8,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 
 /// Linear blend between two sRGB colours (`t` in `0..=1`, 0 → a, 1 → b).
@@ -32,14 +33,7 @@ pub fn alpha(c: Color, a: f32) -> Color {
 /// Parse a hex colour string (`rrggbb`, optional leading `#`) to a `Color`.
 /// Used for authentic GTFS transit line colours (`routeColor`).
 pub fn hex_color(s: &str) -> Option<Color> {
-    let s = s.trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-    let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-    let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-    Some(Color::from_rgba8(r, g, b, 255))
+    ui::color::parse_hex(s)
 }
 
 pub fn stroke_rrect(
@@ -127,24 +121,24 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &path);
 }
 
-/// The faux drop-shadow every floating map surface casts: a slightly
-/// larger, very transparent black plate seated a few pixels below.
-fn floating_shadow(scene: &mut Scene, t: Affine, rect: Rect, radius: f64) {
+/// The drop shadow every floating map surface casts: the theme's elevation
+/// ladder, seated a few pixels below, so a light theme softens it.
+fn floating_shadow(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
     let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
     fill_round(
         scene,
         t,
         shadow,
         radius + 1.0,
-        Color::from_rgba8(0, 0, 0, 46),
+        theme.tokens.elevation.e3.color,
     );
 }
 
 /// A soft elevated card floating over the map: shadow, fill, and the 1 px
 /// rest edge *derived* from the fill (`ui::surface::card`, HIG §9.5) — never
 /// a declared `border_standard`, which vanishes on a raised dark surface.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
-    floating_shadow(scene, t, rect, radius);
+pub fn card(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64, fill: Color) {
+    floating_shadow(scene, t, theme, rect, radius);
     ui::surface::card(scene, t, rect, radius, fill);
 }
 
@@ -155,13 +149,14 @@ pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) 
 pub fn card_ring(
     scene: &mut Scene,
     t: Affine,
+    theme: &Theme,
     rect: Rect,
     radius: f64,
     fill: Color,
     ring: Color,
     width: f64,
 ) {
-    floating_shadow(scene, t, rect, radius);
+    floating_shadow(scene, t, theme, rect, radius);
     fill_round(scene, t, rect, radius, fill);
     stroke_rrect(scene, t, rect, radius, width, ring);
 }
@@ -206,12 +201,6 @@ pub fn separator(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, surface
 }
 
 /// Left-aligned text with top-left at `(x, y)`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
-              other draw helper in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -225,71 +214,27 @@ pub fn text(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
-/// Weighted left-aligned text.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
-              other draw helper in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
-pub fn text_w(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        None,
-        weight,
-    );
-}
-
-/// Left-aligned text clipped to `max_w` (ellipsised by cosmic-text wrap).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
-              other draw helper in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
+/// Left-aligned text with top-left at `origin`, clipped to `max_w`
+/// (ellipsised by cosmic-text wrap).
 pub fn text_clip(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
+    ctx: &mut PaintCtx<'_>,
     s: &str,
-    x: f64,
-    y: f64,
+    origin: Point,
     size: f32,
     color: Color,
     max_w: f64,
 ) {
-    let s = tr.elide_to_width(s, size, ui::num::f32_of_f64(max_w));
-    tr.draw_text(
-        scene,
+    let s = ctx.text.elide_to_width(s, size, ui::num::f32_of_f64(max_w));
+    ctx.text(
         &s,
-        size,
+        &TextStyle::new(size),
         color,
-        t * Affine::translate((x, y)),
+        origin,
         Some(max_w as f32 + 1.0),
     );
 }
 
 /// Right-aligned text with the right edge at `x_right`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
-              other draw helper in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
 pub fn text_right(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -311,32 +256,17 @@ pub fn text_right(
     );
 }
 
-/// Centre text horizontally within `[x0, x1]`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
-              other draw helper in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "conventional short names for the shared drawing context (t: transform) and the \
-              text baseline geometry (x0, x1, y) used consistently across this module"
-)]
-pub fn text_center(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    x0: f64,
-    x1: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-) {
-    let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
+/// Text centred horizontally on `top_center.x`, its top at `top_center.y`.
+pub fn text_center(ctx: &mut PaintCtx<'_>, s: &str, top_center: Point, size: f32, color: Color) {
+    let (w, _) = ctx.text.measure(s, size, None);
+    let x = top_center.x - f64::from(w) / 2.0;
+    ctx.text(
+        s,
+        &TextStyle::new(size),
+        color,
+        Point::new(x, top_center.y),
+        None,
+    );
 }
 
 /// Measure text width.

@@ -87,6 +87,7 @@ fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool 
 
 /// Returns (child handle, socket name like `wayland-3`).
 fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
+    tilo_test_env::require_isolated_desktop();
     // Built by `cargo test`'s pre-build step, at the workspace target directory.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -128,9 +129,7 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
         }
     });
 
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(8))
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
@@ -145,7 +144,7 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     }
     let _ = child.kill();
     let _ = child.wait();
-    panic!("compositor never printed `tilo compositor listening on …` within 8s");
+    panic!("compositor never printed `tilo compositor listening on …`");
 }
 
 fn extract_socket_name(line: &str) -> Option<String> {
@@ -168,6 +167,7 @@ fn extract_socket_name(line: &str) -> Option<String> {
 #[test]
 #[ignore = "spawns two real native compositor processes"]
 fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
+    tilo_test_env::require_isolated_desktop();
     let runtime = tempfile::tempdir().expect("temporary runtime");
     let state = runtime.path().join("state.json");
     let identity_root = runtime.path().join("identity-root");
@@ -193,7 +193,7 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
     };
     let wait_for_socket = |child: &mut std::process::Child| {
         let socket = runtime.path().join("wayland-1");
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while !socket.exists() && child.try_wait().expect("poll compositor").is_none() {
             assert!(
                 Instant::now() < deadline,
@@ -225,6 +225,7 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
                 assert!(
                     !name.starts_with("wayland-")
                         && !name.starts_with("tilo-osk-")
+                        && !name.starts_with("tilo-im-")
                         && !name.starts_with("tilo-privileged-")
                         && !std::path::Path::new(&name)
                             .extension()
@@ -422,7 +423,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     let _registry = display.get_registry(&qh, ());
 
     let mut client = TestClient::new();
-    round_trip_until_bound(&conn, &mut queue, &mut client, Duration::from_secs(3));
+    round_trip_until_bound(&conn, &mut queue, &mut client, tilo_test_env::hang_bound());
     let compositor = client
         .compositor
         .clone()
@@ -446,7 +447,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     }
 
     // Poll the state dump until the foreign tab with our app-id appears.
-    let adopted = poll_for(Duration::from_secs(3), || {
+    let adopted = poll_for(tilo_test_env::hang_bound(), || {
         // Re-pump inside the poll: without it the test blocks on the file
         // system alone and nothing drives the compositor's loop after the
         // initial burst.
@@ -479,7 +480,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     drop(queue);
     drop(conn);
 
-    let reaped = poll_for(Duration::from_secs(2), || {
+    let reaped = poll_for(tilo_test_env::hang_bound(), || {
         // `Some(true)` means "still adopted"; we want the inverse.
         match dump_has_foreign_app_id(dump_path, &app_id) {
             Some(false) => Some(true),

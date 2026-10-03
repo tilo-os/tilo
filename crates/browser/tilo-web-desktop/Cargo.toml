@@ -1,0 +1,65 @@
+[package]
+name = "tilo-web-desktop"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The browser desktop bundle: the page runtime with every web-capable Tilo app linked in and registered from its manifest."
+
+# Build with `crates/browser/tilo-browser-runtime/scripts/build.sh OUT --bundle desktop`.
+# The app list is generated; see tools/web/generate_web_desktop.py.
+# `scripts/smoke.mjs` mounts every registered app in headless Chromium.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Browser-only, like the runtime it links. Native workspace builds compile an
+# empty library.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tilo-browser-runtime = { path = "../tilo-browser-runtime" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+wasm-bindgen = "=0.2.108"
+# generated apps: begin (tools/web/generate_web_desktop.py)
+api-tester = { path = "../../../apps/api-tester" }
+calculator = { path = "../../../apps/calculator" }
+calendar = { path = "../../../apps/calendar" }
+camera = { path = "../../../apps/camera" }
+canvas = { path = "../../../apps/canvas" }
+chat = { path = "../../../apps/chat", default-features = false, features = [] }
+clocks = { path = "../../../apps/clocks" }
+contacts = { path = "../../../apps/contacts" }
+diffmerge = { path = "../../../apps/diffmerge" }
+ebook = { path = "../../../apps/ebook" }
+feeds = { path = "../../../apps/feeds" }
+hex-editor = { path = "../../../apps/hex-editor" }
+image-editor = { path = "../../../apps/image-editor" }
+maps = { path = "../../../apps/maps" }
+music = { path = "../../../apps/music", default-features = false, features = [] }
+notes = { path = "../../../apps/notes" }
+passwords = { path = "../../../apps/passwords" }
+pdf-viewer = { path = "../../../apps/pdf-viewer" }
+photos = { path = "../../../apps/photos" }
+scratchpad = { path = "../../../apps/scratchpad" }
+sheets = { path = "../../../apps/sheets" }
+shortcuts = { path = "../../../apps/shortcuts" }
+slides = { path = "../../../apps/slides" }
+snippets = { path = "../../../apps/snippets" }
+speed-test = { path = "../../../apps/speed-test" }
+themes = { path = "../../../apps/themes" }
+totp = { path = "../../../apps/totp" }
+tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
+typst-editor = { path = "../../../apps/typst-editor" }
+video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
+video-player = { path = "../../../apps/video-player" }
+weather = { path = "../../../apps/weather" }
+word-processor = { path = "../../../apps/word-processor" }
+# generated apps: end
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -305,90 +305,98 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
+    /// Kitty APC scanning preserves ANSI, and parsing accepts only bounded, complete, exactly-sized images.
     #[test]
-    fn scanner_preserves_ansi_and_extracts_split_kitty_apc() {
-        let mut scanner = GraphicsScanner::default();
-        assert_eq!(
-            scanner.push(b"hello\x1b"),
-            vec![StreamEvent::Bytes(b"hello".to_vec())]
-        );
-        assert!(scanner.push(b"_Gf=100,c=2,r=3,i=7;AAAA\x1b").is_empty());
-        assert_eq!(
-            scanner.push(b"\\world"),
-            vec![
-                StreamEvent::Kitty(b"f=100,c=2,r=3,i=7;AAAA".to_vec()),
-                StreamEvent::Bytes(b"world".to_vec())
-            ]
-        );
+    fn kitty_graphics_scanning_and_parsing_is_bounded_and_exact() {
+        // Case `scanner_preserves_ansi_and_extracts_split_kitty_apc`.
+        {
+            let mut scanner = GraphicsScanner::default();
+            assert_eq!(
+                scanner.push(b"hello\x1b"),
+                vec![StreamEvent::Bytes(b"hello".to_vec())]
+            );
+            assert!(scanner.push(b"_Gf=100,c=2,r=3,i=7;AAAA\x1b").is_empty());
+            assert_eq!(
+                scanner.push(b"\\world"),
+                vec![
+                    StreamEvent::Kitty(b"f=100,c=2,r=3,i=7;AAAA".to_vec()),
+                    StreamEvent::Bytes(b"world".to_vec())
+                ]
+            );
+        }
+
+        // Case `parser_accepts_only_bounded_direct_complete_images`.
+        {
+            let image = parse_kitty(b"a=T,f=100,t=d,c=4,r=2,i=9;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
+            assert!(!image.bytes.is_empty());
+            assert_eq!(
+                (
+                    image.columns,
+                    image.rows,
+                    image.pixel_width,
+                    image.pixel_height,
+                    image.protocol_id
+                ),
+                (4, 2, 1, 1, Some(9))
+            );
+            assert!(parse_kitty(b"a=T,f=100,t=f;L3RtcC9pbWFnZQ==").is_none());
+            assert!(parse_kitty(b"a=T,f=100,m=1;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").is_none());
+        }
+
+        // Case `raw_rgb_requires_declared_exact_dimensions`.
+        {
+            let image = parse_kitty(b"a=T,f=24,t=d,s=2,v=1,c=2,r=1;AQIDBAUG").unwrap();
+            assert_eq!(image.bytes, [1, 2, 3, 4, 5, 6]);
+            assert_eq!((image.pixel_width, image.pixel_height), (2, 1));
+            assert!(parse_kitty(b"a=T,f=24,t=d,s=2,v=1;AQID").is_none());
+        }
     }
 
+    /// The rendering decoder revalidates raw metadata and decodes validated PNGs.
     #[test]
-    fn parser_accepts_only_bounded_direct_complete_images() {
-        let image = parse_kitty(b"a=T,f=100,t=d,c=4,r=2,i=9;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
-        assert!(!image.bytes.is_empty());
-        assert_eq!(
-            (
-                image.columns,
-                image.rows,
-                image.pixel_width,
-                image.pixel_height,
-                image.protocol_id
-            ),
-            (4, 2, 1, 1, Some(9))
-        );
-        assert!(parse_kitty(b"a=T,f=100,t=f;L3RtcC9pbWFnZQ==").is_none());
-        assert!(parse_kitty(b"a=T,f=100,m=1;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").is_none());
-    }
+    fn rendering_decoder_revalidates_metadata_and_decodes_png() {
+        // Case `rendering_decoder_revalidates_raw_metadata`.
+        {
+            let placement = TerminalImagePlacement {
+                hash: "test".into(),
+                mime: "application/x-kitty-rgb".into(),
+                byte_len: 6,
+                row: 0,
+                col: 0,
+                columns: 1,
+                rows: 1,
+                pixel_width: 2,
+                pixel_height: 1,
+                protocol_id: None,
+                alternate_screen: false,
+            };
+            let decoded = decode_for_rendering(&placement, &[1, 2, 3, 4, 5, 6]).unwrap();
+            assert_eq!(decoded.intrinsic_size(), (2, 1));
+            assert!(decode_for_rendering(&placement, &[1, 2, 3]).is_none());
+        }
 
-    #[test]
-    fn raw_rgb_requires_declared_exact_dimensions() {
-        let image = parse_kitty(b"a=T,f=24,t=d,s=2,v=1,c=2,r=1;AQIDBAUG").unwrap();
-        assert_eq!(image.bytes, [1, 2, 3, 4, 5, 6]);
-        assert_eq!((image.pixel_width, image.pixel_height), (2, 1));
-        assert!(parse_kitty(b"a=T,f=24,t=d,s=2,v=1;AQID").is_none());
-    }
-
-    #[test]
-    fn rendering_decoder_revalidates_raw_metadata() {
-        let placement = TerminalImagePlacement {
-            hash: "test".into(),
-            mime: "application/x-kitty-rgb".into(),
-            byte_len: 6,
-            row: 0,
-            col: 0,
-            columns: 1,
-            rows: 1,
-            pixel_width: 2,
-            pixel_height: 1,
-            protocol_id: None,
-            alternate_screen: false,
-        };
-        let decoded = decode_for_rendering(&placement, &[1, 2, 3, 4, 5, 6]).unwrap();
-        assert_eq!(decoded.intrinsic_size(), (2, 1));
-        assert!(decode_for_rendering(&placement, &[1, 2, 3]).is_none());
-    }
-
-    #[test]
-    fn rendering_decoder_decodes_validated_png() {
-        let image = parse_kitty(b"a=T,f=100,t=d;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
-        let placement = TerminalImagePlacement {
-            hash: "test".into(),
-            mime: image.mime.into(),
-            byte_len: image.bytes.len() as u64,
-            row: 0,
-            col: 0,
-            columns: image.columns,
-            rows: image.rows,
-            pixel_width: image.pixel_width,
-            pixel_height: image.pixel_height,
-            protocol_id: None,
-            alternate_screen: false,
-        };
-        assert_eq!(
-            decode_for_rendering(&placement, &image.bytes)
-                .unwrap()
-                .intrinsic_size(),
-            (1, 1)
-        );
+        // Case `rendering_decoder_decodes_validated_png`.
+        {
+            let image = parse_kitty(b"a=T,f=100,t=d;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
+            let placement = TerminalImagePlacement {
+                hash: "test".into(),
+                mime: image.mime.into(),
+                byte_len: image.bytes.len() as u64,
+                row: 0,
+                col: 0,
+                columns: image.columns,
+                rows: image.rows,
+                pixel_width: image.pixel_width,
+                pixel_height: image.pixel_height,
+                protocol_id: None,
+                alternate_screen: false,
+            };
+            assert_eq!(
+                decode_for_rendering(&placement, &image.bytes)
+                    .unwrap()
+                    .intrinsic_size(),
+                (1, 1)
+            );
+        }
     }
 }

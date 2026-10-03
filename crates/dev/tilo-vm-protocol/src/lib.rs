@@ -16,6 +16,7 @@
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
 pub mod client;
+pub mod display;
 pub mod input;
 pub mod manifest;
 
@@ -25,11 +26,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
-pub use input::{Button, InputAction};
+pub use display::OutputSpec;
+pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -236,6 +238,15 @@ pub struct SlotCreate {
     pub kind: SlotKind,
     #[serde(default)]
     pub owner: Owner,
+    /// Headful only: one vkms connector per output, left to right, with
+    /// this mode and scale applied through the display settings. Empty
+    /// means one connector at the compositor's default mode and scale.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
+    /// Give the slot's user a throwaway test identity through the session's
+    /// dev-only control op, and start the session with fresh desktop state.
+    #[serde(default)]
+    pub identity: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,6 +581,17 @@ pub enum Action {
     ReleaseSeat {
         seat: String,
     },
+    /// The outputs' modes and scales, confirmed through the display settings.
+    SetOutputs {
+        outputs: String,
+    },
+    /// The session gave its user a throwaway test identity.
+    ProvisionTestIdentity {
+        created: bool,
+    },
+    /// The slot user's desktop layout removed, so the next session starts
+    /// with none.
+    ResetDesktopState,
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
@@ -670,6 +692,9 @@ pub struct SlotInfo {
     /// `systemctl is-active` of the session unit (`vm` reports `n/a`).
     pub session: String,
     pub seat: Option<String>,
+    /// The outputs the slot was created with (`--outputs`), left to right.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
     /// How the running session differs from a greetd session (capabilities,
     /// `SELinux` domain); `None` when it matches or is not running.
     #[serde(default)]
@@ -752,6 +777,19 @@ pub struct SlotCreateResult {
     pub slot: SlotInfo,
     pub created: bool,
     pub actions: Vec<Action>,
+    /// Set exactly when [`SlotCreate::identity`] was asked for; a daemon
+    /// that leaves it out does not know the flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<TestIdentity>,
+}
+
+/// The throwaway test identity a slot's user holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestIdentity {
+    /// Minted by this create, rather than kept from an earlier one.
+    pub created: bool,
+    pub display_name: String,
+    pub throwaway: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -992,117 +1030,188 @@ pub fn valid_slot_name(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
+/// Distribution package names travel on a root command line, so only the
+/// characters package names use get through: `gtk4-devel-tools`, `libfoo++`,
+/// `python3.13`. No option can start one.
+pub fn valid_package_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
+}
+
+/// How long `tilo-vmd install-packages` may take by default.
+pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn request_line_is_flat_json_rpc() {
-        let envelope = RequestEnvelope {
-            jsonrpc: "2.0".into(),
-            id: 7,
-            request: Request::SlotRestart(SlotRestart { name: "a".into() }),
-        };
-        let line = serde_json::to_string(&envelope).unwrap();
-        assert_eq!(
-            line,
-            r#"{"jsonrpc":"2.0","id":7,"method":"slot.restart","params":{"name":"a"}}"#
-        );
-        let back: RequestEnvelope = serde_json::from_str(&line).unwrap();
-        assert_eq!(back, envelope);
-    }
-
-    #[test]
-    fn method_names_match_serde_tags() {
-        let requests: Vec<Request> = vec![
-            Hello {
-                protocol: 1,
-                client_version: String::new(),
-            }
-            .into(),
-            Status::default().into(),
-            SlotList {}.into(),
-            SlotShow { name: "a".into() }.into(),
-            LayerList {}.into(),
-            Swap {
-                slot: "a".into(),
-                component: "c".into(),
-                layer: "h".into(),
-                info: None,
-            }
-            .into(),
-            Control {
-                slot: "a".into(),
-                args: vec![],
-            }
-            .into(),
-        ];
-        for request in requests {
-            let value = serde_json::to_value(&request).unwrap();
-            assert_eq!(value["method"], request.method());
+    fn package_names_cannot_smuggle_options_or_shell() {
+        for good in [
+            "xterm",
+            "gtk4-devel-tools",
+            "libstdc++",
+            "python3.13",
+            "a_b",
+        ] {
+            assert!(valid_package_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-y",
+            "--installroot=/",
+            "a b",
+            "a;b",
+            "$(x)",
+            "a/b",
+            "*",
+        ] {
+            assert!(!valid_package_name(bad), "{bad}");
         }
     }
 
     #[test]
-    fn job_lines_are_found_among_other_output() {
-        let line = JobLine {
-            result: None,
-            error: Some(RpcError {
-                code: code::TOOL,
-                message: "no cargo".into(),
-                hint: "h".into(),
-                see: None,
-            }),
-        };
-        let stdout = format!("motd noise\n{}\ntrailing\n", line.render());
-        assert_eq!(JobLine::find(&stdout), Some(line));
-        assert_eq!(JobLine::find("nothing here"), None);
-        let job = BuildJob {
-            worktree: "wt-1234".into(),
-            target: BuildTarget::App {
-                dir: "notes".into(),
-                slot: "a".into(),
-            },
-            provenance: Provenance::local("app:notes"),
+    fn slot_create_carries_outputs_as_spec_strings() {
+        let request = Request::SlotCreate(SlotCreate {
+            name: "a".into(),
+            kind: SlotKind::Headful,
             owner: Owner::default(),
-            color: false,
-        };
-        let text = serde_json::to_string(&job).unwrap();
-        assert!(text.contains(r#""target":{"kind":"app","dir":"notes","slot":"a"}"#));
-        assert_eq!(serde_json::from_str::<BuildJob>(&text).unwrap(), job);
-    }
-
-    #[test]
-    fn slot_names_fit_user_names() {
-        assert!(valid_slot_name("vm-dev-loop"));
-        assert!(!valid_slot_name("Upper"));
-        assert!(!valid_slot_name("-lead"));
-        assert!(!valid_slot_name("trail-"));
-        assert!(!valid_slot_name(&"a".repeat(29)));
-        assert!(!valid_slot_name("a/b"));
-    }
-
-    #[test]
-    fn base_info_reads_what_the_dev_image_writes() {
-        // The shape os/scripts/finalize-dev-image.py writes: a dev image is
-        // its own builder, so `builder_image_digest` is null.
-        let base: BaseInfo = serde_json::from_str(
-            r#"{
-              "image_digest": "sha256:aaaa",
-              "builder_image_digest": null,
-              "toolchain": "rustc 1.97.1 (abc 2026-08-01)",
-              "target": "x86_64-unknown-linux-gnu",
-              "cargo_lock_hash": "0123abcd",
-              "base_image": "registry.tilo.so/tilo/tilo:main-1a2b3c4"
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(base.builder_image_digest, None);
-        assert_eq!(base.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
-        assert_eq!(base.cargo_lock_hash.as_deref(), Some("0123abcd"));
+            outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+            identity: false,
+        });
+        let value = serde_json::to_value(&request).unwrap();
         assert_eq!(
-            base.toolchain.as_deref(),
-            Some("rustc 1.97.1 (abc 2026-08-01)")
+            value["params"]["outputs"],
+            serde_json::json!(["2560x1600@2", "1920x1080@1"])
         );
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+        // A client that sends no outputs gets the single default connector.
+        let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
+        assert!(bare.outputs.is_empty());
+        // Nor a test identity.
+        assert!(!bare.identity);
+    }
+
+    /// Request lines are flat JSON-RPC, method names match serde tags, and job lines are found among other
+    /// output.
+    #[test]
+    fn the_vm_protocol_wire_is_flat_tagged_and_found_in_output() {
+        // Phase: request_line_is_flat_json_rpc.
+        {
+            let envelope = RequestEnvelope {
+                jsonrpc: "2.0".into(),
+                id: 7,
+                request: Request::SlotRestart(SlotRestart { name: "a".into() }),
+            };
+            let line = serde_json::to_string(&envelope).unwrap();
+            assert_eq!(
+                line,
+                r#"{"jsonrpc":"2.0","id":7,"method":"slot.restart","params":{"name":"a"}}"#
+            );
+            let back: RequestEnvelope = serde_json::from_str(&line).unwrap();
+            assert_eq!(back, envelope);
+        }
+
+        // Phase: method_names_match_serde_tags.
+        {
+            let requests: Vec<Request> = vec![
+                Hello {
+                    protocol: 1,
+                    client_version: String::new(),
+                }
+                .into(),
+                Status::default().into(),
+                SlotList {}.into(),
+                SlotShow { name: "a".into() }.into(),
+                LayerList {}.into(),
+                Swap {
+                    slot: "a".into(),
+                    component: "c".into(),
+                    layer: "h".into(),
+                    info: None,
+                }
+                .into(),
+                Control {
+                    slot: "a".into(),
+                    args: vec![],
+                }
+                .into(),
+            ];
+            for request in requests {
+                let value = serde_json::to_value(&request).unwrap();
+                assert_eq!(value["method"], request.method());
+            }
+        }
+
+        // Phase: job_lines_are_found_among_other_output.
+        {
+            let line = JobLine {
+                result: None,
+                error: Some(RpcError {
+                    code: code::TOOL,
+                    message: "no cargo".into(),
+                    hint: "h".into(),
+                    see: None,
+                }),
+            };
+            let stdout = format!("motd noise\n{}\ntrailing\n", line.render());
+            assert_eq!(JobLine::find(&stdout), Some(line));
+            assert_eq!(JobLine::find("nothing here"), None);
+            let job = BuildJob {
+                worktree: "wt-1234".into(),
+                target: BuildTarget::App {
+                    dir: "notes".into(),
+                    slot: "a".into(),
+                },
+                provenance: Provenance::local("app:notes"),
+                owner: Owner::default(),
+                color: false,
+            };
+            let text = serde_json::to_string(&job).unwrap();
+            assert!(text.contains(r#""target":{"kind":"app","dir":"notes","slot":"a"}"#));
+            assert_eq!(serde_json::from_str::<BuildJob>(&text).unwrap(), job);
+        }
+    }
+
+    /// Slot names fit user names and base info reads what the dev image writes.
+    #[test]
+    fn slot_names_and_base_info_match_what_the_image_writes() {
+        // Phase: slot_names_fit_user_names.
+        {
+            assert!(valid_slot_name("vm-dev-loop"));
+            assert!(!valid_slot_name("Upper"));
+            assert!(!valid_slot_name("-lead"));
+            assert!(!valid_slot_name("trail-"));
+            assert!(!valid_slot_name(&"a".repeat(29)));
+            assert!(!valid_slot_name("a/b"));
+        }
+
+        // Phase: base_info_reads_what_the_dev_image_writes.
+        {
+            // The shape os/scripts/finalize-dev-image.py writes: a dev image is
+            // its own builder, so `builder_image_digest` is null.
+            let base: BaseInfo = serde_json::from_str(
+                r#"{
+                  "image_digest": "sha256:aaaa",
+                  "builder_image_digest": null,
+                  "toolchain": "rustc 1.97.1 (abc 2026-08-01)",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "cargo_lock_hash": "0123abcd",
+                  "base_image": "registry.tilo.so/tilo/tilo:main-1a2b3c4"
+                }"#,
+            )
+            .unwrap();
+            assert_eq!(base.builder_image_digest, None);
+            assert_eq!(base.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+            assert_eq!(base.cargo_lock_hash.as_deref(), Some("0123abcd"));
+            assert_eq!(
+                base.toolchain.as_deref(),
+                Some("rustc 1.97.1 (abc 2026-08-01)")
+            );
+        }
     }
 }

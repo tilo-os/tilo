@@ -4,8 +4,11 @@ autotests = false
 name = "runtime-collab"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cap'n Proto client for the Tilo collaboration service."
 
 # Tilo runtime collaboration-broker client. Connects to the session broker
 # over the Unix-socket Cap'n Proto channel passed in as TILO_SVC_COLLAB_FD.
@@ -24,10 +27,11 @@ default = ["client"]
 client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
-runtime-portal = { path = "../runtime-portal", optional = true }
+runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+# `net` (the Unix-socket transport) is added for non-WASM targets below.
+tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
 tokio-util = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -37,6 +41,9 @@ postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }
 
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
 [[test]]
 name = "it"
 path = "tests/it.rs"
@@ -44,3 +51,8 @@ required-features = ["client"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, optional = true, features = ["net"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

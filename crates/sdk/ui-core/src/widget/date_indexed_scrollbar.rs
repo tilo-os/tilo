@@ -770,140 +770,148 @@ mod tests {
     }
 
     #[test]
-    fn marker_projection_is_bounded_ordered_and_keeps_years() {
-        let bar = scrollbar();
-        let mut input = Vec::new();
-        for index in 0..120 {
-            input.push(DateIndexMarker::new(
-                format!("m{index}"),
-                format!("Month {index}"),
-                f64::from(index) / 119.0,
-                if index % 12 == 0 {
-                    DateIndexMarkerKind::Major
-                } else {
-                    DateIndexMarkerKind::Minor
-                },
-            ));
+    fn date_markers_project_and_pointer_jumps_track_the_collection() {
+        fn marker_projection_is_bounded_ordered_and_keeps_years() {
+            let bar = scrollbar();
+            let mut input = Vec::new();
+            for index in 0..120 {
+                input.push(DateIndexMarker::new(
+                    format!("m{index}"),
+                    format!("Month {index}"),
+                    f64::from(index) / 119.0,
+                    if index % 12 == 0 {
+                        DateIndexMarkerKind::Major
+                    } else {
+                        DateIndexMarkerKind::Minor
+                    },
+                ));
+            }
+            let projected = bar.project_markers(&input, 12);
+            assert_eq!(projected.len(), 12);
+            assert_eq!(
+                projected.first().map(|marker| marker.id.as_str()),
+                Some("m0")
+            );
+            assert_eq!(
+                projected.last().map(|marker| marker.id.as_str()),
+                Some("m119")
+            );
+            assert!(projected.iter().any(|marker| marker.id == "m12"));
+            assert!(
+                projected
+                    .windows(2)
+                    .all(|window| window[0].axis <= window[1].axis)
+            );
         }
-        let projected = bar.project_markers(&input, 12);
-        assert_eq!(projected.len(), 12);
-        assert_eq!(
-            projected.first().map(|marker| marker.id.as_str()),
-            Some("m0")
-        );
-        assert_eq!(
-            projected.last().map(|marker| marker.id.as_str()),
-            Some("m119")
-        );
-        assert!(projected.iter().any(|marker| marker.id == "m12"));
-        assert!(
-            projected
-                .windows(2)
-                .all(|window| window[0].axis <= window[1].axis)
-        );
+
+        fn pointer_marker_jump_uses_normalised_collection_position() {
+            let mut bar = scrollbar();
+            let all = markers();
+            let moved = bar.pointer_moved(Point::new(305.0, 220.0), metrics(0.0), &all);
+            assert!(matches!(
+                moved,
+                Some(DateIndexIntent::PreviewChanged(Some(_)))
+            ));
+            assert_eq!(
+                bar.press(metrics(0.0), &all),
+                Some(DateIndexIntent::ScrollTo { position: 0.5 })
+            );
+        }
+
+        fn thumb_drag_keeps_tracking_after_pointer_leaves_lane() {
+            let mut bar = scrollbar();
+            let all = markers();
+            let m = metrics(0.0);
+            let thumb = bar.bar.thumb_rect(bar.rect, m).unwrap();
+            let _ = bar.pointer_moved(Point::new(308.0, thumb.center().y), m, &all);
+            assert_eq!(bar.press(m, &all), None);
+            assert!(bar.is_dragging());
+            let intent = bar
+                .pointer_moved(Point::new(800.0, 360.0), m, &all)
+                .expect("drag intent");
+            assert!(matches!(intent, DateIndexIntent::ScrollTo { position } if position > 0.6));
+        }
+
+        fn acquisition_lane_is_a_tight_rail_not_a_sidebar() {
+            let bar = scrollbar();
+            let lane = bar.preview_lane();
+            assert!(
+                lane.width() <= 32.0,
+                "date index must not capture photo tiles"
+            );
+            assert_eq!(PREVIEW_BUBBLE_MAX_WIDTH, 96.0);
+            assert!(!bar.contains_interaction_point(Point::new(250.0, 220.0)));
+            assert!(bar.contains_interaction_point(Point::new(304.0, 220.0)));
+        }
+
+        marker_projection_is_bounded_ordered_and_keeps_years();
+        pointer_marker_jump_uses_normalised_collection_position();
+        thumb_drag_keeps_tracking_after_pointer_leaves_lane();
+        acquisition_lane_is_a_tight_rail_not_a_sidebar();
     }
 
     #[test]
-    fn pointer_marker_jump_uses_normalised_collection_position() {
-        let mut bar = scrollbar();
-        let all = markers();
-        let moved = bar.pointer_moved(Point::new(305.0, 220.0), metrics(0.0), &all);
-        assert!(matches!(
-            moved,
-            Some(DateIndexIntent::PreviewChanged(Some(_)))
-        ));
-        assert_eq!(
-            bar.press(metrics(0.0), &all),
-            Some(DateIndexIntent::ScrollTo { position: 0.5 })
-        );
-    }
+    fn date_scrollbar_keyboard_semantics_and_density_controls() {
+        fn keyboard_and_accessibility_share_absolute_scroll_intents() {
+            let mut bar = scrollbar();
+            bar.set_focus(true);
+            let all = markers();
+            assert_eq!(
+                bar.key(&Key::Named(NamedKey::End), metrics(0.0)),
+                Some(DateIndexIntent::ScrollTo { position: 1.0 })
+            );
+            assert_eq!(
+                bar.perform_access_action(
+                    "test:chronology:jump:2025",
+                    &Action::Activate,
+                    metrics(0.0),
+                    &all
+                ),
+                Some(DateIndexIntent::ScrollTo { position: 0.5 })
+            );
+            assert_eq!(
+                bar.perform_access_action(
+                    "test:chronology:position",
+                    &Action::SetValue("25%".into()),
+                    metrics(0.0),
+                    &all
+                ),
+                Some(DateIndexIntent::ScrollTo { position: 0.25 })
+            );
+        }
 
-    #[test]
-    fn thumb_drag_keeps_tracking_after_pointer_leaves_lane() {
-        let mut bar = scrollbar();
-        let all = markers();
-        let m = metrics(0.0);
-        let thumb = bar.bar.thumb_rect(bar.rect, m).unwrap();
-        let _ = bar.pointer_moved(Point::new(308.0, thumb.center().y), m, &all);
-        assert_eq!(bar.press(m, &all), None);
-        assert!(bar.is_dragging());
-        let intent = bar
-            .pointer_moved(Point::new(800.0, 360.0), m, &all)
-            .expect("drag intent");
-        assert!(matches!(intent, DateIndexIntent::ScrollTo { position } if position > 0.6));
-    }
+        fn semantics_are_bounded_and_have_stable_action_targets() {
+            let bar = scrollbar();
+            let semantics = bar.accessibility(metrics(0.0), &markers());
+            assert_eq!(semantics.role, Role::Group);
+            assert_eq!(semantics.children[0].role, Role::Slider);
+            assert_eq!(
+                semantics.children[0].action_target.as_deref(),
+                Some("test:chronology:position")
+            );
+            assert!(semantics.children.len() <= 13);
+            assert!(
+                semantics.children[1]
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.contains(":jump:"))
+            );
+        }
 
-    #[test]
-    fn keyboard_and_accessibility_share_absolute_scroll_intents() {
-        let mut bar = scrollbar();
-        bar.set_focus(true);
-        let all = markers();
-        assert_eq!(
-            bar.key(&Key::Named(NamedKey::End), metrics(0.0)),
-            Some(DateIndexIntent::ScrollTo { position: 1.0 })
-        );
-        assert_eq!(
-            bar.perform_access_action(
-                "test:chronology:jump:2025",
-                &Action::Activate,
-                metrics(0.0),
-                &all
-            ),
-            Some(DateIndexIntent::ScrollTo { position: 0.5 })
-        );
-        assert_eq!(
-            bar.perform_access_action(
-                "test:chronology:position",
-                &Action::SetValue("25%".into()),
-                metrics(0.0),
-                &all
-            ),
-            Some(DateIndexIntent::ScrollTo { position: 0.25 })
-        );
-    }
+        fn plus_and_minus_offer_non_gesture_density_parity() {
+            let bar = scrollbar();
+            assert_eq!(
+                bar.key(&Key::Character("+".into()), metrics(0.0)),
+                Some(DateIndexIntent::AdjustDensity { delta: 1 })
+            );
+            assert_eq!(
+                bar.key(&Key::Character("-".into()), metrics(0.0)),
+                Some(DateIndexIntent::AdjustDensity { delta: -1 })
+            );
+        }
 
-    #[test]
-    fn semantics_are_bounded_and_have_stable_action_targets() {
-        let bar = scrollbar();
-        let semantics = bar.accessibility(metrics(0.0), &markers());
-        assert_eq!(semantics.role, Role::Group);
-        assert_eq!(semantics.children[0].role, Role::Slider);
-        assert_eq!(
-            semantics.children[0].action_target.as_deref(),
-            Some("test:chronology:position")
-        );
-        assert!(semantics.children.len() <= 13);
-        assert!(
-            semantics.children[1]
-                .action_target
-                .as_deref()
-                .is_some_and(|target| target.contains(":jump:"))
-        );
-    }
-
-    #[test]
-    fn acquisition_lane_is_a_tight_rail_not_a_sidebar() {
-        let bar = scrollbar();
-        let lane = bar.preview_lane();
-        assert!(
-            lane.width() <= 32.0,
-            "date index must not capture photo tiles"
-        );
-        assert_eq!(PREVIEW_BUBBLE_MAX_WIDTH, 96.0);
-        assert!(!bar.contains_interaction_point(Point::new(250.0, 220.0)));
-        assert!(bar.contains_interaction_point(Point::new(304.0, 220.0)));
-    }
-
-    #[test]
-    fn plus_and_minus_offer_non_gesture_density_parity() {
-        let bar = scrollbar();
-        assert_eq!(
-            bar.key(&Key::Character("+".into()), metrics(0.0)),
-            Some(DateIndexIntent::AdjustDensity { delta: 1 })
-        );
-        assert_eq!(
-            bar.key(&Key::Character("-".into()), metrics(0.0)),
-            Some(DateIndexIntent::AdjustDensity { delta: -1 })
-        );
+        keyboard_and_accessibility_share_absolute_scroll_intents();
+        semantics_are_bounded_and_have_stable_action_targets();
+        plus_and_minus_offer_non_gesture_density_parity();
     }
 }

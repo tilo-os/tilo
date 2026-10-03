@@ -1,0 +1,85 @@
+//! Every room this profile takes part in, as the brokers ask about them: its
+//! own room and the rooms it joined.
+use super::{joined::Joined, workspace::ProfileWorkspace};
+use std::sync::Arc;
+use tilo_action_broker::services::WorkspaceAuthority;
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+
+pub(super) struct Rooms {
+    pub(super) profile: Arc<ProfileWorkspace>,
+    pub(super) joined: Arc<Joined>,
+}
+
+impl WorkspaceAuthority for Rooms {
+    /// The profile's own workspaces, then each joined room as its
+    /// governance describes it. Joined rooms are never written to the
+    /// profile's workspace file.
+    fn snapshot(&self) -> Result<DesktopTree, String> {
+        let mut tree = self.profile.snapshot()?;
+        tree.workspaces.extend(self.joined.workspaces());
+        Ok(tree)
+    }
+
+    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
+        self.profile.legacy_journal_root()
+    }
+}
+
+impl WorkspaceMembership for Rooms {
+    fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+        let mut found = false;
+        self.profile.with_workspace(room, &mut |workspace| {
+            found = true;
+            read(workspace);
+        });
+        if !found
+            && let Some(workspace) = self
+                .joined
+                .workspaces()
+                .into_iter()
+                .find(|workspace| &workspace.room == room)
+        {
+            read(&workspace);
+        }
+    }
+}
+
+/// Each commit goes to the owner of the room it names.
+pub(super) struct Owners {
+    pub(super) own: Arc<dyn OwnerCommitService>,
+    pub(super) joined: Arc<Joined>,
+}
+
+impl OwnerCommitService for Owners {
+    fn requires_room(&self, room: &str) -> bool {
+        self.own.requires_room(room) || self.joined.requires_room(room)
+    }
+
+    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        if self.joined.requires_room(&request.room) {
+            self.joined.commit(request)
+        } else {
+            self.own.commit(request)
+        }
+    }
+
+    fn commit_with_record_kind(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> CommitFuture {
+        if self.joined.requires_room(&request.room) {
+            self.joined.commit(request)
+        } else {
+            self.own.commit_with_record_kind(request, record_kind)
+        }
+    }
+
+    /// The profile's own room decides; a fenced joined room refuses only
+    /// its own commits.
+    fn health(&self) -> Result<(), String> {
+        self.own.health()
+    }
+}

@@ -1,8 +1,9 @@
 use super::PresenceCtx;
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::permissions::UserId;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use vello::{
     Scene,
@@ -198,10 +199,6 @@ impl PresenceCtx {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "peer caret painting combines render context with collaborator identity, display name and caret bounds"
-    )]
     pub fn draw_peer_caret_labeled(
         &self,
         scene: &mut Scene,
@@ -273,33 +270,17 @@ impl PresenceCtx {
     /// a hover or a roster lookup. Mirrors
     /// [`Self::draw_peer_caret_labeled`] — one chip design for every "this
     /// is where that person is" affordance.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "labeled peer outlines share render context with collaborator identity, name, object bounds and corner radius"
-    )]
     pub fn draw_peer_outline_labeled(
         &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         user: &UserId,
         name: &str,
         rect: Rect,
         radius: f64,
     ) {
-        self.draw_peer_outline(scene, theme, transform, user, rect, radius);
-        let color = color_for(self, user, theme);
-        draw_name_chip(
-            scene,
-            theme,
-            text_renderer,
-            transform,
-            color,
-            name,
-            rect.x0,
-            rect.y0,
-        );
+        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
+        let color = color_for(self, user, ctx.theme);
+        draw_name_chip(ctx, color, name, rect.origin());
     }
 
     /// [`Self::draw_peer_outline_labeled`] for a surface that clips its own
@@ -316,30 +297,24 @@ impl PresenceCtx {
     /// `Logo_Bug.png` into one named `Ada_Bug.png`. On an object too narrow to
     /// hold both, the chip stays within the object rather than escaping it —
     /// covering a name is recoverable, pointing at the wrong clip is not.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "bounded peer labels need render context, collaborator identity and name, object geometry and clipping bounds"
-    )]
     pub fn draw_peer_outline_labeled_within(
         &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         user: &UserId,
         name: &str,
         rect: Rect,
         radius: f64,
         bounds: Rect,
     ) {
-        self.draw_peer_outline(scene, theme, transform, user, rect, radius);
+        let theme = ctx.theme;
+        self.draw_peer_outline(ctx.scene, theme, ctx.transform, user, rect, radius);
         let color = color_for(self, user, theme);
         // Sideways the same rule applies: a chip that runs past the
         // surface's right edge is clipped to its first letters, so the name
         // is elided to what the surface can show and the chip slides left
         // to stay inside — at 2× a name is twice as wide, and objects near
         // the right edge lost their labels first.
-        let (name, w, h) = chip_fitting(theme, text_renderer, name, bounds.width());
+        let (name, w, h) = chip_fitting(theme, ctx.text, name, bounds.width());
         let above = rect.y0 - h - CHIP_GAP;
         let chip = if above >= bounds.y0 {
             Rect::new(rect.x0, above, rect.x0 + w, above + h)
@@ -350,7 +325,7 @@ impl PresenceCtx {
         };
         let x0 = chip.x0.min(bounds.x1 - w).max(bounds.x0);
         let chip = Rect::new(x0, chip.y0, x0 + w, chip.y1);
-        draw_name_chip_in(scene, theme, text_renderer, transform, color, &name, chip);
+        draw_name_chip_in(ctx, color, &name, chip);
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
@@ -480,6 +455,9 @@ pub struct PeerCursor {
     /// Authenticated participant kind. Agents use diamond pointer geometry
     /// and an icon-bearing chip, so identity does not depend on reading text.
     pub is_agent: bool,
+    /// `1.0` normally; falls towards `0.0` as a quiet peer's pointer fades
+    /// out (see [`super::PresenceCtx::pointer_opacity`]).
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -645,7 +623,10 @@ pub fn draw_peer_cursors(
     let placements = layout_peer_pills(viewport, &requests);
 
     for p in peers {
-        draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+        let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+        });
     }
 
     // Tethers — under the pills so a line never crosses a name.
@@ -658,27 +639,66 @@ pub fn draw_peer_cursors(
         let mut line = vello::kurbo::BezPath::new();
         line.move_to(from);
         line.line_to(to);
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            p.color.with_alpha_factor(0.75),
-            None,
-            &line,
-        );
+        let bounds = Rect::from_points(from, to).inflate(FADE_EDGE, FADE_EDGE);
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                p.color.with_alpha_factor(0.75),
+                None,
+                &line,
+            );
+        });
     }
 
     for (p, place) in peers.iter().zip(&placements) {
-        draw_peer_pill_kind(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            place.rect,
-            &p.label,
-            p.color,
-            p.is_agent,
-        );
+        let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            draw_peer_pill_kind(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                place.rect,
+                &p.label,
+                p.color,
+                p.is_agent,
+            );
+        });
     }
+}
+
+/// Room around a pointer's centre that covers its halo, shadow and ring.
+const FADE_DOT_BOUNDS: f64 = 96.0;
+/// Room around a pill or tether for its stroke and shadow.
+const FADE_EDGE: f64 = 8.0;
+
+/// Paint `draw` at `opacity`: directly when opaque, not at all when fully
+/// faded, else through a layer clipped to `bounds`, so overlapping parts of
+/// one peer's mark fade as one rather than showing through each other.
+fn faded(
+    scene: &mut Scene,
+    transform: Affine,
+    opacity: f32,
+    bounds: Rect,
+    draw: impl FnOnce(&mut Scene),
+) {
+    if opacity >= 1.0 {
+        draw(scene);
+        return;
+    }
+    if opacity <= 0.0 {
+        return;
+    }
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        opacity,
+        transform,
+        &bounds,
+    );
+    draw(scene);
+    scene.pop_layer();
 }
 
 /// A peer's pointer: halo, shadow edge, solid dot, white ring. Shadow and
@@ -742,7 +762,6 @@ fn draw_agent_diamond(
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::too_many_arguments,
     reason = "kurbo Rect/Affine arithmetic is f64 math; it cannot panic or overflow, unlike integer +/-/*"
 )]
 fn draw_peer_pill_kind(
@@ -871,6 +890,7 @@ fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
             255,
         ),
         is_agent: ctx.is_agent(&UserId(cursor.user_id.clone())),
+        opacity: 1.0,
     }
 }
 
@@ -937,58 +957,33 @@ fn chip_fitting(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
 )]
-fn draw_name_chip_in(
-    scene: &mut Scene,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    transform: Affine,
-    color: Color,
-    name: &str,
-    chip_rect: Rect,
-) {
-    let chip = RoundedRect::from_rect(chip_rect, f64::from(theme.tokens.radii.sm));
+fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect: Rect) {
+    let theme = ctx.theme;
     // Solid fill in the peer's colour so the chip reads as "them".
-    scene.fill(Fill::NonZero, transform, color, None, &chip);
+    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.sm), color);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-    let pad_x = CHIP_PAD_X * label_magnification(theme, text_renderer);
-    let (_, th) = text_renderer.measure(name, label_size, None);
+    let label_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.xs);
+    let pad_x = CHIP_PAD_X * label_magnification(theme, ctx.text);
+    let (_, th) = ctx.text.measure(name, label_size, None);
     let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
-        scene,
+    ctx.text(
         name,
-        label_size,
+        &TextStyle::new(label_size),
         contrast_ink(color),
-        transform * Affine::translate((chip_rect.x0 + pad_x, text_y)),
+        Point::new(chip_rect.x0 + pad_x, text_y),
         None,
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "name-chip painting shares render context with collaborator color, label and the object anchor coordinates"
-)]
-fn draw_name_chip(
-    scene: &mut Scene,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    transform: Affine,
-    color: Color,
-    name: &str,
-    anchor_x: f64,
-    anchor_top: f64,
-) {
-    let (w, h) = chip_size(theme, text_renderer, name);
-    let cy = anchor_top - h - CHIP_GAP;
+fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Point) {
+    let (w, h) = chip_size(ctx.theme, ctx.text, name);
+    let cy = anchor.y - h - CHIP_GAP;
     draw_name_chip_in(
-        scene,
-        theme,
-        text_renderer,
-        transform,
+        ctx,
         color,
         name,
-        Rect::new(anchor_x, cy, anchor_x + w, cy + h),
+        Rect::new(anchor.x, cy, anchor.x + w, cy + h),
     );
 }
 
@@ -1202,15 +1197,17 @@ pub fn draw_peer_presence(
     for peer in peers {
         let target = Point::new(peer.pos.0, peer.pos.1);
         if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
-            draw_edge_mist(
-                scene,
-                text_renderer,
-                theme,
-                viewport,
-                &mist,
-                peer.color,
-                &peer.label,
-            );
+            faded(scene, Affine::IDENTITY, peer.opacity, viewport, |scene| {
+                draw_edge_mist(
+                    scene,
+                    text_renderer,
+                    theme,
+                    viewport,
+                    &mist,
+                    peer.color,
+                    &peer.label,
+                );
+            });
         } else {
             on_screen.push(peer.clone());
         }
@@ -1277,48 +1274,470 @@ mod tests {
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
 
-    /// "alice" maps to the pinned pink (0xec, 0x48, 0x99): the dot center
-    /// should read red-high / green-low / blue-mid.
-    #[test]
-    fn peer_pointer_paints_peer_color_at_center() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut scene = Scene::new();
-        let user = UserId("alice".to_string());
-        ctx.draw_peer_pointer(&mut scene, &theme, Affine::IDENTITY, &user, (40.0, 40.0));
-
-        let mut r = OffscreenRenderer::new(80, 80);
-        let rgba = r.render(&scene, Color::BLACK);
-        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 40);
-        assert!(
-            red > 150 && green < 150 && blue > 70,
-            "expected alice's pink pointer at center, got ({red},{green},{blue})"
-        );
-    }
-
-    /// "One person, one pointer": painted once when this layer owns it, not
-    /// at all when the compositor overlay does. Both halves are asserted in
-    /// one test — either alone would pass a filter that always/never draws.
     #[test]
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "`at` is a fixed in-bounds test coordinate, always representable as u32"
     )]
-    fn only_a_pointer_this_layer_owns_reaches_the_screen() {
-        use super::super::PointerOwner;
-
-        let theme = Theme::default();
-        let viewport = Rect::new(0.0, 0.0, 120.0, 120.0);
-        // Well inside the viewport, so `edge_mist_for` resolves to the
-        // on-screen branch and this is testing the dot, not the mist.
-        let at = [40.0_f32, 40.0_f32];
-
-        let paint = |owner: PointerOwner| {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor_owned("alice".into(), at, Some("Alice"), 1.0, owner);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn pointers_and_carets_paint_in_the_peer_colour_with_their_marker() {
+        // phase: peer_pointer_paints_peer_color_at_center
+        // "alice" maps to the pinned pink (0xec, 0x48, 0x99): the dot center
+        // should read red-high / green-low / blue-mid.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
             let mut scene = Scene::new();
+            let user = UserId("alice".to_string());
+            ctx.draw_peer_pointer(&mut scene, &theme, Affine::IDENTITY, &user, (40.0, 40.0));
+
+            let mut r = OffscreenRenderer::new(80, 80);
+            let rgba = r.render(&scene, Color::BLACK);
+            let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 40);
+            assert!(
+                red > 150 && green < 150 && blue > 70,
+                "expected alice's pink pointer at center, got ({red},{green},{blue})"
+            );
+        }
+        // phase: only_a_pointer_this_layer_owns_reaches_the_screen
+        // "One person, one pointer": painted once when this layer owns it, not
+        // at all when the compositor overlay does. Both halves are asserted in
+        // one test — either alone would pass a filter that always/never draws.
+        {
+            use super::super::PointerOwner;
+
+            let theme = Theme::default();
+            let viewport = Rect::new(0.0, 0.0, 120.0, 120.0);
+            // Well inside the viewport, so `edge_mist_for` resolves to the
+            // on-screen branch and this is testing the dot, not the mist.
+            let at = [40.0_f32, 40.0_f32];
+
+            let paint = |owner: PointerOwner| {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor_owned("alice".into(), at, Some("Alice"), 1.0, owner);
+                let mut scene = Scene::new();
+                let mut tr = TextRenderer::new();
+                draw_remote_presence(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    viewport,
+                    &mut tr,
+                    &theme,
+                    &ctx,
+                );
+                let mut r = OffscreenRenderer::new(120, 120);
+                let rgba = r.render(&scene, Color::BLACK);
+                OffscreenRenderer::sample(&rgba, 120, at[0] as u32, at[1] as u32)
+            };
+
+            // Owned here: alice's pinned pink lands on the screen.
+            let (r, g, b, _) = paint(PointerOwner::Window);
+            assert!(
+                r > 150 && g < 150 && b > 70,
+                "a pointer this layer owns must be drawn; got ({r},{g},{b})"
+            );
+
+            // Owned by the compositor: the overlay already draws that person.
+            let (r, g, b, _) = paint(PointerOwner::Desktop);
+            assert_eq!(
+                (r, g, b),
+                (0, 0, 0),
+                "the compositor paints this peer; painting them here too is one person twice",
+            );
+        }
+        // phase: peer_caret_paints_peer_color
+        // "charlie" maps to emerald (0x10, 0xb9, 0x81): green dominant.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut scene = Scene::new();
+            let user = UserId("charlie".to_string());
+            ctx.draw_peer_caret(
+                &mut scene,
+                &theme,
+                Affine::IDENTITY,
+                &user,
+                Rect::new(20.0, 10.0, 22.0, 26.0),
+            );
+
+            let mut r = OffscreenRenderer::new(80, 80);
+            let rgba = r.render(&scene, Color::BLACK);
+            // Sample inside the 2px-wide, 16px-tall caret bar at (20, 18).
+            let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 20, 18);
+            assert!(
+                green > red && green > blue && green > 100,
+                "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
+            );
+        }
+        // phase: agent_caret_has_a_non_text_diamond_identity_marker
+        {
+            let theme = Theme::default();
+            let agent = UserId("peer@agent".to_string());
+            let mut agent_ctx = PresenceCtx::empty();
+            agent_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Agent);
+            let mut person_ctx = PresenceCtx::empty();
+            person_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Person);
+            let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
+
+            let render = |ctx: &PresenceCtx| {
+                let mut scene = Scene::new();
+                ctx.draw_peer_caret(&mut scene, &theme, Affine::IDENTITY, &agent, caret);
+                let mut renderer = OffscreenRenderer::new(80, 80);
+                renderer.render(&scene, Color::BLACK)
+            };
+            let agent_pixels = render(&agent_ctx);
+            let person_pixels = render(&person_ctx);
+
+            // Three pixels above the ordinary caret, only the agent's diamond
+            // marker occupies this point. This remains distinguishable without
+            // colour perception and before any label is painted.
+            let (ar, ag, ab, _) = OffscreenRenderer::sample(&agent_pixels, 80, 31, 37);
+            let (pr, pg, pb, _) = OffscreenRenderer::sample(&person_pixels, 80, 31, 37);
+            assert!(
+                u16::from(ar) + u16::from(ag) + u16::from(ab)
+                    > u16::from(pr) + u16::from(pg) + u16::from(pb)
+            );
+        }
+        // phase: labeled_caret_paints_bar_and_chip_above
+        // Samples both the caret bar and the name chip above it. "charlie" is
+        // emerald (G dominant).
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
             let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let user = UserId("charlie".to_string());
+            // Caret bar from y=40..60 at x=30..32. The chip sits above y=40.
+            ctx.draw_peer_caret_labeled(
+                &mut scene,
+                &theme,
+                &mut tr,
+                Affine::IDENTITY,
+                &user,
+                "Charlie",
+                Rect::new(30.0, 40.0, 32.0, 60.0),
+            );
+
+            let mut r = OffscreenRenderer::new(120, 120);
+            let rgba = r.render(&scene, Color::BLACK);
+
+            // The caret bar itself, at (30, 50).
+            let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 50);
+            assert!(
+                bg > br && bg > bb && bg > 100,
+                "caret bar should be emerald, got ({br},{bg},{bb})"
+            );
+
+            // The chip fill, a few pixels above the caret top (y ~ 33).
+            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
+            assert!(
+                ca > 0,
+                "expected an opaque chip above the caret, got alpha {ca}"
+            );
+            assert!(
+                cg > cr && cg > cb,
+                "chip should be emerald (peer color), got ({cr},{cg},{cb})"
+            );
+        }
+        // phase: a_caret_chip_carries_the_same_shadow_as_a_pointer_pill
+        // Sampled just under the chip's bottom edge, where a shadow lands and
+        // a flat fill does not.
+        {
+            let theme = Theme::default();
+            let user = UserId("alice".to_string());
+            let ctx = PresenceCtx::empty();
+            let mut tr = crate::text_render::TextRenderer::new();
+            let (w, h) = peer_pill_size(&mut tr, &theme, "alice");
+
+            let mut scene = Scene::new();
+            let caret = Rect::new(20.0, 60.0, 22.0, 80.0);
+            ctx.draw_peer_caret_labeled(
+                &mut scene,
+                &theme,
+                &mut tr,
+                Affine::IDENTITY,
+                &user,
+                "alice",
+                caret,
+            );
+            let mut r = OffscreenRenderer::new(160, 160);
+            let rgba = r.render(&scene, Color::WHITE);
+
+            // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
+            // its bottom edge should be the shadow, darker than the white ground.
+            let top = 60.0 - h - 2.0;
+            // `top + h + 1.0` collapses to a fixed in-bounds sample row (59) on
+            // the 160px-tall offscreen canvas, regardless of the chip height it
+            // was derived from.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "top + h + 1.0 is a fixed, always-positive, in-bounds sample row"
+            )]
+            let (sr, sg, sb, _sa) =
+                OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
+            assert!(
+                sr < 250 && sg < 250 && sb < 250,
+                "expected a drop shadow under the caret's name chip, got \
+             ({sr},{sg},{sb}) on a white ground — the chip is drawn flat \
+             while the pointer's pill is not",
+            );
+            assert!(w > 0.0);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn objects_and_typing_are_tinted_outlined_and_chipped_in_the_peer_colour() {
+        // phase: peer_mist_tints_element_in_peer_color
+        // "bob" maps to orange (0xf9, 0x73, 0x16): red-high, green-mid,
+        // blue-low. Translucent over black, the channel ordering still holds.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut scene = Scene::new();
+            let user = UserId("bob".to_string());
+            ctx.draw_peer_mist(&mut scene, &theme, &user, Rect::new(10.0, 10.0, 70.0, 30.0));
+
+            let mut r = OffscreenRenderer::new(80, 80);
+            let rgba = r.render(&scene, Color::BLACK);
+            let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 20);
+            assert!(
+                red > green && green >= blue && red > 20,
+                "expected bob's orange mist (R>G>=B), got ({red},{green},{blue})"
+            );
+        }
+        // phase: peer_outline_rings_the_object_and_washes_its_middle
+        // A peer's selected object gets both halves: a ring on the boundary
+        // and a wash across the middle. Either alone fails somewhere — a bare
+        // wash reads as the app's own hover, a bare ring vanishes over a busy
+        // fill — so both are asserted, and the ring is asserted to be the
+        // *stronger* of the two or it is not a boundary any more.
+        //
+        // "charlie" is emerald (0x10, 0xb9, 0x81), so both should read G-dominant.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut scene = Scene::new();
+            let user = UserId("charlie".to_string());
+            ctx.draw_peer_outline(
+                &mut scene,
+                &theme,
+                Affine::IDENTITY,
+                &user,
+                Rect::new(20.0, 20.0, 100.0, 80.0),
+                4.0,
+            );
+
+            let mut r = OffscreenRenderer::new(120, 120);
+            let rgba = r.render(&scene, Color::BLACK);
+
+            // The ring, on the left edge at mid-height.
+            let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 120, 20, 50);
+            assert!(
+                eg > er && eg > eb && eg > 100,
+                "the outline edge should be charlie's emerald, got ({er},{eg},{eb})"
+            );
+
+            // The wash, in the middle, well away from any edge.
+            let (wr, wg, wb, _a) = OffscreenRenderer::sample(&rgba, 120, 60, 50);
+            assert!(
+                wg > wr && wg > wb && wg > 0,
+                "the interior should carry a wash of the same colour, got ({wr},{wg},{wb})"
+            );
+            assert!(
+                eg > wg,
+                "the edge must read stronger than the wash or it is not a boundary: \
+             edge G={eg}, wash G={wg}"
+            );
+        }
+        // phase: a_labelled_outline_chips_the_peers_name_above_the_object
+        // The named variant puts the same chip above the object that
+        // `draw_peer_caret_labeled` puts above a caret — one chip design, so a
+        // person's caret and their selected object read as the same person.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let user = UserId("charlie".to_string());
+            ctx.draw_peer_outline_labeled(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                &user,
+                "Charlie",
+                Rect::new(30.0, 40.0, 100.0, 80.0),
+                4.0,
+            );
+
+            let mut r = OffscreenRenderer::new(140, 140);
+            let rgba = r.render(&scene, Color::BLACK);
+
+            // The chip fill, a few pixels above the object's top edge, at its
+            // left x — the same anchoring the labelled caret uses.
+            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 140, 31, 33);
+            assert!(
+                ca > 0,
+                "expected an opaque chip above the object, got alpha {ca}"
+            );
+            assert!(
+                cg > cr && cg > cb,
+                "the chip should be the peer's emerald, got ({cr},{cg},{cb})"
+            );
+
+            // And the object is still outlined underneath it.
+            let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 140, 30, 60);
+            assert!(
+                eg > er && eg > eb && eg > 100,
+                "the outline should still be drawn, got ({er},{eg},{eb})"
+            );
+        }
+        // phase: a_name_chip_with_no_room_above_it_comes_inside_the_object
+        // On the top row of a surface that clips its contents there is no room
+        // above an object for its name chip, and hanging one there anyway gets
+        // it sliced by the clip — a collaborator labelled with the bottom two
+        // pixels of their name. The chip has to come inside instead.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let user = UserId("charlie".to_string());
+            // The lane area starts at y=20; the object sits 2px inside its top,
+            // so a chip hung above would start above y=20 and be cut off.
+            let bounds = Rect::new(0.0, 20.0, 200.0, 120.0);
+            let object = Rect::new(10.0, 22.0, 160.0, 90.0);
+
+            let mut scene = Scene::new();
+            ctx.draw_peer_outline_labeled_within(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                &user,
+                "Charlie",
+                object,
+                4.0,
+                bounds,
+            );
+            let mut r = OffscreenRenderer::new(200, 140);
+            let rgba = r.render(&scene, Color::BLACK);
+
+            // Nothing at all above the ceiling: that whole band would be clipped
+            // away by the surface, so anything drawn there is invisible.
+            for y in 0..20 {
+                for x in 0..200 {
+                    let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, x, y);
+                    assert!(
+                        cr == 0 && cg == 0 && cb == 0,
+                        "painted at ({x},{y}), above the ceiling at y=20, where the \
+                     surface would clip it away",
+                    );
+                }
+            }
+
+            // And the chip is inside the object, at its right — the left is where
+            // an object keeps its own label.
+            let inside_right = (155, 30);
+            let (cr, cg, cb, ca) =
+                OffscreenRenderer::sample(&rgba, 200, inside_right.0, inside_right.1);
+            assert!(ca > 0, "no chip inside the object at {inside_right:?}");
+            assert!(
+                cg > cr && cg > cb,
+                "the chip inside should be charlie's emerald, got ({cr},{cg},{cb})",
+            );
+        }
+        // phase: a_name_chip_with_room_above_it_still_hangs_above
+        // With room above, the chip still hangs above — the flip is a fallback,
+        // not a new default, or every labelled object would start covering itself.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let user = UserId("charlie".to_string());
+            let bounds = Rect::new(0.0, 0.0, 200.0, 140.0);
+            let object = Rect::new(10.0, 60.0, 160.0, 120.0);
+
+            let mut scene = Scene::new();
+            ctx.draw_peer_outline_labeled_within(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                &user,
+                "Charlie",
+                object,
+                4.0,
+                bounds,
+            );
+            let mut r = OffscreenRenderer::new(200, 140);
+            let rgba = r.render(&scene, Color::BLACK);
+
+            // Above the object's top edge, at its left.
+            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 200, 12, 52);
+            assert!(ca > 0, "expected the chip above the object");
+            assert!(
+                cg > cr && cg > cb,
+                "chip above should be charlie's emerald, got ({cr},{cg},{cb})",
+            );
+        }
+        // phase: typing_tint_paints_peer_color_over_run
+        // The typing highlighter paints the peer's color over the typed run.
+        // "bob" is orange (R>G>B). Fresh (alpha 1.0) over black still keeps
+        // that channel ordering.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
+            let mut scene = Scene::new();
+            let user = UserId("bob".to_string());
+            ctx.draw_peer_typing(
+                &mut scene,
+                &theme,
+                &user,
+                &[(Rect::new(10.0, 10.0, 70.0, 30.0), 1.0)],
+            );
+            let mut r = OffscreenRenderer::new(80, 80);
+            let rgba = r.render(&scene, Color::BLACK);
+            let (red, green, blue, a) = OffscreenRenderer::sample(&rgba, 80, 40, 20);
+            assert!(a > 0, "typing tint should be visible");
+            assert!(
+                red > green && green >= blue && red > 20,
+                "expected bob's orange typing tint (R>G>=B), got ({red},{green},{blue})"
+            );
+            // A fainter alpha paints a dimmer tint — prove the fade is applied.
+            let mut scene2 = Scene::new();
+            ctx.draw_peer_typing(
+                &mut scene2,
+                &theme,
+                &user,
+                &[(Rect::new(10.0, 10.0, 70.0, 30.0), 0.2)],
+            );
+            let rgba2 = r.render(&scene2, Color::BLACK);
+            let (red2, ..) = OffscreenRenderer::sample(&rgba2, 80, 40, 20);
+            assert!(
+                red2 < red,
+                "lower alpha must paint a dimmer tint: {red2} !< {red}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn offscreen_peers_get_a_band_only_where_the_window_can_place_them() {
+        // phase: offscreen_peer_mists_the_correct_edge
+        // A peer off to the RIGHT tints the right edge and leaves the left
+        // edge clear.
+        {
+            let mut ctx = PresenceCtx::empty();
+            // "bob" (orange) at x=180 — well past a 100-wide viewport's right
+            // edge — at mid height.
+            ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
             draw_remote_presence(
                 &mut scene,
                 Affine::IDENTITY,
@@ -1327,397 +1746,177 @@ mod tests {
                 &theme,
                 &ctx,
             );
-            let mut r = OffscreenRenderer::new(120, 120);
+
+            let mut r = OffscreenRenderer::new(100, 100);
             let rgba = r.render(&scene, Color::BLACK);
-            OffscreenRenderer::sample(&rgba, 120, at[0] as u32, at[1] as u32)
-        };
-
-        // Owned here: alice's pinned pink lands on the screen.
-        let (r, g, b, _) = paint(PointerOwner::Window);
-        assert!(
-            r > 150 && g < 150 && b > 70,
-            "a pointer this layer owns must be drawn; got ({r},{g},{b})"
-        );
-
-        // Owned by the compositor: the overlay already draws that person.
-        let (r, g, b, _) = paint(PointerOwner::Desktop);
-        assert_eq!(
-            (r, g, b),
-            (0, 0, 0),
-            "the compositor paints this peer; painting them here too is one person twice",
-        );
-    }
-
-    /// "charlie" maps to emerald (0x10, 0xb9, 0x81): green dominant.
-    #[test]
-    fn peer_caret_paints_peer_color() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut scene = Scene::new();
-        let user = UserId("charlie".to_string());
-        ctx.draw_peer_caret(
-            &mut scene,
-            &theme,
-            Affine::IDENTITY,
-            &user,
-            Rect::new(20.0, 10.0, 22.0, 26.0),
-        );
-
-        let mut r = OffscreenRenderer::new(80, 80);
-        let rgba = r.render(&scene, Color::BLACK);
-        // Sample inside the 2px-wide, 16px-tall caret bar at (20, 18).
-        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 20, 18);
-        assert!(
-            green > red && green > blue && green > 100,
-            "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
-        );
-    }
-
-    #[test]
-    fn agent_caret_has_a_non_text_diamond_identity_marker() {
-        let theme = Theme::default();
-        let agent = UserId("peer@agent".to_string());
-        let mut agent_ctx = PresenceCtx::empty();
-        agent_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Agent);
-        let mut person_ctx = PresenceCtx::empty();
-        person_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Person);
-        let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
-
-        let render = |ctx: &PresenceCtx| {
-            let mut scene = Scene::new();
-            ctx.draw_peer_caret(&mut scene, &theme, Affine::IDENTITY, &agent, caret);
-            let mut renderer = OffscreenRenderer::new(80, 80);
-            renderer.render(&scene, Color::BLACK)
-        };
-        let agent_pixels = render(&agent_ctx);
-        let person_pixels = render(&person_ctx);
-
-        // Three pixels above the ordinary caret, only the agent's diamond
-        // marker occupies this point. This remains distinguishable without
-        // colour perception and before any label is painted.
-        let (ar, ag, ab, _) = OffscreenRenderer::sample(&agent_pixels, 80, 31, 37);
-        let (pr, pg, pb, _) = OffscreenRenderer::sample(&person_pixels, 80, 31, 37);
-        assert!(
-            u16::from(ar) + u16::from(ag) + u16::from(ab)
-                > u16::from(pr) + u16::from(pg) + u16::from(pb)
-        );
-    }
-
-    /// "bob" maps to orange (0xf9, 0x73, 0x16): red-high, green-mid,
-    /// blue-low. Translucent over black, the channel ordering still holds.
-    #[test]
-    fn peer_mist_tints_element_in_peer_color() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut scene = Scene::new();
-        let user = UserId("bob".to_string());
-        ctx.draw_peer_mist(&mut scene, &theme, &user, Rect::new(10.0, 10.0, 70.0, 30.0));
-
-        let mut r = OffscreenRenderer::new(80, 80);
-        let rgba = r.render(&scene, Color::BLACK);
-        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 20);
-        assert!(
-            red > green && green >= blue && red > 20,
-            "expected bob's orange mist (R>G>=B), got ({red},{green},{blue})"
-        );
-    }
-
-    /// Samples both the caret bar and the name chip above it. "charlie" is
-    /// emerald (G dominant).
-    #[test]
-    fn labeled_caret_paints_bar_and_chip_above() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let user = UserId("charlie".to_string());
-        // Caret bar from y=40..60 at x=30..32. The chip sits above y=40.
-        ctx.draw_peer_caret_labeled(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "Charlie",
-            Rect::new(30.0, 40.0, 32.0, 60.0),
-        );
-
-        let mut r = OffscreenRenderer::new(120, 120);
-        let rgba = r.render(&scene, Color::BLACK);
-
-        // The caret bar itself, at (30, 50).
-        let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 50);
-        assert!(
-            bg > br && bg > bb && bg > 100,
-            "caret bar should be emerald, got ({br},{bg},{bb})"
-        );
-
-        // The chip fill, a few pixels above the caret top (y ~ 33).
-        let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
-        assert!(
-            ca > 0,
-            "expected an opaque chip above the caret, got alpha {ca}"
-        );
-        assert!(
-            cg > cr && cg > cb,
-            "chip should be emerald (peer color), got ({cr},{cg},{cb})"
-        );
-    }
-
-    /// A peer's selected object gets both halves: a ring on the boundary
-    /// and a wash across the middle. Either alone fails somewhere — a bare
-    /// wash reads as the app's own hover, a bare ring vanishes over a busy
-    /// fill — so both are asserted, and the ring is asserted to be the
-    /// *stronger* of the two or it is not a boundary any more.
-    ///
-    /// "charlie" is emerald (0x10, 0xb9, 0x81), so both should read G-dominant.
-    #[test]
-    fn peer_outline_rings_the_object_and_washes_its_middle() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut scene = Scene::new();
-        let user = UserId("charlie".to_string());
-        ctx.draw_peer_outline(
-            &mut scene,
-            &theme,
-            Affine::IDENTITY,
-            &user,
-            Rect::new(20.0, 20.0, 100.0, 80.0),
-            4.0,
-        );
-
-        let mut r = OffscreenRenderer::new(120, 120);
-        let rgba = r.render(&scene, Color::BLACK);
-
-        // The ring, on the left edge at mid-height.
-        let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 120, 20, 50);
-        assert!(
-            eg > er && eg > eb && eg > 100,
-            "the outline edge should be charlie's emerald, got ({er},{eg},{eb})"
-        );
-
-        // The wash, in the middle, well away from any edge.
-        let (wr, wg, wb, _a) = OffscreenRenderer::sample(&rgba, 120, 60, 50);
-        assert!(
-            wg > wr && wg > wb && wg > 0,
-            "the interior should carry a wash of the same colour, got ({wr},{wg},{wb})"
-        );
-        assert!(
-            eg > wg,
-            "the edge must read stronger than the wash or it is not a boundary: \
-             edge G={eg}, wash G={wg}"
-        );
-    }
-
-    /// The named variant puts the same chip above the object that
-    /// `draw_peer_caret_labeled` puts above a caret — one chip design, so a
-    /// person's caret and their selected object read as the same person.
-    #[test]
-    fn a_labelled_outline_chips_the_peers_name_above_the_object() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let user = UserId("charlie".to_string());
-        ctx.draw_peer_outline_labeled(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "Charlie",
-            Rect::new(30.0, 40.0, 100.0, 80.0),
-            4.0,
-        );
-
-        let mut r = OffscreenRenderer::new(140, 140);
-        let rgba = r.render(&scene, Color::BLACK);
-
-        // The chip fill, a few pixels above the object's top edge, at its
-        // left x — the same anchoring the labelled caret uses.
-        let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 140, 31, 33);
-        assert!(
-            ca > 0,
-            "expected an opaque chip above the object, got alpha {ca}"
-        );
-        assert!(
-            cg > cr && cg > cb,
-            "the chip should be the peer's emerald, got ({cr},{cg},{cb})"
-        );
-
-        // And the object is still outlined underneath it.
-        let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 140, 30, 60);
-        assert!(
-            eg > er && eg > eb && eg > 100,
-            "the outline should still be drawn, got ({er},{eg},{eb})"
-        );
-    }
-
-    /// On the top row of a surface that clips its contents there is no room
-    /// above an object for its name chip, and hanging one there anyway gets
-    /// it sliced by the clip — a collaborator labelled with the bottom two
-    /// pixels of their name. The chip has to come inside instead.
-    #[test]
-    fn a_name_chip_with_no_room_above_it_comes_inside_the_object() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let user = UserId("charlie".to_string());
-        // The lane area starts at y=20; the object sits 2px inside its top,
-        // so a chip hung above would start above y=20 and be cut off.
-        let bounds = Rect::new(0.0, 20.0, 200.0, 120.0);
-        let object = Rect::new(10.0, 22.0, 160.0, 90.0);
-
-        let mut scene = Scene::new();
-        ctx.draw_peer_outline_labeled_within(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "Charlie",
-            object,
-            4.0,
-            bounds,
-        );
-        let mut r = OffscreenRenderer::new(200, 140);
-        let rgba = r.render(&scene, Color::BLACK);
-
-        // Nothing at all above the ceiling: that whole band would be clipped
-        // away by the surface, so anything drawn there is invisible.
-        for y in 0..20 {
-            for x in 0..200 {
-                let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, x, y);
-                assert!(
-                    cr == 0 && cg == 0 && cb == 0,
-                    "painted at ({x},{y}), above the ceiling at y=20, where the \
-                     surface would clip it away",
-                );
-            }
+            // Right edge, mid-height: expect orange mist.
+            let (rr, rg, rb, ra) = OffscreenRenderer::sample(&rgba, 100, 97, 50);
+            assert!(ra > 0, "right edge should carry the mist");
+            assert!(
+                rr > rg && rg >= rb && rr > 15,
+                "right-edge mist should be bob's orange (R>G>=B), got ({rr},{rg},{rb})"
+            );
+            // Left edge, mid-height: the peer isn't that way — no mist.
+            let (lr, lg, lb, _la) = OffscreenRenderer::sample(&rgba, 100, 3, 50);
+            assert!(
+                lr < 20 && lg < 20 && lb < 20,
+                "left edge should stay clear, got ({lr},{lg},{lb})"
+            );
         }
+        // phase: a_window_paints_no_band_for_a_pointer_it_cannot_place
+        // The edge band, too, is only for a pointer measured in this window's
+        // own coordinates — a desktop pointer is the compositor's to place.
+        {
+            let theme = Theme::default();
+            let mut tr = crate::text_render::TextRenderer::new();
+            let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
 
-        // And the chip is inside the object, at its right — the left is where
-        // an object keeps its own label.
-        let inside_right = (155, 30);
-        let (cr, cg, cb, ca) =
-            OffscreenRenderer::sample(&rgba, 200, inside_right.0, inside_right.1);
-        assert!(ca > 0, "no chip inside the object at {inside_right:?}");
-        assert!(
-            cg > cr && cg > cb,
-            "the chip inside should be charlie's emerald, got ({cr},{cg},{cb})",
-        );
-    }
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_own_identity(["me"]);
+            ctx.set_display_name(UserId("peer@7".to_string()), "bob");
+            // The frame a room sends: a pointer keyed by the room, the
+            // same key the compositor overlay and broker use.
+            let _ = ctx.apply_remote_presence(
+                "peer@7".to_string(),
+                crate::presence::PresenceKey::Workspace {
+                    id: "room-1".to_string(),
+                },
+                crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
+            );
+            assert_eq!(
+                ctx.remote_cursors.len(),
+                1,
+                "the fixture published no pointer"
+            );
+            assert!(
+                !ctx.remote_cursors[0].painted_by_window(),
+                "fixture error: a room-keyed pointer is the compositor's to paint",
+            );
 
-    /// With room above, the chip still hangs above — the flip is a fallback,
-    /// not a new default, or every labelled object would start covering itself.
-    #[test]
-    fn a_name_chip_with_room_above_it_still_hangs_above() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let user = UserId("charlie".to_string());
-        let bounds = Rect::new(0.0, 0.0, 200.0, 140.0);
-        let object = Rect::new(10.0, 60.0, 160.0, 120.0);
+            let mut scene = Scene::new();
+            draw_remote_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                viewport,
+                &mut tr,
+                &theme,
+                &ctx,
+            );
+            let mut r = OffscreenRenderer::new(320, 240);
+            let painted = r.render(&scene, Color::WHITE);
+            let mut b = OffscreenRenderer::new(320, 240);
+            let bare = b.render(&Scene::new(), Color::WHITE);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare),
+                0,
+                "a window painted something for a pointer it cannot place",
+            );
 
-        let mut scene = Scene::new();
-        ctx.draw_peer_outline_labeled_within(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "Charlie",
-            object,
-            4.0,
-            bounds,
-        );
-        let mut r = OffscreenRenderer::new(200, 140);
-        let rgba = r.render(&scene, Color::BLACK);
+            // A click there goes to whatever's under it — hit-test must use the
+            // same rule or pixels and clicks disagree.
+            assert_eq!(
+                ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
+                None,
+                "a band nobody can see still answered a click",
+            );
+        }
+        // phase: an_offscreen_peer_in_this_window_still_gets_a_band
+        // The half that must keep working, or the rule above is satisfied by
+        // never drawing anything: a pointer this window does own still gets a
+        // band once it leaves the visible part of it.
+        {
+            let theme = Theme::default();
+            let mut tr = crate::text_render::TextRenderer::new();
+            let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
 
-        // Above the object's top edge, at its left.
-        let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 200, 12, 52);
-        assert!(ca > 0, "expected the chip above the object");
-        assert!(
-            cg > cr && cg > cb,
-            "chip above should be charlie's emerald, got ({cr},{cg},{cb})",
-        );
-    }
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_own_identity(["me"]);
+            ctx.set_display_name(UserId("peer@7".to_string()), "bob");
+            // A widget scope is a position in this window's content, so this
+            // window is the only layer that can place it.
+            let _ = ctx.apply_remote_presence(
+                "peer@7".to_string(),
+                crate::presence::PresenceKey::Widget {
+                    path: vec![crate::presence::PathSegment::Index(0)],
+                },
+                crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 120.0 },
+            );
+            assert!(
+                ctx.remote_cursors[0].painted_by_window(),
+                "fixture error: a widget-scoped pointer is this window's",
+            );
 
-    /// The typing highlighter paints the peer's color over the typed run.
-    /// "bob" is orange (R>G>B). Fresh (alpha 1.0) over black still keeps
-    /// that channel ordering.
-    #[test]
-    fn typing_tint_paints_peer_color_over_run() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut scene = Scene::new();
-        let user = UserId("bob".to_string());
-        ctx.draw_peer_typing(
-            &mut scene,
-            &theme,
-            &user,
-            &[(Rect::new(10.0, 10.0, 70.0, 30.0), 1.0)],
-        );
-        let mut r = OffscreenRenderer::new(80, 80);
-        let rgba = r.render(&scene, Color::BLACK);
-        let (red, green, blue, a) = OffscreenRenderer::sample(&rgba, 80, 40, 20);
-        assert!(a > 0, "typing tint should be visible");
-        assert!(
-            red > green && green >= blue && red > 20,
-            "expected bob's orange typing tint (R>G>=B), got ({red},{green},{blue})"
-        );
-        // A fainter alpha paints a dimmer tint — prove the fade is applied.
-        let mut scene2 = Scene::new();
-        ctx.draw_peer_typing(
-            &mut scene2,
-            &theme,
-            &user,
-            &[(Rect::new(10.0, 10.0, 70.0, 30.0), 0.2)],
-        );
-        let rgba2 = r.render(&scene2, Color::BLACK);
-        let (red2, ..) = OffscreenRenderer::sample(&rgba2, 80, 40, 20);
-        assert!(
-            red2 < red,
-            "lower alpha must paint a dimmer tint: {red2} !< {red}"
-        );
-    }
-
-    /// A peer off to the RIGHT tints the right edge and leaves the left
-    /// edge clear.
-    #[test]
-    fn offscreen_peer_mists_the_correct_edge() {
-        let mut ctx = PresenceCtx::empty();
-        // "bob" (orange) at x=180 — well past a 100-wide viewport's right
-        // edge — at mid height.
-        ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
-        draw_remote_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            viewport,
-            &mut tr,
-            &theme,
-            &ctx,
-        );
-
-        let mut r = OffscreenRenderer::new(100, 100);
-        let rgba = r.render(&scene, Color::BLACK);
-        // Right edge, mid-height: expect orange mist.
-        let (rr, rg, rb, ra) = OffscreenRenderer::sample(&rgba, 100, 97, 50);
-        assert!(ra > 0, "right edge should carry the mist");
-        assert!(
-            rr > rg && rg >= rb && rr > 15,
-            "right-edge mist should be bob's orange (R>G>=B), got ({rr},{rg},{rb})"
-        );
-        // Left edge, mid-height: the peer isn't that way — no mist.
-        let (lr, lg, lb, _la) = OffscreenRenderer::sample(&rgba, 100, 3, 50);
-        assert!(
-            lr < 20 && lg < 20 && lb < 20,
-            "left edge should stay clear, got ({lr},{lg},{lb})"
-        );
+            let mut scene = Scene::new();
+            draw_remote_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                viewport,
+                &mut tr,
+                &theme,
+                &ctx,
+            );
+            let mut r = OffscreenRenderer::new(320, 240);
+            let painted = r.render(&scene, Color::WHITE);
+            let mut b = OffscreenRenderer::new(320, 240);
+            let bare = b.render(&Scene::new(), Color::WHITE);
+            assert!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare) > 200,
+                "a peer off the right edge of this window was not pointed at",
+            );
+            assert_eq!(
+                ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
+                Some("peer@7".to_string()),
+                "the band that was painted does not answer a click on it",
+            );
+        }
+        // phase: hit_test_offscreen_mist_selects_the_peer
+        // Clicking within an off-screen peer's mist band selects that peer to
+        // follow; a click in open space selects nobody.
+        {
+            let mut ctx = PresenceCtx::empty();
+            ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
+            let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+            // A point on the right-edge band.
+            assert_eq!(
+                ctx.hit_test_offscreen_mist(viewport, Point::new(98.0, 50.0)),
+                Some("bob".to_string())
+            );
+            // A point in the middle of the canvas hits no band.
+            assert_eq!(
+                ctx.hit_test_offscreen_mist(viewport, Point::new(50.0, 50.0)),
+                None
+            );
+        }
+        // phase: resolved_desktop_peer_outside_viewport_becomes_edge_mist
+        {
+            let theme = Theme::default();
+            let mut text = crate::text_render::TextRenderer::new();
+            let viewport = Rect::new(0.0, 0.0, 160.0, 120.0);
+            let peers = [PeerCursor {
+                pos: (300.0, 60.0),
+                label: "Ada".to_string(),
+                color: Color::from_rgb8(236, 72, 153),
+                is_agent: false,
+                opacity: 1.0,
+            }];
+            let mut scene = Scene::new();
+            draw_peer_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                viewport,
+                &mut text,
+                &theme,
+                &peers,
+            );
+            // The rail and label background are the two geometry draws that
+            // prove an off-screen cue was emitted. Glyph batching is deliberately
+            // renderer-dependent, so counting the label's glyph draws made this
+            // test vary between the local and CI render backends.
+            assert!(
+                scene.encoding().draw_tags.len() >= 2,
+                "an off-screen desktop peer produced no directional mist",
+            );
+        }
     }
 
     fn req(x: f64, y: f64, w: f64, h: f64) -> PillRequest {
@@ -1727,149 +1926,104 @@ mod tests {
         }
     }
 
-    /// Two people working next to each other put their pointers a few
-    /// pixels apart. Their names must still be two names.
     #[test]
-    fn pills_of_adjacent_peers_do_not_overlap() {
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let out = layout_peer_pills(
-            vp,
-            &[req(400.0, 300.0, 60.0, 20.0), req(404.0, 302.0, 60.0, 20.0)],
-        );
-        assert!(
-            out[0].rect.intersect(out[1].rect).is_zero_area(),
-            "two pills landed on top of each other: {:?} and {:?}",
-            out[0].rect,
-            out[1].rect,
-        );
-    }
-
-    /// Four pills from four nearly-identical pointers must still separate.
-    #[test]
-    fn four_piled_peers_get_four_readable_pills() {
-        let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let pills: Vec<PillRequest> = (0..4)
-            .map(|i| {
-                req(
-                    600.0 + f64::from(i) * 3.0,
-                    400.0 + f64::from(i) * 2.0,
-                    70.0,
-                    22.0,
-                )
-            })
-            .collect();
-        let out = layout_peer_pills(vp, &pills);
-        for i in 0..out.len() {
-            for j in i + 1..out.len() {
+    fn pills_are_placed_without_overlap_inside_the_viewport_deterministically() {
+        // phase: pills_of_adjacent_peers_do_not_overlap
+        // Two people working next to each other put their pointers a few
+        // pixels apart. Their names must still be two names.
+        {
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let out = layout_peer_pills(
+                vp,
+                &[req(400.0, 300.0, 60.0, 20.0), req(404.0, 302.0, 60.0, 20.0)],
+            );
+            assert!(
+                out[0].rect.intersect(out[1].rect).is_zero_area(),
+                "two pills landed on top of each other: {:?} and {:?}",
+                out[0].rect,
+                out[1].rect,
+            );
+        }
+        // phase: four_piled_peers_get_four_readable_pills
+        // Four pills from four nearly-identical pointers must still separate.
+        {
+            let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let pills: Vec<PillRequest> = (0..4)
+                .map(|i| {
+                    req(
+                        600.0 + f64::from(i) * 3.0,
+                        400.0 + f64::from(i) * 2.0,
+                        70.0,
+                        22.0,
+                    )
+                })
+                .collect();
+            let out = layout_peer_pills(vp, &pills);
+            for i in 0..out.len() {
+                for j in i + 1..out.len() {
+                    assert!(
+                        out[i].rect.intersect(out[j].rect).is_zero_area(),
+                        "pills {i} and {j} overlap: {:?} vs {:?}",
+                        out[i].rect,
+                        out[j].rect,
+                    );
+                }
+            }
+        }
+        // phase: a_pill_never_leaves_the_viewport
+        // A peer in the bottom-right corner still gets a readable name: the
+        // pill flips to the other side of them rather than running off the
+        // window.
+        {
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let corners = [
+                (795.0, 595.0),
+                (2.0, 2.0),
+                (795.0, 2.0),
+                (2.0, 595.0),
+                (400.0, 598.0),
+            ];
+            for (x, y) in corners {
+                let out = layout_peer_pills(vp, &[req(x, y, 90.0, 22.0)]);
+                let r = out[0].rect;
                 assert!(
-                    out[i].rect.intersect(out[j].rect).is_zero_area(),
-                    "pills {i} and {j} overlap: {:?} vs {:?}",
-                    out[i].rect,
-                    out[j].rect,
+                    r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1,
+                    "a peer at ({x}, {y}) put its name at {r:?}, outside {vp:?}",
                 );
             }
         }
-    }
+        // phase: only_a_displaced_pill_asks_for_a_tether
+        // A pill in its own corner needs no tether; a tether on every pill
+        // would be noise.
+        {
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let alone = layout_peer_pills(vp, &[req(400.0, 300.0, 60.0, 20.0)]);
+            assert!(!alone[0].tethered, "a peer on its own needs no tether");
 
-    /// A peer in the bottom-right corner still gets a readable name: the
-    /// pill flips to the other side of them rather than running off the
-    /// window.
-    #[test]
-    fn a_pill_never_leaves_the_viewport() {
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let corners = [
-            (795.0, 595.0),
-            (2.0, 2.0),
-            (795.0, 2.0),
-            (2.0, 595.0),
-            (400.0, 598.0),
-        ];
-        for (x, y) in corners {
-            let out = layout_peer_pills(vp, &[req(x, y, 90.0, 22.0)]);
-            let r = out[0].rect;
+            // Six peers stacked within a few pixels: the corners run out and
+            // the later ones must be walked away and tethered.
+            let pile: Vec<PillRequest> = (0..6)
+                .map(|i| req(400.0 + f64::from(i), 300.0 + f64::from(i), 60.0, 20.0))
+                .collect();
+            let out = layout_peer_pills(vp, &pile);
             assert!(
-                r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1,
-                "a peer at ({x}, {y}) put its name at {r:?}, outside {vp:?}",
+                out.iter().any(|p| p.tethered),
+                "a six-deep pile placed every pill in a corner, which cannot be",
             );
         }
-    }
-
-    /// A pill in its own corner needs no tether; a tether on every pill
-    /// would be noise.
-    #[test]
-    fn only_a_displaced_pill_asks_for_a_tether() {
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let alone = layout_peer_pills(vp, &[req(400.0, 300.0, 60.0, 20.0)]);
-        assert!(!alone[0].tethered, "a peer on its own needs no tether");
-
-        // Six peers stacked within a few pixels: the corners run out and
-        // the later ones must be walked away and tethered.
-        let pile: Vec<PillRequest> = (0..6)
-            .map(|i| req(400.0 + f64::from(i), 300.0 + f64::from(i), 60.0, 20.0))
-            .collect();
-        let out = layout_peer_pills(vp, &pile);
-        assert!(
-            out.iter().any(|p| p.tethered),
-            "a six-deep pile placed every pill in a corner, which cannot be",
-        );
-    }
-
-    /// A peer reconnecting must not reshuffle everyone else's names.
-    #[test]
-    fn placement_does_not_depend_on_arrival_order() {
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let a = req(400.0, 300.0, 60.0, 20.0);
-        let b = req(404.0, 302.0, 70.0, 20.0);
-        let c = req(410.0, 306.0, 50.0, 20.0);
-        let forward = layout_peer_pills(vp, &[a, b, c]);
-        let backward = layout_peer_pills(vp, &[c, b, a]);
-        assert_eq!(forward[0], backward[2]);
-        assert_eq!(forward[1], backward[1]);
-        assert_eq!(forward[2], backward[0]);
-    }
-
-    #[test]
-    fn a_peer_pill_is_the_peer_colour_and_its_label_contrasts() {
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        // Orange (bob's pin) is light enough that its label must be black.
-        let peer = Color::from_rgb8(0xf9, 0x73, 0x16);
-        draw_peer_cursors(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 200.0, 200.0),
-            &mut tr,
-            &theme,
-            &[PeerCursor {
-                pos: (60.0, 60.0),
-                label: "bob".into(),
-                color: peer,
-                is_agent: false,
-            }],
-        );
-        let mut r = OffscreenRenderer::new(200, 200);
-        let rgba = r.render(&scene, Color::WHITE);
-
-        // The dot itself.
-        let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 60, 60);
-        assert!(
-            dr > 180 && dg > 80 && dg < 160 && db < 90,
-            "expected bob's orange at the pointer, got ({dr},{dg},{db})"
-        );
-        // The pill, below-right of the pointer.
-        let (pr, pg, pb, pa) = OffscreenRenderer::sample(&rgba, 200, 80, 78);
-        assert!(pa > 0, "expected an opaque pill below-right of the pointer");
-        assert!(
-            pr > pg && pg > pb,
-            "the pill should be the peer's orange (R>G>B), got ({pr},{pg},{pb})"
-        );
-        assert_eq!(contrast_ink(peer), Color::BLACK, "orange needs black ink");
-        assert_eq!(
-            contrast_ink(Color::from_rgb8(0x63, 0x66, 0xf1)),
-            Color::WHITE,
-            "indigo needs white ink",
-        );
+        // phase: placement_does_not_depend_on_arrival_order
+        // A peer reconnecting must not reshuffle everyone else's names.
+        {
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let a = req(400.0, 300.0, 60.0, 20.0);
+            let b = req(404.0, 302.0, 70.0, 20.0);
+            let c = req(410.0, 306.0, 50.0, 20.0);
+            let forward = layout_peer_pills(vp, &[a, b, c]);
+            let backward = layout_peer_pills(vp, &[c, b, a]);
+            assert_eq!(forward[0], backward[2]);
+            assert_eq!(forward[1], backward[1]);
+            assert_eq!(forward[2], backward[0]);
+        }
     }
 
     #[test]
@@ -1879,133 +2033,268 @@ mod tests {
         clippy::cast_sign_loss,
         reason = "conventional short names for a color/angle sample; x/y are always in-bounds by construction"
     )]
-    fn a_peer_dot_reads_on_a_white_page_and_on_a_dark_desktop() {
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let peer = Color::from_rgb8(0xf4, 0xf1, 0x71); // a pale ring member
-        let mut render = |bg: Color| {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn markers_keep_the_peer_hue_equal_strength_and_legible_text() {
+        // phase: a_peer_pill_is_the_peer_colour_and_its_label_contrasts
+        {
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
+            // Orange (bob's pin) is light enough that its label must be black.
+            let peer = Color::from_rgb8(0xf9, 0x73, 0x16);
             draw_peer_cursors(
                 &mut scene,
                 Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 120.0, 120.0),
+                Rect::new(0.0, 0.0, 200.0, 200.0),
                 &mut tr,
                 &theme,
                 &[PeerCursor {
                     pos: (60.0, 60.0),
-                    label: "p".into(),
+                    label: "bob".into(),
                     color: peer,
                     is_agent: false,
+                    opacity: 1.0,
                 }],
             );
-            let mut r = OffscreenRenderer::new(120, 120);
-            r.render(&scene, bg)
-        };
-        for (name, bg) in [
-            ("a white page", Color::WHITE),
-            ("the desktop", Color::BLACK),
-        ] {
-            let rgba = render(bg);
-            let bgc = bg.to_rgba8();
-            // Somewhere on the ring around the dot must differ from the
-            // background, or the cursor has no edge at all on it.
-            //
-            // `r`/`g`/`b`/`x`/`y`/`a`/`deg` are the conventional color and
-            // polar-coordinate abbreviations; renaming them would only add
-            // width. `x`/`y` are sampled on a fixed 6.8px ring around
-            // (60, 60) on a 120x120 canvas, always in u32 range.
-            let edge = (0..360).step_by(15).any(|deg| {
-                let a = f64::from(deg).to_radians();
-                let x = (60.0 + 6.8 * a.cos()).round() as u32;
-                let y = (60.0 + 6.8 * a.sin()).round() as u32;
-                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 120, x, y);
-                let d = super::super::color_distance((r, g, b), (bgc.r, bgc.g, bgc.b));
-                d > 60.0
-            });
-            assert!(edge, "a pale peer has no visible edge against {name}");
+            let mut r = OffscreenRenderer::new(200, 200);
+            let rgba = r.render(&scene, Color::WHITE);
+
+            // The dot itself.
+            let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 60, 60);
+            assert!(
+                dr > 180 && dg > 80 && dg < 160 && db < 90,
+                "expected bob's orange at the pointer, got ({dr},{dg},{db})"
+            );
+            // The pill, below-right of the pointer.
+            let (pr, pg, pb, pa) = OffscreenRenderer::sample(&rgba, 200, 80, 78);
+            assert!(pa > 0, "expected an opaque pill below-right of the pointer");
+            assert!(
+                pr > pg && pg > pb,
+                "the pill should be the peer's orange (R>G>B), got ({pr},{pg},{pb})"
+            );
+            assert_eq!(contrast_ink(peer), Color::BLACK, "orange needs black ink");
+            assert_eq!(
+                contrast_ink(Color::from_rgb8(0x63, 0x66, 0xf1)),
+                Color::WHITE,
+                "indigo needs white ink",
+            );
+        }
+        // phase: a_peer_dot_reads_on_a_white_page_and_on_a_dark_desktop
+        {
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let peer = Color::from_rgb8(0xf4, 0xf1, 0x71); // a pale ring member
+            let mut render = |bg: Color| {
+                let mut scene = Scene::new();
+                draw_peer_cursors(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 120.0, 120.0),
+                    &mut tr,
+                    &theme,
+                    &[PeerCursor {
+                        pos: (60.0, 60.0),
+                        label: "p".into(),
+                        color: peer,
+                        is_agent: false,
+                        opacity: 1.0,
+                    }],
+                );
+                let mut r = OffscreenRenderer::new(120, 120);
+                r.render(&scene, bg)
+            };
+            for (name, bg) in [
+                ("a white page", Color::WHITE),
+                ("the desktop", Color::BLACK),
+            ] {
+                let rgba = render(bg);
+                let bgc = bg.to_rgba8();
+                // Somewhere on the ring around the dot must differ from the
+                // background, or the cursor has no edge at all on it.
+                //
+                // `r`/`g`/`b`/`x`/`y`/`a`/`deg` are the conventional color and
+                // polar-coordinate abbreviations; renaming them would only add
+                // width. `x`/`y` are sampled on a fixed 6.8px ring around
+                // (60, 60) on a 120x120 canvas, always in u32 range.
+                let edge = (0..360).step_by(15).any(|deg| {
+                    let a = f64::from(deg).to_radians();
+                    let x = (60.0 + 6.8 * a.cos()).round() as u32;
+                    let y = (60.0 + 6.8 * a.sin()).round() as u32;
+                    let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 120, x, y);
+                    let d = super::super::color_distance((r, g, b), (bgc.r, bgc.g, bgc.b));
+                    d > 60.0
+                });
+                assert!(edge, "a pale peer has no visible edge against {name}");
+            }
+        }
+        // phase: a_peer_name_is_the_same_pill_everywhere
+        // Asserted through `peer_pill_size`, shared by the pointer pill and
+        // the caret chip, so this fails if either drifts.
+        {
+            let theme = Theme::default();
+            let mut tr = crate::text_render::TextRenderer::new();
+
+            // Control step, not caption — names are on screen for a whole
+            // session.
+            assert_eq!(
+                pill_label_size(&theme),
+                theme.tokens.typography.scale.sm,
+                "a peer's name is a control label, not a caption",
+            );
+
+            let (w, h) = peer_pill_size(&mut tr, &theme, "ada");
+            assert_eq!(
+                (w, h),
+                peer_pill_size(&mut tr, &theme, "ada"),
+                "peer_pill_size is not stable for one label",
+            );
+
+            assert!(
+                h >= 18.0,
+                "a name pill {h}px tall is the unreadable one this replaced",
+            );
+            assert!(
+                w > h,
+                "a name pill should be wider than it is tall, got {w}x{h}"
+            );
+
+            // Wider pill, same height — height is the type, not the content.
+            let (w2, h2) = peer_pill_size(&mut tr, &theme, "bob-with-a-long-name");
+            assert!(w2 > w, "a longer name should get a wider pill");
+            assert_eq!(h2, h, "pill height should not depend on the label");
+        }
+        // phase: every_peers_marker_is_about_as_strong_as_every_others
+        // Every peer's marker lands at comparable strength against the page.
+        // See [`marker_pigment`].
+        {
+            let theme = Theme::default();
+            // Paper, as the word processor draws it in *either* palette.
+            let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+            let paper_rgb = (0xfa, 0xfa, 0xf8);
+
+            let strengths: Vec<(f32, String)> = super::super::PEER_PALETTE
+                .iter()
+                .map(|rgb| {
+                    (
+                        contrast(marker_band_for(*rgb, paper, &theme), paper_rgb),
+                        format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2),
+                    )
+                })
+                .collect();
+
+            for (s, u) in &strengths {
+                assert!(
+                    *s > 1.4,
+                    "{u}'s marker is invisible against the page ({s:.2}:1)"
+                );
+            }
+            let lo = strengths.iter().map(|(s, _)| *s).fold(f32::MAX, f32::min);
+            let hi = strengths.iter().map(|(s, _)| *s).fold(0.0f32, f32::max);
+            assert!(
+                hi / lo < 1.25,
+                "markers differ too much between peers: {lo:.2}..{hi:.2} — {strengths:?}"
+            );
+        }
+        // phase: reduce_motion_holds_the_marker_instead_of_dissolving_it
+        // Reduce-motion holds the marker at full strength instead of fading it
+        // — it still clears when the span expires; only the animation goes.
+        {
+            let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+            let paper_rgb = (0xfa, 0xfa, 0xf8);
+
+            let half = |theme: &Theme| {
+                let ctx = PresenceCtx::empty();
+                let mut scene = Scene::new();
+                ctx.draw_peer_typing(
+                    &mut scene,
+                    theme,
+                    &UserId("alice".to_string()),
+                    &[(Rect::new(0.0, 0.0, 40.0, 40.0), 0.25)],
+                );
+                let mut r = OffscreenRenderer::new(40, 40);
+                let rgba = r.render(&scene, paper);
+                let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
+                (red, green, blue)
+            };
+
+            let motion = Theme::default().with_reduce_motion(false);
+            let still = Theme::default().with_reduce_motion(true);
+
+            let faded = contrast(half(&motion), paper_rgb);
+            let held = contrast(half(&still), paper_rgb);
+            let fresh = contrast(marker_band("alice", paper, &motion), paper_rgb);
+
+            assert!(
+                faded < held,
+                "with motion on, a quarter-aged mark should be weaker than a held one \
+             ({faded:.2} vs {held:.2})"
+            );
+            assert!(
+                (held - fresh).abs() < 0.02,
+                "under reduce-motion an aged mark should read like a fresh one \
+             ({held:.2} vs {fresh:.2})"
+            );
+        }
+        // phase: marker_pigment_keeps_the_peers_hue
+        // The marker re-tunes lightness only; a peer's hue (what their caret is
+        // also coloured by) must survive it.
+        {
+            for user in ["alice", "bob", "charlie", "me", "agent", "sara"] {
+                let raw = super::super::user_color(user);
+                let raw = Color::from_rgb8(raw.0, raw.1, raw.2);
+                let pig = marker_pigment(raw);
+
+                let a = raw.to_rgba8();
+                let b = pig.to_rgba8();
+                // Rank order of the channels is what carries hue; a pure lightness
+                // change cannot reorder them.
+                let order = |c: &vello::peniko::color::Rgba8| {
+                    let mut v = [(c.r, 0u8), (c.g, 1), (c.b, 2)];
+                    v.sort_by_key(|(x, _)| *x);
+                    [v[0].1, v[1].1, v[2].1]
+                };
+                assert_eq!(
+                    order(&a),
+                    order(&b),
+                    "{user}: marker pigment changed the hue ({a:?} -> {b:?})"
+                );
+            }
         }
     }
 
-    /// Asserted through `peer_pill_size`, shared by the pointer pill and
-    /// the caret chip, so this fails if either drifts.
+    /// Measures the band against *unmarked* ink, which is only right while
+    /// the marker paints under the glyphs (see
+    /// [`PresenceCtx::draw_peer_typing`]) — over them gets a number this
+    /// test can't see.
     #[test]
-    fn a_peer_name_is_the_same_pill_everywhere() {
-        let theme = Theme::default();
-        let mut tr = crate::text_render::TextRenderer::new();
+    fn text_stays_legible_under_a_marker_in_both_palettes() {
+        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+        let dark = Color::from_rgb8(0x18, 0x18, 0x1b);
+        let ink = (0x1a, 0x1a, 0x1a);
+        let dark_ink = (0xf5, 0xf5, 0xf5);
 
-        // Control step, not caption — names are on screen for a whole
-        // session.
-        assert_eq!(
-            pill_label_size(&theme),
-            theme.tokens.typography.scale.sm,
-            "a peer's name is a control label, not a caption",
-        );
-
-        let (w, h) = peer_pill_size(&mut tr, &theme, "ada");
-        assert_eq!(
-            (w, h),
-            peer_pill_size(&mut tr, &theme, "ada"),
-            "peer_pill_size is not stable for one label",
-        );
-
-        assert!(
-            h >= 18.0,
-            "a name pill {h}px tall is the unreadable one this replaced",
-        );
-        assert!(
-            w > h,
-            "a name pill should be wider than it is tall, got {w}x{h}"
-        );
-
-        // Wider pill, same height — height is the type, not the content.
-        let (w2, h2) = peer_pill_size(&mut tr, &theme, "bob-with-a-long-name");
-        assert!(w2 > w, "a longer name should get a wider pill");
-        assert_eq!(h2, h, "pill height should not depend on the label");
-    }
-
-    /// Sampled just under the chip's bottom edge, where a shadow lands and
-    /// a flat fill does not.
-    #[test]
-    fn a_caret_chip_carries_the_same_shadow_as_a_pointer_pill() {
-        let theme = Theme::default();
-        let user = UserId("alice".to_string());
-        let ctx = PresenceCtx::empty();
-        let mut tr = crate::text_render::TextRenderer::new();
-        let (w, h) = peer_pill_size(&mut tr, &theme, "alice");
-
-        let mut scene = Scene::new();
-        let caret = Rect::new(20.0, 60.0, 22.0, 80.0);
-        ctx.draw_peer_caret_labeled(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "alice",
-            caret,
-        );
-        let mut r = OffscreenRenderer::new(160, 160);
-        let rgba = r.render(&scene, Color::WHITE);
-
-        // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
-        // its bottom edge should be the shadow, darker than the white ground.
-        let top = 60.0 - h - 2.0;
-        // `top + h + 1.0` collapses to a fixed in-bounds sample row (59) on
-        // the 160px-tall offscreen canvas, regardless of the chip height it
-        // was derived from.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "top + h + 1.0 is a fixed, always-positive, in-bounds sample row"
-        )]
-        let (sr, sg, sb, _sa) = OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
-        assert!(
-            sr < 250 && sg < 250 && sb < 250,
-            "expected a drop shadow under the caret's name chip, got \
-             ({sr},{sg},{sb}) on a white ground — the chip is drawn flat \
-             while the pointer's pill is not",
-        );
-        assert!(w > 0.0);
+        // Every colour a peer can be drawn in, not just the ids that hash
+        // onto one — an unhit palette entry is still a legibility promise.
+        for rgb in super::super::PEER_PALETTE {
+            for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
+                let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
+                let on_paper = contrast(marker_band_for(rgb, paper, &theme), ink);
+                assert!(
+                    on_paper >= 4.5,
+                    "{hex}: body ink under the marker on paper ({name} theme) \
+                     falls to {on_paper:.2}:1"
+                );
+                let on_dark = contrast(marker_band_for(rgb, dark, &theme), dark_ink);
+                assert!(
+                    on_dark >= 4.5,
+                    "{hex}: ink under the marker on a dark surface ({name} theme) \
+                     falls to {on_dark:.2}:1"
+                );
+            }
+        }
     }
 
     /// Renders the production `draw_peer_typing` for real — the band is read
@@ -2059,550 +2348,261 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// Every peer's marker lands at comparable strength against the page.
-    /// See [`marker_pigment`].
     #[test]
-    fn every_peers_marker_is_about_as_strong_as_every_others() {
-        let theme = Theme::default();
-        // Paper, as the word processor draws it in *either* palette.
-        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
-        let paper_rgb = (0xfa, 0xfa, 0xf8);
-
-        let strengths: Vec<(f32, String)> = super::super::PEER_PALETTE
-            .iter()
-            .map(|rgb| {
-                (
-                    contrast(marker_band_for(*rgb, paper, &theme), paper_rgb),
-                    format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2),
-                )
-            })
-            .collect();
-
-        for (s, u) in &strengths {
-            assert!(
-                *s > 1.4,
-                "{u}'s marker is invisible against the page ({s:.2}:1)"
-            );
-        }
-        let lo = strengths.iter().map(|(s, _)| *s).fold(f32::MAX, f32::min);
-        let hi = strengths.iter().map(|(s, _)| *s).fold(0.0f32, f32::max);
-        assert!(
-            hi / lo < 1.25,
-            "markers differ too much between peers: {lo:.2}..{hi:.2} — {strengths:?}"
-        );
-    }
-
-    /// Measures the band against *unmarked* ink, which is only right while
-    /// the marker paints under the glyphs (see
-    /// [`PresenceCtx::draw_peer_typing`]) — over them gets a number this
-    /// test can't see.
-    #[test]
-    fn text_stays_legible_under_a_marker_in_both_palettes() {
-        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
-        let dark = Color::from_rgb8(0x18, 0x18, 0x1b);
-        let ink = (0x1a, 0x1a, 0x1a);
-        let dark_ink = (0xf5, 0xf5, 0xf5);
-
-        // Every colour a peer can be drawn in, not just the ids that hash
-        // onto one — an unhit palette entry is still a legibility promise.
-        for rgb in super::super::PEER_PALETTE {
-            for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
-                let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
-                let on_paper = contrast(marker_band_for(rgb, paper, &theme), ink);
-                assert!(
-                    on_paper >= 4.5,
-                    "{hex}: body ink under the marker on paper ({name} theme) \
-                     falls to {on_paper:.2}:1"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn pills_and_chips_scale_with_their_label_and_stay_inside_their_bounds() {
+        // phase: pill_and_chip_heights_follow_the_measured_label_at_every_text_scale
+        // The pill and chip are sized from the measured line box, so they hold
+        // their label at every renderer text scale — the label used to spill
+        // out of a font-size-derived box at 2×.
+        {
+            let theme = Theme::dark();
+            for scale in [1.0_f32, 2.0] {
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+                let (_, label_h) = tr.measure(
+                    "Alice",
+                    renderer_type_size(&tr, pill_label_size(&theme)),
+                    None,
                 );
-                let on_dark = contrast(marker_band_for(rgb, dark, &theme), dark_ink);
                 assert!(
-                    on_dark >= 4.5,
-                    "{hex}: ink under the marker on a dark surface ({name} theme) \
-                     falls to {on_dark:.2}:1"
+                    (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
+                    "at {scale}x the pill is {pill_h} tall around a {label_h} label"
+                );
+                let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
+                let (_, chip_label_h) = tr.measure(
+                    "Alice",
+                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
+                    None,
+                );
+                assert!(
+                    (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
+                    "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
                 );
             }
         }
-    }
-
-    /// Reduce-motion holds the marker at full strength instead of fading it
-    /// — it still clears when the span expires; only the animation goes.
-    #[test]
-    fn reduce_motion_holds_the_marker_instead_of_dissolving_it() {
-        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
-        let paper_rgb = (0xfa, 0xfa, 0xf8);
-
-        let half = |theme: &Theme| {
-            let ctx = PresenceCtx::empty();
-            let mut scene = Scene::new();
-            ctx.draw_peer_typing(
-                &mut scene,
-                theme,
-                &UserId("alice".to_string()),
-                &[(Rect::new(0.0, 0.0, 40.0, 40.0), 0.25)],
-            );
-            let mut r = OffscreenRenderer::new(40, 40);
-            let rgba = r.render(&scene, paper);
-            let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
-            (red, green, blue)
-        };
-
-        let motion = Theme::default().with_reduce_motion(false);
-        let still = Theme::default().with_reduce_motion(true);
-
-        let faded = contrast(half(&motion), paper_rgb);
-        let held = contrast(half(&still), paper_rgb);
-        let fresh = contrast(marker_band("alice", paper, &motion), paper_rgb);
-
-        assert!(
-            faded < held,
-            "with motion on, a quarter-aged mark should be weaker than a held one \
-             ({faded:.2} vs {held:.2})"
-        );
-        assert!(
-            (held - fresh).abs() < 0.02,
-            "under reduce-motion an aged mark should read like a fresh one \
-             ({held:.2} vs {fresh:.2})"
-        );
-    }
-
-    /// The marker re-tunes lightness only; a peer's hue (what their caret is
-    /// also coloured by) must survive it.
-    #[test]
-    fn marker_pigment_keeps_the_peers_hue() {
-        for user in ["alice", "bob", "charlie", "me", "agent", "sara"] {
-            let raw = super::super::user_color(user);
-            let raw = Color::from_rgb8(raw.0, raw.1, raw.2);
-            let pig = marker_pigment(raw);
-
-            let a = raw.to_rgba8();
-            let b = pig.to_rgba8();
-            // Rank order of the channels is what carries hue; a pure lightness
-            // change cannot reorder them.
-            let order = |c: &vello::peniko::color::Rgba8| {
-                let mut v = [(c.r, 0u8), (c.g, 1), (c.b, 2)];
-                v.sort_by_key(|(x, _)| *x);
-                [v[0].1, v[1].1, v[2].1]
-            };
-            assert_eq!(
-                order(&a),
-                order(&b),
-                "{user}: marker pigment changed the hue ({a:?} -> {b:?})"
+        // phase: the_default_pill_height_is_unchanged_at_one_x
+        // Re-deriving the pad from the line box must not have changed the pill
+        // every consumer already lays out around: `scale.sm` at 1× is still an
+        // 18 px pill.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            assert!(
+                (pill_h - 18.0).abs() < 1e-6,
+                "pill height {pill_h}; the 1x default is 18px"
             );
         }
-    }
-
-    /// The edge band, too, is only for a pointer measured in this window's
-    /// own coordinates — a desktop pointer is the compositor's to place.
-    #[test]
-    fn a_window_paints_no_band_for_a_pointer_it_cannot_place() {
-        let theme = Theme::default();
-        let mut tr = crate::text_render::TextRenderer::new();
-        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
-
-        let mut ctx = PresenceCtx::empty();
-        ctx.set_own_identity(["me"]);
-        ctx.set_display_name(UserId("peer@7".to_string()), "bob");
-        // The frame a room sends: a pointer keyed by the room, the
-        // same key the compositor overlay and broker use.
-        let _ = ctx.apply_remote_presence(
-            "peer@7".to_string(),
-            crate::presence::PresenceKey::Workspace {
-                id: "room-1".to_string(),
-            },
-            crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
-        );
-        assert_eq!(
-            ctx.remote_cursors.len(),
-            1,
-            "the fixture published no pointer"
-        );
-        assert!(
-            !ctx.remote_cursors[0].painted_by_window(),
-            "fixture error: a room-keyed pointer is the compositor's to paint",
-        );
-
-        let mut scene = Scene::new();
-        draw_remote_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            viewport,
-            &mut tr,
-            &theme,
-            &ctx,
-        );
-        let mut r = OffscreenRenderer::new(320, 240);
-        let painted = r.render(&scene, Color::WHITE);
-        let mut b = OffscreenRenderer::new(320, 240);
-        let bare = b.render(&Scene::new(), Color::WHITE);
-        assert_eq!(
-            OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare),
-            0,
-            "a window painted something for a pointer it cannot place",
-        );
-
-        // A click there goes to whatever's under it — hit-test must use the
-        // same rule or pixels and clicks disagree.
-        assert_eq!(
-            ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
-            None,
-            "a band nobody can see still answered a click",
-        );
-    }
-
-    /// The half that must keep working, or the rule above is satisfied by
-    /// never drawing anything: a pointer this window does own still gets a
-    /// band once it leaves the visible part of it.
-    #[test]
-    fn an_offscreen_peer_in_this_window_still_gets_a_band() {
-        let theme = Theme::default();
-        let mut tr = crate::text_render::TextRenderer::new();
-        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
-
-        let mut ctx = PresenceCtx::empty();
-        ctx.set_own_identity(["me"]);
-        ctx.set_display_name(UserId("peer@7".to_string()), "bob");
-        // A widget scope is a position in this window's content, so this
-        // window is the only layer that can place it.
-        let _ = ctx.apply_remote_presence(
-            "peer@7".to_string(),
-            crate::presence::PresenceKey::Widget {
-                path: vec![crate::presence::PathSegment::Index(0)],
-            },
-            crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 120.0 },
-        );
-        assert!(
-            ctx.remote_cursors[0].painted_by_window(),
-            "fixture error: a widget-scoped pointer is this window's",
-        );
-
-        let mut scene = Scene::new();
-        draw_remote_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            viewport,
-            &mut tr,
-            &theme,
-            &ctx,
-        );
-        let mut r = OffscreenRenderer::new(320, 240);
-        let painted = r.render(&scene, Color::WHITE);
-        let mut b = OffscreenRenderer::new(320, 240);
-        let bare = b.render(&Scene::new(), Color::WHITE);
-        assert!(
-            OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare) > 200,
-            "a peer off the right edge of this window was not pointed at",
-        );
-        assert_eq!(
-            ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
-            Some("peer@7".to_string()),
-            "the band that was painted does not answer a click on it",
-        );
-    }
-
-    /// Clicking within an off-screen peer's mist band selects that peer to
-    /// follow; a click in open space selects nobody.
-    #[test]
-    fn hit_test_offscreen_mist_selects_the_peer() {
-        let mut ctx = PresenceCtx::empty();
-        ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
-        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
-        // A point on the right-edge band.
-        assert_eq!(
-            ctx.hit_test_offscreen_mist(viewport, Point::new(98.0, 50.0)),
-            Some("bob".to_string())
-        );
-        // A point in the middle of the canvas hits no band.
-        assert_eq!(
-            ctx.hit_test_offscreen_mist(viewport, Point::new(50.0, 50.0)),
-            None
-        );
-    }
-    #[test]
-    fn resolved_desktop_peer_outside_viewport_becomes_edge_mist() {
-        let theme = Theme::default();
-        let mut text = crate::text_render::TextRenderer::new();
-        let viewport = Rect::new(0.0, 0.0, 160.0, 120.0);
-        let peers = [PeerCursor {
-            pos: (300.0, 60.0),
-            label: "Ada".to_string(),
-            color: Color::from_rgb8(236, 72, 153),
-            is_agent: false,
-        }];
-        let mut scene = Scene::new();
-        draw_peer_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            viewport,
-            &mut text,
-            &theme,
-            &peers,
-        );
-        // The rail and label background are the two geometry draws that
-        // prove an off-screen cue was emitted. Glyph batching is deliberately
-        // renderer-dependent, so counting the label's glyph draws made this
-        // test vary between the local and CI render backends.
-        assert!(
-            scene.encoding().draw_tags.len() >= 2,
-            "an off-screen desktop peer produced no directional mist",
-        );
-    }
-
-    /// The pill and chip are sized from the measured line box, so they hold
-    /// their label at every renderer text scale — the label used to spill
-    /// out of a font-size-derived box at 2×.
-    #[test]
-    fn pill_and_chip_heights_follow_the_measured_label_at_every_text_scale() {
-        let theme = Theme::dark();
-        for scale in [1.0_f32, 2.0] {
+        // phase: pill_and_chip_side_insets_scale_with_the_label
+        // The side insets frame the label at every magnification: a 2× label
+        // gets 2× pads (pill and chip alike), and the agent glyph's room grows
+        // with it, while the 1× pill keeps its exact default width.
+        {
+            let theme = Theme::dark();
             let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-            let (_, label_h) = tr.measure(
+            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            assert!(
+                (pw - (f64::from(tw) + PILL_PAD_X * 2.0)).abs() < 1e-6,
+                "1x pill width {pw} is not label {tw} + two {PILL_PAD_X}px pads"
+            );
+            let (aw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
+            assert!(
+                (aw - pw - AGENT_GLYPH_W).abs() < 1e-6,
+                "1x agent pill adds exactly the glyph room"
+            );
+            let (ctw, _) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+            let (cw, _) = chip_size(&theme, &mut tr, "Alice");
+            assert!((cw - (f64::from(ctw) + CHIP_PAD_X * 2.0)).abs() < 1e-6);
+
+            // A matched 2x host: the theme's type steps carry the scale and the
+            // renderer is set to the same scale, so the label is measured at the
+            // renderer-relative size the painter uses (X1) and paints at 2x.
+            let theme = Theme::dark().with_text_scale(2.0);
+            tr.set_text_scale(2.0);
+            let (tw2, _) = tr.measure(
                 "Alice",
                 renderer_type_size(&tr, pill_label_size(&theme)),
                 None,
             );
             assert!(
-                (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
-                "at {scale}x the pill is {pill_h} tall around a {label_h} label"
+                tw2 > tw * 1.5,
+                "the 2x label ({tw2}) must be about twice the 1x label ({tw})"
             );
-            let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
-            let (_, chip_label_h) = tr.measure(
+            let (pw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            assert!(
+                (pw2 - (f64::from(tw2) + PILL_PAD_X * 4.0)).abs() < 1e-6,
+                "2x pill width {pw2} should frame the {tw2} label with doubled pads"
+            );
+            let (aw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
+            assert!((aw2 - pw2 - AGENT_GLYPH_W * 2.0).abs() < 1e-6);
+            let (ctw2, _) = tr.measure(
                 "Alice",
                 renderer_type_size(&tr, theme.tokens.typography.scale.xs),
                 None,
             );
+            let (cw2, _) = chip_size(&theme, &mut tr, "Alice");
+            assert!((cw2 - (f64::from(ctw2) + CHIP_PAD_X * 4.0)).abs() < 1e-6);
+        }
+        // phase: edge_tag_stays_inside_its_band_at_every_text_scale
+        // The edge tag paints inside the band that is also its hit rect: a
+        // long name, or any name at 2×, is elided rather than hung out over
+        // content the pointer cannot reach it from. A short name at 1× is
+        // untouched.
+        {
+            use super::super::geom::{EdgeMist, MistEdge};
+            let theme = Theme::dark();
+            let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+            for (scale, name) in [
+                (1.0_f32, "Bob"),
+                (1.0, "Charlotte Okonkwo"),
+                (2.0, "Alice"),
+                (3.0, "Alice"),
+            ] {
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                for edge in [
+                    MistEdge::Left,
+                    MistEdge::Right,
+                    MistEdge::Top,
+                    MistEdge::Bottom,
+                ] {
+                    let mist = EdgeMist {
+                        edge,
+                        along: 0.5,
+                        distance: 80.0,
+                    };
+                    let band = mist_band_rect(viewport, &mist);
+                    let Some((tag, label, _)) = mist_tag(&mut tr, &theme, band, edge, name) else {
+                        // Only a line box deeper than the band may withhold the
+                        // tag; up to 2× every band shows one.
+                        assert!(scale > 2.0, "{name:?} at {scale}x on {edge:?} shows no tag");
+                        continue;
+                    };
+                    assert!(
+                        tag.x0 >= band.x0 - 1e-6
+                            && tag.x1 <= band.x1 + 1e-6
+                            && tag.y0 >= band.y0 - 1e-6
+                            && tag.y1 <= band.y1 + 1e-6,
+                        "{name:?} at {scale}x on {edge:?}: tag {tag:?} leaves band {band:?}"
+                    );
+                    assert!(
+                        !label.is_empty(),
+                        "{name:?} at {scale}x on {edge:?} lost its label"
+                    );
+                    if name == "Bob" {
+                        assert_eq!(label, "Bob", "a short 1x name must not be elided");
+                    }
+                }
+            }
+        }
+        // phase: pill_insets_follow_ui_scaled_type_too
+        // `with_ui_scale` doubles the type without touching `Theme::text_scale`;
+        // the insets must follow the type, whichever knob grew it.
+        {
+            let theme = Theme::dark().with_ui_scale(2.0);
+            let mut tr = TextRenderer::new();
+            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
             assert!(
-                (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
-                "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
+                (pw - (f64::from(tw) + PILL_PAD_X * 4.0)).abs() < 1e-6,
+                "ui-scaled pill width {pw} should frame the {tw} label with doubled pads"
             );
         }
-    }
-
-    /// Re-deriving the pad from the line box must not have changed the pill
-    /// every consumer already lays out around: `scale.sm` at 1× is still an
-    /// 18 px pill.
-    #[test]
-    fn the_default_pill_height_is_unchanged_at_one_x() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-        assert!(
-            (pill_h - 18.0).abs() < 1e-6,
-            "pill height {pill_h}; the 1x default is 18px"
-        );
-    }
-
-    /// The side insets frame the label at every magnification: a 2× label
-    /// gets 2× pads (pill and chip alike), and the agent glyph's room grows
-    /// with it, while the 1× pill keeps its exact default width.
-    #[test]
-    fn pill_and_chip_side_insets_scale_with_the_label() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
-        let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-        assert!(
-            (pw - (f64::from(tw) + PILL_PAD_X * 2.0)).abs() < 1e-6,
-            "1x pill width {pw} is not label {tw} + two {PILL_PAD_X}px pads"
-        );
-        let (aw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
-        assert!(
-            (aw - pw - AGENT_GLYPH_W).abs() < 1e-6,
-            "1x agent pill adds exactly the glyph room"
-        );
-        let (ctw, _) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
-        let (cw, _) = chip_size(&theme, &mut tr, "Alice");
-        assert!((cw - (f64::from(ctw) + CHIP_PAD_X * 2.0)).abs() < 1e-6);
-
-        // A matched 2x host: the theme's type steps carry the scale and the
-        // renderer is set to the same scale, so the label is measured at the
-        // renderer-relative size the painter uses (X1) and paints at 2x.
-        let theme = Theme::dark().with_text_scale(2.0);
-        tr.set_text_scale(2.0);
-        let (tw2, _) = tr.measure(
-            "Alice",
-            renderer_type_size(&tr, pill_label_size(&theme)),
-            None,
-        );
-        assert!(
-            tw2 > tw * 1.5,
-            "the 2x label ({tw2}) must be about twice the 1x label ({tw})"
-        );
-        let (pw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-        assert!(
-            (pw2 - (f64::from(tw2) + PILL_PAD_X * 4.0)).abs() < 1e-6,
-            "2x pill width {pw2} should frame the {tw2} label with doubled pads"
-        );
-        let (aw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
-        assert!((aw2 - pw2 - AGENT_GLYPH_W * 2.0).abs() < 1e-6);
-        let (ctw2, _) = tr.measure(
-            "Alice",
-            renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-            None,
-        );
-        let (cw2, _) = chip_size(&theme, &mut tr, "Alice");
-        assert!((cw2 - (f64::from(ctw2) + CHIP_PAD_X * 4.0)).abs() < 1e-6);
-    }
-
-    /// The edge tag paints inside the band that is also its hit rect: a
-    /// long name, or any name at 2×, is elided rather than hung out over
-    /// content the pointer cannot reach it from. A short name at 1× is
-    /// untouched.
-    #[test]
-    fn edge_tag_stays_inside_its_band_at_every_text_scale() {
-        use super::super::geom::{EdgeMist, MistEdge};
-        let theme = Theme::dark();
-        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
-        for (scale, name) in [
-            (1.0_f32, "Bob"),
-            (1.0, "Charlotte Okonkwo"),
-            (2.0, "Alice"),
-            (3.0, "Alice"),
-        ] {
+        // phase: a_name_chip_never_leaves_the_clipped_surface_sideways
+        // Sideways too: an object near the right edge of a clipped surface
+        // keeps its name chip inside the surface, elided if need be, instead of
+        // showing the first two letters of a name that ran off the edge.
+        {
+            let ctx = PresenceCtx::empty();
+            let theme = Theme::default();
             let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            for edge in [
-                MistEdge::Left,
-                MistEdge::Right,
-                MistEdge::Top,
-                MistEdge::Bottom,
-            ] {
-                let mist = EdgeMist {
-                    edge,
-                    along: 0.5,
-                    distance: 80.0,
-                };
-                let band = mist_band_rect(viewport, &mist);
-                let Some((tag, label, _)) = mist_tag(&mut tr, &theme, band, edge, name) else {
-                    // Only a line box deeper than the band may withhold the
-                    // tag; up to 2× every band shows one.
-                    assert!(scale > 2.0, "{name:?} at {scale}x on {edge:?} shows no tag");
-                    continue;
-                };
-                assert!(
-                    tag.x0 >= band.x0 - 1e-6
-                        && tag.x1 <= band.x1 + 1e-6
-                        && tag.y0 >= band.y0 - 1e-6
-                        && tag.y1 <= band.y1 + 1e-6,
-                    "{name:?} at {scale}x on {edge:?}: tag {tag:?} leaves band {band:?}"
-                );
-                assert!(
-                    !label.is_empty(),
-                    "{name:?} at {scale}x on {edge:?} lost its label"
-                );
-                if name == "Bob" {
-                    assert_eq!(label, "Bob", "a short 1x name must not be elided");
+            tr.set_text_scale(2.0);
+            let user = UserId("charlie".to_string());
+            // The surface ends at x=200; the canvas continues to 260 so paint
+            // past the edge is observable.
+            let bounds = Rect::new(0.0, 0.0, 200.0, 160.0);
+            let object = Rect::new(150.0, 60.0, 196.0, 140.0);
+
+            let mut scene = Scene::new();
+            ctx.draw_peer_outline_labeled_within(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                &user,
+                "Charlotte Okonkwo",
+                object,
+                4.0,
+                bounds,
+            );
+            let mut r = OffscreenRenderer::new(260, 160);
+            let rgba = r.render(&scene, Color::BLACK);
+            let mut chip_seen = false;
+            for y in 0..60 {
+                for x in 0..260 {
+                    let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 260, x, y);
+                    if ca == 0 || (cr == 0 && cg == 0 && cb == 0) {
+                        continue;
+                    }
+                    assert!(
+                        x < 200,
+                        "chip paint at ({x},{y}) is past the surface edge at x=200"
+                    );
+                    chip_seen = true;
                 }
             }
+            assert!(
+                chip_seen,
+                "the chip was not painted above the object at all"
+            );
         }
-    }
-
-    /// `with_ui_scale` doubles the type without touching `Theme::text_scale`;
-    /// the insets must follow the type, whichever knob grew it.
-    #[test]
-    fn pill_insets_follow_ui_scaled_type_too() {
-        let theme = Theme::dark().with_ui_scale(2.0);
-        let mut tr = TextRenderer::new();
-        let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
-        let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-        assert!(
-            (pw - (f64::from(tw) + PILL_PAD_X * 4.0)).abs() < 1e-6,
-            "ui-scaled pill width {pw} should frame the {tw} label with doubled pads"
-        );
-    }
-
-    /// Sideways too: an object near the right edge of a clipped surface
-    /// keeps its name chip inside the surface, elided if need be, instead of
-    /// showing the first two letters of a name that ran off the edge.
-    #[test]
-    fn a_name_chip_never_leaves_the_clipped_surface_sideways() {
-        let ctx = PresenceCtx::empty();
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let user = UserId("charlie".to_string());
-        // The surface ends at x=200; the canvas continues to 260 so paint
-        // past the edge is observable.
-        let bounds = Rect::new(0.0, 0.0, 200.0, 160.0);
-        let object = Rect::new(150.0, 60.0, 196.0, 140.0);
-
-        let mut scene = Scene::new();
-        ctx.draw_peer_outline_labeled_within(
-            &mut scene,
-            &theme,
-            &mut tr,
-            Affine::IDENTITY,
-            &user,
-            "Charlotte Okonkwo",
-            object,
-            4.0,
-            bounds,
-        );
-        let mut r = OffscreenRenderer::new(260, 160);
-        let rgba = r.render(&scene, Color::BLACK);
-        let mut chip_seen = false;
-        for y in 0..60 {
-            for x in 0..260 {
-                let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 260, x, y);
-                if ca == 0 || (cr == 0 && cg == 0 && cb == 0) {
-                    continue;
-                }
-                assert!(
-                    x < 200,
-                    "chip paint at ({x},{y}) is past the surface edge at x=200"
-                );
-                chip_seen = true;
-            }
-        }
-        assert!(
-            chip_seen,
-            "the chip was not painted above the object at all"
-        );
-    }
-
-    /// At 2× the label ink of a pointer pill stays inside the pill it was
-    /// laid out for, top and bottom.
-    #[test]
-    fn pill_label_stays_inside_its_pill_at_two_x() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (pw, ph) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-        let (w, h) = (160_u32, 96_u32);
-        let rect = Rect::new(20.0, 30.0, 20.0 + pw, 30.0 + ph);
-        let mut scene = Scene::new();
-        // A dark peer colour so the light label ink is unambiguous.
-        let peer = Color::from_rgb8(0x1e, 0x29, 0x3b);
-        draw_peer_pill_kind(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            "Alice",
-            peer,
-            false,
-        );
-        let rgba = OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
-        let mut ink_rows = Vec::new();
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                let i = (y * w as usize + x) * 4;
-                // Label ink is white-ish; the pill and background are dark.
-                if rgba[i] > 160 && rgba[i + 1] > 160 && rgba[i + 2] > 160 {
-                    ink_rows.push(y);
-                    break;
+        // phase: pill_label_stays_inside_its_pill_at_two_x
+        // At 2× the label ink of a pointer pill stays inside the pill it was
+        // laid out for, top and bottom.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let (pw, ph) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            let (w, h) = (160_u32, 96_u32);
+            let rect = Rect::new(20.0, 30.0, 20.0 + pw, 30.0 + ph);
+            let mut scene = Scene::new();
+            // A dark peer colour so the light label ink is unambiguous.
+            let peer = Color::from_rgb8(0x1e, 0x29, 0x3b);
+            draw_peer_pill_kind(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                "Alice",
+                peer,
+                false,
+            );
+            let rgba = OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+            let mut ink_rows = Vec::new();
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let i = (y * w as usize + x) * 4;
+                    // Label ink is white-ish; the pill and background are dark.
+                    if rgba[i] > 160 && rgba[i + 1] > 160 && rgba[i + 2] > 160 {
+                        ink_rows.push(y);
+                        break;
+                    }
                 }
             }
+            let (top, bottom) = (
+                *ink_rows.first().expect("label painted some ink"),
+                *ink_rows.last().expect("label painted some ink"),
+            );
+            assert!(
+                f64::from(top as u32) >= rect.y0.floor()
+                    && f64::from(bottom as u32) < rect.y1.ceil(),
+                "label ink rows {top}..={bottom} leave the pill {rect:?} at 2x"
+            );
         }
-        let (top, bottom) = (
-            *ink_rows.first().expect("label painted some ink"),
-            *ink_rows.last().expect("label painted some ink"),
-        );
-        assert!(
-            f64::from(top as u32) >= rect.y0.floor() && f64::from(bottom as u32) < rect.y1.ceil(),
-            "label ink rows {top}..={bottom} leave the pill {rect:?} at 2x"
-        );
     }
 }

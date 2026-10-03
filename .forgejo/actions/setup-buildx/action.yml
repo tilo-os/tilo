@@ -2,11 +2,10 @@ name: Set up buildx with the runner pool's registries
 description: >-
   Start a docker-container buildx builder whose buildkitd.toml combines the
   runner pool's registry configuration (/etc/buildkit/buildkitd.toml, when
-  the pool provides one: pull-through mirrors with upstream fallback and
-  the pool's layer-cache registry) with the caller's own daemon settings.
-  Exports TILO_LAYER_CACHE_REGISTRY, the registry that holds this pool's
-  BuildKit layer caches (registry.tilo.so when the pool names none, which
-  needs a registry.tilo.so login before any cache export).
+  the pool provides one: pull-through mirrors with upstream fallback) with
+  the caller's own daemon settings.
+  Layer caches use the runner's Actions cache: cache-to/cache-from
+  type=gha,scope=<image>.
 
 inputs:
   driver-opts:
@@ -17,6 +16,23 @@ inputs:
     description: Additional buildkitd.toml tables for this builder.
     required: false
     default: ""
+  persistent:
+    description: >-
+      Keep this builder's BuildKit state (layers and RUN cache mounts) in the
+      runner slot's Docker store for the slot's next job of the same trust
+      class and configuration. Only a push to main is trusted, so a pull
+      request never writes state a main build reads. Publications build from
+      a fresh builder: leave this false for them.
+    required: false
+    default: "false"
+
+  seed:
+    description: >-
+      Start from the slot's seeded BuildKit state when it has one. Builds that
+      must be reproducible pass false: seeded directories carry the times the
+      seed was unpacked, not their inputs'.
+    required: false
+    default: "true"
 
 outputs:
   name:
@@ -30,6 +46,10 @@ runs:
       shell: bash
       env:
         EXTRA_CONFIG: ${{ inputs.buildkitd-config-inline }}
+        DRIVER_OPTS: ${{ inputs.driver-opts }}
+        PERSISTENT: ${{ inputs.persistent }}
+        SEED: ${{ inputs.seed }}
+        TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
       run: |
         set -euo pipefail
         config="$(mktemp "${RUNNER_TEMP:-/tmp}/buildkitd.XXXXXX.toml")"
@@ -39,16 +59,82 @@ runs:
           : > "$config"
         fi
         printf '\n%s\n' "$EXTRA_CONFIG" >> "$config"
-        registry="${CI_LAYER_CACHE_REGISTRY:-registry.tilo.so}"
-        [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
-          echo "::error::invalid layer-cache registry: $registry"; exit 1;
-        }
-        echo "TILO_LAYER_CACHE_REGISTRY=$registry" >> "$GITHUB_ENV"
+        # The builder is a sibling of the job container in the slot's Docker,
+        # outside the job's memory limit. Bound it below the slot's memory so
+        # a build that outgrows it fails alone: at the slot limit the kernel
+        # also kills the Docker daemon and with it the job.
+        opts="$DRIVER_OPTS"
+        # The runner slots prewarm this BuildKit image (infra runner-config.yaml).
+        if ! grep -Eq '(^|[[:space:],])image=' <<< "$opts"; then
+          opts=$(printf '%s\nimage=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8' "$opts" | sed '/^$/d')
+        fi
+        if ! grep -Eq '(^|[[:space:],])memory=' <<< "$opts"; then
+          total=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
+          if [[ $total =~ ^[0-9]+$ ]] && (( total > 8 * 1024 * 1024 * 1024 )); then
+            limit=$(( total - 4 * 1024 * 1024 * 1024 ))
+            opts=$(printf '%s\nmemory=%s\nmemory-swap=%s' "$opts" "$limit" "$limit" | sed '/^$/d')
+            echo "::notice::BuildKit builder memory bound: $(( limit / 1024 / 1024 )) MiB of $(( total / 1024 / 1024 )) MiB"
+          fi
+        fi
+        {
+          echo 'driver-opts<<TILO_DRIVER_OPTS'
+          printf '%s\n' "$opts"
+          echo 'TILO_DRIVER_OPTS'
+        } >> "$GITHUB_OUTPUT"
+        name=
+        keep_state=false
+        if [[ $PERSISTENT == true ]]; then
+          if grep -q '^\[worker\.oci\]' "$config"; then
+            echo "::error::a persistent builder sets its own [worker.oci] garbage collection"; exit 1
+          fi
+          # Bound the state kept between jobs; the slot's store also holds
+          # images and a Rust target tree.
+          printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "30GB"\n  minFreeSpace = "30GB"\n' >> "$config"
+          # A builder's configuration is fixed when its container starts, so
+          # the name covers it; the slot's DinD maintenance keeps tilo-* state.
+          digest=$( { cat "$config"; printf '%s' "$opts"; } | sha256sum | cut -c1-12)
+          name="tilo-$TRUST-$digest"
+          echo "::notice::persistent BuildKit builder $name"
+          keep_state=true
+        elif [[ $SEED == true ]]; then
+          # Large-class golden stores carry a BuildKit state volume, seeded by
+          # the pool's warmer with main's pinned base and buildroot images and
+          # keyed by the BuildKit image digest. Each clone-per-job slot owns
+          # its copy, which leaves with the clone; elsewhere the volume does
+          # not exist and the builder starts empty as before.
+          image_digest=$(grep -oE '(^|[[:space:],])image=[^[:space:],]*@sha256:[0-9a-f]{64}' <<< "$opts" \
+            | grep -oE '[0-9a-f]{64}$' | head -1 || true)
+          if [[ -n $image_digest ]]; then
+            seed="ci-seed-${image_digest:0:12}"
+            if docker volume inspect "buildx_buildkit_${seed}0_state" >/dev/null 2>&1 \
+                && ! docker buildx inspect "$seed" >/dev/null 2>&1; then
+              name=$seed
+              # The seeded state leaves with this clone's store; removing tens
+              # of GB of it would only outlast the Docker client's timeout.
+              keep_state=true
+              # It also becomes the next golden state when this build is
+              # promoted, so bound it within the job as well, relative to the
+              # store (200 or 300 GiB): a board build needs about twice the
+              # rootfs free, and a tighter bound drops cargo's target caches.
+              if ! grep -q '^\[worker\.oci\]' "$config"; then
+                printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "40%%"\n  minFreeSpace = "23%%"\n' >> "$config"
+              fi
+              echo "::notice::BuildKit builder $name starts from the slot's seeded state"
+            fi
+          fi
+        fi
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+        echo "keep-state=$keep_state" >> "$GITHUB_OUTPUT"
         echo "path=$config" >> "$GITHUB_OUTPUT"
-        echo "::notice::BuildKit registries: $(grep -c '^\[registry' "$config" || true) pool entries; layer cache in $registry"
+        echo "::notice::BuildKit registries: $(grep -c '^\[registry' "$config" || true) pool entries"
     - id: buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       with:
         driver: docker-container
-        driver-opts: ${{ inputs.driver-opts }}
+        driver-opts: ${{ steps.config.outputs.driver-opts }}
         buildkitd-config: ${{ steps.config.outputs.path }}
+        name: ${{ steps.config.outputs.name }}
+        # Removes the builder container at the end of the job. A persistent
+        # builder keeps its state volume for the slot's next job of this name;
+        # a seeded one leaves it to the clone's disposal.
+        keep-state: ${{ steps.config.outputs.keep-state == 'true' }}

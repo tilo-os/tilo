@@ -14,9 +14,9 @@ use crate::shell::search::{
 };
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
 use crate::shell::tab_documents::tab_body;
-use ui::search::{FieldWeight, RankField};
+use tilo_search::{Document, FieldWeight, Page, SearchIndex};
 
-/// Top of the shared score scale — an exact title. See [`match_score`].
+/// Top of the shared score scale: a title the query starts.
 pub const MAX_SCORE: i32 = crate::shell::search::MAX_PROVIDER_SCORE;
 
 /// Retained projection for the two CRDT-backed tab providers.  It is rebuilt
@@ -46,7 +46,8 @@ struct TextEntry {
 struct TextSnapshot {
     revision: String,
     entries: Vec<TextEntry>,
-    index: ui::search::SearchTextIndex,
+    /// Titles and bodies, keyed by position in `entries`.
+    index: SearchIndex,
 }
 
 /// Tree membership and record content jointly define a text-app search
@@ -116,62 +117,9 @@ pub fn proximity_of(
     }
 }
 
-/// [`crate::shell::search::SearchProvider::query`] for a text app.
-/// `body_key` must match the Automerge key
-/// [`CrdtTextBody`](crate::shell::crdt_text::CrdtTextBody) writes under,
-/// read **per tab** out of that tab's own document.
-pub fn query_text_app(
-    ctx: &SearchContext<'_>,
-    app: &str,
-    body_key: &str,
-    provider_id: &'static str,
-    kind: &ResourceKind,
-) -> Vec<SearchResult> {
-    // Kept for direct callers and old provider tests. The live providers use
-    // `query_text_app_page` and therefore their retained snapshot.
-    if !ctx.wanted.contains(kind) {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let tree = ctx.chrome.tree();
-    for w in &tree.desktop.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    if !tile_hosts_app(&t.tile, app) {
-                        continue;
-                    }
-                    let body = tab_body(ctx.chrome.records(), t.id, body_key).unwrap_or_default();
-                    let Some((score, snippet)) = match_score(ctx.needle, &t.title, &body) else {
-                        continue;
-                    };
-                    let (workspace_id, strip_id, group_id, tab_id) = (w.id, s.id, g.id, t.id);
-                    out.push(SearchResult::nullary(
-                        kind.clone(),
-                        provider_id,
-                        format!("{tab_id}"),
-                        t.title.clone(),
-                        snippet,
-                        score,
-                        move |_doc, _root, chrome: &Chrome| {
-                            focus_tab(chrome, workspace_id, strip_id, group_id, tab_id);
-                        },
-                    ));
-                }
-            }
-        }
-    }
-    drop(tree);
-    out
-}
-
-/// Query the retained tab/body projection.  Cursors carry only a snapshot
-/// offset and the Chrome revision; a changed tree invalidates rather than
-/// skipping a concurrent insert or edit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared helper preserves one explicit provider contract for each text-app source without an allocation-only parameter object"
-)]
+/// Query the retained tab/body projection, best match first.  Cursors carry
+/// only the number of hits already shown and the Chrome revision; a changed
+/// tree invalidates rather than skipping a concurrent insert or edit.
 pub fn query_text_app_page(
     cache: &TextSearchCache,
     ctx: &SearchContext<'_>,
@@ -186,7 +134,7 @@ pub fn query_text_app_page(
         return SearchPage::exhausted(text_search_revision(ctx.chrome), Vec::new());
     }
     let revision = text_search_revision(ctx.chrome);
-    let after = match cursor {
+    let offset = match cursor {
         Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
         Some(cursor) => {
             let Some((offset, cursor_query)) = cursor
@@ -202,9 +150,9 @@ pub fn query_text_app_page(
             let Ok(offset) = offset.parse::<usize>() else {
                 return SearchPage::stale(revision);
             };
-            Some(offset)
+            offset
         }
-        None => None,
+        None => 0,
     };
     let mut slot = cache.snapshot.borrow_mut();
     if slot
@@ -216,18 +164,25 @@ pub fn query_text_app_page(
     let Some(snapshot) = slot.as_ref() else {
         return SearchPage::exhausted(revision, Vec::new());
     };
-    let page = snapshot
-        .index
-        .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
+    let found = snapshot.index.search(
+        ctx.needle,
+        Page {
+            offset,
+            limit: budget.max_work.min(budget.max_results),
+        },
+    );
     let mut used = 0usize;
+    let mut shown = 0usize;
     let mut results = Vec::new();
-    for id in page.ids {
-        let Some(entry) = snapshot.entries.get(id) else {
+    for hit in &found.hits {
+        let Some(entry) = usize::try_from(hit.key)
+            .ok()
+            .and_then(|at| snapshot.entries.get(at))
+        else {
             continue;
         };
-        let Some((score, snippet)) = match_score(ctx.needle, &entry.title, &entry.body) else {
-            continue;
-        };
+        let score = crate::shell::search::provider_score(hit.rank.unwrap_or(0));
+        let snippet = snippet_for(ctx.needle, &entry.body);
         let bytes = entry
             .title
             .len()
@@ -237,6 +192,7 @@ pub fn query_text_app_page(
             break;
         }
         used = used.saturating_add(bytes);
+        shown = shown.saturating_add(1);
         let (workspace, strip, group, tab) = (entry.workspace, entry.strip, entry.group, entry.tab);
         results.push(SearchResult::nullary(
             kind.clone(),
@@ -248,13 +204,14 @@ pub fn query_text_app_page(
             move |_doc, _root, chrome: &Chrome| focus_tab(chrome, workspace, strip, group, tab),
         ));
     }
-    let exhausted = page.next_after.is_none();
+    let exhausted = !found.more && shown == found.hits.len();
+    let next = offset.saturating_add(shown);
     SearchPage {
         revision: revision.clone(),
         results,
-        next_cursor: page.next_after.map(|offset| SearchCursor {
+        next_cursor: (!exhausted).then(|| SearchCursor {
             revision,
-            token: format!("text:{offset}\u{1f}{}", ctx.needle),
+            token: format!("text:{next}\u{1f}{}", ctx.needle),
         }),
         exhausted,
         stale_cursor: false,
@@ -291,11 +248,15 @@ fn build_snapshot(
         }
     }
     drop(tree);
-    let index = ui::search::SearchTextIndex::new(
-        entries
-            .iter()
-            .map(|entry| format!("{}\u{1f}{}", entry.title, entry.body)),
-    );
+    let mut index = SearchIndex::default();
+    index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+        Document::new(at as u64)
+            .field(entry.title.as_str(), FieldWeight::TITLE)
+            .field(entry.body.as_str(), FieldWeight::BODY)
+    }));
+    if let Err(error) = index.commit() {
+        tracing::error!(%error, "could not index text app tabs");
+    }
     TextSnapshot {
         revision,
         entries,
@@ -303,23 +264,9 @@ fn build_snapshot(
     }
 }
 
-/// The shared ranker over the title and the body; a body containing the
-/// query carries a snippet showing why it matched.
-pub fn match_score(needle: &str, title: &str, body: &str) -> Option<(i32, Option<String>)> {
-    if needle.trim().is_empty() {
-        return Some((0, None));
-    }
-    let title_rank =
-        crate::shell::search::rank_fields(needle, &[RankField::new(title, FieldWeight::TITLE)]);
-    let body_hit = ui::search::rank::locate(needle, body);
-    let body_rank = body_hit
-        .as_ref()
-        .map(|(tier, _)| crate::shell::search::provider_score(tier.rank_in(FieldWeight::BODY)));
-    let score = title_rank.max(body_rank)?;
-    Some((
-        score,
-        body_hit.and_then(|(_, hit)| snippet_around(body, hit)),
-    ))
+/// Context around the query in a matching body, shown under the title.
+fn snippet_for(needle: &str, body: &str) -> Option<String> {
+    snippet_around(body, tilo_search::locate(needle, body)?)
 }
 
 /// Extract ~60 chars of context around the `hit` byte range, `…`-marked

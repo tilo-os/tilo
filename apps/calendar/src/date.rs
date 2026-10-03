@@ -166,16 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn month_grid_is_42_days_monday_first() {
+    fn month_grid_is_42_days_monday_first_with_spill_in() {
         // June 2026: 1st is a Monday → grid starts exactly on Jun 1.
         let g = month_grid(d(2026, 6, 15));
         assert_eq!(g.len(), 42);
         assert_eq!(g[0], d(2026, 6, 1));
         assert_eq!(g[0].weekday(), chrono::Weekday::Mon);
-    }
 
-    #[test]
-    fn month_grid_spills_in_for_non_monday_first() {
         // July 2026: 1st is a Wednesday → two spill-in days (Mon Jun 29,
         // Tue Jun 30).
         let g = month_grid(d(2026, 7, 10));
@@ -184,23 +181,19 @@ mod tests {
     }
 
     #[test]
-    fn add_months_clamps_day_of_month() {
+    fn month_and_week_arithmetic_clamps_days_and_starts_on_monday() {
+        // add_months clamps the day of month.
         assert_eq!(add_months(d(2026, 1, 31), 1), d(2026, 2, 28));
         assert_eq!(add_months(d(2026, 12, 15), 1), d(2027, 1, 15));
         assert_eq!(add_months(d(2026, 3, 31), -1), d(2026, 2, 28));
-    }
 
-    #[test]
-    fn week_starts_on_monday() {
-        // Jun 17 2026 is a Wednesday.
+        // Weeks start on Monday. Jun 17 2026 is a Wednesday.
         assert_eq!(week_start(d(2026, 6, 17)), d(2026, 6, 15));
         let w = week_days(d(2026, 6, 17));
         assert_eq!(w[0], d(2026, 6, 15));
         assert_eq!(w[6], d(2026, 6, 21));
-    }
 
-    #[test]
-    fn days_in_month_handles_february() {
+        // days_in_month handles February.
         assert_eq!(days_in_month(2024, 2), 29);
         assert_eq!(days_in_month(2026, 2), 28);
         assert_eq!(days_in_month(2026, 4), 30);

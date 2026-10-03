@@ -6,7 +6,6 @@ use crate::{
     theme::Theme,
     widget::{TaffyTreeExt, Widget},
 };
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{
@@ -15,15 +14,16 @@ use vello::{
 };
 use winit::event::{MouseScrollDelta, WindowEvent};
 
-pub(super) struct PreviewCanvas {
-    pub(super) preview: Option<Box<dyn HistoryPreview>>,
+pub(crate) struct PreviewCanvas {
+    pub(crate) preview: Option<Box<dyn HistoryPreview>>,
     rect: Rect,
     cursor: Point,
     error: Option<String>,
     pub(super) status: Option<String>,
+    dirty: bool,
 }
 impl PreviewCanvas {
-    pub(super) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
+    pub(crate) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
         self.status = None;
         match result {
             Ok(preview) => {
@@ -35,14 +35,36 @@ impl PreviewCanvas {
                 self.error = Some(error);
             }
         }
+        self.dirty = true;
     }
-    pub(super) fn new() -> Self {
+    pub(crate) fn clear(&mut self) {
+        self.preview = None;
+        self.error = None;
+        self.status = None;
+        self.dirty = true;
+    }
+    pub(crate) fn set_status(&mut self, status: Option<String>) {
+        if self.status != status {
+            self.status = status;
+            self.dirty = true;
+        }
+    }
+    pub(crate) fn navigate(&mut self, command: PreviewNavigation) -> bool {
+        let handled = self
+            .preview
+            .as_mut()
+            .is_some_and(|preview| preview.navigate(command));
+        self.dirty |= handled;
+        handled
+    }
+    pub(crate) fn new() -> Self {
         Self {
             preview: None,
             rect: Rect::ZERO,
             cursor: Point::new(-1.0, -1.0),
             error: None,
             status: None,
+            dirty: true,
         }
     }
 }
@@ -53,7 +75,6 @@ impl Widget for PreviewCanvas {
     fn test_id(&self) -> Option<&str> {
         Some("history-preview")
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -77,13 +98,17 @@ impl Widget for PreviewCanvas {
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = tree.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
+        let rect = Rect::from_origin_size(
             (
                 origin.x + f64::from(layout.location.x),
                 origin.y + f64::from(layout.location.y),
             ),
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
     }
     #[allow(
         clippy::arithmetic_side_effects,
@@ -117,22 +142,11 @@ impl Widget for PreviewCanvas {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale, position.y / scale);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
@@ -142,9 +156,7 @@ impl Widget for PreviewCanvas {
                 MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 32.0, f64::from(*y) * 32.0),
                 MouseScrollDelta::PixelDelta(point) => (point.x, point.y),
             };
-            if let Some(preview) = &mut self.preview {
-                *handled = preview.navigate(PreviewNavigation::Scroll { dx, dy });
-            }
+            *ctx.handled = self.navigate(PreviewNavigation::Scroll { dx, dy });
         }
     }
     fn get_rect(&self) -> Rect {
@@ -158,11 +170,21 @@ impl Widget for PreviewCanvas {
                     .or_else(|| self.status.clone())
                     .unwrap_or_else(|| {
                         self.preview.as_ref().map_or_else(
-                            || "Historical content unavailable".into(),
+                            || {
+                                crate::i18n::I18nManager::lookup_plain(
+                                    "history-mode-content-unavailable",
+                                )
+                            },
                             |preview| preview.accessibility().description,
                         )
                     }),
             ),
         )
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
 }

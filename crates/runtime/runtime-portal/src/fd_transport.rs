@@ -99,9 +99,9 @@ fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd
                 let offset =
                     usize::try_from(libc::CMSG_DATA(header).offset_from(control.as_ptr().cast()))
                         .unwrap_or(usize::MAX);
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 let (control_len, header_len) = (msg.msg_controllen, (*header).cmsg_len);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 let (control_len, header_len) = (
                     usize::try_from(msg.msg_controllen).unwrap_or(0),
                     usize::try_from((*header).cmsg_len).unwrap_or(0),
@@ -151,27 +151,29 @@ mod tests {
     use std::os::unix::net::{UnixDatagram, UnixStream};
 
     #[test]
-    fn a_descriptor_survives_the_socket() {
-        let (a, b) = UnixStream::pair().unwrap();
-        let (mut source, target) = UnixStream::pair().unwrap();
-        send_with_fd(a.as_raw_fd(), b"session", target.as_raw_fd()).unwrap();
-        let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
-        assert_eq!(payload, b"session");
-        let mut received = unsafe { UnixStream::from_raw_fd(fd.unwrap()) };
-        source.write_all(b"hello").unwrap();
-        let mut bytes = [0; 5];
-        received.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"hello");
-    }
-
-    #[test]
-    fn received_descriptor_is_close_on_exec() {
-        let (a, b) = UnixStream::pair().unwrap();
-        send_with_fd(a.as_raw_fd(), b"session", a.as_raw_fd()).unwrap();
-        let (_, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
-        let received = unsafe { UnixStream::from_raw_fd(fd.unwrap()) };
-        let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
-        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    fn a_descriptor_survives_the_socket_and_arrives_close_on_exec() {
+        // The descriptor is live on the far side.
+        {
+            let (a, b) = UnixStream::pair().unwrap();
+            let (mut source, target) = UnixStream::pair().unwrap();
+            send_with_fd(a.as_raw_fd(), b"session", target.as_raw_fd()).unwrap();
+            let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+            assert_eq!(payload, b"session");
+            let mut received = unsafe { UnixStream::from_raw_fd(fd.unwrap()) };
+            source.write_all(b"hello").unwrap();
+            let mut bytes = [0; 5];
+            received.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"hello");
+        }
+        // And it is close-on-exec.
+        {
+            let (a, b) = UnixStream::pair().unwrap();
+            send_with_fd(a.as_raw_fd(), b"session", a.as_raw_fd()).unwrap();
+            let (_, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+            let received = unsafe { UnixStream::from_raw_fd(fd.unwrap()) };
+            let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
+            assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        }
     }
 
     fn send_many(socket: &UnixDatagram, payload: &[u8], fds: &[RawFd]) {
@@ -229,26 +231,22 @@ mod tests {
     }
 
     #[test]
-    fn multiple_descriptors_are_rejected_and_closed() {
-        rejected_message_closes_descriptors(2, 1);
-    }
-
-    #[test]
-    fn excess_descriptors_that_previously_truncated_control_are_closed() {
-        rejected_message_closes_descriptors(32, 1);
-    }
-
-    #[test]
-    fn maximum_rights_message_is_rejected_without_leaking_descriptors() {
+    fn rejected_messages_close_every_delivered_descriptor() {
         #[cfg(target_os = "macos")]
-        let count = 254;
+        let maximum_rights = 254;
         #[cfg(not(target_os = "macos"))]
-        let count = 253;
-        rejected_message_closes_descriptors(count, 1);
-    }
-
-    #[test]
-    fn truncated_payload_closes_delivered_descriptor() {
-        rejected_message_closes_descriptors(1, 1024);
+        let maximum_rights = 253;
+        // (case, descriptor count, payload bytes)
+        let cases = [
+            ("multiple descriptors are rejected and closed", 2, 1),
+            // Excess descriptors previously truncated the control message.
+            ("excess descriptors that truncated control", 32, 1),
+            ("maximum rights message", maximum_rights, 1),
+            ("truncated payload closes the delivered descriptor", 1, 1024),
+        ];
+        for (case, count, bytes) in cases {
+            eprintln!("case: {case}");
+            rejected_message_closes_descriptors(count, bytes);
+        }
     }
 }

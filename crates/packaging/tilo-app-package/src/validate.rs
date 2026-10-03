@@ -5,6 +5,8 @@
 //!
 //! - `package.version` parses as semver.
 //! - `package.runtime` is `<name>/<semver>`, absent for `kind = "runtime"`.
+//! - `package.platform-reason` is present exactly when `package.platforms`
+//!   narrows the default targets; capability names are non-empty and unique.
 //! - `kind = "app"` has `[entrypoint]` with `bin` set.
 //! - `kind = "format-provider"` has non-empty `providers.mime` and
 //!   ships [`FORMAT_PROVIDER_MODULE`] (payload-side counterpart in
@@ -15,7 +17,7 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::{ContinuityFacet, EntrypointType, Manifest};
+use crate::manifest::{ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manifest};
 
 /// File a `kind = "format-provider"` payload must ship: the provider's core
 /// WebAssembly module, which the format host checks against its provider ABI
@@ -31,6 +33,26 @@ pub enum ManifestError {
     BadRuntimeForm(String),
     #[error("package.runtime version {0:?} is not valid semver: {1}")]
     BadRuntimeVersion(String, String),
+    #[error("package.platforms must name at least one platform")]
+    EmptyPlatforms,
+    #[error("package.platforms repeats {0:?}")]
+    DuplicatePlatform(String),
+    #[error(
+        "package.platforms leaves out {missing} and needs a one-line package.platform-reason, \
+         for example \"Writes OS images to block devices.\""
+    )]
+    MissingPlatformReason { missing: String },
+    #[error(
+        "package.platform-reason is only for an app that narrows package.platforms; \
+         remove it, the app runs on linux, macos and web"
+    )]
+    UnneededPlatformReason,
+    #[error("package.platform-reason must be one non-empty line")]
+    BadPlatformReason,
+    #[error("capabilities.{list} has an empty or padded capability name {name:?}")]
+    BadCapabilityName { list: &'static str, name: String },
+    #[error("capabilities lists {0:?} more than once")]
+    DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
     #[error("kind=app requires `[entrypoint]` with `bin` set")]
@@ -45,6 +67,8 @@ pub enum ManifestError {
     BadProviderMime(String),
     #[error("invalid or reserved provider URI scheme {0:?}")]
     BadProviderScheme(String),
+    #[error("invalid resource kind {0:?}")]
+    BadResourceKind(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -59,6 +83,20 @@ pub enum ManifestError {
     AppContinuityMissingPresentation,
     #[error("accessibility.atspi_acceptance.{field} must not be empty")]
     EmptyAtspiAcceptanceField { field: &'static str },
+    #[error("target: {0}")]
+    BadTarget(String),
+    #[error("target.module {0:?} must be a safe payload path ending in `.wasm`")]
+    BadTargetModule(String),
+    #[error("a web build declares no native `[package.isa]`")]
+    TargetWithNativeIsa,
+    #[error("only kind=app and kind=runtime packages have a web build")]
+    TargetKindUnsupported,
+    #[error("target.runtime {target:?} is not a build of package.runtime {declared:?}")]
+    TargetRuntimeMismatch { declared: String, target: String },
+    #[error("a web app's entrypoint must be its target.module {0:?}")]
+    TargetEntrypointMismatch(String),
+    #[error("target.module {0:?} is not in the payload")]
+    TargetModuleMissing(String),
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -115,6 +153,8 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             entry: entry.clone(),
         });
     }
+
+    validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
     let mut facets = std::collections::BTreeSet::new();
     for facet in &m.continuity.required {
@@ -190,7 +230,19 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         }
         Kind::Service | Kind::Plugin | Kind::Runtime => {}
     }
+    validate_declarations(m)?;
 
+    m.publisher
+        .identity_bytes()
+        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
+    m.publisher
+        .signature_bytes()
+        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+    validate_target(m)
+}
+
+/// What the app claims to open and the resource kinds its records hold.
+fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
     for ext in &m.providers.ext {
         if ext.is_empty()
             || ext.len() > 64
@@ -211,14 +263,168 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadProviderScheme(scheme.clone()));
         }
     }
+    for kind in &m.resources.kinds {
+        if !valid_resource_kind(kind) {
+            return Err(ManifestError::BadResourceKind(kind.clone()));
+        }
+    }
+    Ok(())
+}
 
-    m.publisher
-        .identity_bytes()
-        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
-    m.publisher
-        .signature_bytes()
-        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(target) = &m.target else {
+        return Ok(());
+    };
+    let registry_target = registry_types::RegistryTarget {
+        platform: target.platform.clone(),
+        architecture: target.architecture.clone(),
+        isa: target.isa.clone(),
+        runtime: Some(target.runtime.clone()),
+    };
+    registry_target
+        .validate()
+        .map_err(|error| ManifestError::BadTarget(error.to_string()))?;
+    if registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()) {
+        return validate_desktop_target(m, target);
+    }
+    let runtime = registry_target.web_runtime().ok_or_else(|| {
+        ManifestError::BadTarget(format!(
+            "platform {:?} is native; native builds declare `[package.isa]` instead",
+            target.platform
+        ))
+    })?;
+    if !crate::package::is_safe_path(&target.module)
+        || std::path::Path::new(&target.module)
+            .extension()
+            .is_none_or(|extension| extension != "wasm")
+        || target.module.len() > 255
+    {
+        return Err(ManifestError::BadTargetModule(target.module.clone()));
+    }
+    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
+        return Err(ManifestError::TargetWithNativeIsa);
+    }
+    match m.package.kind {
+        Kind::App => {
+            let declared = m.package.runtime.clone().unwrap_or_default();
+            if declared != runtime.release() {
+                return Err(ManifestError::TargetRuntimeMismatch {
+                    declared,
+                    target: target.runtime.clone(),
+                });
+            }
+            let entry = m
+                .entrypoint
+                .as_ref()
+                .and_then(|entry| entry.gui_bin_path())
+                .and_then(|path| path.to_str());
+            if entry != Some(target.module.as_str()) {
+                return Err(ManifestError::TargetEntrypointMismatch(
+                    target.module.clone(),
+                ));
+            }
+        }
+        Kind::Runtime => {}
+        Kind::Service | Kind::FormatProvider | Kind::Plugin => {
+            return Err(ManifestError::TargetKindUnsupported);
+        }
+    }
+    Ok(())
+}
 
+/// A Linux, Windows, macOS or Android app: `module` is the executable (for
+/// Android, the `.apk` or `.aab`) the entrypoint names, and `runtime` is the
+/// toolkit release linked into it, as declared.
+fn validate_desktop_target(
+    m: &Manifest,
+    target: &crate::manifest::Target,
+) -> Result<(), ManifestError> {
+    let android_package = || {
+        std::path::Path::new(&target.module)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                registry_types::ANDROID_PACKAGE_EXTENSIONS.contains(&extension)
+            })
+    };
+    if !crate::package::is_safe_path(&target.module)
+        || target.module.len() > 255
+        || (target.platform == registry_types::ANDROID_PLATFORM && !android_package())
+    {
+        return Err(ManifestError::BadTargetModule(target.module.clone()));
+    }
+    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
+        return Err(ManifestError::TargetWithNativeIsa);
+    }
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::TargetKindUnsupported);
+    }
+    let declared = m.package.runtime.clone().unwrap_or_default();
+    if declared.is_empty() || declared != target.runtime {
+        return Err(ManifestError::TargetRuntimeMismatch {
+            declared,
+            target: target.runtime.clone(),
+        });
+    }
+    let entry = m
+        .entrypoint
+        .as_ref()
+        .and_then(|entry| entry.gui_bin_path())
+        .and_then(|path| path.to_str());
+    if entry != Some(target.module.as_str()) {
+        return Err(ManifestError::TargetEntrypointMismatch(
+            target.module.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
+    let platforms = m.package.platforms();
+    if platforms.is_empty() {
+        return Err(ManifestError::EmptyPlatforms);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(repeated) = platforms.iter().find(|platform| !seen.insert(**platform)) {
+        return Err(ManifestError::DuplicatePlatform(
+            repeated.as_str().to_owned(),
+        ));
+    }
+    match (&m.package.platform_reason, m.package.is_platform_narrowed()) {
+        (Some(reason), true) if reason.trim().is_empty() || reason.contains('\n') => {
+            Err(ManifestError::BadPlatformReason)
+        }
+        (Some(_), false) => Err(ManifestError::UnneededPlatformReason),
+        (None, true) => Err(ManifestError::MissingPlatformReason {
+            missing: DEFAULT_PLATFORMS
+                .iter()
+                .filter(|platform| !platforms.contains(platform))
+                .map(|platform| platform.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn validate_capabilities(m: &Manifest) -> Result<(), ManifestError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (list, names) in [
+        ("required", &m.capabilities.required),
+        ("optional", &m.capabilities.optional),
+    ] {
+        for name in names {
+            if name.trim().is_empty() || name.trim() != name {
+                return Err(ManifestError::BadCapabilityName {
+                    list,
+                    name: name.clone(),
+                });
+            }
+            if !seen.insert(name.as_str()) {
+                return Err(ManifestError::DuplicateCapability(name.clone()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -275,6 +481,17 @@ fn valid_scheme(scheme: &str) -> bool {
         && !matches!(scheme, "file" | "data" | "javascript")
 }
 
+/// The shape the toolkit's `RecordKind` accepts, so every declared kind can
+/// name a record.
+fn valid_resource_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= 64
+        && kind.bytes().enumerate().all(|(i, byte)| {
+            (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                && (i != 0 || byte.is_ascii_alphabetic())
+        })
+}
+
 fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
     let (name, ver) = raw
         .split_once('/')
@@ -326,6 +543,14 @@ pub fn validate_manifest_with_payload(
     {
         return Err(ManifestError::FormatProviderMissingModule);
     }
+    if let Some(target) = &m.target
+        && !payload_files.iter().any(|path| {
+            path.to_str()
+                .is_some_and(|path| path.replace('\\', "/") == target.module)
+        })
+    {
+        return Err(ManifestError::TargetModuleMissing(target.module.clone()));
+    }
     Ok(())
 }
 
@@ -367,111 +592,126 @@ mode = "off"
     }
 
     #[test]
-    fn format_provider_payload_needs_provider_module() {
-        let m = minimal_format_provider_manifest();
-        assert_eq!(
-            validate_manifest_with_payload(&m, &["provider.wasm".into()]),
-            Ok(())
-        );
-        assert_eq!(
-            validate_manifest_with_payload(&m, &["component.wasm".into()]),
-            Err(ManifestError::FormatProviderMissingModule)
-        );
-        assert_eq!(
-            validate_manifest_with_payload(&m, &[]),
-            Err(ManifestError::FormatProviderMissingModule)
-        );
+    fn runtime_and_provider_manifests_validate_their_kind() {
+        // phase: format_provider_payload_needs_provider_module
+        {
+            let m = minimal_format_provider_manifest();
+            assert_eq!(
+                validate_manifest_with_payload(&m, &["provider.wasm".into()]),
+                Ok(())
+            );
+            assert_eq!(
+                validate_manifest_with_payload(&m, &["component.wasm".into()]),
+                Err(ManifestError::FormatProviderMissingModule)
+            );
+            assert_eq!(
+                validate_manifest_with_payload(&m, &[]),
+                Err(ManifestError::FormatProviderMissingModule)
+            );
+        }
+        // phase: runtime_kind_with_runtime_field_rejected
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.runtime = Some("tilo-runtime/2025.06".into());
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::RuntimeKindHasRuntime)
+            );
+        }
+        // phase: calendar_runtime_version_accepted
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.kind = Kind::App;
+            m.package.runtime = Some("tilo-runtime/2025.06".into());
+            // Will still fail because no entrypoint is set, but the
+            // runtime-version parse should pass before that — make sure the
+            // error is App-specific, not runtime-version.
+            let e = validate_manifest(&m).unwrap_err();
+            assert!(
+                matches!(e, ManifestError::AppMissingEntrypoint),
+                "expected app-entrypoint error, got {e:?}"
+            );
+        }
+        // phase: stamped_browser_runtime_manifest_accepted
+        {
+            let source = include_str!("../../../../apps/browser/tilo-app.toml");
+            let stamped = source.replace(
+                "runtime  = \"tilo-runtime/2026.07\"",
+                "runtime  = \"tilo-runtime/2026.7.0-browser\"",
+            );
+            assert_ne!(stamped, source, "browser runtime stamp did not match");
+            let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
+            assert_eq!(
+                manifest.package.runtime.as_deref(),
+                Some("tilo-runtime/2026.7.0-browser")
+            );
+            assert_eq!(validate_manifest(&manifest), Ok(()));
+        }
     }
 
     #[test]
-    fn runtime_kind_with_runtime_field_rejected() {
+    fn declared_resource_kinds_must_be_record_kinds() {
         let mut m = minimal_runtime_manifest();
-        m.package.runtime = Some("tilo-runtime/2025.06".into());
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::RuntimeKindHasRuntime)
-        );
+        m.resources.kinds = vec!["example.note".into(), "notes.note-book_2".into()];
+        assert_eq!(validate_manifest(&m), Ok(()));
+        for bad in ["", "1note", "note book", "note/page", &"k".repeat(65)] {
+            m.resources.kinds = vec![bad.to_owned()];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::BadResourceKind(bad.to_owned()))
+            );
+        }
     }
 
     #[test]
-    fn calendar_runtime_version_accepted() {
-        let mut m = minimal_runtime_manifest();
-        m.package.kind = Kind::App;
-        m.package.runtime = Some("tilo-runtime/2025.06".into());
-        // Will still fail because no entrypoint is set, but the
-        // runtime-version parse should pass before that — make sure the
-        // error is App-specific, not runtime-version.
-        let e = validate_manifest(&m).unwrap_err();
-        assert!(
-            matches!(e, ManifestError::AppMissingEntrypoint),
-            "expected app-entrypoint error, got {e:?}"
-        );
-    }
-
-    #[test]
-    fn stamped_browser_runtime_manifest_accepted() {
-        let source = include_str!("../../../../apps/browser/tilo-app.toml");
-        let stamped = source.replace(
-            "runtime  = \"tilo-runtime/2026.07\"",
-            "runtime  = \"tilo-runtime/2026.7.0-browser\"",
-        );
-        assert_ne!(stamped, source, "browser runtime stamp did not match");
-        let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
-        assert_eq!(
-            manifest.package.runtime.as_deref(),
-            Some("tilo-runtime/2026.7.0-browser")
-        );
-        assert_eq!(validate_manifest(&manifest), Ok(()));
-    }
-
-    #[test]
-    fn semantic_continuity_requires_presentation() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Semantic];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::SemanticContinuityWithoutPresentation)
-        );
-    }
-
-    #[test]
-    fn semantic_continuity_requires_a_signed_portable_schema() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::SemanticContinuityWithoutSchema)
-        );
-    }
-
-    #[test]
-    fn continuity_facets_cannot_be_repeated() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::DuplicateContinuityFacet(
-                ContinuityFacet::Presentation
-            ))
-        );
-    }
-
-    #[test]
-    fn apps_cannot_opt_out_of_structural_presentation() {
-        let mut m = minimal_runtime_manifest();
-        m.package.kind = Kind::App;
-        m.entrypoint = Some(crate::manifest::Entrypoint {
-            bin: "bin/app".into(),
-            r#type: EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            splash_segments: Vec::new(),
-            splash_budget_ms: 400,
-        });
-        m.continuity.required.clear();
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::AppContinuityMissingPresentation)
-        );
+    fn continuity_declarations_are_validated() {
+        // phase: semantic_continuity_requires_presentation
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required = vec![ContinuityFacet::Semantic];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::SemanticContinuityWithoutPresentation)
+            );
+        }
+        // phase: semantic_continuity_requires_a_signed_portable_schema
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::SemanticContinuityWithoutSchema)
+            );
+        }
+        // phase: continuity_facets_cannot_be_repeated
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required =
+                vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::DuplicateContinuityFacet(
+                    ContinuityFacet::Presentation
+                ))
+            );
+        }
+        // phase: apps_cannot_opt_out_of_structural_presentation
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.kind = Kind::App;
+            m.entrypoint = Some(crate::manifest::Entrypoint {
+                bin: "bin/app".into(),
+                r#type: EntrypointType::Gui,
+                gui_bin: None,
+                cli_bin: None,
+                splash_segments: Vec::new(),
+                splash_budget_ms: 400,
+            });
+            m.continuity.required.clear();
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::AppContinuityMissingPresentation)
+            );
+        }
     }
 }

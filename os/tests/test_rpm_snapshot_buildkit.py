@@ -1,9 +1,13 @@
-"""Exercise metadata and manifest rejection without pulling a multi-GB snapshot."""
+"""Exercise snapshot manifest verification without pulling a multi-GB snapshot."""
 
+import gzip
+import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -12,115 +16,124 @@ SCRIPT = Path(__file__).resolve().parents[1] / "dev/verify-rpm-snapshot-buildkit
 SPEC = importlib.util.spec_from_file_location("snapshot_buildkit", SCRIPT)
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
-REF = "code.example/tilo/rpms@sha256:" + "a" * 64
+OCI_INDEX = "application/vnd.oci.image.index.v1+json"
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+GZIP_LAYER = "application/vnd.oci.image.layer.v1.tar+gzip"
 
 
-class BuildkitSnapshotTests(unittest.TestCase):
-    def check(self, metadata, manifest="example-package\n", host="x86_64", ref=REF,
-              inspect_error=False, build_error=False, raw_metadata=None, manifest_kind="file"):
-        commands = []
+def digest(data):
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def layer(files):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name)
+            if content is None:
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            elif isinstance(content, tuple):
+                info.type = tarfile.SYMTYPE
+                info.linkname = content[0]
+                archive.addfile(info)
+            else:
+                data = content.encode()
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+    return gzip.compress(buffer.getvalue())
+
+
+class SnapshotManifestTests(unittest.TestCase):
+    def check(self, files=None, host="x86_64", arch=None, ref=None, blob=None, layer_type=GZIP_LAYER,
+              manifest_bytes=None):
+        files = {"repo/tilo-direct-package-specs.txt": "example-package\n"} if files is None else files
+        data = layer(files)
+        manifest = json.dumps({"mediaType": OCI_MANIFEST, "layers": [
+            {"mediaType": GZIP_LAYER, "digest": digest(b"packages"), "size": 8},
+            {"mediaType": layer_type, "digest": digest(data), "size": len(data)},
+        ]}).encode()
+        platform_arch = arch or {"x86_64": "amd64", "aarch64": "arm64"}.get(host, "amd64")
+        index = json.dumps({"mediaType": OCI_INDEX, "manifests": [
+            {"mediaType": OCI_MANIFEST, "digest": digest(manifest),
+             "platform": {"os": "linux", "architecture": platform_arch}},
+        ]}).encode()
+        ref = ref or "code.example/tilo/rpms@" + digest(index)
+        served = {digest(index): index, digest(manifest): manifest_bytes or manifest}
+        self.commands = []
+        self.fetched = []
 
         def read(command, **kwargs):
-            commands.append(command)
+            self.commands.append(command)
             if command[:3] == ["docker", "buildx", "imagetools"]:
-                self.assertEqual(command[4], ref)
-                if inspect_error:
-                    raise subprocess.CalledProcessError(1, command)
-                return json.dumps(metadata) if raw_metadata is None else raw_metadata
+                return served[command[-1].rsplit("@", 1)[1]]
             self.assertTrue(command[1].endswith("derive-rpm-package-set.py"))
             return "example-package\n"
 
-        def build(command, **kwargs):
-            commands.append(command)
-            self.assertEqual(command[:3], ["docker", "buildx", "build"])
-            self.assertEqual(command[command.index("--builder") + 1], "relay-builder")
-            self.assertIn("RPMS_REF=" + ref, command)
-            dockerfile = (Path(command[-1]) / "Dockerfile").read_text()
-            self.assertIn("FROM ${RPMS_REF} AS rpms", dockerfile)
-            self.assertIn("COPY --from=rpms /repo/tilo-direct-package-specs.txt /actual", dockerfile)
-            self.assertNotIn("RUN ", dockerfile)
-            if build_error:
-                raise subprocess.CalledProcessError(1, command)
-            output = Path(command[command.index("--output") + 1].split("dest=", 1)[1])
-            output.mkdir()
-            if manifest_kind == "directory":
-                (output / "actual").mkdir()
-            elif manifest_kind == "symlink":
-                target = output / "elsewhere"
-                target.write_text("example-package\n")
-                (output / "actual").symlink_to(target)
-            elif manifest is not None:
-                (output / "actual").write_text(manifest)
+        def fetch(registry, repository, blob_digest, size):
+            self.fetched.append((registry, repository, blob_digest, size))
+            self.assertEqual((registry, repository), ("code.example", "tilo/rpms"))
+            payload = data if blob is None else blob
+            if len(payload) != size or digest(payload) != blob_digest:
+                raise ValueError("metadata layer does not match its manifest entry")
+            return payload
 
-        self.commands = commands
         with patch.object(VERIFY.platform, "machine", return_value=host), \
              patch.object(VERIFY.subprocess, "check_output", side_effect=read), \
-             patch.object(VERIFY.subprocess, "run", side_effect=build):
-            VERIFY.verify(ref, "relay-builder")
+             patch.object(VERIFY, "fetch_blob", side_effect=fetch):
+            VERIFY.verify(ref)
 
-    def test_native_single_and_multiarch_configs(self):
-        for host, arch in (("x86_64", "amd64"), ("aarch64", "arm64")):
-            image = {"architecture": arch, "os": "linux"}
-            for metadata in (image, {f"linux/{arch}": image, "unknown/unknown": {}}):
-                with self.subTest(host=host, metadata=metadata):
-                    self.check(metadata, host=host)
-                    self.assertIn(f"linux/{arch}", self.commands[-1])
+    def test_reads_only_the_metadata_layer(self):
+        for host in ("x86_64", "aarch64"):
+            with self.subTest(host=host):
+                self.check(host=host)
+                self.assertEqual(len(self.fetched), 1)
+                self.assertNotEqual(self.fetched[0][2], digest(b"packages"))
 
-    def test_missing_or_wrong_metadata_never_downloads_layers(self):
-        invalid = [None, {}, "", {"architecture": "arm64", "os": "linux"},
-                   {"architecture": "amd64"}, {"architecture": "amd64", "os": "windows"},
-                   {"linux/amd64": {"architecture": "arm64", "os": "linux"}}]
-        for metadata in invalid:
-            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
-                self.check(metadata)
-            self.assertEqual(len(self.commands), 1)
+    def test_rejections(self):
+        with self.subTest(phase="unpinned_snapshot_is_rejected_before_registry_access"):
+            with self.assertRaises(ValueError):
+                self.check(ref="code.example/tilo/rpms:latest")
+            self.assertEqual(self.commands, [])
+        with self.subTest(phase="unknown_host_is_rejected"):
+            with self.assertRaises(ValueError):
+                self.check(host="riscv64")
+            self.assertEqual(self.commands, [])
+        with self.subTest(phase="foreign_architecture_is_rejected_before_layers"):
+            with self.assertRaisesRegex(ValueError, "no single linux/amd64"):
+                self.check(arch="arm64")
+            self.assertEqual(self.fetched, [])
+        with self.subTest(phase="manifest_digest_is_checked"):
+            with self.assertRaisesRegex(ValueError, "not sha256:"):
+                self.check(manifest_bytes=b'{"mediaType": "' + OCI_MANIFEST.encode() + b'", "layers": []}')
+        with self.subTest(phase="unexpected_layer_type"):
+            with self.assertRaisesRegex(ValueError, "metadata layer last"):
+                self.check(layer_type="application/vnd.oci.image.layer.v1.tar+zstd")
+        with self.subTest(phase="blob_digest_is_checked"):
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                self.check(blob=b"tampered")
+        with self.subTest(phase="manifest_must_be_a_regular_file"):
+            for files in ({"repo/tilo-direct-package-specs.txt": None},
+                          {"repo/tilo-direct-package-specs.txt": ("elsewhere",)},
+                          {"repo/other.txt": "x\n"}):
+                with self.subTest(files=files), self.assertRaisesRegex(ValueError, "no regular package manifest"):
+                    self.check(files=files)
+        with self.subTest(phase="stale_package_manifest_is_fatal"):
+            with self.assertRaisesRegex(ValueError, "does not match the current Containerfiles"):
+                self.check(files={"repo/tilo-direct-package-specs.txt": "old-package\n"})
+        with self.subTest(phase="registry_failure_is_fatal"):
+            with patch.object(VERIFY.subprocess, "check_output",
+                              side_effect=subprocess.CalledProcessError(1, ["docker"])), \
+                 patch.object(VERIFY.platform, "machine", return_value="x86_64"), \
+                 self.assertRaises(subprocess.CalledProcessError):
+                VERIFY.verify("code.example/tilo/rpms@sha256:" + "a" * 64)
 
-    def test_registry_metadata_failure_is_fatal(self):
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.check({}, inspect_error=True)
-        self.assertEqual(len(self.commands), 1)
-
-    def test_invalid_registry_json_is_fatal_before_layer_download(self):
-        with self.assertRaises(ValueError):
-            self.check({}, raw_metadata="not json")
-        self.assertEqual(len(self.commands), 1)
-
-    def test_ambiguous_arm_variant_is_rejected_before_layer_download(self):
-        image = {"architecture": "arm64", "os": "linux", "variant": "v8"}
-        with self.assertRaises(ValueError):
-            self.check({"linux/arm64": image, "linux/arm64/v8": image}, host="aarch64")
-        self.assertEqual(len(self.commands), 1)
-
-    def test_manifest_must_be_a_regular_file(self):
-        for kind in ("directory", "symlink"):
-            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "no regular package manifest"):
-                self.check({"architecture": "amd64", "os": "linux"}, manifest_kind=kind)
-
-    def test_unpinned_snapshot_is_rejected_before_registry_access(self):
-        with self.assertRaises(ValueError):
-            self.check({}, ref="code.example/tilo/rpms:latest")
-        self.assertEqual(self.commands, [])
-
-    def test_unknown_host_is_rejected(self):
-        with self.assertRaises(ValueError):
-            self.check({}, host="riscv64")
-        self.assertEqual(self.commands, [])
-
-    def test_missing_and_stale_package_manifest_are_fatal(self):
-        for manifest in (None, "old-package\n"):
-            with self.subTest(manifest=manifest), self.assertRaises(ValueError):
-                self.check({"architecture": "amd64", "os": "linux"}, manifest=manifest)
-
-    def test_buildkit_export_failure_is_fatal(self):
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.check({"architecture": "amd64", "os": "linux"}, build_error=True)
-
-    def test_workflow_uses_same_builder_for_verification_and_relay(self):
-        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/tilo-relay.yaml").read_text()
-        self.assertLess(workflow.index("id: buildx"), workflow.index("run: python3 os/dev/verify-rpm-snapshot-buildkit.py"))
-        self.assertIn("SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}", workflow)
-        self.assertIn("builder: ${{ steps.buildx.outputs.name }}", workflow)
-        self.assertNotIn('verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"', workflow)
+    def test_workflows_verify_before_building(self):
+        for name in ("build-image.yml", "release-relay.yml"):
+            workflow = (SCRIPT.parents[2] / ".forgejo/workflows" / name).read_text()
+            with self.subTest(workflow=name):
+                self.assertIn('run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"\n', workflow)
+                self.assertNotIn('verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"', workflow)
 
 
 if __name__ == "__main__":

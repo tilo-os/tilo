@@ -10,7 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -231,13 +231,13 @@ impl PermissionPrompt {
     }
 }
 
-fn button_label(choice: PromptChoice) -> &'static str {
-    match choice {
-        PromptChoice::Allow => "Allow",
-        PromptChoice::Session => "This session",
-        PromptChoice::Always => "Always allow",
-        PromptChoice::Deny => "Deny",
-    }
+fn button_label(choice: PromptChoice) -> String {
+    crate::i18n!(match choice {
+        PromptChoice::Allow => "permission-prompt-allow",
+        PromptChoice::Session => "permission-prompt-session",
+        PromptChoice::Always => "permission-prompt-always",
+        PromptChoice::Deny => "permission-prompt-deny",
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -255,10 +255,6 @@ struct ButtonVisualState {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "permission buttons combine scene resources and theme with bounds, label and hover/disabled/primary/focus state"
-)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
@@ -340,10 +336,6 @@ fn draw_button(
 }
 
 impl Widget for PermissionPrompt {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Content is pushed by the host's portal request flow, not pulled from the doc.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -481,7 +473,7 @@ impl Widget for PermissionPrompt {
                 text_renderer,
                 theme,
                 *rect,
-                button_label(*choice),
+                &button_label(*choice),
                 ButtonVisualState {
                     hover: is_hover,
                     disabled: is_disabled,
@@ -492,21 +484,10 @@ impl Widget for PermissionPrompt {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let new_idx = if self.allow_rect.contains(p) {
                     Some(0)
@@ -522,7 +503,7 @@ impl Widget for PermissionPrompt {
                 };
                 if new_idx != self.hover_idx {
                     self.hover_idx = new_idx;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -534,26 +515,26 @@ impl Widget for PermissionPrompt {
                 if self.allow_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Allow);
                     self.choose(PromptChoice::Allow);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.session_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Session);
                     self.choose(PromptChoice::Session);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.always_rect.contains(p) {
                     if self.is_owner {
                         self.focused_choice = Some(PromptChoice::Always);
                         self.choose(PromptChoice::Always);
-                        *focus_target = Some(node_id);
-                        *handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
                     }
                     // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Deny);
                     self.choose(PromptChoice::Deny);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -567,20 +548,20 @@ impl Widget for PermissionPrompt {
             } if self.has_keyboard_focus => match logical_key {
                 Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
                     self.move_focus(false);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
                     self.move_focus(true);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(choice) = self.focused_choice {
-                        *handled = self.choose(choice);
+                        *ctx.handled = self.choose(choice);
                     }
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.focused_choice = Some(PromptChoice::Deny);
-                    *handled = self.choose(PromptChoice::Deny);
+                    *ctx.handled = self.choose(PromptChoice::Deny);
                 }
                 _ => {}
             },
@@ -610,9 +591,10 @@ impl Widget for PermissionPrompt {
             .collect();
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(format!(
-                    "{} requested by {}",
-                    self.capability_label, self.app_id
+                .with_name(crate::i18n!(
+                    "permission-prompt-requested",
+                    "capability" => self.capability_label.as_str(),
+                    "app" => self.app_id.as_str()
                 ))
                 .with_state(AccessState {
                     modal: true,
@@ -650,8 +632,8 @@ impl Widget for PermissionPrompt {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate)
             && let Some(choice) = self.focused_choice
@@ -695,8 +677,8 @@ impl Widget for PermissionPrompt {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let [key] = key_path else {
             return false;
@@ -724,6 +706,7 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     fn synth_device() -> DeviceId {
@@ -734,73 +717,96 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_modal_dialog_with_request_name() {
-        use crate::a11y::Role;
-        let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
-        let node = Widget::accessibility(&p).expect("prompt is not presentational");
-        assert_eq!(node.role, Role::Dialog);
-        assert!(node.state.modal, "a permission prompt traps focus");
-        assert!(node.state.focusable);
-        assert_eq!(
-            node.name.as_deref(),
-            Some("Camera access requested by org.gnome.gedit")
-        );
-        assert_eq!(node.children.len(), 4, "every decision is exposed");
-        assert_eq!(node.children[0].role, Role::Button);
-        assert_eq!(node.children[0].name.as_deref(), Some("Allow"));
-        assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
-    }
+    fn permission_dialog_semantics_focus_and_owner_only_always() {
+        // Case `accessibility_reports_modal_dialog_with_request_name`.
+        {
+            use crate::a11y::Role;
+            let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
+            let node = Widget::accessibility(&p).expect("prompt is not presentational");
+            assert_eq!(node.role, Role::Dialog);
+            assert!(node.state.modal, "a permission prompt traps focus");
+            assert!(node.state.focusable);
+            assert_eq!(
+                node.name.as_deref(),
+                Some("Camera access requested by org.gnome.gedit")
+            );
+            assert_eq!(node.children.len(), 4, "every decision is exposed");
+            assert_eq!(node.children[0].role, Role::Button);
+            assert_eq!(node.children[0].name.as_deref(), Some("Allow"));
+            assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
+        }
 
-    #[test]
-    fn non_owner_prompt_exposes_always_as_disabled_and_traps_focus() {
-        let p = prompt_at(false);
-        let node = Widget::accessibility(&p).expect("prompt is semantic");
-        assert!(Widget::traps_focus(&p));
-        assert!(node.children[2].state.disabled);
-        assert!(!node.children[2].state.focusable);
-        assert_eq!(p.synthetic_accessibility_rect(&[0]), Some(p.allow_rect()));
-        assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
-    }
+        // Case `non_owner_prompt_exposes_always_as_disabled_and_traps_focus`.
+        {
+            let p = prompt_at(false);
+            let node = Widget::accessibility(&p).expect("prompt is semantic");
+            assert!(Widget::traps_focus(&p));
+            assert!(node.children[2].state.disabled);
+            assert!(!node.children[2].state.focusable);
+            assert_eq!(p.synthetic_accessibility_rect(&[0]), Some(p.allow_rect()));
+            assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
+        }
 
-    #[test]
-    fn keyboard_focus_defaults_to_deny_and_at_can_activate_an_exact_choice() {
-        let mut p = prompt_at(false);
-        Widget::set_focus(&mut p, true);
-        let node = Widget::accessibility(&p).expect("prompt is semantic");
-        assert!(node.state.focused);
-        assert!(node.children[3].state.focused, "Deny is the safe default");
+        // Case `keyboard_focus_defaults_to_deny_and_at_can_activate_an_exact_choice`.
+        {
+            let mut p = prompt_at(false);
+            Widget::set_focus(&mut p, true);
+            let node = Widget::accessibility(&p).expect("prompt is semantic");
+            assert!(node.state.focused);
+            assert!(node.children[3].state.focused, "Deny is the safe default");
 
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut p,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
-
-        p.pending_choice = None;
-        assert!(Widget::perform_action_at(
-            &mut p,
-            &crate::a11y::Action::Activate,
-            &[SESSION_KEY],
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.pending_choice, Some(PromptChoice::Session));
-
-        p.pending_choice = None;
-        assert!(
-            !Widget::perform_action_at(
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
-                &[ALWAYS_KEY],
                 &mut doc,
                 &automerge::ROOT,
-            ),
-            "a disabled persistent grant cannot be activated through AT"
-        );
-        assert_eq!(p.pending_choice, None);
+            ));
+            assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+
+            p.pending_choice = None;
+            assert!(Widget::perform_action_at(
+                &mut p,
+                &crate::a11y::Action::Activate,
+                &[SESSION_KEY],
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+
+            p.pending_choice = None;
+            assert!(
+                !Widget::perform_action_at(
+                    &mut p,
+                    &crate::a11y::Action::Activate,
+                    &[ALWAYS_KEY],
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "a disabled persistent grant cannot be activated through AT"
+            );
+            assert_eq!(p.pending_choice, None);
+        }
+
+        // Case `build_layout_emits_fixed_height_node`.
+        {
+            // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
+            // the strip's content shifts down by the right amount.
+            let mut p = prompt_at(false);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let theme = Theme::dark();
+            let node = p.build_layout(&mut taffy, &theme, &mut node_map);
+            let style = taffy.style(node).unwrap();
+            // `Dimension` is opaque, so this compares against the canonical
+            // constructor rather than pattern-matching a private representation.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
+            )]
+            let expected = Dimension::length(PROMPT_HEIGHT as f32);
+            assert_eq!(style.size.height, expected);
+        }
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
@@ -827,14 +833,16 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -849,77 +857,60 @@ mod tests {
     }
 
     #[test]
-    fn click_allow_sets_pending_choice_to_allow() {
-        let mut p = prompt_at(false);
-        let center = p.allow_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
-    }
+    fn permission_buttons_set_exactly_their_pending_choice() {
+        // Case `click_allow_sets_pending_choice_to_allow`.
+        {
+            let mut p = prompt_at(false);
+            let center = p.allow_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
+        }
 
-    #[test]
-    fn click_session_sets_pending_choice_to_session() {
-        let mut p = prompt_at(false);
-        let center = p.session_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, Some(PromptChoice::Session));
-    }
+        // Case `click_session_sets_pending_choice_to_session`.
+        {
+            let mut p = prompt_at(false);
+            let center = p.session_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+        }
 
-    #[test]
-    fn always_button_disabled_for_non_owner_drops_clicks() {
-        let mut p = prompt_at(false);
-        let center = p.always_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, None);
-    }
+        // Case `always_button_disabled_for_non_owner_drops_clicks`.
+        {
+            let mut p = prompt_at(false);
+            let center = p.always_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, None);
+        }
 
-    #[test]
-    fn always_button_active_for_owner_sets_choice_to_always() {
-        let mut p = prompt_at(true);
-        let center = p.always_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, Some(PromptChoice::Always));
-    }
+        // Case `always_button_active_for_owner_sets_choice_to_always`.
+        {
+            let mut p = prompt_at(true);
+            let center = p.always_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, Some(PromptChoice::Always));
+        }
 
-    #[test]
-    fn deny_click_sets_pending_choice_to_deny() {
-        let mut p = prompt_at(false);
-        let center = p.deny_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
-    }
+        // Case `deny_click_sets_pending_choice_to_deny`.
+        {
+            let mut p = prompt_at(false);
+            let center = p.deny_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+        }
 
-    #[test]
-    fn click_outside_button_rects_does_not_set_choice() {
-        // Click on the icon (left edge of the bar), far from any
-        // button rect.
-        let mut p = prompt_at(true);
-        dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.pending_choice, None);
-    }
-
-    #[test]
-    fn build_layout_emits_fixed_height_node() {
-        // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
-        // the strip's content shifts down by the right amount.
-        let mut p = prompt_at(false);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark();
-        let node = p.build_layout(&mut taffy, &theme, &mut node_map);
-        let style = taffy.style(node).unwrap();
-        // `Dimension` is opaque, so this compares against the canonical
-        // constructor rather than pattern-matching a private representation.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
-        )]
-        let expected = Dimension::length(PROMPT_HEIGHT as f32);
-        assert_eq!(style.size.height, expected);
+        // Case `click_outside_button_rects_does_not_set_choice`.
+        {
+            // Click on the icon (left edge of the bar), far from any
+            // button rect.
+            let mut p = prompt_at(true);
+            dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.pending_choice, None);
+        }
     }
 }

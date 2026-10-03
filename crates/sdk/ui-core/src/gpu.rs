@@ -35,7 +35,7 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
@@ -54,7 +54,7 @@ impl DeviceLossMonitor {
 }
 
 impl DeviceHandle {
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     pub(crate) fn finish_shader_cache(&self) {
         crate::dx12_shader_cache::report(&self.device);
         if let Some(cache) = &self.shader_cache {
@@ -72,13 +72,58 @@ impl DeviceHandle {
     pub fn adapter(&self) -> &Adapter {
         &self.adapter
     }
+
+    /// The same driver's device on a fresh instance of this adapter's backend, with this
+    /// device's features and limits. Blocks while the device opens.
+    ///
+    /// Not a second device on this adapter: Mesa's CPU Vulkan driver compiles shaders for every
+    /// device of one physical device one at a time, so work meant to run beside this device's
+    /// needs a physical device of its own.
+    pub fn open_peer(&self) -> Option<(Device, Queue)> {
+        let info = self.adapter.get_info();
+        let backends = wgpu::Backends::from(info.backend);
+        let instance = Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends,
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(backends))
+            .into_iter()
+            .find(|adapter| {
+                let peer = adapter.get_info();
+                (peer.name.as_str(), peer.driver.as_str(), peer.device_type)
+                    == (info.name.as_str(), info.driver.as_str(), info.device_type)
+            })?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: self.device.features(),
+            required_limits: self.device.limits(),
+            memory_hints: MEMORY_HINTS,
+            ..Default::default()
+        }))
+        .ok()
+    }
 }
+
+/// See the module header for the default's cost. `MemoryUsage` (8 MB first block, 64 MB
+/// largest) is still not enough, because the block size doubles with every block a process opens
+/// (`min << active_general_blocks`, capped at the maximum): one idle app held
+/// 4+8+16+32+64 = 124 MB of blocks to suballocate ~50 MB of buffers out of.
+///
+/// Fixed 4 MB blocks stop the doubling. Anything larger gets a dedicated allocation of its own
+/// exact size instead (`gpu_allocator`'s `requires_personal_block`), so big buffers cost what
+/// they are. 4 MB is the floor wgpu clamps to.
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
+};
 
 /// wgpu state for one process, with a memory hint that fits a shared GPU.
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
 
@@ -103,6 +148,7 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST,
         format: TextureFormat::Rgba8Unorm,
@@ -110,6 +156,21 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     });
     let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
     (target_texture, target_view)
+}
+
+/// wgpu's defaults, except the two a renderer's scratch buffers are bound
+/// against, which come from the adapter.
+///
+/// The default `max_storage_buffer_binding_size` is 128 MiB whatever the
+/// hardware can do, and vello binds each bump buffer whole. A 5120x2880
+/// output legitimately needs more than that; asking for what the adapter
+/// supports (4 GiB on RADV) costs nothing until a buffer is allocated.
+fn required_limits(adapter: &Limits) -> Limits {
+    Limits {
+        max_storage_buffer_binding_size: adapter.max_storage_buffer_binding_size,
+        max_buffer_size: adapter.max_buffer_size,
+        ..Limits::default()
+    }
 }
 
 impl RenderContext {
@@ -135,10 +196,10 @@ impl RenderContext {
         };
         // Every field spelled out: `InstanceDescriptor` has no `Default`, and
         // these are the values vello would have used.
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let compiler_identity =
             crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let backend_options = {
             let mut options = backend_options;
             if let Some(compiler) = &compiler_identity {
@@ -155,18 +216,29 @@ impl RenderContext {
             backends: wgpu::Backends::from_env().unwrap_or_else(|| {
                 if cfg!(target_os = "windows") {
                     wgpu::Backends::DX12
+                } else if cfg!(target_os = "android") {
+                    // Every device the app installs on has Vulkan 1.1.
+                    wgpu::Backends::VULKAN
                 } else {
                     wgpu::Backends::default()
                 }
             }),
-            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            flags: {
+                let flags = wgpu::InstanceFlags::from_build_config();
+                // The Android emulator's Vulkan driver crashes in
+                // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
+                // for object labels.
+                #[cfg(target_os = "android")]
+                let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
+                flags.with_env()
+            },
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options,
         });
         Self {
             instance,
             devices: Vec::new(),
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "dx12-shader-cache"))]
             compiler_identity,
         }
     }
@@ -233,21 +305,8 @@ impl RenderContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
-                required_limits: Limits::default(),
-                // See the module header for the default's cost. `MemoryUsage`
-                // (8 MB first block, 64 MB largest) is still not enough,
-                // because the block size doubles with every block a process
-                // opens (`min << active_general_blocks`, capped at the
-                // maximum): one idle app held 4+8+16+32+64 = 124 MB of blocks
-                // to suballocate ~50 MB of buffers out of.
-                //
-                // Fixed 4 MB blocks stop the doubling. Anything larger gets a
-                // dedicated allocation of its own exact size instead
-                // (`gpu_allocator`'s `requires_personal_block`), so big
-                // buffers cost what they are. 4 MB is the floor wgpu clamps to.
-                memory_hints: wgpu::MemoryHints::Manual {
-                    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
-                },
+                required_limits: required_limits(&adapter.limits()),
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             })
             .await
@@ -263,7 +322,7 @@ impl RenderContext {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }
         });
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let shader_cache =
             crate::dx12_shader_cache::CacheSession::load(&device, self.compiler_identity.clone());
         self.devices.push(DeviceHandle {
@@ -271,7 +330,7 @@ impl RenderContext {
             device,
             queue,
             loss,
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "dx12-shader-cache"))]
             shader_cache,
         });
         Some(self.devices.len().saturating_sub(1))
@@ -295,7 +354,7 @@ impl RenderContext {
         let surface = self
             .instance
             .create_surface(window.into())
-            .map_err(|_| CreateSurfaceError::Surface)?;
+            .map_err(CreateSurfaceError::Surface)?;
         tilo_startup_metrics::mark("surface-native-create-done");
         tilo_startup_metrics::mark("surface-device-select-start");
         let dev_id = self
@@ -309,15 +368,27 @@ impl RenderContext {
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-capabilities-start");
         let capabilities = surface.get_capabilities(&handle.adapter);
-        let format = capabilities
-            .formats
-            .into_iter()
-            .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        // The intermediate target is RGBA8. Prefer a matching surface format
+        // so capable backends can present it with a texture copy instead of
+        // compiling a fullscreen blit shader for every new surface.
+        let format = if capabilities.formats.contains(&TextureFormat::Rgba8Unorm) {
+            TextureFormat::Rgba8Unorm
+        } else if capabilities.formats.contains(&TextureFormat::Bgra8Unorm) {
+            TextureFormat::Bgra8Unorm
+        } else {
+            return Err(CreateSurfaceError::UnsupportedSurfaceFormat);
+        };
+        let direct_copy = format == TextureFormat::Rgba8Unorm
+            && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if direct_copy {
+                    wgpu::TextureUsages::COPY_DST
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format,
             width,
             height,
@@ -353,6 +424,9 @@ impl RenderContext {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
         };
+        // Release the old target before allocating the new one: on WebGPU a
+        // dropped texture stays resident until JavaScript collects it.
+        surface.target_texture.destroy();
         let (texture, view) = create_targets(width, height, &handle.device);
         surface.target_texture = texture;
         surface.target_view = view;
@@ -381,8 +455,8 @@ impl RenderContext {
 /// Why a surface could not be made.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateSurfaceError {
-    #[error("could not create a wgpu surface for this window")]
-    Surface,
+    #[error("could not create a wgpu surface for this window: {0}")]
+    Surface(#[source] wgpu::CreateSurfaceError),
     #[error("no GPU adapter can present to this surface")]
     NoCompatibleDevice,
     #[error("this surface offers no format vello can render")]
@@ -395,70 +469,73 @@ mod tests {
     use crate::offscreen::shared_gpu;
 
     #[test]
-    fn device_loss_observers_share_the_context_callback() {
-        let mut context = super::RenderContext::new();
-        let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
-        let handle = &context.devices[index];
-        let first = handle.loss_monitor();
-        let second = handle.loss_monitor();
-        assert!(first.reason().is_none());
-        handle.device.destroy();
-        let _ = handle.device.poll(wgpu::PollType::Poll);
-        assert!(
-            first.reason().is_some(),
-            "context must record actual destroyed-device loss"
-        );
-        assert_eq!(first.reason(), second.reason());
-    }
+    fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {
+        // Case `device_loss_observers_share_the_context_callback`.
+        {
+            let mut context = super::RenderContext::new();
+            let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
+            let handle = &context.devices[index];
+            let first = handle.loss_monitor();
+            let second = handle.loss_monitor();
+            assert!(first.reason().is_none());
+            handle.device.destroy();
+            let _ = handle.device.poll(wgpu::PollType::Poll);
+            assert!(
+                first.reason().is_some(),
+                "context must record actual destroyed-device loss"
+            );
+            assert_eq!(first.reason(), second.reason());
+        }
 
-    #[test]
-    fn live_retained_target_accepts_native_damage_copy() {
-        let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
-        let (target, _) = create_targets(4, 4, &gpu.device);
-        assert!(target.usage().contains(wgpu::TextureUsages::COPY_DST));
-        let source = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gpu-test-copy-source"),
-            size: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("gpu-test-copy-into-live-target"),
+        // Case `live_retained_target_accepts_native_damage_copy`.
+        {
+            let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
+            let (target, _) = create_targets(4, 4, &gpu.device);
+            assert!(target.usage().contains(wgpu::TextureUsages::COPY_DST));
+            let source = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gpu-test-copy-source"),
+                size: wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
             });
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &source,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit([encoder.finish()]);
-        assert!(
-            pollster::block_on(scope.pop()).is_none(),
-            "live target rejected COPY_DST damage copy"
-        );
+            let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("gpu-test-copy-into-live-target"),
+                });
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &source,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit([encoder.finish()]);
+            assert!(
+                pollster::block_on(scope.pop()).is_none(),
+                "live target rejected COPY_DST damage copy"
+            );
+        }
     }
 }

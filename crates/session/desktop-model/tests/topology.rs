@@ -9,8 +9,8 @@
 )]
 
 use tilo_desktop_model::{
-    DesktopTree, DropTarget, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    DesktopTree, DropTarget, GroupShape, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId,
 };
 
 fn tab(id: u64) -> Tab {
@@ -63,88 +63,180 @@ fn layout(tree: &DesktopTree, strip: u64) -> Vec<(u64, Vec<u64>)> {
 }
 
 #[test]
-fn a_tab_dropped_in_a_gap_becomes_its_own_group_and_empties_its_source() {
-    let mut tree = tree();
-    let moved = tree
-        .move_tab_across_strips(
-            StripId(1),
-            StripId(2),
-            110,
-            99,
-            DropTarget::GroupGap { gap_index: 7 },
-        )
-        .unwrap();
-    assert_eq!(moved.source_group, 11);
-    assert!(moved.source_group_removed);
-    assert_eq!(moved.target, DropTarget::GroupGap { gap_index: 1 });
-    assert_eq!(layout(&tree, 1), vec![(10, vec![100, 101])]);
-    assert_eq!(layout(&tree, 2), vec![(20, vec![200]), (99, vec![110])]);
+fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
+    // Phase `a_tab_dropped_in_a_gap_becomes_its_own_group_and_empties_its_source`.
+    {
+        let mut tree = tree();
+        let moved = tree
+            .move_tab_across_strips(
+                StripId(1),
+                StripId(2),
+                110,
+                99,
+                DropTarget::GroupGap { gap_index: 7 },
+            )
+            .unwrap();
+        assert_eq!(moved.source_group, 11);
+        assert!(moved.source_group_removed);
+        assert_eq!(moved.target, DropTarget::GroupGap { gap_index: 1 });
+        assert_eq!(layout(&tree, 1), vec![(10, vec![100, 101])]);
+        assert_eq!(layout(&tree, 2), vec![(20, vec![200]), (99, vec![110])]);
+    }
+    // Phase `a_tab_dropped_into_a_group_lands_at_its_index_and_becomes_active`.
+    {
+        let mut tree = tree();
+        let moved = tree
+            .move_tab_across_strips(
+                StripId(1),
+                StripId(2),
+                100,
+                99,
+                DropTarget::ExistingGroup {
+                    group_id: 20,
+                    tab_index: 0,
+                },
+            )
+            .unwrap();
+        assert!(!moved.source_group_removed);
+        assert_eq!(layout(&tree, 2), vec![(20, vec![100, 200])]);
+        let source = &tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(source.active_tab, 101, "the source promotes a sibling");
+        assert_eq!(
+            tree.workspaces[0].strips[1].window_groups[0].active_tab,
+            100
+        );
+    }
+    // Phase `a_stale_target_or_same_strip_move_changes_nothing`.
+    {
+        let mut tree = tree();
+        let stale = DropTarget::ExistingGroup {
+            group_id: 404,
+            tab_index: 0,
+        };
+        assert!(
+            tree.move_tab_across_strips(StripId(1), StripId(2), 100, 99, stale)
+                .is_none()
+        );
+        let gap = DropTarget::GroupGap { gap_index: 0 };
+        assert!(
+            tree.move_tab_across_strips(StripId(1), StripId(1), 100, 99, gap)
+                .is_none()
+        );
+        assert!(
+            tree.move_tab_across_strips(StripId(1), StripId(2), 999, 99, gap)
+                .is_none()
+        );
+        assert_eq!(layout(&tree, 1), layout(&self::tree(), 1));
+        assert_eq!(layout(&tree, 2), layout(&self::tree(), 2));
+    }
+    // Phase `splitting_mints_a_group_and_refuses_a_lone_tab`.
+    {
+        let mut tree = tree();
+        let mut ids = IdMinter::resume(0, 500);
+        let moved = tree
+            .split_tab_into_new_group(StripId(1), 100, 1, &mut ids)
+            .unwrap();
+        assert_eq!(moved.new_group.id, 500);
+        assert_eq!(
+            layout(&tree, 1),
+            vec![(10, vec![101]), (500, vec![100]), (11, vec![110])]
+        );
+        assert!(
+            tree.split_tab_into_new_group(StripId(1), 110, 0, &mut ids)
+                .is_none(),
+            "a group's only tab has nothing to split from"
+        );
+    }
 }
 
 #[test]
-fn a_tab_dropped_into_a_group_lands_at_its_index_and_becomes_active() {
+fn a_live_strip_shape_rearranges_tabs_without_touching_their_content() {
     let mut tree = tree();
-    let moved = tree
-        .move_tab_across_strips(
-            StripId(1),
-            StripId(2),
-            100,
-            99,
-            DropTarget::ExistingGroup {
-                group_id: 20,
-                tab_index: 0,
-            },
-        )
-        .unwrap();
-    assert!(!moved.source_group_removed);
-    assert_eq!(layout(&tree, 2), vec![(20, vec![100, 200])]);
-    let source = &tree.workspaces[0].strips[0].window_groups[0];
-    assert_eq!(source.active_tab, 101, "the source promotes a sibling");
-    assert_eq!(
-        tree.workspaces[0].strips[1].window_groups[0].active_tab,
-        100
-    );
-}
-
-#[test]
-fn a_stale_target_or_same_strip_move_changes_nothing() {
-    let mut tree = tree();
-    let stale = DropTarget::ExistingGroup {
-        group_id: 404,
-        tab_index: 0,
-    };
-    assert!(
-        tree.move_tab_across_strips(StripId(1), StripId(2), 100, 99, stale)
-            .is_none()
-    );
-    let gap = DropTarget::GroupGap { gap_index: 0 };
-    assert!(
-        tree.move_tab_across_strips(StripId(1), StripId(1), 100, 99, gap)
-            .is_none()
-    );
-    assert!(
-        tree.move_tab_across_strips(StripId(1), StripId(2), 999, 99, gap)
-            .is_none()
-    );
-    assert_eq!(layout(&tree, 1), layout(&self::tree(), 1));
-    assert_eq!(layout(&tree, 2), layout(&self::tree(), 2));
-}
-
-#[test]
-fn splitting_mints_a_group_and_refuses_a_lone_tab() {
-    let mut tree = tree();
-    let mut ids = IdMinter::resume(0, 500);
-    let moved = tree
-        .split_tab_into_new_group(StripId(1), 100, 1, &mut ids)
-        .unwrap();
-    assert_eq!(moved.new_group.id, 500);
+    tree.workspaces[0].strips[0].window_groups[1].maximized = true;
+    let shape = [
+        GroupShape {
+            id: 11,
+            tab_ids: vec![110, 101],
+            active_tab: 101,
+            width: WindowWidth::Fraction(700),
+        },
+        GroupShape {
+            id: 12,
+            tab_ids: vec![100],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+        },
+    ];
+    let groups = tree.reconcile_strip_topology(StripId(1), &shape).unwrap();
+    assert_eq!(groups.len(), 2);
     assert_eq!(
         layout(&tree, 1),
-        vec![(10, vec![101]), (500, vec![100]), (11, vec![110])]
+        vec![(11, vec![110, 101]), (12, vec![100])]
     );
+    let first = &tree.workspaces[0].strips[0].window_groups[0];
+    assert!(first.maximized, "maximized stays with its group id");
+    assert_eq!(first.width, WindowWidth::Fraction(700));
     assert!(
-        tree.split_tab_into_new_group(StripId(1), 110, 0, &mut ids)
-            .is_none(),
-        "a group's only tab has nothing to split from"
+        matches!(&first.tabs[1].tile, TileContent::LocalApp { app_id, .. } if app_id == "org.example.App")
+    );
+    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+    assert!(
+        tree.reconcile_strip_topology(StripId(1), &shape).is_none(),
+        "an unchanged shape reports nothing"
+    );
+}
+
+#[test]
+fn removing_a_groups_last_tab_removes_the_group_and_moves_the_active_pointer() {
+    let mut tree = tree();
+    tree.set_active_group(StripId(1), 10);
+    let removed = tree.remove_tab(101).unwrap();
+    assert!(!removed.group_removed);
+    assert_eq!(
+        tree.workspaces[0].strips[0].window_groups[0].active_tab,
+        100
+    );
+    let removed = tree.remove_tab(100).unwrap();
+    assert!(removed.group_removed);
+    assert_eq!(
+        (removed.strip, removed.group, removed.tab.id),
+        (StripId(1), 10, 100)
+    );
+    assert_eq!(layout(&tree, 1), vec![(11, vec![110])]);
+    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+    assert!(tree.remove_tab(100).is_none());
+}
+
+#[test]
+fn a_live_strip_shape_that_loses_or_invents_a_tab_is_refused() {
+    let mut tree = tree();
+    let lost = [GroupShape {
+        id: 10,
+        tab_ids: vec![100, 101],
+        active_tab: 100,
+        width: WindowWidth::Normal,
+    }];
+    assert!(tree.reconcile_strip_topology(StripId(1), &lost).is_none());
+    let invented = [
+        GroupShape {
+            id: 10,
+            tab_ids: vec![100, 101, 999],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+        },
+        GroupShape {
+            id: 11,
+            tab_ids: vec![110],
+            active_tab: 110,
+            width: WindowWidth::Normal,
+        },
+    ];
+    assert!(
+        tree.reconcile_strip_topology(StripId(1), &invented)
+            .is_none()
+    );
+    assert_eq!(
+        layout(&tree, 1),
+        vec![(10, vec![100, 101]), (11, vec![110])]
     );
 }

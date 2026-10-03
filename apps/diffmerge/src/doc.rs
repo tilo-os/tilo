@@ -7,23 +7,120 @@
 //!
 //! ```text
 //! root
-//! ├── "merged"       (Text)   # the editable merged result
-//! ├── "resolutions"  (Map)    # "<hunk index>" -> "ours" | "theirs" | "both"
-//! └── "session"      (Str)    # which sample/session is loaded (for late joiners)
+//! ├── "merged"        (Text)   # the editable merged result
+//! ├── "resolutions"   (Map)    # "<hunk index>" -> "ours" | "theirs" | "both"
+//! ├── "session"       (Str)    # which sample/session is loaded (for late joiners)
+//! └── "shared_merge"  (Str)    # JSON projection of the three-way inputs
 //! ```
 //!
 //! The `resolutions` map records the per-hunk take-a-side choice a user made so
 //! the chip state converges across peers and survives a reload; it is cleared
 //! when a fresh set of inputs is loaded (the hunk indices no longer correspond).
 //!
-//! The diff and three-way panels are derived views over plain text held in
-//! memory. Only the *output* of the merge is CRDT-backed, keeping conflict
-//! markers ephemeral while the saved buffer remains authoritative.
+//! The shared merge projection carries the base/ours/theirs texts collaborators
+//! need to rebuild conflict children for [`tilo_resource::publish`]. Two-way
+//! local comparisons stay device-local and are never written here.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::fmt::Write as _;
+
+use ui::doc::read_str;
+
+use crate::actions::HunkChoice;
+use crate::model::MergeModel;
+
+/// Document keys beside the merged buffer.
+pub mod keys {
+    pub const SHARED_MERGE: &str = "shared_merge";
+}
+
+/// Framework resource state: merged buffer, session label, and the shared
+/// three-way projection (with resolutions applied onto the model).
+#[derive(Clone, Debug, Default)]
+pub struct MergeState {
+    pub merged: String,
+    pub session: String,
+    pub title: String,
+    pub model: MergeModel,
+}
+
+impl MergeState {
+    pub fn from_doc(doc: &AutoCommit) -> Self {
+        let shared = SharedMerge::read(doc);
+        let title = shared
+            .as_ref()
+            .map_or_else(|| "Diff & Merge".into(), SharedMerge::title);
+        let mut model = shared
+            .as_ref()
+            .map(SharedMerge::into_model)
+            .unwrap_or_default();
+        apply_resolutions(&mut model, doc);
+        Self {
+            merged: MergeDoc::merged_text(doc),
+            session: MergeDoc::session(doc).unwrap_or_default(),
+            title,
+            model,
+        }
+    }
+}
+
+/// Three-way inputs collaborators share so conflict children can be published
+/// from document state. Local two-way comparisons are omitted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedMerge {
+    pub base: String,
+    pub ours: String,
+    pub theirs: String,
+    pub base_label: String,
+    pub ours_label: String,
+    pub theirs_label: String,
+}
+
+impl SharedMerge {
+    pub fn title(&self) -> String {
+        if self.ours_label.is_empty() && self.theirs_label.is_empty() {
+            "Merge result".into()
+        } else {
+            format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
+        }
+    }
+
+    pub fn into_model(&self) -> MergeModel {
+        MergeModel::compute(&self.base, &self.ours, &self.theirs)
+    }
+
+    pub fn write(doc: &mut AutoCommit, shared: &Self) {
+        let json = serde_json::to_string(shared).unwrap_or_else(|_| "{}".into());
+        Self::write_json(doc, &json);
+    }
+
+    pub fn write_json(doc: &mut AutoCommit, json: &str) {
+        let _ = doc.put(&ROOT, keys::SHARED_MERGE, json);
+    }
+
+    pub fn read(doc: &AutoCommit) -> Option<Self> {
+        let json = read_str(doc, &ROOT, keys::SHARED_MERGE)?;
+        serde_json::from_str(&json).ok()
+    }
+
+    pub fn fingerprint(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+/// Apply recorded take-a-side choices onto a freshly computed model.
+pub fn apply_resolutions(model: &mut MergeModel, doc: &AutoCommit) {
+    for (hunk, choice) in MergeDoc::resolutions(doc) {
+        if let (Some(h), Some(c)) = (model.hunks.get_mut(hunk), HunkChoice::from_tag(&choice))
+            && h.is_change
+        {
+            h.resolution = c.to_resolution();
+        }
+    }
+}
 
 /// Stateless helpers over the shared document.
 pub struct MergeDoc;
@@ -142,7 +239,17 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
 
+    /// The merged-output CRDT text: round trip, identical sets commit nothing,
+    /// resolves splice rather than rewrite, and two peers converge. Every phase
+    /// builds its own documents.
     #[test]
+    fn merged_buffer_round_trips_edits_minimally_and_converges() {
+        merged_round_trip();
+        set_merged_is_incremental_and_minimal();
+        resolving_hunks_does_not_rewrite_the_whole_buffer();
+        two_peers_converge_on_merged_buffer();
+    }
+
     fn merged_round_trip() {
         let mut doc = AutoCommit::new();
         assert!(!MergeDoc::has_merged(&doc));
@@ -151,7 +258,6 @@ mod tests {
         assert_eq!(MergeDoc::merged_text(&doc), "line one\nline two\n");
     }
 
-    #[test]
     fn set_merged_is_incremental_and_minimal() {
         let mut doc = AutoCommit::new();
         MergeDoc::set_merged(&mut doc, "a\nb\nc\n");
@@ -163,7 +269,6 @@ mod tests {
         assert_eq!(MergeDoc::merged_text(&doc), "a\nB\nc\n");
     }
 
-    #[test]
     fn resolving_hunks_does_not_rewrite_the_whole_buffer() {
         // Re-resolving a hunk hands `set_merged` the entire composed output.
         // Rewriting it wholesale costs O(len) ops and leaves O(len) tombstones
@@ -195,7 +300,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn two_peers_converge_on_merged_buffer() {
         let mut a = AutoCommit::new();
         MergeDoc::set_merged(&mut a, "shared\n");
@@ -206,7 +310,14 @@ mod tests {
         assert!(MergeDoc::merged_text(&a).contains("from-b"));
     }
 
+    /// The sidecar state next to the merged buffer: per-hunk resolutions (sorted,
+    /// overwritten, cleared) and the session label. Fresh document per phase.
     #[test]
+    fn resolutions_and_session_round_trip() {
+        resolutions_round_trip_and_clear();
+        session_round_trip();
+    }
+
     fn resolutions_round_trip_and_clear() {
         let mut doc = AutoCommit::new();
         assert!(MergeDoc::resolutions(&doc).is_empty());
@@ -230,7 +341,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn session_round_trip() {
         let mut doc = AutoCommit::new();
         assert!(MergeDoc::session(&doc).is_none());
@@ -245,6 +355,7 @@ pub(crate) struct AuthoredSnapshot {
     merged: Option<String>,
     resolutions: Option<Vec<(usize, String)>>,
     session: Option<String>,
+    shared_merge: Option<String>,
 }
 pub(crate) fn authored_snapshot(doc: &AutoCommit) -> AuthoredSnapshot {
     AuthoredSnapshot {
@@ -255,5 +366,6 @@ pub(crate) fn authored_snapshot(doc: &AutoCommit) -> AuthoredSnapshot {
             .flatten()
             .map(|_| MergeDoc::resolutions(doc)),
         session: MergeDoc::session(doc),
+        shared_merge: read_str(doc, &ROOT, keys::SHARED_MERGE),
     }
 }

@@ -12,7 +12,7 @@ use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use settings_store::hardware::KeyboardInputSource;
+use settings_store::hardware::{InputMethodEngine, KeyboardInputSource};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CatalogEntry {
@@ -21,6 +21,40 @@ pub(crate) struct CatalogEntry {
 }
 
 pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
+    let mut entries = installed_layouts();
+    entries.extend(input_method_entries(InputMethodEngine::is_installed));
+    entries
+}
+
+/// Input-method engines (Rime, Anthy, Hangul) the image ships, listed with
+/// the layouts: they are chosen, ordered and switched exactly like them.
+fn input_method_entries(installed: impl Fn(InputMethodEngine) -> bool) -> Vec<CatalogEntry> {
+    InputMethodEngine::ALL
+        .into_iter()
+        .filter(|engine| installed(*engine))
+        .map(|engine| CatalogEntry {
+            id: engine.source_id(),
+            label: engine.label().to_string(),
+        })
+        .collect()
+}
+
+/// Whether `id` fits beside `active`: keyboard layouts are bounded by the
+/// XKB group limit, input-method engines are not XKB groups.
+pub(crate) fn has_room_for(active: &[String], id: &str) -> bool {
+    InputMethodEngine::from_source_id(id).is_some() || !layouts_full(active)
+}
+
+/// Whether `active` already holds as many keyboard layouts as XKB groups.
+pub(crate) fn layouts_full(active: &[String]) -> bool {
+    active
+        .iter()
+        .filter(|source| InputMethodEngine::from_source_id(source).is_none())
+        .count()
+        >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+}
+
+fn installed_layouts() -> Vec<CatalogEntry> {
     for path in [
         Path::new("/usr/share/X11/xkb/rules/evdev.xml"),
         Path::new("/usr/share/X11/xkb/rules/base.xml"),
@@ -191,54 +225,73 @@ fn fallback_catalog() -> Vec<CatalogEntry> {
 mod tests {
     use super::*;
 
+    /// The xkb catalogue parser yields base layouts and `layout:variant`
+    /// entries, resolving entity and character references in descriptions;
+    /// the installed catalogue contains a real US layout.
     #[test]
-    fn parses_base_layouts_and_variants_from_standard_shape() {
-        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
+    fn input_source_catalog_parses_layouts_variants_and_references() {
+        // (case, registry xml, base label, variant label)
+        let cases: [(&str, &[u8], &str, &str); 2] = [
+            (
+                "standard shape",
+                br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US)</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak</description>
-          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
-        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
-        assert_eq!(
-            entries,
-            [
-                CatalogEntry {
-                    id: "us".into(),
-                    label: "English (US)".into(),
-                },
-                CatalogEntry {
-                    id: "us:dvorak".into(),
-                    label: "English (US) — Dvorak".into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn entity_and_character_references_stay_in_descriptions() {
-        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
+                "English (US)",
+                "English (US) — Dvorak",
+            ),
+            (
+                "entity and character references",
+                br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US) &amp; &lt;intl&gt; &#x1F600;</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak &amp;&#32;more</description>
-          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
-        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
+                "English (US) & <intl> \u{1F600}",
+                "English (US) & <intl> \u{1F600} — Dvorak & more",
+            ),
+        ];
+        for (case, xml, base, variant) in cases {
+            let entries = parse_catalog(&mut Reader::from_reader(xml)).unwrap();
+            assert_eq!(
+                entries,
+                [
+                    CatalogEntry {
+                        id: "us".into(),
+                        label: base.into(),
+                    },
+                    CatalogEntry {
+                        id: "us:dvorak".into(),
+                        label: variant.into(),
+                    },
+                ],
+                "case {case}"
+            );
+        }
+
+        assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
+    }
+
+    #[test]
+    fn installed_input_method_engines_are_offered_as_sources() {
+        let entries = input_method_entries(|engine| {
+            engine != settings_store::hardware::InputMethodEngine::Anthy
+        });
         assert_eq!(
             entries,
             [
                 CatalogEntry {
-                    id: "us".into(),
-                    label: "English (US) & <intl> \u{1F600}".into(),
+                    id: "ime/rime".into(),
+                    label: "Chinese (Simplified) — Rime".into(),
                 },
                 CatalogEntry {
-                    id: "us:dvorak".into(),
-                    label: "English (US) & <intl> \u{1F600} — Dvorak & more".into(),
+                    id: "ime/hangul".into(),
+                    label: "Korean — Hangul".into(),
                 },
-            ]
+            ],
+            "an engine the image lacks is not offered"
         );
-    }
-
-    #[test]
-    fn installed_catalog_contains_a_real_us_layout() {
-        assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
     }
 }

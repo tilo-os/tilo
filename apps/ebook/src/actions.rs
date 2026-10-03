@@ -20,9 +20,9 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
+    Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourcePresentation, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::BooksDoc;
@@ -72,6 +72,17 @@ pub enum EbookOperation {
     HydrateSharedBook {
         book_id: String,
     },
+    /// Select a passage of the open book, as a drag would, and reveal its
+    /// page. Blocks count from 0 in the chapter; a character offset counts
+    /// in its block's text, and `end_char` is exclusive (`None`: block end).
+    SelectPassage {
+        book_id: String,
+        chapter: usize,
+        start_block: usize,
+        start_char: usize,
+        end_block: usize,
+        end_char: Option<usize>,
+    },
 }
 
 pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
@@ -81,7 +92,8 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::ToggleContents
         | EbookOperation::ToggleNotes
         | EbookOperation::OpenSettings
-        | EbookOperation::Reveal { .. } => OperationKind::View,
+        | EbookOperation::Reveal { .. }
+        | EbookOperation::SelectPassage { .. } => OperationKind::View,
         EbookOperation::OpenBook
         | EbookOperation::ShareBook { .. }
         | EbookOperation::HydrateSharedBook { .. } => OperationKind::Effect,
@@ -191,6 +203,9 @@ pub enum EbookAction {
         author: String,
         subject: String,
         added: u64,
+        /// Full content hash of bytes kept in a host content store.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
     /// Replace the authored reading-preference snapshot. Every field is an
     /// absolute value, making replay independent of a receiver's UI state.
@@ -233,6 +248,12 @@ pub enum EbookAction {
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
+    /// One edit of an annotation's note as its editor writes it: typing,
+    /// formatting, a new paragraph, applied to the note's rich text.
+    EditNoteText {
+        id: String,
+        edit: tilo_document::RichTextAction,
+    },
     /// Mark an annotation as finished at an author-supplied timestamp. Draft
     /// editors create their row first and then use this action on Save/Escape;
     /// carrying the timestamp keeps the lifecycle replayable and avoids a
@@ -346,6 +367,7 @@ impl SerializedNote<'_> {
             color: HiColor::from_str(self.color),
             created: 0,
             group,
+            blocks: Vec::new(),
         }
     }
 }
@@ -434,6 +456,7 @@ impl EbookAction {
                 author,
                 subject,
                 added,
+                content,
                 ..
             } => {
                 Self::validate_book_id(book_id)?;
@@ -442,6 +465,14 @@ impl EbookAction {
                 Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
                 if *added > i64::MAX as u64 {
                     return Err(Self::refused("book timestamp is invalid"));
+                }
+                if let Some(content) = content {
+                    let names_book = content
+                        .get(..32)
+                        .is_some_and(|prefix| book_id.strip_prefix("book:") == Some(prefix));
+                    if !tilo_content::valid_hash(content) || !names_book {
+                        return Err(Self::refused("book content hash is invalid"));
+                    }
                 }
             }
             Self::SetReadingSettings { before, settings } => {
@@ -518,7 +549,8 @@ impl EbookAction {
                     return Err(Self::refused("annotation timestamp is invalid"));
                 }
             }
-            Self::DeleteAnnotation { id } => {
+            // A note edit is checked against the note's text when it applies.
+            Self::DeleteAnnotation { id } | Self::EditNoteText { id, .. } => {
                 Self::parse_uuid(id, "annotation")?;
             }
             Self::AddNote {
@@ -710,6 +742,17 @@ impl EbookAction {
             .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 
+    fn apply_edit_note_text(
+        doc: &mut Doc,
+        id: &str,
+        edit: &tilo_document::RichTextAction,
+    ) -> Result<(), ActionError> {
+        let id = Self::require_live_annotation(doc, id)?;
+        let root = BooksDoc::annotation_text(doc, id)
+            .ok_or_else(|| Self::refused("annotation has no note text"))?;
+        edit.apply_under(doc, &root)
+    }
+
     fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
         let id = Self::require_live_annotation(doc, id)?;
         BooksDoc::write_annotation_created(doc, id, created)
@@ -733,10 +776,6 @@ impl EbookAction {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the serialized bookmark action is deliberately flat so every authored target and removal id is independently auditable"
-    )]
     fn apply_set_bookmark(
         doc: &mut Doc,
         book_id: &str,
@@ -777,6 +816,7 @@ impl EbookAction {
                     color: HiColor::Yellow,
                     created: 0,
                     group: uuid,
+                    blocks: Vec::new(),
                 },
             );
         }
@@ -836,6 +876,7 @@ impl EbookAction {
                     color: col,
                     created: 0,
                     group: group_uuid,
+                    blocks: Vec::new(),
                 };
                 BooksDoc::upsert_annotation(doc, &anno);
             }
@@ -927,6 +968,7 @@ impl Action for EbookAction {
                 author,
                 subject,
                 added,
+                content,
             } => {
                 BooksDoc::restore_library_entry(
                     doc,
@@ -937,6 +979,7 @@ impl Action for EbookAction {
                         author: author.clone(),
                         subject: subject.clone(),
                         added: *added,
+                        content: content.clone(),
                     },
                 );
                 Ok(())
@@ -986,6 +1029,7 @@ impl Action for EbookAction {
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::EditNoteText { id, edit } => Self::apply_edit_note_text(doc, id, edit),
             EbookAction::FinalizeAnnotation { id, created } => {
                 Self::apply_finalize_annotation(doc, id, *created)
             }
@@ -1094,6 +1138,14 @@ impl Action for EbookAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Where the reader is in a book is shared state about it, not a change to it.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::SetProgress { .. } => tilo_actions::ChangeKind::Housekeeping,
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 /// Register Books' action decoder for palette execution + remote replay.
@@ -1139,6 +1191,7 @@ pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
         author: entry.author.clone(),
         subject: entry.subject.clone(),
         added: entry.added,
+        content: entry.content.clone(),
     }
 }
 
@@ -1180,6 +1233,14 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     EbookAction::EditAnnotationNote {
         id: id.to_string(),
         note: note.to_string(),
+    }
+}
+
+/// One edit of an annotation's note, as its SDK editor writes it.
+pub fn edit_note_text_action(id: Uuid, edit: tilo_document::RichTextAction) -> EbookAction {
+    EbookAction::EditNoteText {
+        id: id.to_string(),
+        edit,
     }
 }
 
@@ -1388,6 +1449,309 @@ pub struct BookResourceCtx {
     pub bookmark_block: usize,
     pub bookmark: BookmarkPlan,
     pub selection_highlight: Option<HighlightPlan>,
+    /// A note on the live selection, as the toolbar's Note button drafts it;
+    /// each invocation mints its own id and supplies the text.
+    pub selection_note: Option<NoteDraft>,
+    /// The open book's annotations, published as its child resources.
+    pub annotations: Vec<Annotation>,
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
+fn select_passage_operation(book_id: String, chapter: usize) -> ActionSpec {
+    let index = |name: &'static str, required: bool, description: &'static str| {
+        let param = if required {
+            ActionParam::required(name, ParamType::Integer, description)
+        } else {
+            ActionParam::optional(name, ParamType::Integer, description)
+        };
+        param.with_schema(serde_json::json!({"minimum": 0}))
+    };
+    ActionSpec::typed_operation(
+        "select-passage",
+        "Select passage",
+        "select a passage by paragraph and character",
+        OperationKind::View,
+        EBOOK_OPERATION_TYPE,
+        vec![
+            index(
+                "start_block",
+                true,
+                "Block (paragraph or heading) the selection starts in, counted from 0 in the chapter",
+            ),
+            index(
+                "start_char",
+                false,
+                "Character offset into the start block; 0 when omitted",
+            ),
+            index(
+                "end_block",
+                false,
+                "Block the selection ends in; the start block when omitted",
+            ),
+            index(
+                "end_char",
+                false,
+                "Exclusive character offset into the end block; the block's end when omitted",
+            ),
+            index(
+                "chapter",
+                false,
+                "Chapter, counted from 0; the open chapter when omitted",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
+            let start_block = value("start_block").unwrap_or(0);
+            let operation = EbookOperation::SelectPassage {
+                book_id: book_id.clone(),
+                chapter: value("chapter").unwrap_or(chapter),
+                start_block,
+                start_char: value("start_char").unwrap_or(0),
+                end_block: value("end_block").unwrap_or(start_block),
+                end_char: value("end_char"),
+            };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+}
+
+/// Move this reader to a chapter and block, as revealing an annotation does:
+/// the page holding the block's start opens, nothing is selected, and any
+/// selection is cleared. Each mount keeps its own position.
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
+fn go_to_operation(book_id: String, chapter: usize) -> ActionSpec {
+    let index = |name: &'static str, description: &'static str| {
+        ActionParam::optional(name, ParamType::Integer, description)
+            .with_schema(serde_json::json!({"minimum": 0}))
+    };
+    ActionSpec::typed_operation(
+        "go-to",
+        "Go to",
+        "open the book at a chapter and paragraph without selecting",
+        OperationKind::View,
+        EBOOK_OPERATION_TYPE,
+        vec![
+            index(
+                "chapter",
+                "Chapter, counted from 0; the open chapter when omitted",
+            ),
+            index(
+                "block",
+                "Block (paragraph or heading) to open at, counted from 0 in the chapter; its start when omitted",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
+            let operation = EbookOperation::Reveal {
+                book_id: book_id.clone(),
+                chapter: value("chapter").unwrap_or(chapter),
+                page: 0,
+                block: Some(value("block").unwrap_or(0)),
+            };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+}
+
+/// The open book's annotations as resources: one per highlight (its comments
+/// beneath it), note and bookmark, with the ids search resolves, each opening
+/// its passage and carrying the Document mutations the palette/agent door
+/// must reach through [`tilo_resource::publish`].
+fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
+    let open = |annotation: &Annotation| {
+        operation(
+            "open",
+            "Show in book",
+            OperationKind::View,
+            EbookOperation::Reveal {
+                book_id: annotation.doc_id.clone(),
+                chapter: annotation.chapter,
+                page: 0,
+                block: Some(annotation.block),
+            },
+        )
+    };
+    let presentation = |annotation: &Annotation| {
+        let mut preview: String = annotation.excerpt.trim().to_string();
+        while preview.len() > ResourcePresentation::MAX_PREVIEW_BYTES {
+            preview.pop();
+        }
+        ResourcePresentation {
+            detail: Some(format!(
+                "Chapter {} · {}",
+                annotation.chapter + 1,
+                annotation.color.as_str()
+            )),
+            badge: Some(annotation.kind.label().into()),
+            preview: (!preview.is_empty()).then_some(preview),
+        }
+    };
+    let label = |annotation: &Annotation| {
+        let text = if annotation.note.trim().is_empty() {
+            annotation.excerpt.trim()
+        } else {
+            annotation.note.trim()
+        };
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let mut resources: Vec<Resource> = Vec::new();
+    for annotation in annotations {
+        let comment = annotation.kind == AnnoKind::Note && annotation.group != annotation.id;
+        if comment {
+            continue;
+        }
+        let (id, kind) = match annotation.kind {
+            AnnoKind::Highlight => (
+                format!("ebook.highlight:{}", annotation.group),
+                "ebook.highlight",
+            ),
+            AnnoKind::Bookmark => (
+                format!("ebook.bookmark:{}", annotation.id),
+                "ebook.bookmark",
+            ),
+            AnnoKind::Note => (format!("ebook.note:{}", annotation.id), "ebook.note"),
+        };
+        if let Some(existing) = resources
+            .iter_mut()
+            .find(|resource| resource.id.as_str() == id)
+        {
+            // A later piece of a multi-block highlight extends its label.
+            existing.label = format!("{} {}", existing.label, label(annotation));
+            continue;
+        }
+        let mut resource = Resource::new(id, kind, label(annotation))
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+        resource = with_annotation_document_actions(resource, annotation, false);
+        resources.push(resource);
+    }
+    for annotation in annotations {
+        if annotation.kind != AnnoKind::Note || annotation.group == annotation.id {
+            continue;
+        }
+        let parent = format!("ebook.highlight:{}", annotation.group);
+        if let Some(highlight) = resources
+            .iter_mut()
+            .find(|resource| resource.id.as_str() == parent)
+        {
+            let mut comment = Resource::new(
+                format!("ebook.comment:{}", annotation.id),
+                "ebook.comment",
+                label(annotation),
+            )
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+            comment = with_annotation_document_actions(comment, annotation, true);
+            highlight.children.push(comment);
+        }
+    }
+    resources
+}
+
+/// Document mutations on one annotation row (or comment). Views stay on the
+/// resource separately; this only attaches CRDT-backed ops.
+fn with_annotation_document_actions(
+    mut resource: Resource,
+    annotation: &Annotation,
+    comment: bool,
+) -> Resource {
+    match annotation.kind {
+        AnnoKind::Highlight => {
+            let group = annotation.group;
+            resource = resource.with_action(ActionSpec::prompted(
+                "change-color",
+                "Change colour",
+                "Colour",
+                "yellow, green, blue, pink, purple",
+                ExecutionLocus::ClientLocal,
+                move |name| encode(&change_color_action(group, HiColor::from_str(name.trim()))),
+            ));
+            resource = resource.with_action(encode_spec(
+                "delete-highlight",
+                "Delete highlight",
+                &delete_highlight_action(annotation.group),
+            ));
+            let book_id = annotation.doc_id.clone();
+            let anchor = AnnotationAnchor {
+                chapter: annotation.chapter,
+                block: annotation.block,
+                start: annotation.start,
+                end: annotation.end,
+                excerpt: annotation.excerpt.clone(),
+            };
+            let color = annotation.color;
+            resource = resource.with_action(ActionSpec::prompted(
+                "add-comment",
+                "Add comment",
+                "Comment",
+                "your comment…",
+                ExecutionLocus::ClientLocal,
+                move |text| {
+                    encode(
+                        &CommentDraft {
+                            group,
+                            note: NoteDraft {
+                                book_id: book_id.clone(),
+                                id: Uuid::new_v4(),
+                                anchor: anchor.clone(),
+                                color,
+                                text: text.to_string(),
+                            },
+                        }
+                        .into_action(),
+                    )
+                },
+            ));
+        }
+        AnnoKind::Bookmark => {
+            resource = resource.with_action(encode_spec(
+                "delete",
+                "Delete bookmark",
+                &delete_annotation_action(annotation.id),
+            ));
+        }
+        AnnoKind::Note => {
+            let id = annotation.id;
+            let edit_id = if comment { "edit-comment" } else { "edit" };
+            let edit_label = if comment { "Edit comment" } else { "Edit note" };
+            let delete_id = if comment { "delete-comment" } else { "delete" };
+            let delete_label = if comment {
+                "Delete comment"
+            } else {
+                "Delete note"
+            };
+            resource = resource.with_action(ActionSpec::prompted(
+                edit_id,
+                edit_label,
+                if comment { "Comment" } else { "Note" },
+                if comment {
+                    "edit the comment…"
+                } else {
+                    "edit the note…"
+                },
+                ExecutionLocus::ClientLocal,
+                move |text| encode(&edit_note_action(id, text)),
+            ));
+            resource = resource.with_action(encode_spec(
+                delete_id,
+                delete_label,
+                &delete_annotation_action(id),
+            ));
+        }
+    }
+    resource
 }
 
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
@@ -1398,6 +1762,27 @@ pub struct BookResourceCtx {
 )]
 fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
     ActionSpec::immediate(id, label, EBOOK_ACTION_TYPE, action).expect("encode ebook action")
+}
+
+/// Live reading chrome for the open book. Published beside the framework root
+/// when hosted — never a second copy of the library document door. Selection-
+/// bound palette rows (highlight / note / bookmark) and page Views stay
+/// addressable without republishing shelf ops already on [`tilo_resource::publish`].
+pub fn live_reading_resources(ctx: &BookResourceCtx) -> Vec<Resource> {
+    vec![reading_selection_resource(ctx)]
+}
+
+/// Peer-local reading focus: page chrome and selection-bound conveniences.
+/// Annotation Document ops already nest under the published `ebook.book` child.
+fn reading_selection_resource(ctx: &BookResourceCtx) -> Resource {
+    let base = Resource::new(
+        format!("ebook.selection:{}", ctx.book_id),
+        "ebook.selection",
+        "Current reading",
+    );
+    let mut resource = current_book_actions(base, ctx);
+    resource.children.clear();
+    resource
 }
 
 /// Add the controls that are meaningful only for the reader's active book to
@@ -1415,6 +1800,45 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
             "Highlight selection",
             &plan.clone().into_action(),
         ));
+    }
+    if let Some(draft) = &ctx.selection_note {
+        let draft = draft.clone();
+        resource = resource.with_action(ActionSpec::prompted(
+            "note-selection",
+            "Add note to selection",
+            "Note",
+            "your note…",
+            ExecutionLocus::ClientLocal,
+            move |text| {
+                encode(
+                    &NoteDraft {
+                        id: Uuid::new_v4(),
+                        text: text.to_string(),
+                        ..draft.clone()
+                    }
+                    .into_action(),
+                )
+            },
+        ));
+    }
+    resource
+        .actions
+        .retain(|action| action.id != "select-passage" && action.id != "go-to");
+    resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
+    resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
+    // A published book already nests its annotation children. Add only the
+    // live annotations that are not already there. An empty resource (the
+    // reading-selection extra) still receives them, and that extra clears
+    // them before it is published.
+    let live_annotations = annotation_resources(&ctx.annotations);
+    if resource.children.is_empty() {
+        resource.children = live_annotations;
+    } else {
+        for child in live_annotations {
+            if !resource.children.iter().any(|have| have.id == child.id) {
+                resource.children.push(child);
+            }
+        }
     }
     let book_id = ctx.book_id.clone();
     let chapter = ctx.chapter;
@@ -1468,8 +1892,47 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
     resource
 }
 
-fn settings_resource(doc: &AutoCommit) -> Resource {
-    let settings = BooksDoc::read_settings(doc);
+/// Effect ops on the library root (portal import). Document mutations live on
+/// [`bound_library_document_actions`] / [`publish_document_children`].
+pub(crate) fn library_effect_specs() -> Vec<ActionSpec> {
+    vec![open_book_operation()]
+}
+
+/// Shelf Document ops whose payloads bind from live library preferences.
+pub(crate) fn bound_library_document_actions(prefs: LibraryPrefs) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    let mut toggled = prefs;
+    toggled.hide_read = !toggled.hide_read;
+    actions.push(encode_spec(
+        "toggle-hide-read",
+        if prefs.hide_read {
+            "Show read books"
+        } else {
+            "Hide read books"
+        },
+        &set_library_preferences_action(prefs, toggled),
+    ));
+    for sort in LibrarySort::ALL {
+        let mut next = prefs;
+        next.sort = sort;
+        actions.push(encode_spec(
+            &format!("sort-{}", sort.as_str()),
+            &format!("Sort by {}", sort.label()),
+            &set_library_preferences_action(prefs, next),
+        ));
+    }
+    actions
+}
+
+/// Reading-settings Document resource (mode / composition / theme / fonts /
+/// schemes). Shared CRDT state — published under the library via
+/// [`publish_document_children`], never as a second hosted root beside
+/// [`tilo_resource::publish`].
+pub(crate) fn settings_document_resource(
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Resource {
     let mut root = Resource::new("ebook.settings", "ebook.settings", "Reading settings")
         .with_action(operation(
             "open",
@@ -1505,13 +1968,12 @@ fn settings_resource(doc: &AutoCommit) -> Resource {
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
-
-    root = font_resources(root, doc);
-    scheme_resources(root, doc)
+    root = font_document_children(root, fonts);
+    scheme_document_children(root, schemes)
 }
 
-fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for font in BooksDoc::read_fonts(doc) {
+fn font_document_children(mut root: Resource, fonts: &[FontEntry]) -> Resource {
+    for font in fonts {
         let id = font.id.clone();
         let mut child = Resource::new(format!("ebook.font:{id}"), "ebook.font", font.name.clone())
             .with_action(operation(
@@ -1561,8 +2023,8 @@ fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
-fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for scheme in BooksDoc::read_schemes(doc) {
+fn scheme_document_children(mut root: Resource, schemes: &[ColorScheme]) -> Resource {
+    for scheme in schemes {
         let id = scheme.id.clone();
         let mut child = Resource::new(
             format!("ebook.scheme:{id}"),
@@ -1617,64 +2079,164 @@ fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
-fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resource {
-    let prefs = BooksDoc::read_library_prefs(doc);
-    let mut toggled = prefs;
-    toggled.hide_read = !toggled.hide_read;
-    library = library.with_action(encode_spec(
-        "toggle-hide-read",
-        if prefs.hide_read {
-            "Show read books"
-        } else {
-            "Hide read books"
-        },
-        &set_library_preferences_action(prefs, toggled),
-    ));
-    for sort in LibrarySort::ALL {
-        let mut next = prefs;
-        next.sort = sort;
-        library = library.with_action(encode_spec(
-            &format!("sort-{}", sort.as_str()),
-            &format!("Sort by {}", sort.label()),
-            &set_library_preferences_action(prefs, next),
-        ));
+fn settings_resource(doc: &AutoCommit) -> Resource {
+    settings_document_resource(
+        &BooksDoc::read_settings(doc),
+        &BooksDoc::read_fonts(doc),
+        &BooksDoc::read_schemes(doc),
+    )
+}
+
+/// One shelf book with membership Document ops and its annotation Document
+/// children. Share / hydrate Effects stay for the palette; remove is Document.
+pub(crate) fn library_book_document_resource(
+    entry: &LibraryEntry,
+    annotations: &[Annotation],
+) -> Resource {
+    let book_id = entry.id.clone();
+    let mut resource = Resource::new(
+        format!("ebook.book:{book_id}"),
+        "ebook.book",
+        entry.title.clone(),
+    );
+    if entry.shared && entry.content.is_none() {
+        resource = resource.with_action(
+            operation(
+                "open",
+                "Download and open",
+                OperationKind::Effect,
+                EbookOperation::HydrateSharedBook {
+                    book_id: book_id.clone(),
+                },
+            )
+            .with_contract(tilo_actions::ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "hydrate".into()],
+                ..tilo_actions::ActionContract::default()
+            }),
+        );
+    } else {
+        resource = resource.with_action(
+            operation(
+                "share",
+                "Share with workspace",
+                OperationKind::Effect,
+                EbookOperation::ShareBook {
+                    book_id: book_id.clone(),
+                },
+            )
+            .with_contract(tilo_actions::ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "materialize".into()],
+                ..tilo_actions::ActionContract::default()
+            }),
+        );
     }
-    library
+    resource = resource.with_action(
+        encode_spec(
+            "remove-from-library",
+            "Remove from library",
+            &remove_library_book_action(&book_id),
+        )
+        .with_contract(tilo_actions::ActionContract {
+            risk: RiskLevel::Destructive,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags: vec!["library".into(), "tombstone".into()],
+            ..tilo_actions::ActionContract::default()
+        }),
+    );
+    // Passage/goto Views belong on every book address — not only the open
+    // reader — so bound `ebook.book:…` encodes without Unknown. Open-book
+    // overlay replaces these with the live chapter via `current_book_actions`.
+    resource = resource.with_action(select_passage_operation(book_id.clone(), 0));
+    resource = resource.with_action(go_to_operation(book_id.clone(), 0));
+    let book_annotations: Vec<Annotation> = annotations
+        .iter()
+        .filter(|annotation| annotation.doc_id == book_id)
+        .cloned()
+        .collect();
+    resource.children = annotation_resources(&book_annotations);
+    resource
 }
 
-/// Build the bounded canonical directory root. Exact book, chapter, and
-/// annotation resources are deliberately lazy through [`ResourceProvider`].
+/// Nested Document resources under the library: books (with annotations) and
+/// reading settings. Hosted [`PublishesResources`] must not republish these.
+pub(crate) fn publish_document_children(
+    entries: &[LibraryEntry],
+    annotations: &[Annotation],
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Vec<Resource> {
+    let mut children: Vec<Resource> = entries
+        .iter()
+        .take(64)
+        .map(|entry| library_book_document_resource(entry, annotations))
+        .collect();
+    children.push(settings_document_resource(settings, fonts, schemes));
+    children
+}
+
+/// The published library. Settings and library entries are children of that
+/// root; chapter and annotation rows stay lazy through exact lookup.
 pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
-    let library = Resource::new("ebook.library", "ebook.library", "Books library")
-        .with_action(open_book_operation());
-    let mut settings = settings_resource(doc);
-    settings.children.clear();
-    vec![library_preference_actions(library, doc), settings]
+    let state =
+        <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    vec![ui::tilo_resource::publish::<crate::resource::Ebook>(
+        crate::resource::LIBRARY_RESOURCE_ID,
+        "Books library",
+        &state,
+    )]
 }
 
-impl ResourceProvider for crate::app::BooksApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::BooksApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Directory discovery is intentionally root-only. Children are exact,
         // lazy resources resolved through the retained provider; exporting a
         // whole EPUB/annotation tree here would make opening Ctrl+K O(library).
         ["ebook.library", "ebook.settings"]
             .into_iter()
-            .filter_map(|id| self.resource(doc, id))
+            .filter_map(|id| self.publish_resource(doc, id))
             .collect()
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "ebook.library" {
-            return Some(library_preference_actions(
-                Resource::new("ebook.library", "ebook.library", "Books library")
-                    .with_action(open_book_operation()),
-                doc,
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            return Some(ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
             ));
         }
         if id == "ebook.settings" {
-            let mut settings = settings_resource(doc);
-            settings.children.clear();
-            return Some(settings);
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            return ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
+            )
+            .children
+            .into_iter()
+            .find(|child| child.id.as_str() == "ebook.settings");
+        }
+        if let Some(book_id) = id.strip_prefix("ebook.selection:") {
+            let ctx = self.current_book_resource_context()?;
+            if ctx.book_id != book_id {
+                return None;
+            }
+            return Some(reading_selection_resource(&ctx));
         }
 
         if [
@@ -1689,6 +2251,32 @@ impl ResourceProvider for crate::app::BooksApp {
         .iter()
         .any(|prefix| id.starts_with(prefix))
         {
+            fn find(resource: &Resource, id: &str) -> Option<Resource> {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                for child in &resource.children {
+                    if let Some(found) = find(child, id) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let library = ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
+            );
+            if let Some(found) = find(&library, id) {
+                if let Some(ctx) = self.current_book_resource_context()
+                    && id == format!("ebook.book:{}", ctx.book_id)
+                {
+                    return Some(current_book_actions(found, &ctx));
+                }
+                return Some(found);
+            }
             let address = tilo_actions::ActionAddress::new(id, "open");
             let resource = self.resolve_search_resource(&address)?;
             if let Some(ctx) = self.current_book_resource_context()
@@ -1722,7 +2310,6 @@ mod tests {
     use crate::app::BooksApp;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -1755,6 +2342,7 @@ mod tests {
             color: HiColor::Green,
             created: 1,
             group,
+            blocks: Vec::new(),
         };
         BooksDoc::upsert_annotation(&mut doc, &hl);
         // Two comments on it.
@@ -1772,6 +2360,7 @@ mod tests {
                 color: HiColor::Green,
                 created: 10 + i as u64,
                 group,
+                blocks: Vec::new(),
             };
             BooksDoc::upsert_annotation(&mut doc, &cm);
         }
@@ -1801,8 +2390,13 @@ mod tests {
     /// exact book and annotation resources the retained search snapshot
     /// resolves for the document's annotations.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        fn contains_id(resources: &[Resource], id: &str) -> bool {
+            resources
+                .iter()
+                .any(|resource| resource.id.as_str() == id || contains_id(&resource.children, id))
+        }
         let (app, _seed, book_id, _group) = open_with_annotations();
-        let mut resources = Widget::resources(&app, doc);
+        let mut resources = ui::resources::resources(&app, doc);
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
@@ -1815,8 +2409,12 @@ mod tests {
                     .map(|scheme| format!("ebook.scheme:{}", scheme.id)),
             );
         for id in lazy {
-            resources
-                .push(Widget::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")));
+            if contains_id(&resources, &id) {
+                continue;
+            }
+            resources.push(
+                ui::resources::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")),
+            );
         }
         let books: Vec<crate::model::Book> = app
             .library()
@@ -1839,7 +2437,7 @@ mod tests {
                 }
                 AnnoKind::Note => format!("ebook.note:{}", annotation.id),
             };
-            if !seen.insert(id.clone()) {
+            if !seen.insert(id.clone()) || contains_id(&resources, &id) {
                 continue;
             }
             resources.push(
@@ -1963,637 +2561,695 @@ mod tests {
         ],
     }
 
-    /// Discovery exports bounded roots; exact resources are resolved from
-    /// the immutable search snapshot and never materialise siblings.
+    /// The palette publishes root-only and exact resources, library open is canonical without loaded books, and exact lookup hydrates a book.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn ctrl_k_publishes_root_only_and_exact_resources() {
-        let (app, doc, book_id, _group) = open_with_annotations();
-        let roots = Widget::resources(&app, &doc);
-        assert_eq!(roots.len(), 2);
-        assert_eq!(roots[0].id.as_str(), "ebook.library");
-        assert!(roots[0].children.is_empty());
-        assert_eq!(roots[1].id.as_str(), "ebook.settings");
-        assert!(roots[1].children.is_empty());
-        let books: Vec<crate::model::Book> = app
-            .library()
-            .iter()
-            .map(|book| book.as_ref().clone())
-            .collect();
-        let annotations = BooksDoc::list_annotations(&doc);
-        let provider = crate::search_provider::BookSearchProvider::new_with_registry(
-            &books,
-            &annotations,
-            &BooksDoc::read_library_entries(&doc),
-        );
-        let address = tilo_actions::ActionAddress::new(format!("ebook.book:{book_id}"), "open");
-        let book = ui::search::SearchProvider::resolve_action_resource(&provider, &address)
-            .expect("exact book");
-        assert!(book.children.is_empty());
-        assert!(book.actions.iter().any(|action| action.id == "share"));
-        assert!(
-            book.actions
-                .iter()
-                .any(|action| action.id == "remove-from-library")
-        );
-        let current = Widget::resource(&app, &doc, &format!("ebook.book:{book_id}"))
-            .expect("current exact book");
-        for id in [
-            "toggle-bookmark",
-            "add-note",
-            "previous-page",
-            "next-page",
-            "contents",
-            "notes",
-            "settings",
-        ] {
+    fn library_resources_are_canonical_and_resolve_exactly() {
+        // --- phase: ctrl_k_publishes_root_only_and_exact_resources ---
+        // Discovery exports bounded roots; exact resources are resolved from
+        // the immutable search snapshot and never materialise siblings.
+        {
+            let (app, doc, book_id, _group) = open_with_annotations();
+            let roots = ui::resources::resources(&app, &doc);
+            assert_eq!(roots.len(), 1);
+            assert_eq!(roots[0].id.as_str(), "ebook.library");
             assert!(
-                current.actions.iter().any(|action| action.id == id),
-                "missing current-book action {id}"
-            );
-        }
-        let settings = Widget::resource(&app, &doc, "ebook.settings").expect("settings");
-        assert!(settings.children.is_empty());
-        for font in BooksDoc::read_fonts(&doc) {
-            assert!(Widget::resource(&app, &doc, &format!("ebook.font:{}", font.id)).is_some());
-        }
-        for scheme in BooksDoc::read_schemes(&doc) {
-            assert!(Widget::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id)).is_some());
-        }
-    }
-
-    #[test]
-    fn library_open_action_is_canonical_even_without_loaded_books() {
-        let doc = AutoCommit::new();
-        let resources = provide_resources(&[], &doc);
-        assert_eq!(resources.len(), 2);
-        let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
-        let encoded = tilo_actions::door::encode(&resources, &address, None)
-            .expect("library action resolves through the canonical tree");
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(EbookOperation::OpenBook)
-        );
-    }
-
-    #[test]
-    fn remove_library_action_replays_as_a_keyed_tombstone() {
-        use crate::model::LibraryEntry;
-
-        let entry = LibraryEntry {
-            id: "book:0123456789abcdef0123456789abcdef".into(),
-            shared: true,
-            title: "Shared title".into(),
-            author: "A. Reader".into(),
-            subject: String::new(),
-            added: 7,
-        };
-        let mut a = AutoCommit::new();
-        BooksDoc::upsert_library_entry(&mut a, &entry);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let action = remove_library_book_action(&entry.id);
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-
-        for peer in [&a, &b] {
-            assert!(BooksDoc::library_is_removed(peer, &entry.id));
-            assert!(BooksDoc::read_library_entries(peer).is_empty());
-        }
-        assert_eq!(a.get_heads(), b.get_heads(), "replay converges exactly");
-    }
-
-    #[test]
-    fn encoded_import_action_restores_the_same_content_addressed_row_on_a_peer() {
-        use crate::model::LibraryEntry;
-
-        let entry = LibraryEntry {
-            id: "book:fedcba9876543210fedcba9876543210".into(),
-            shared: true,
-            title: "A shared book".into(),
-            author: "A. Reader".into(),
-            subject: "Architecture".into(),
-            added: 42,
-        };
-        let action = restore_library_book_action(&entry);
-        let encoded = encode(&action);
-        let mut author = AutoCommit::new();
-        let envelope = tilo_actions::apply_local(&mut author, &action, encoded).unwrap();
-        let mut peer = AutoCommit::new();
-        tilo_actions::replay(&mut peer, &envelope, &registry()).unwrap();
-
-        assert_eq!(BooksDoc::read_library_entries(&author), vec![entry.clone()]);
-        assert_eq!(BooksDoc::read_library_entries(&peer), vec![entry]);
-        assert_eq!(author.get_heads(), peer.get_heads());
-    }
-
-    #[test]
-    fn encoded_registry_actions_converge_without_lost_siblings_or_resurrection() {
-        use crate::model::{FontEntry, FontKind, ReadTheme};
-
-        let mut base = AutoCommit::new().with_actor(ActorId::random());
-        let original = Settings::default();
-        let mut left = base.fork().with_actor(ActorId::random());
-        let mut right = base.fork().with_actor(ActorId::random());
-        let mut themed = original.clone();
-        themed.theme = ReadTheme::Dark;
-        let mut spaced = original.clone();
-        spaced.line_spacing = 1.55;
-        for (peer, action) in [
-            (
-                &mut left,
-                set_reading_settings_action(original.clone(), themed),
-            ),
-            (&mut right, set_reading_settings_action(original, spaced)),
-        ] {
-            let encoded = encode(&action);
-            registry().decode(&encoded).unwrap().apply(peer).unwrap();
-        }
-        let left_font = FontEntry::new(
-            "font-left",
-            FontKind::Named("Atkinson Hyperlegible".into()),
-            "Atkinson",
-            1.0,
-            true,
-        );
-        let right_font = FontEntry::new(
-            "font-right",
-            FontKind::Named("Literata".into()),
-            "Literata",
-            1.08,
-            true,
-        );
-        for (peer, action) in [
-            (&mut left, upsert_font_action(left_font.clone())),
-            (&mut right, upsert_font_action(right_font.clone())),
-        ] {
-            let encoded = encode(&action);
-            registry().decode(&encoded).unwrap().apply(peer).unwrap();
-        }
-        left.merge_incoming(&mut right).unwrap();
-        right.merge_incoming(&mut left).unwrap();
-        for peer in [&left, &right] {
-            let settings = BooksDoc::read_settings(peer);
-            assert_eq!(settings.theme, ReadTheme::Dark);
-            assert_eq!(settings.line_spacing, 1.55);
-            let ids: Vec<String> = BooksDoc::read_fonts(peer)
-                .into_iter()
-                .map(|font| font.id)
-                .collect();
-            assert!(ids.contains(&left_font.id), "left sibling survives");
-            assert!(ids.contains(&right_font.id), "right sibling survives");
-        }
-
-        let mut deleting = left.fork().with_actor(ActorId::random());
-        let mut editing = left.fork().with_actor(ActorId::random());
-        let delete = delete_font_action(&left_font.id);
-        let mut late_edit = left_font.clone();
-        late_edit.name = "Late offline rename".into();
-        for (peer, action) in [
-            (&mut deleting, delete),
-            (&mut editing, upsert_font_action(late_edit)),
-        ] {
-            let encoded = encode(&action);
-            registry().decode(&encoded).unwrap().apply(peer).unwrap();
-        }
-        deleting.merge_incoming(&mut editing).unwrap();
-        editing.merge_incoming(&mut deleting).unwrap();
-        for peer in [&deleting, &editing] {
-            assert!(
-                BooksDoc::read_fonts(peer)
+                roots[0]
+                    .children
                     .iter()
-                    .all(|font| font.id != left_font.id),
-                "the stable-id tombstone wins over an offline edit"
+                    .any(|child| child.id.as_str() == "ebook.settings"),
+                "reading settings ride the library door"
             );
-        }
-        assert_eq!(
-            BooksDoc::read_fonts(&deleting),
-            BooksDoc::read_fonts(&editing),
-            "both replicas materialise the same stable registry"
-        );
-    }
-
-    /// Deleting the highlight through its action removes the highlight *and*
-    /// both of its comments — the whole logical group.
-    #[test]
-    fn delete_highlight_removes_the_group_and_its_comments() {
-        let (_app, mut doc, book_id, group) = open_with_annotations();
-        assert_eq!(
-            BooksDoc::annotations_for(&doc, &book_id).len(),
-            5,
-            "hl + 2 comments + note + bookmark"
-        );
-
-        let action = delete_highlight_action(group);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let left = BooksDoc::annotations_for(&doc, &book_id);
-        assert_eq!(left.len(), 2, "only the standalone note + bookmark survive");
-        assert!(
-            left.iter().all(|a| a.group != group),
-            "no row of the deleted group remains (highlight + both comments gone)"
-        );
-    }
-
-    #[test]
-    fn stale_annotation_edit_finalize_and_move_are_refused() {
-        let (_app, mut doc, book_id, _group) = open_with_annotations();
-        let id = BooksDoc::annotations_for(&doc, &book_id)
-            .into_iter()
-            .find(|annotation| annotation.kind == AnnoKind::Note)
-            .expect("standalone note")
-            .id;
-        BooksDoc::remove_annotation(&mut doc, id);
-
-        for action in [
-            edit_note_action(id, "late edit"),
-            finalize_annotation_action(id, 1_700_000_123_456),
-            move_annotation_action(
-                id,
-                AnnotationAnchor {
-                    chapter: 0,
-                    block: 9,
-                    start: 0,
-                    end: 5,
-                    excerpt: "late move".into(),
-                },
-            ),
-        ] {
+            let books: Vec<crate::model::Book> = app
+                .library()
+                .iter()
+                .map(|book| book.as_ref().clone())
+                .collect();
+            let annotations = BooksDoc::list_annotations(&doc);
+            let provider = crate::search_provider::BookSearchProvider::new_with_registry(
+                &books,
+                &annotations,
+                &BooksDoc::read_library_entries(&doc),
+            );
+            let address = tilo_actions::ActionAddress::new(format!("ebook.book:{book_id}"), "open");
+            let book = ui::search::SearchProvider::resolve_action_resource(&provider, &address)
+                .expect("exact book");
+            assert!(book.children.is_empty());
+            assert!(book.actions.iter().any(|action| action.id == "share"));
             assert!(
-                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
-                "a stale annotation mutation must report refusal"
+                book.actions
+                    .iter()
+                    .any(|action| action.id == "remove-from-library")
+            );
+            let current = ui::resources::resource(&app, &doc, &format!("ebook.book:{book_id}"))
+                .expect("current exact book");
+            for id in [
+                "toggle-bookmark",
+                "add-note",
+                "previous-page",
+                "next-page",
+                "contents",
+                "notes",
+                "settings",
+            ] {
+                assert!(
+                    current.actions.iter().any(|action| action.id == id),
+                    "missing current-book action {id}"
+                );
+            }
+            let settings = ui::resources::resource(&app, &doc, "ebook.settings").expect("settings");
+            assert_eq!(settings.kind, "ebook.settings");
+            for font in BooksDoc::read_fonts(&doc) {
+                assert!(
+                    ui::resources::resource(&app, &doc, &format!("ebook.font:{}", font.id))
+                        .is_some()
+                );
+            }
+            for scheme in BooksDoc::read_schemes(&doc) {
+                assert!(
+                    ui::resources::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id))
+                        .is_some()
+                );
+            }
+        }
+
+        // --- phase: library_open_action_is_canonical_even_without_loaded_books ---
+        {
+            let doc = AutoCommit::new();
+            let resources = provide_resources(&[], &doc);
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].id.as_str(), "ebook.library");
+            let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
+            let encoded = tilo_actions::door::encode(&resources, &address, None)
+                .expect("library action resolves through the canonical tree");
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(EbookOperation::OpenBook)
             );
         }
 
-        // Repeating a delete is deliberately convergence-safe and succeeds.
-        assert!(delete_annotation_action(id).apply(&mut doc).is_ok());
+        // --- phase: exact_resource_lookup_materialises_an_unhydrated_library_book ---
+        {
+            let mut doc = AutoCommit::new();
+            BooksDoc::upsert_library_entry(
+                &mut doc,
+                &LibraryEntry {
+                    id: "book:remote-only".into(),
+                    shared: true,
+                    title: "Waiting for bytes".into(),
+                    author: "Remote Reader".into(),
+                    subject: String::new(),
+                    added: 1,
+                    content: None,
+                },
+            );
+
+            let provider = crate::search_provider::BookSearchProvider::new_with_registry(
+                &[],
+                &[],
+                &BooksDoc::read_library_entries(&doc),
+            );
+            let resource = ui::search::SearchProvider::resolve_action_resource(
+                &provider,
+                &tilo_actions::ActionAddress::new("ebook.book:book:remote-only", "open"),
+            );
+            let resource = resource.expect("remote bytes expose a typed hydrate capability");
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("download and open");
+            assert_eq!(open.label, "Download and open");
+            let ActionInput::Immediate(operation) = &open.input else {
+                panic!("remote hydrate is replayable");
+            };
+            assert_eq!(
+                decode_operation(&operation.type_id, &operation.payload).unwrap(),
+                Some(EbookOperation::HydrateSharedBook {
+                    book_id: "book:remote-only".into(),
+                })
+            );
+            let roots = provide_resources(&[], &doc);
+            assert_eq!(roots.len(), 1);
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "ebook.book:book:remote-only"),
+                "the shared book is a child of the published library"
+            );
+            let resource = ui::search::SearchProvider::search(&provider, "Waiting")
+                .pop()
+                .expect("remote metadata row");
+            assert_eq!(resource.kind, crate::search_provider::BOOK_KIND);
+        }
     }
 
+    /// Library remove, import and progress actions replay as keyed, content-addressed rows that converge without loss or resurrection.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn stale_highlight_group_mutations_are_refused() {
-        let (_app, mut doc, book_id, group) = open_with_annotations();
-        BooksDoc::remove_group(&mut doc, group);
-        let new_id = Uuid::from_u128(0xBADD_CAFE_0000_0000_0000_0000_0000_0001);
+    fn library_registry_actions_replay_and_converge() {
+        // --- phase: remove_library_action_replays_as_a_keyed_tombstone ---
+        {
+            use crate::model::LibraryEntry;
 
-        let actions = [
-            CommentDraft {
-                group,
-                note: NoteDraft {
-                    book_id: book_id.clone(),
-                    id: new_id,
-                    anchor: AnnotationAnchor {
+            let entry = LibraryEntry {
+                id: "book:0123456789abcdef0123456789abcdef".into(),
+                shared: true,
+                title: "Shared title".into(),
+                author: "A. Reader".into(),
+                subject: String::new(),
+                added: 7,
+                content: None,
+            };
+            let mut a = AutoCommit::new();
+            BooksDoc::upsert_library_entry(&mut a, &entry);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let action = remove_library_book_action(&entry.id);
+            let encoded = encode(&action);
+            let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+            tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
+
+            for peer in [&a, &b] {
+                assert!(BooksDoc::library_is_removed(peer, &entry.id));
+                assert!(BooksDoc::read_library_entries(peer).is_empty());
+            }
+            assert_eq!(a.get_heads(), b.get_heads(), "replay converges exactly");
+        }
+
+        // --- phase: encoded_import_action_restores_the_same_content_addressed_row_on_a_peer ---
+        {
+            use crate::model::LibraryEntry;
+
+            let entry = LibraryEntry {
+                id: "book:fedcba9876543210fedcba9876543210".into(),
+                shared: true,
+                title: "A shared book".into(),
+                author: "A. Reader".into(),
+                subject: "Architecture".into(),
+                added: 42,
+                content: None,
+            };
+            let action = restore_library_book_action(&entry);
+            let encoded = encode(&action);
+            let mut author = AutoCommit::new();
+            let envelope = tilo_actions::apply_local(&mut author, &action, encoded).unwrap();
+            let mut peer = AutoCommit::new();
+            tilo_actions::replay(&mut peer, &envelope, &registry()).unwrap();
+
+            assert_eq!(BooksDoc::read_library_entries(&author), vec![entry.clone()]);
+            assert_eq!(BooksDoc::read_library_entries(&peer), vec![entry]);
+            assert_eq!(author.get_heads(), peer.get_heads());
+        }
+
+        // --- phase: encoded_registry_actions_converge_without_lost_siblings_or_resurrection ---
+        {
+            use crate::model::{FontEntry, FontKind, ReadTheme};
+
+            let mut base = AutoCommit::new().with_actor(ActorId::random());
+            let original = Settings::default();
+            let mut left = base.fork().with_actor(ActorId::random());
+            let mut right = base.fork().with_actor(ActorId::random());
+            let mut themed = original.clone();
+            themed.theme = ReadTheme::Dark;
+            let mut spaced = original.clone();
+            spaced.line_spacing = 1.55;
+            for (peer, action) in [
+                (
+                    &mut left,
+                    set_reading_settings_action(original.clone(), themed),
+                ),
+                (&mut right, set_reading_settings_action(original, spaced)),
+            ] {
+                let encoded = encode(&action);
+                registry().decode(&encoded).unwrap().apply(peer).unwrap();
+            }
+            let left_font = FontEntry::new(
+                "font-left",
+                FontKind::Named("Atkinson Hyperlegible".into()),
+                "Atkinson",
+                1.0,
+                true,
+            );
+            let right_font = FontEntry::new(
+                "font-right",
+                FontKind::Named("Literata".into()),
+                "Literata",
+                1.08,
+                true,
+            );
+            for (peer, action) in [
+                (&mut left, upsert_font_action(left_font.clone())),
+                (&mut right, upsert_font_action(right_font.clone())),
+            ] {
+                let encoded = encode(&action);
+                registry().decode(&encoded).unwrap().apply(peer).unwrap();
+            }
+            left.merge_incoming(&mut right).unwrap();
+            right.merge_incoming(&mut left).unwrap();
+            for peer in [&left, &right] {
+                let settings = BooksDoc::read_settings(peer);
+                assert_eq!(settings.theme, ReadTheme::Dark);
+                assert_eq!(settings.line_spacing, 1.55);
+                let ids: Vec<String> = BooksDoc::read_fonts(peer)
+                    .into_iter()
+                    .map(|font| font.id)
+                    .collect();
+                assert!(ids.contains(&left_font.id), "left sibling survives");
+                assert!(ids.contains(&right_font.id), "right sibling survives");
+            }
+
+            let mut deleting = left.fork().with_actor(ActorId::random());
+            let mut editing = left.fork().with_actor(ActorId::random());
+            let delete = delete_font_action(&left_font.id);
+            let mut late_edit = left_font.clone();
+            late_edit.name = "Late offline rename".into();
+            for (peer, action) in [
+                (&mut deleting, delete),
+                (&mut editing, upsert_font_action(late_edit)),
+            ] {
+                let encoded = encode(&action);
+                registry().decode(&encoded).unwrap().apply(peer).unwrap();
+            }
+            deleting.merge_incoming(&mut editing).unwrap();
+            editing.merge_incoming(&mut deleting).unwrap();
+            for peer in [&deleting, &editing] {
+                assert!(
+                    BooksDoc::read_fonts(peer)
+                        .iter()
+                        .all(|font| font.id != left_font.id),
+                    "the stable-id tombstone wins over an offline edit"
+                );
+            }
+            assert_eq!(
+                BooksDoc::read_fonts(&deleting),
+                BooksDoc::read_fonts(&editing),
+                "both replicas materialise the same stable registry"
+            );
+        }
+
+        // --- phase: progress_action_preserves_open_timestamp ---
+        {
+            let (_app, mut doc, book_id, _group) = open_with_annotations();
+            set_progress_action(&book_id, reading_progress())
+                .apply(&mut doc)
+                .expect("action applies");
+            assert_eq!(BooksDoc::read_progress(&doc, &book_id), reading_progress());
+        }
+    }
+
+    /// Annotation actions delete, stamp and move rows, preserve concurrent field edits, and refuse stale targets.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn annotation_actions_apply_converge_and_refuse_stale_targets() {
+        // --- phase: delete_highlight_removes_the_group_and_its_comments ---
+        // Deleting the highlight through its action removes the highlight *and*
+        // both of its comments — the whole logical group.
+        {
+            let (_app, mut doc, book_id, group) = open_with_annotations();
+            assert_eq!(
+                BooksDoc::annotations_for(&doc, &book_id).len(),
+                5,
+                "hl + 2 comments + note + bookmark"
+            );
+
+            let action = delete_highlight_action(group);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let left = BooksDoc::annotations_for(&doc, &book_id);
+            assert_eq!(left.len(), 2, "only the standalone note + bookmark survive");
+            assert!(
+                left.iter().all(|a| a.group != group),
+                "no row of the deleted group remains (highlight + both comments gone)"
+            );
+        }
+
+        // --- phase: stale_annotation_edit_finalize_and_move_are_refused ---
+        {
+            let (_app, mut doc, book_id, _group) = open_with_annotations();
+            let id = BooksDoc::annotations_for(&doc, &book_id)
+                .into_iter()
+                .find(|annotation| annotation.kind == AnnoKind::Note)
+                .expect("standalone note")
+                .id;
+            BooksDoc::remove_annotation(&mut doc, id);
+
+            for action in [
+                edit_note_action(id, "late edit"),
+                finalize_annotation_action(id, 1_700_000_123_456),
+                move_annotation_action(
+                    id,
+                    AnnotationAnchor {
                         chapter: 0,
+                        block: 9,
+                        start: 0,
+                        end: 5,
+                        excerpt: "late move".into(),
+                    },
+                ),
+            ] {
+                assert!(
+                    matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                    "a stale annotation mutation must report refusal"
+                );
+            }
+
+            // Repeating a delete is deliberately convergence-safe and succeeds.
+            assert!(delete_annotation_action(id).apply(&mut doc).is_ok());
+        }
+
+        // --- phase: stale_highlight_group_mutations_are_refused ---
+        {
+            let (_app, mut doc, book_id, group) = open_with_annotations();
+            BooksDoc::remove_group(&mut doc, group);
+            let new_id = Uuid::from_u128(0xBADD_CAFE_0000_0000_0000_0000_0000_0001);
+
+            let actions = [
+                CommentDraft {
+                    group,
+                    note: NoteDraft {
+                        book_id: book_id.clone(),
+                        id: new_id,
+                        anchor: AnnotationAnchor {
+                            chapter: 0,
+                            block: 3,
+                            start: 0,
+                            end: 12,
+                            excerpt: "a passage".into(),
+                        },
+                        color: HiColor::Green,
+                        text: "late comment".into(),
+                    },
+                }
+                .into_action(),
+                change_color_action(group, HiColor::Pink),
+                EbookAction::HighlightSelection {
+                    book_id,
+                    group: group.to_string(),
+                    chapter: 0,
+                    color: HiColor::Blue.as_str().into(),
+                    remove_groups: Vec::new(),
+                    pieces: vec![HiPiece {
+                        id: new_id.to_string(),
                         block: 3,
                         start: 0,
                         end: 12,
                         excerpt: "a passage".into(),
-                    },
-                    color: HiColor::Green,
-                    text: "late comment".into(),
+                    }],
                 },
+            ];
+            for action in actions {
+                assert!(
+                    matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                    "a mutation against a deleted highlight group must report refusal"
+                );
             }
-            .into_action(),
-            change_color_action(group, HiColor::Pink),
-            EbookAction::HighlightSelection {
-                book_id,
-                group: group.to_string(),
-                chapter: 0,
-                color: HiColor::Blue.as_str().into(),
-                remove_groups: Vec::new(),
-                pieces: vec![HiPiece {
-                    id: new_id.to_string(),
-                    block: 3,
-                    start: 0,
-                    end: 12,
-                    excerpt: "a passage".into(),
-                }],
-            },
-        ];
-        for action in actions {
-            assert!(
-                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
-                "a mutation against a deleted highlight group must report refusal"
-            );
+
+            assert!(delete_highlight_action(group).apply(&mut doc).is_ok());
         }
 
-        assert!(delete_highlight_action(group).apply(&mut doc).is_ok());
-    }
-
-    #[test]
-    fn absolute_bookmark_actions_converge_after_divergent_peer_changes() {
-        let (_app, mut base, book_id, _group) = open_with_annotations();
-        let mut left = base.fork().with_actor(ActorId::random());
-        let mut right = base.fork().with_actor(ActorId::random());
-        let authored = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0001);
-        let concurrent = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0002);
-        let add = set_bookmark_action(&book_id, authored, 0, 9, "new bookmark", true, Vec::new());
-
-        // A second reader adds its own bookmark before it receives the exact
-        // authored add action. Both replicas execute an add, never an
-        // accidental receiver-state-dependent delete.
-        add.apply(&mut left).expect("author add applies");
-        let mut competing = Annotation::new(&book_id, AnnoKind::Bookmark, 0, 9);
-        competing.id = concurrent;
-        competing.group = concurrent;
-        BooksDoc::upsert_annotation(&mut right, &competing);
-        add.apply(&mut right).expect("peer replays authored add");
-        left.merge_incoming(&mut right).expect("replicas merge");
-        right.merge_incoming(&mut left).expect("replicas converge");
-
-        for doc in [&left, &right] {
-            let ids = BooksDoc::annotations_for(doc, &book_id)
-                .into_iter()
-                .filter(|annotation| annotation.kind == AnnoKind::Bookmark && annotation.block == 9)
-                .map(|annotation| annotation.id)
-                .collect::<Vec<_>>();
-            assert!(ids.contains(&authored));
-            assert!(ids.contains(&concurrent));
-        }
-
-        // The authored removal names exactly the bookmark it saw. It cannot
-        // delete the concurrent bookmark just because a receiver has one.
-        let remove = set_bookmark_action(
-            &book_id,
-            Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0003),
-            0,
-            9,
-            "new bookmark",
-            false,
-            vec![authored],
-        );
-        remove.apply(&mut left).expect("author remove applies");
-        remove
-            .apply(&mut right)
-            .expect("peer replays authored remove");
-        left.merge_incoming(&mut right)
-            .expect("replicas merge removal");
-        right
-            .merge_incoming(&mut left)
-            .expect("replicas converge removal");
-        for doc in [&left, &right] {
-            let ids = BooksDoc::annotations_for(doc, &book_id)
-                .into_iter()
-                .filter(|annotation| annotation.kind == AnnoKind::Bookmark && annotation.block == 9)
-                .map(|annotation| annotation.id)
-                .collect::<Vec<_>>();
-            assert_eq!(ids, vec![concurrent]);
-        }
-    }
-
-    #[test]
-    fn legacy_bookmark_toggle_is_decoded_but_refused() {
-        let (_app, mut doc, book_id, _group) = open_with_annotations();
-        let legacy = toggle_bookmark_action(
-            &book_id,
-            Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0004),
-            0,
-            9,
-            "legacy",
-        );
-        assert!(matches!(
-            legacy.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-    }
-
-    #[test]
-    fn progress_action_preserves_open_timestamp() {
-        let (_app, mut doc, book_id, _group) = open_with_annotations();
-        set_progress_action(&book_id, reading_progress())
-            .apply(&mut doc)
-            .expect("action applies");
-        assert_eq!(BooksDoc::read_progress(&doc, &book_id), reading_progress());
-    }
-
-    #[test]
-    fn editor_finalisation_stamps_the_note_through_the_action() {
-        let (_app, mut doc, book_id, _group) = open_with_annotations();
-        let id = first_note(&doc, &book_id);
-        finalize_annotation_action(id, 1_700_000_123_456)
-            .apply(&mut doc)
-            .expect("finalisation applies");
-        assert_eq!(
-            BooksDoc::annotations_for(&doc, &book_id)
-                .into_iter()
-                .find(|annotation| annotation.id == id)
-                .expect("note remains")
-                .created,
-            1_700_000_123_456,
-        );
-    }
-
-    /// Re-anchoring a highlight (the draggable marker's action) moves exactly the
-    /// one row it names, leaving the highlight's comments in place.
-    #[test]
-    fn move_annotation_reanchors_one_row() {
-        let (_app, mut a, book_id, group) = open_with_annotations();
-        let hl = BooksDoc::annotations_for(&a, &book_id)
-            .into_iter()
-            .find(|a| a.kind == AnnoKind::Highlight)
-            .expect("the seeded highlight");
-        assert_eq!(hl.block, 3, "precondition: the highlight starts on block 3");
-
-        move_highlight_action(hl.id).apply(&mut a).unwrap();
-
-        // The same highlight row moved — its id is preserved.
-        let moved = BooksDoc::annotations_for(&a, &book_id)
-            .into_iter()
-            .find(|x| x.id == hl.id)
-            .expect("the highlight still exists after the move");
-        assert_eq!(
-            moved.block, 9,
-            "the highlight re-anchored to the target block"
-        );
-        assert_eq!((moved.start, moved.end), (0, 5), "with the moved range");
-        // Its two comments (Note rows sharing the group) are untouched.
-        let comments = BooksDoc::annotations_for(&a, &book_id)
-            .into_iter()
-            .filter(|x| x.kind == AnnoKind::Note && x.group == group)
-            .count();
-        assert_eq!(
-            comments, 2,
-            "the highlight's comments survived the re-anchor"
-        );
-    }
-
-    #[test]
-    fn exact_resource_lookup_materialises_an_unhydrated_library_book() {
-        let mut doc = AutoCommit::new();
-        BooksDoc::upsert_library_entry(
-            &mut doc,
-            &LibraryEntry {
-                id: "book:remote-only".into(),
-                shared: true,
-                title: "Waiting for bytes".into(),
-                author: "Remote Reader".into(),
-                subject: String::new(),
-                added: 1,
-            },
-        );
-
-        let provider = crate::search_provider::BookSearchProvider::new_with_registry(
-            &[],
-            &[],
-            &BooksDoc::read_library_entries(&doc),
-        );
-        let resource = ui::search::SearchProvider::resolve_action_resource(
-            &provider,
-            &tilo_actions::ActionAddress::new("ebook.book:book:remote-only", "open"),
-        );
-        let resource = resource.expect("remote bytes expose a typed hydrate capability");
-        let open = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("download and open");
-        assert_eq!(open.label, "Download and open");
-        let ActionInput::Immediate(operation) = &open.input else {
-            panic!("remote hydrate is replayable");
-        };
-        assert_eq!(
-            decode_operation(&operation.type_id, &operation.payload).unwrap(),
-            Some(EbookOperation::HydrateSharedBook {
-                book_id: "book:remote-only".into(),
-            })
-        );
-        let roots = provide_resources(&[], &doc);
-        assert!(roots[0].children.is_empty());
-        let resource = ui::search::SearchProvider::search(&provider, "Waiting")
-            .pop()
-            .expect("remote metadata row");
-        assert_eq!(resource.kind, crate::search_provider::BOOK_KIND);
-    }
-
-    #[test]
-    fn concurrent_note_edit_and_move_preserve_both_fields() {
-        let mut base = AutoCommit::new().with_actor(ActorId::random());
-        let note = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
-            .with_excerpt("old anchor")
-            .with_note("old note");
-        BooksDoc::upsert_annotation(&mut base, &note);
-        let mut editing = base.fork().with_actor(ActorId::random());
-        let mut moving = base.fork().with_actor(ActorId::random());
-
-        edit_note_action(note.id, "edited concurrently")
-            .apply(&mut editing)
-            .unwrap();
-        move_annotation_action(
-            note.id,
-            AnnotationAnchor {
-                chapter: 2,
-                block: 7,
-                start: 3,
-                end: 12,
-                excerpt: "new anchor".into(),
-            },
-        )
-        .apply(&mut moving)
-        .unwrap();
-        editing.merge_incoming(&mut moving).unwrap();
-        moving.merge_incoming(&mut editing).unwrap();
-
-        for peer in [&editing, &moving] {
-            let merged = BooksDoc::list_annotations(peer)
-                .into_iter()
-                .find(|annotation| annotation.id == note.id)
-                .unwrap();
-            assert_eq!(merged.note, "edited concurrently");
-            assert_eq!((merged.chapter, merged.block), (2, 7));
-            assert_eq!((merged.start, merged.end), (3, 12));
-            assert_eq!(merged.excerpt, "new anchor");
-        }
-    }
-
-    #[test]
-    fn concurrent_comment_edit_and_group_recolour_preserve_both_fields() {
-        let mut base = AutoCommit::new().with_actor(ActorId::random());
-        let group = Uuid::from_u128(0xABCD);
-        let highlight =
-            Annotation::new("book:concurrency", AnnoKind::Highlight, 0, 1).with_group(group);
-        let comment = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
-            .with_group(group)
-            .with_note("old comment");
-        BooksDoc::upsert_annotation(&mut base, &highlight);
-        BooksDoc::upsert_annotation(&mut base, &comment);
-        let mut editing = base.fork().with_actor(ActorId::random());
-        let mut recolouring = base.fork().with_actor(ActorId::random());
-
-        edit_note_action(comment.id, "edited concurrently")
-            .apply(&mut editing)
-            .unwrap();
-        change_color_action(group, HiColor::Purple)
-            .apply(&mut recolouring)
-            .unwrap();
-        editing.merge_incoming(&mut recolouring).unwrap();
-        recolouring.merge_incoming(&mut editing).unwrap();
-
-        for peer in [&editing, &recolouring] {
-            let rows = BooksDoc::list_annotations(peer);
-            assert!(
-                rows.iter()
-                    .all(|annotation| annotation.color == HiColor::Purple)
-            );
+        // --- phase: editor_finalisation_stamps_the_note_through_the_action ---
+        {
+            let (_app, mut doc, book_id, _group) = open_with_annotations();
+            let id = first_note(&doc, &book_id);
+            finalize_annotation_action(id, 1_700_000_123_456)
+                .apply(&mut doc)
+                .expect("finalisation applies");
             assert_eq!(
-                rows.iter()
-                    .find(|annotation| annotation.id == comment.id)
+                BooksDoc::annotations_for(&doc, &book_id)
+                    .into_iter()
+                    .find(|annotation| annotation.id == id)
+                    .expect("note remains")
+                    .created,
+                1_700_000_123_456,
+            );
+        }
+
+        // --- phase: move_annotation_reanchors_one_row ---
+        // Re-anchoring a highlight (the draggable marker's action) moves exactly the
+        // one row it names, leaving the highlight's comments in place.
+        {
+            let (_app, mut a, book_id, group) = open_with_annotations();
+            let hl = BooksDoc::annotations_for(&a, &book_id)
+                .into_iter()
+                .find(|a| a.kind == AnnoKind::Highlight)
+                .expect("the seeded highlight");
+            assert_eq!(hl.block, 3, "precondition: the highlight starts on block 3");
+
+            move_highlight_action(hl.id).apply(&mut a).unwrap();
+
+            // The same highlight row moved — its id is preserved.
+            let moved = BooksDoc::annotations_for(&a, &book_id)
+                .into_iter()
+                .find(|x| x.id == hl.id)
+                .expect("the highlight still exists after the move");
+            assert_eq!(
+                moved.block, 9,
+                "the highlight re-anchored to the target block"
+            );
+            assert_eq!((moved.start, moved.end), (0, 5), "with the moved range");
+            // Its two comments (Note rows sharing the group) are untouched.
+            let comments = BooksDoc::annotations_for(&a, &book_id)
+                .into_iter()
+                .filter(|x| x.kind == AnnoKind::Note && x.group == group)
+                .count();
+            assert_eq!(
+                comments, 2,
+                "the highlight's comments survived the re-anchor"
+            );
+        }
+
+        // --- phase: concurrent_note_edit_and_move_preserve_both_fields ---
+        {
+            let mut base = AutoCommit::new().with_actor(ActorId::random());
+            let note = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
+                .with_excerpt("old anchor")
+                .with_note("old note");
+            BooksDoc::upsert_annotation(&mut base, &note);
+            let mut editing = base.fork().with_actor(ActorId::random());
+            let mut moving = base.fork().with_actor(ActorId::random());
+
+            edit_note_action(note.id, "edited concurrently")
+                .apply(&mut editing)
+                .unwrap();
+            move_annotation_action(
+                note.id,
+                AnnotationAnchor {
+                    chapter: 2,
+                    block: 7,
+                    start: 3,
+                    end: 12,
+                    excerpt: "new anchor".into(),
+                },
+            )
+            .apply(&mut moving)
+            .unwrap();
+            editing.merge_incoming(&mut moving).unwrap();
+            moving.merge_incoming(&mut editing).unwrap();
+
+            for peer in [&editing, &moving] {
+                let merged = BooksDoc::list_annotations(peer)
+                    .into_iter()
+                    .find(|annotation| annotation.id == note.id)
+                    .unwrap();
+                assert_eq!(merged.note, "edited concurrently");
+                assert_eq!((merged.chapter, merged.block), (2, 7));
+                assert_eq!((merged.start, merged.end), (3, 12));
+                assert_eq!(merged.excerpt, "new anchor");
+            }
+        }
+
+        // --- phase: concurrent_comment_edit_and_group_recolour_preserve_both_fields ---
+        {
+            let mut base = AutoCommit::new().with_actor(ActorId::random());
+            let group = Uuid::from_u128(0xABCD);
+            let highlight =
+                Annotation::new("book:concurrency", AnnoKind::Highlight, 0, 1).with_group(group);
+            let comment = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
+                .with_group(group)
+                .with_note("old comment");
+            BooksDoc::upsert_annotation(&mut base, &highlight);
+            BooksDoc::upsert_annotation(&mut base, &comment);
+            let mut editing = base.fork().with_actor(ActorId::random());
+            let mut recolouring = base.fork().with_actor(ActorId::random());
+
+            edit_note_action(comment.id, "edited concurrently")
+                .apply(&mut editing)
+                .unwrap();
+            change_color_action(group, HiColor::Purple)
+                .apply(&mut recolouring)
+                .unwrap();
+            editing.merge_incoming(&mut recolouring).unwrap();
+            recolouring.merge_incoming(&mut editing).unwrap();
+
+            for peer in [&editing, &recolouring] {
+                let rows = BooksDoc::list_annotations(peer);
+                assert!(
+                    rows.iter()
+                        .all(|annotation| annotation.color == HiColor::Purple)
+                );
+                assert_eq!(
+                    rows.iter()
+                        .find(|annotation| annotation.id == comment.id)
+                        .unwrap()
+                        .note,
+                    "edited concurrently"
+                );
+            }
+        }
+    }
+
+    /// Absolute bookmark actions converge; legacy toggles and malformed or oversized actions are refused atomically.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn bookmarks_converge_and_invalid_actions_are_refused_atomically() {
+        // --- phase: absolute_bookmark_actions_converge_after_divergent_peer_changes ---
+        {
+            let (_app, mut base, book_id, _group) = open_with_annotations();
+            let mut left = base.fork().with_actor(ActorId::random());
+            let mut right = base.fork().with_actor(ActorId::random());
+            let authored = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0001);
+            let concurrent = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0002);
+            let add =
+                set_bookmark_action(&book_id, authored, 0, 9, "new bookmark", true, Vec::new());
+
+            // A second reader adds its own bookmark before it receives the exact
+            // authored add action. Both replicas execute an add, never an
+            // accidental receiver-state-dependent delete.
+            add.apply(&mut left).expect("author add applies");
+            let mut competing = Annotation::new(&book_id, AnnoKind::Bookmark, 0, 9);
+            competing.id = concurrent;
+            competing.group = concurrent;
+            BooksDoc::upsert_annotation(&mut right, &competing);
+            add.apply(&mut right).expect("peer replays authored add");
+            left.merge_incoming(&mut right).expect("replicas merge");
+            right.merge_incoming(&mut left).expect("replicas converge");
+
+            for doc in [&left, &right] {
+                let ids = BooksDoc::annotations_for(doc, &book_id)
+                    .into_iter()
+                    .filter(|annotation| {
+                        annotation.kind == AnnoKind::Bookmark && annotation.block == 9
+                    })
+                    .map(|annotation| annotation.id)
+                    .collect::<Vec<_>>();
+                assert!(ids.contains(&authored));
+                assert!(ids.contains(&concurrent));
+            }
+
+            // The authored removal names exactly the bookmark it saw. It cannot
+            // delete the concurrent bookmark just because a receiver has one.
+            let remove = set_bookmark_action(
+                &book_id,
+                Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0003),
+                0,
+                9,
+                "new bookmark",
+                false,
+                vec![authored],
+            );
+            remove.apply(&mut left).expect("author remove applies");
+            remove
+                .apply(&mut right)
+                .expect("peer replays authored remove");
+            left.merge_incoming(&mut right)
+                .expect("replicas merge removal");
+            right
+                .merge_incoming(&mut left)
+                .expect("replicas converge removal");
+            for doc in [&left, &right] {
+                let ids = BooksDoc::annotations_for(doc, &book_id)
+                    .into_iter()
+                    .filter(|annotation| {
+                        annotation.kind == AnnoKind::Bookmark && annotation.block == 9
+                    })
+                    .map(|annotation| annotation.id)
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, vec![concurrent]);
+            }
+        }
+
+        // --- phase: legacy_bookmark_toggle_is_decoded_but_refused ---
+        {
+            let (_app, mut doc, book_id, _group) = open_with_annotations();
+            let legacy = toggle_bookmark_action(
+                &book_id,
+                Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0004),
+                0,
+                9,
+                "legacy",
+            );
+            assert!(matches!(
+                legacy.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+        }
+
+        // --- phase: malformed_or_oversized_actions_are_atomic_refusals ---
+        {
+            let (_app, mut doc, book_id, group) = open_with_annotations();
+            let before = BooksDoc::annotations_for(&doc, &book_id);
+            let invalid = EbookAction::HighlightSelection {
+                book_id: book_id.clone(),
+                group: Uuid::new_v4().to_string(),
+                chapter: 0,
+                color: HiColor::Yellow.as_str().into(),
+                remove_groups: vec![group.to_string()],
+                pieces: vec![HiPiece {
+                    id: Uuid::new_v4().to_string(),
+                    block: 1,
+                    start: 9,
+                    end: 2,
+                    excerpt: "backwards".into(),
+                }],
+            };
+            assert!(matches!(
+                invalid.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(
+                BooksDoc::annotations_for(&doc, &book_id).len(),
+                before.len()
+            );
+            assert!(!BooksDoc::group_is_deleted(&doc, group));
+
+            let note_id = before
+                .iter()
+                .find(|annotation| annotation.kind == AnnoKind::Note)
+                .unwrap()
+                .id;
+            let oversized = edit_note_action(note_id, &"x".repeat(MAX_NOTE_BYTES + 1));
+            assert!(matches!(
+                oversized.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(
+                BooksDoc::list_annotations(&doc)
+                    .into_iter()
+                    .find(|annotation| annotation.id == note_id)
                     .unwrap()
                     .note,
-                "edited concurrently"
+                before
+                    .iter()
+                    .find(|annotation| annotation.id == note_id)
+                    .unwrap()
+                    .note
             );
         }
-    }
-
-    #[test]
-    fn malformed_or_oversized_actions_are_atomic_refusals() {
-        let (_app, mut doc, book_id, group) = open_with_annotations();
-        let before = BooksDoc::annotations_for(&doc, &book_id);
-        let invalid = EbookAction::HighlightSelection {
-            book_id: book_id.clone(),
-            group: Uuid::new_v4().to_string(),
-            chapter: 0,
-            color: HiColor::Yellow.as_str().into(),
-            remove_groups: vec![group.to_string()],
-            pieces: vec![HiPiece {
-                id: Uuid::new_v4().to_string(),
-                block: 1,
-                start: 9,
-                end: 2,
-                excerpt: "backwards".into(),
-            }],
-        };
-        assert!(matches!(
-            invalid.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(
-            BooksDoc::annotations_for(&doc, &book_id).len(),
-            before.len()
-        );
-        assert!(!BooksDoc::group_is_deleted(&doc, group));
-
-        let note_id = before
-            .iter()
-            .find(|annotation| annotation.kind == AnnoKind::Note)
-            .unwrap()
-            .id;
-        let oversized = edit_note_action(note_id, &"x".repeat(MAX_NOTE_BYTES + 1));
-        assert!(matches!(
-            oversized.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(
-            BooksDoc::list_annotations(&doc)
-                .into_iter()
-                .find(|annotation| annotation.id == note_id)
-                .unwrap()
-                .note,
-            before
-                .iter()
-                .find(|annotation| annotation.id == note_id)
-                .unwrap()
-                .note
-        );
     }
 }

@@ -204,43 +204,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalid_language_is_refused_before_reading_pixels() {
-        let open = OpenImage::from_path("/not/read.png", 1, 1);
-        assert!(recognize_text(&open, "eng; rm -rf", &ContentStore::memory()).is_err());
-    }
+    fn local_analysis_refuses_bad_language_truncates_safely_and_pins_vision_models() {
+        eprintln!("phase invalid_language_is_refused_before_reading_pixels");
+        {
+            let open = OpenImage::from_path("/not/read.png", 1, 1);
+            assert!(recognize_text(&open, "eng; rm -rf", &ContentStore::memory()).is_err());
+        }
 
-    #[test]
-    fn truncation_keeps_unicode_boundaries() {
-        let mut value = "ééé".to_owned();
-        truncate_chars(&mut value, 2);
-        assert_eq!(value, "éé");
-    }
+        eprintln!("phase truncation_keeps_unicode_boundaries");
+        {
+            let mut value = "ééé".to_owned();
+            truncate_chars(&mut value, 2);
+            assert_eq!(value, "éé");
+        }
 
-    #[test]
-    fn vision_output_stays_generic_and_records_the_pinned_model() {
-        let open = OpenImage::from_path("vision.png", 3, 2).with_content("b".repeat(64));
-        let capability = tilo_vision::LocalVisionCapability {
-            profile_id: "local".to_owned(),
-            model_id: "vision-model".to_owned(),
-            model_label: "Vision model".to_owned(),
-            revision: "a".repeat(64),
-        };
-        let analysis = image_analysis_from_vision_result(
-            &open,
-            &capability,
-            tilo_vision::Analysis {
-                description: "A dog beside a bicycle".to_owned(),
-                labels: vec!["dog".to_owned(), "bicycle".to_owned()],
-                pets: vec!["dog".to_owned()],
-                ocr: "42 North Street".to_owned(),
-            },
-        );
-        assert_eq!(analysis.objects, ["dog", "bicycle"]);
-        assert!(analysis.people.is_empty());
-        assert_eq!(analysis.pets, ["dog"]);
-        assert_eq!(analysis.ocr_text, "42 North Street");
-        assert_eq!(analysis.provenance.source, "local-vision");
-        assert_eq!(analysis.provenance.model_id, "vision-model");
-        assert_eq!(analysis.provenance.model_revision, "a".repeat(64));
+        eprintln!("phase vision_output_stays_generic_and_records_the_pinned_model");
+        {
+            let open = OpenImage::from_path("vision.png", 3, 2).with_content("b".repeat(64));
+            let capability = tilo_vision::LocalVisionCapability {
+                profile_id: "local".to_owned(),
+                model_id: "vision-model".to_owned(),
+                model_label: "Vision model".to_owned(),
+                revision: "a".repeat(64),
+            };
+            let analysis = image_analysis_from_vision_result(
+                &open,
+                &capability,
+                tilo_vision::Analysis {
+                    description: "A dog beside a bicycle".to_owned(),
+                    labels: vec!["dog".to_owned(), "bicycle".to_owned()],
+                    pets: vec!["dog".to_owned()],
+                    ocr: "42 North Street".to_owned(),
+                },
+            );
+            assert_eq!(analysis.objects, ["dog", "bicycle"]);
+            assert!(analysis.people.is_empty());
+            assert_eq!(analysis.pets, ["dog"]);
+            assert_eq!(analysis.ocr_text, "42 North Street");
+            assert_eq!(analysis.provenance.source, "local-vision");
+            assert_eq!(analysis.provenance.model_id, "vision-model");
+            assert_eq!(analysis.provenance.model_revision, "a".repeat(64));
+        }
     }
 }

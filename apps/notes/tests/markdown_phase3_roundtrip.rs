@@ -21,69 +21,20 @@
 use notes::markdown::{BlockSpec, parse, serialize};
 
 #[test]
-fn round_trip_paragraph_only() {
-    let md = "Hello, world.\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_all_heading_levels() {
-    let md = "# H1\n\n## H2\n\n### H3\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_bullets_at_three_indents() {
-    let md = "- a\n\n  - b\n\n    - c\n";
-    let blocks = parse(md);
-    assert_eq!(blocks.len(), 3);
-    match &blocks[0] {
-        BlockSpec::Bullet { indent, text } => {
-            assert_eq!(*indent, 0);
-            assert_eq!(text.text, "a");
-        }
-        b => panic!("expected Bullet, got {b:?}"),
-    }
-    match &blocks[1] {
-        BlockSpec::Bullet { indent, .. } => assert_eq!(*indent, 1),
-        b => panic!("expected Bullet, got {b:?}"),
-    }
-    match &blocks[2] {
-        BlockSpec::Bullet { indent, .. } => assert_eq!(*indent, 2),
-        b => panic!("expected Bullet, got {b:?}"),
-    }
-    assert_eq!(serialize(&blocks), md);
-}
-
-#[test]
-fn round_trip_checklist_done_and_not() {
-    let md = "- [ ] todo\n\n- [x] done\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_code_block_rust_lang() {
-    let md = "```rust\nfn main() {}\n```\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_code_block_no_lang() {
-    let md = "```\nplain\n```\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_divider_between_paragraphs() {
-    let md = "before\n\n---\n\nafter\n";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn round_trip_kitchen_sink() {
-    // Pins every block kind in one document. If this regresses, the
-    // grammar has drifted — likely in the Phase-3 serializer.
-    let md = "\
+fn every_block_kind_round_trips_byte_stably() {
+    // (case, markdown that must survive parse -> serialize unchanged)
+    let cases = [
+        ("paragraph only", "Hello, world.\n"),
+        ("all heading levels", "# H1\n\n## H2\n\n### H3\n"),
+        ("checklist done and not", "- [ ] todo\n\n- [x] done\n"),
+        ("code block with rust lang", "```rust\nfn main() {}\n```\n"),
+        ("code block without lang", "```\nplain\n```\n"),
+        ("divider between paragraphs", "before\n\n---\n\nafter\n"),
+        // Pins every block kind in one document. If this regresses, the
+        // grammar has drifted — likely in the Phase-3 serializer.
+        (
+            "kitchen sink",
+            "\
 # Welcome
 
 This is a paragraph.
@@ -105,32 +56,38 @@ fn main() {}
 ---
 
 after the rule
-";
-    assert_eq!(serialize(&parse(md)), md);
-}
-
-#[test]
-fn parse_accepts_max_indent_level() {
-    // Exactly 5 levels (= 10 spaces) is the MAX_LIST_INDENT cap and
-    // should parse as a bullet. The parser stops chewing indent
-    // groups at 5 — beyond that, the line falls through to a
-    // paragraph (covered separately).
-    let md = "          - deep\n"; // 10 spaces + "- deep"
-    let blocks = parse(md);
-    match &blocks[0] {
-        BlockSpec::Bullet { indent, text } => {
-            assert_eq!(*indent, 5);
-            assert_eq!(text.text, "deep");
-        }
-        b => panic!("expected Bullet, got {b:?}"),
+",
+        ),
+    ];
+    for (case, md) in cases {
+        assert_eq!(serialize(&parse(md)), md, "case {case}");
     }
-    assert_eq!(serialize(&blocks), md);
-}
 
-#[test]
-fn star_bullet_normalises_to_dash() {
     // Both `- ` and `* ` are accepted; we always emit `- ` so the
     // output is canonical.
-    let blocks = parse("* alpha\n");
-    assert_eq!(serialize(&blocks), "- alpha\n");
+    assert_eq!(serialize(&parse("* alpha\n")), "- alpha\n");
+}
+
+#[test]
+fn bullet_indents_parse_up_to_the_cap_and_round_trip() {
+    // (markdown, expected (indent, text) per bullet). Exactly 5 levels
+    // (= 10 spaces) is the MAX_LIST_INDENT cap and should parse as a
+    // bullet. The parser stops chewing indent groups at 5 — beyond that,
+    // the line falls through to a paragraph (covered separately).
+    let cases: [(&str, &[(u8, &str)]); 2] = [
+        ("- a\n\n  - b\n\n    - c\n", &[(0, "a"), (1, "b"), (2, "c")]),
+        ("          - deep\n", &[(5, "deep")]),
+    ];
+    for (md, want) in cases {
+        let blocks = parse(md);
+        let got: Vec<(u8, &str)> = blocks
+            .iter()
+            .map(|block| match block {
+                BlockSpec::Bullet { indent, text } => (*indent, text.text.as_str()),
+                b => panic!("expected Bullet in {md:?}, got {b:?}"),
+            })
+            .collect();
+        assert_eq!(got, want, "bullets of {md:?}");
+        assert_eq!(serialize(&blocks), md, "round-trip of {md:?}");
+    }
 }

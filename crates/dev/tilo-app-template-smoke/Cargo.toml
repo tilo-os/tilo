@@ -6,9 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
 
 [build-dependencies]
 tilo-app-cli = { path = "../tilo-app-cli" }
@@ -17,7 +16,7 @@ tilo-app-cli = { path = "../tilo-app-cli" }
 # cargo-machete cannot observe these dependencies in the crate's handwritten
 # source or its build script even though removing them breaks the compile.
 [package.metadata.cargo-machete]
-ignored = ["tilo-actions", "tilo-app-cli", "serde", "serde_json"]
+ignored = ["tilo-app-cli"]
 
 [lints]
 workspace = true

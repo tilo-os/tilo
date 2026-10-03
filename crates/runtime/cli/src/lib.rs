@@ -157,8 +157,9 @@ pub fn data_home() -> PathBuf {
         return home.join(".local/share");
     }
     // Temporary storage is not persistent and is used when the platform's
-    // home/data environment is unavailable.
-    std::env::temp_dir()
+    // home/data environment is unavailable. The page has neither: a bare
+    // relative path fails every file operation there instead of panicking.
+    xdg_paths::temp_dir().unwrap_or_default()
 }
 
 /// The XDG data dir fallback for state outside Tilo; public so an app can
@@ -178,26 +179,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invoked_command_reads_env() {
+    fn the_environment_names_the_command_package_and_state_dir() {
         let mut env = tilo_test_env::ScopedEnv::new();
+        // invoked_command reads TILO_CLI_COMMAND and is None once it is gone.
         env.set("TILO_CLI_COMMAND", "notes");
         assert_eq!(invoked_command().as_deref(), Some("notes"));
         env.remove("TILO_CLI_COMMAND");
         assert!(invoked_command().is_none());
-    }
-
-    #[test]
-    fn package_id_falls_back_to_standalone() {
-        let mut env = tilo_test_env::ScopedEnv::new();
+        // package_id falls back to the standalone id without TILO_PACKAGE_ID.
         env.remove("TILO_PACKAGE_ID");
         assert_eq!(package_id(), "tilo-standalone");
         env.set("TILO_PACKAGE_ID", "dev.example.notes");
         assert_eq!(package_id(), "dev.example.notes");
-    }
-
-    #[test]
-    fn standalone_state_dir_honours_xdg() {
-        let mut env = tilo_test_env::ScopedEnv::new();
+        // the standalone state dir honours XDG_DATA_HOME.
         env.set("XDG_DATA_HOME", "/tmp/xdg");
         assert_eq!(
             standalone_state_dir("notes.tilo.sh"),
@@ -206,15 +200,17 @@ mod tests {
     }
 
     #[test]
-    fn run_main_returns_zero_on_ok() {
-        let code = run_main(|| Ok(()));
-        // ExitCode isn't PartialEq, but we can format it.
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(0)));
-    }
-
-    #[test]
-    fn run_main_returns_one_on_err() {
-        let code = run_main(|| Err(anyhow::anyhow!("boom")));
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(1)));
+    fn run_main_maps_ok_to_zero_and_err_to_one() {
+        let cases: [(&str, anyhow::Result<()>, u8); 2] =
+            [("ok", Ok(()), 0), ("err", Err(anyhow::anyhow!("boom")), 1)];
+        for (name, result, want) in cases {
+            let code = run_main(move || result);
+            // ExitCode isn't PartialEq, but we can format it.
+            assert_eq!(
+                format!("{code:?}"),
+                format!("{:?}", ExitCode::from(want)),
+                "case {name}"
+            );
+        }
     }
 }

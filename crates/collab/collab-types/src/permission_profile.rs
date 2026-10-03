@@ -149,89 +149,94 @@ mod tests {
     use super::*;
     use crate::caps::{Actor, CapDecision, ResourceRef, decide_capability};
 
+    /// An app and sub-action profile is real enforced authority, and ambiguous profiles are rejected
+    /// before any assignment exists.
     #[test]
-    fn app_and_sub_action_profile_is_real_enforced_authority() {
-        let profile = PermissionProfile {
-            name: "Release reviewer".into(),
-            description: "Can inspect Builds and approve exactly one action".into(),
-            rules: vec![
-                PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
-                PermissionProfileRule::grant(
-                    Scope::Action {
+    fn permission_profiles_are_enforced_authority_and_unambiguous() {
+        // Phase: app_and_sub_action_profile_is_real_enforced_authority.
+        {
+            let profile = PermissionProfile {
+                name: "Release reviewer".into(),
+                description: "Can inspect Builds and approve exactly one action".into(),
+                rules: vec![
+                    PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
+                    PermissionProfileRule::grant(
+                        Scope::Action {
+                            app: "org.tilo.Builds".into(),
+                            action: "release.approve".into(),
+                        },
+                        Verb::Write,
+                    ),
+                ],
+            };
+            let caps = profile
+                .assign_to(
+                    &Subject::person("ada"),
+                    &Principal::Person("owner".into()),
+                    Expiry::Never,
+                )
+                .unwrap();
+            let actor = Actor::person(None, "ada");
+            assert_eq!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::App("org.tilo.Builds".into()),
+                    Verb::Read,
+                    &caps,
+                    None
+                ),
+                CapDecision::Allow
+            );
+            assert_eq!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::Action {
                         app: "org.tilo.Builds".into(),
-                        action: "release.approve".into(),
+                        action: "release.approve".into()
                     },
                     Verb::Write,
+                    &caps,
+                    None
                 ),
-            ],
-        };
-        let caps = profile
-            .assign_to(
-                &Subject::person("ada"),
-                &Principal::Person("owner".into()),
-                Expiry::Never,
-            )
-            .unwrap();
-        let actor = Actor::person(None, "ada");
-        assert_eq!(
-            decide_capability(
-                &actor,
-                &ResourceRef::App("org.tilo.Builds".into()),
-                Verb::Read,
-                &caps,
-                None
-            ),
-            CapDecision::Allow
-        );
-        assert_eq!(
-            decide_capability(
-                &actor,
-                &ResourceRef::Action {
-                    app: "org.tilo.Builds".into(),
-                    action: "release.approve".into()
-                },
-                Verb::Write,
-                &caps,
-                None
-            ),
-            CapDecision::Allow
-        );
-        assert_ne!(
-            decide_capability(
-                &actor,
-                &ResourceRef::Action {
-                    app: "org.tilo.Builds".into(),
-                    action: "release.delete".into()
-                },
-                Verb::Write,
-                &caps,
-                None
-            ),
-            CapDecision::Allow
-        );
-        assert!(
-            caps.iter()
-                .all(|cap| cap.id.starts_with("profile:") && cap.granted_by.is_some())
-        );
-    }
+                CapDecision::Allow
+            );
+            assert_ne!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::Action {
+                        app: "org.tilo.Builds".into(),
+                        action: "release.delete".into()
+                    },
+                    Verb::Write,
+                    &caps,
+                    None
+                ),
+                CapDecision::Allow
+            );
+            assert!(
+                caps.iter()
+                    .all(|cap| cap.id.starts_with("profile:") && cap.granted_by.is_some())
+            );
+        }
 
-    #[test]
-    fn rejects_ambiguous_profiles_before_any_assignment_exists() {
-        let profile = PermissionProfile {
-            name: "Confused".into(),
-            description: String::new(),
-            rules: vec![
-                PermissionProfileRule::grant(Scope::App("notes".into()), Verb::Write),
-                PermissionProfileRule::restrict(Scope::App("notes".into()), Verb::Read),
-            ],
-        };
-        assert_eq!(
-            profile.assign_to(
-                &Subject::person("ada"),
-                &Principal::Person("owner".into()),
-                Expiry::Never
-            ),
-            Err(PermissionProfileError::ContradictoryRule)
-        );
+        // Phase: rejects_ambiguous_profiles_before_any_assignment_exists.
+        {
+            let profile = PermissionProfile {
+                name: "Confused".into(),
+                description: String::new(),
+                rules: vec![
+                    PermissionProfileRule::grant(Scope::App("notes".into()), Verb::Write),
+                    PermissionProfileRule::restrict(Scope::App("notes".into()), Verb::Read),
+                ],
+            };
+            assert_eq!(
+                profile.assign_to(
+                    &Subject::person("ada"),
+                    &Principal::Person("owner".into()),
+                    Expiry::Never
+                ),
+                Err(PermissionProfileError::ContradictoryRule)
+            );
+        }
     }
 }

@@ -46,6 +46,11 @@ pub trait Presenter: Send {
         self.present(&frame.scene, output);
     }
 
+    /// Build the renderer before the first frame arrives. Called once on the render thread as it
+    /// starts, so device setup and shader compilation overlap the compositor's own startup
+    /// instead of delaying the first frame.
+    fn prepare(&mut self) {}
+
     /// The output was resized; default no-op for presenters with a fixed surface.
     fn resize(&mut self, _size: (u32, u32)) {}
 
@@ -130,6 +135,7 @@ impl PresentPipe {
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
                 let _done = FinishedOnDrop(thread_finished);
+                presenter.prepare();
                 for msg in rx {
                     match msg {
                         PresentMsg::Frame {
@@ -146,7 +152,10 @@ impl PresentPipe {
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
-                            if queue_wait >= SLOW_FRAME_LIFECYCLE
+                            // Keep the first completed presentation observable even when
+                            // it is fast and the event loop then parks indefinitely.
+                            if serial == 1
+                                || queue_wait >= SLOW_FRAME_LIFECYCLE
                                 || render >= SLOW_FRAME_LIFECYCLE
                                 || total >= SLOW_FRAME_LIFECYCLE
                             {
@@ -431,332 +440,332 @@ mod tests {
     // gate, so locals drop in reverse order and the render thread is released before `shutdown`
     // waits on it — the other order still works but pays `SHUTDOWN_GRACE` on every teardown instead of exercising the clean path.
 
-    fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .unwrap_or_else(std::time::Instant::now);
-        while std::time::Instant::now() < deadline {
-            if cond() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(1));
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn frames_present_asynchronously_on_the_render_thread() {
+        fn a_scene_can_cross_a_thread_boundary() {
+            // The whole design rests on this: if `Scene` were not `Send` the seam would have to move — pin it as a compile-time fact rather than an assumption in a comment.
+            fn assert_send<T: Send>() {}
+            assert_send::<Scene>();
+            assert_send::<Box<dyn Presenter>>();
         }
-        panic!("timed out waiting for {what}");
-    }
 
-    #[test]
-    fn a_scene_can_cross_a_thread_boundary() {
-        // The whole design rests on this: if `Scene` were not `Send` the seam would have to move — pin it as a compile-time fact rather than an assumption in a comment.
-        fn assert_send<T: Send>() {}
-        assert_send::<Scene>();
-        assert_send::<Box<dyn Presenter>>();
-    }
-
-    #[test]
-    fn frames_are_presented_on_the_render_thread_not_the_caller() {
-        let seen = Arc::new(AtomicU64::new(0));
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: Arc::new(Mutex::new(())),
-            seen: seen.clone(),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        wait_until(|| pipe.presented() == 1, "the frame to be presented");
-        assert_eq!(seen.load(Ordering::Acquire), 1);
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn submit_does_not_block_on_a_slow_present() {
-        // The point of the split: hold the presenter inside `present` and assert the submitting thread returns anyway — if `submit` blocked, this call wouldn't return until the gate released.
-        let gate = Arc::new(Mutex::new(()));
-        // See the declaration-order note above.
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: gate.clone(),
-            seen: Arc::new(AtomicU64::new(0)),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        let held = gate.lock().expect("hold the presenter inside `present`");
-        let t0 = std::time::Instant::now();
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        let elapsed = t0.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "submit must hand off, not wait for the present; took {elapsed:?}"
-        );
-        assert_eq!(pipe.presented(), 0, "the present is still blocked");
-        drop(held);
-        wait_until(|| pipe.presented() == 1, "the released frame");
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn input_age_metadata_does_not_change_async_submission() {
-        let seen = Arc::new(AtomicU64::new(0));
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: Arc::new(Mutex::new(())),
-            seen: seen.clone(),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        assert!(
-            pipe.submit_frame_with_input_age(
-                FramePaint::full(Scene::new()),
-                OutputId(0),
-                Some(Duration::from_secs(2)),
-            )
-            .is_some()
-        );
-        wait_until(|| pipe.presented() == 1, "the annotated frame to retire");
-        assert_eq!(seen.load(Ordering::Acquire), 1);
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn submitted_serial_distinguishes_the_requested_frame_from_an_older_retirement() {
-        // The sleep path must wait for the lock frame it just handed over,
-        // not merely observe that *a* frame retired.  Model a desktop frame
-        // that is already complete, then hold the lock frame in the queue:
-        // its serial remains distinguishable until that exact frame runs.
-        let gate = Arc::new(Mutex::new(()));
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: gate.clone(),
-            seen: Arc::new(AtomicU64::new(0)),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        wait_until(|| pipe.presented() == 1, "the older desktop frame");
-
-        let held = gate.lock().expect("hold the lock frame in presentation");
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        let lock_frame = pipe.submitted();
-        assert_eq!(lock_frame, 2);
-        assert_eq!(
-            pipe.presented(),
-            1,
-            "retiring the older desktop frame must not acknowledge lock frame {lock_frame}"
-        );
-        drop(held);
-        wait_until(
-            || pipe.presented() >= lock_frame,
-            "the specific lock frame to retire",
-        );
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn presenter_failure_is_observable_while_a_frame_is_unretired() {
-        // A security-sensitive caller waits for a particular serial.  It
-        // must be able to tell "the GPU is slow" from "the render worker is
-        // gone"; otherwise a sleep-delay lock could wait forever with an
-        // in-flight count that will never drain.
-        let mut pipe = spawn_with_retire(Box::new(PanickingPresenter));
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        let serial = pipe.submitted();
-        wait_until(
-            || pipe.is_finished(),
-            "the presenter panic to terminate its thread",
-        );
-        assert!(pipe.is_finished());
-        assert!(
-            pipe.presented() < serial,
-            "a failed presenter must not claim it retired frame {serial}"
-        );
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn the_pipe_refuses_more_than_queue_depth_frames_beyond_the_one_in_flight() {
-        // Back-pressure is what bounds latency. With the presenter stuck, capacity must run out — otherwise the logic thread would build frames forever and input-to-photon latency would grow unbounded.
-        let gate = Arc::new(Mutex::new(()));
-        // See the declaration-order note above.
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: gate.clone(),
-            seen: Arc::new(AtomicU64::new(0)),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        let held = gate.lock().expect("hold the presenter inside `present`");
-        let mut accepted = 0;
-        for _ in 0..10 {
-            if !pipe.has_capacity() {
-                pipe.note_backpressure();
-                continue;
-            }
+        fn frames_are_presented_on_the_render_thread_not_the_caller() {
+            let seen = Arc::new(AtomicU64::new(0));
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: Arc::new(Mutex::new(())),
+                seen: seen.clone(),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            accepted += 1;
+            tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
+            assert_eq!(seen.load(Ordering::Acquire), 1);
+            pipe.shutdown();
         }
-        assert_eq!(
-            accepted,
-            QUEUE_DEPTH + 1,
-            "the pipe must admit exactly one frame beyond the queue depth \
-             while the presenter is stuck; admitted {accepted}"
-        );
-        assert!(
-            pipe.backpressured() > 0,
-            "the refused ticks must be counted so the stats can attribute them"
-        );
-        drop(held);
-        wait_until(
-            || usize::try_from(pipe.presented()).is_ok_and(|presented| presented == accepted),
-            "the queued frames to drain",
-        );
-        assert!(
-            pipe.has_capacity(),
-            "capacity must come back once the queue drains"
-        );
-        pipe.shutdown();
-    }
 
-    #[test]
-    fn resize_and_dpms_are_ordered_behind_queued_frames() {
-        // A blank must never overtake a frame already handed over: the display would light up showing
-        // a frame the compositor thought it had suppressed. One channel gives that for free — this pins it so a future "fast path" for control messages can't silently break it.
-        let resizes = Arc::new(Mutex::new(Vec::new()));
-        let dpms = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::new(AtomicU64::new(0));
-        let gate = Arc::new(Mutex::new(()));
-        // See the note above about declaration order and `shutdown`.
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: gate.clone(),
-            seen: seen.clone(),
-            resizes: resizes.clone(),
-            dpms: dpms.clone(),
-        }));
-        let held = gate.lock().expect("hold the presenter inside `present`");
-        pipe.submit(Scene::new(), OutputId(0));
-        pipe.resize((800, 600));
-        pipe.set_dpms(false);
-        // Nothing may have run yet: the frame is blocking the thread.
-        assert!(resizes.lock().expect("resizes").is_empty());
-        assert!(dpms.lock().expect("dpms").is_empty());
-        drop(held);
-        wait_until(
-            || dpms.lock().expect("dpms").len() == 1,
-            "the dpms message to be handled after the frame",
-        );
-        assert_eq!(seen.load(Ordering::Acquire), 1, "the frame ran first");
-        assert_eq!(*resizes.lock().expect("resizes"), vec![(800, 600)]);
-        assert_eq!(*dpms.lock().expect("dpms"), vec![false]);
-        pipe.shutdown();
-    }
-
-    #[test]
-    fn the_loop_is_woken_after_the_capacity_is_restored_not_before() {
-        // The wakeup exists so a back-pressured loop doesn't park out the whole frame interval — only
-        // useful if, by the time the loop wakes, `has_capacity` is already true. A signal sent before
-        // the in-flight count drops would wake the loop into the same "no room" state, and the frame would still wait a full interval.
-        let wakeups = Arc::new(AtomicU64::new(0));
-        let counter = wakeups.clone();
-        let gate = Arc::new(Mutex::new(()));
-        // See the note above about declaration order and `shutdown`.
-        let mut pipe = PresentPipe::spawn(
-            Box::new(Blocking {
+        fn submit_does_not_block_on_a_slow_present() {
+            // The point of the split: hold the presenter inside `present` and assert the submitting thread returns anyway — if `submit` blocked, this call wouldn't return until the gate released.
+            let gate = Arc::new(Mutex::new(()));
+            // See the declaration-order note above.
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
                 gate: gate.clone(),
                 seen: Arc::new(AtomicU64::new(0)),
                 resizes: Arc::new(Mutex::new(Vec::new())),
                 dpms: Arc::new(Mutex::new(Vec::new())),
-            }),
-            Box::new(move || {
-                counter.fetch_add(1, Ordering::Release);
-            }),
-        );
-        let held = gate.lock().expect("hold the presenter inside `present`");
-        // Fill the pipe while the presenter is stuck. Bounded rather than `while has_capacity()`: a regression making capacity unconditional would turn an unbounded fill into a hang that reports nothing.
-        let mut accepted = 0;
-        for _ in 0..8 {
-            if !pipe.has_capacity() {
-                break;
-            }
+            }));
+            let held = gate.lock().expect("hold the presenter inside `present`");
+            let t0 = std::time::Instant::now();
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            accepted += 1;
+            let elapsed = t0.elapsed();
+            assert!(
+                elapsed < Duration::from_millis(100),
+                "submit must hand off, not wait for the present; took {elapsed:?}"
+            );
+            assert_eq!(pipe.presented(), 0, "the present is still blocked");
+            drop(held);
+            tilo_test_env::wait_until("the released frame", || pipe.presented() == 1);
+            pipe.shutdown();
         }
-        assert_eq!(
-            accepted,
-            QUEUE_DEPTH + 1,
-            "the stuck presenter must stop admitting frames after the queue fills"
-        );
-        assert_eq!(
-            wakeups.load(Ordering::Acquire),
-            0,
-            "nothing has retired, so the loop must not have been woken — a \
-             spurious wakeup would spin it against a still-full pipe"
-        );
-        drop(held);
-        wait_until(
-            || {
+
+        fn input_age_metadata_does_not_change_async_submission() {
+            let seen = Arc::new(AtomicU64::new(0));
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: Arc::new(Mutex::new(())),
+                seen: seen.clone(),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
+            assert!(
+                pipe.submit_frame_with_input_age(
+                    FramePaint::full(Scene::new()),
+                    OutputId(0),
+                    Some(Duration::from_secs(2)),
+                )
+                .is_some()
+            );
+            tilo_test_env::wait_until("the annotated frame to retire", || pipe.presented() == 1);
+            assert_eq!(seen.load(Ordering::Acquire), 1);
+            pipe.shutdown();
+        }
+
+        fn submitted_serial_distinguishes_the_requested_frame_from_an_older_retirement() {
+            // The sleep path must wait for the lock frame it just handed over,
+            // not merely observe that *a* frame retired.  Model a desktop frame
+            // that is already complete, then hold the lock frame in the queue:
+            // its serial remains distinguishable until that exact frame runs.
+            let gate = Arc::new(Mutex::new(()));
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: gate.clone(),
+                seen: Arc::new(AtomicU64::new(0)),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
+
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            tilo_test_env::wait_until("the older desktop frame", || pipe.presented() == 1);
+
+            let held = gate.lock().expect("hold the lock frame in presentation");
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            let lock_frame = pipe.submitted();
+            assert_eq!(lock_frame, 2);
+            assert_eq!(
+                pipe.presented(),
+                1,
+                "retiring the older desktop frame must not acknowledge lock frame {lock_frame}"
+            );
+            drop(held);
+            tilo_test_env::wait_until("the specific lock frame to retire", || {
+                pipe.presented() >= lock_frame
+            });
+            pipe.shutdown();
+        }
+
+        fn presenter_failure_is_observable_while_a_frame_is_unretired() {
+            // A security-sensitive caller waits for a particular serial.  It
+            // must be able to tell "the GPU is slow" from "the render worker is
+            // gone"; otherwise a sleep-delay lock could wait forever with an
+            // in-flight count that will never drain.
+            let mut pipe = spawn_with_retire(Box::new(PanickingPresenter));
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            let serial = pipe.submitted();
+            tilo_test_env::wait_until("the presenter panic to terminate its thread", || {
+                pipe.is_finished()
+            });
+            assert!(pipe.is_finished());
+            assert!(
+                pipe.presented() < serial,
+                "a failed presenter must not claim it retired frame {serial}"
+            );
+            pipe.shutdown();
+        }
+
+        a_scene_can_cross_a_thread_boundary();
+        frames_are_presented_on_the_render_thread_not_the_caller();
+        submit_does_not_block_on_a_slow_present();
+        input_age_metadata_does_not_change_async_submission();
+        submitted_serial_distinguishes_the_requested_frame_from_an_older_retirement();
+        presenter_failure_is_observable_while_a_frame_is_unretired();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn present_pipe_bounds_queue_depth_and_orders_control_behind_frames() {
+        fn the_pipe_refuses_more_than_queue_depth_frames_beyond_the_one_in_flight() {
+            // Back-pressure is what bounds latency. With the presenter stuck, capacity must run out — otherwise the logic thread would build frames forever and input-to-photon latency would grow unbounded.
+            let gate = Arc::new(Mutex::new(()));
+            // See the declaration-order note above.
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: gate.clone(),
+                seen: Arc::new(AtomicU64::new(0)),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
+            let held = gate.lock().expect("hold the presenter inside `present`");
+            let mut accepted = 0;
+            for _ in 0..10 {
+                if !pipe.has_capacity() {
+                    pipe.note_backpressure();
+                    continue;
+                }
+                assert!(pipe.submit(Scene::new(), OutputId(0)));
+                accepted += 1;
+            }
+            assert_eq!(
+                accepted,
+                QUEUE_DEPTH + 1,
+                "the pipe must admit exactly one frame beyond the queue depth \
+                 while the presenter is stuck; admitted {accepted}"
+            );
+            assert!(
+                pipe.backpressured() > 0,
+                "the refused ticks must be counted so the stats can attribute them"
+            );
+            drop(held);
+            tilo_test_env::wait_until("the queued frames to drain", || {
+                usize::try_from(pipe.presented()).is_ok_and(|presented| presented == accepted)
+            });
+            assert!(
+                pipe.has_capacity(),
+                "capacity must come back once the queue drains"
+            );
+            pipe.shutdown();
+        }
+
+        fn resize_and_dpms_are_ordered_behind_queued_frames() {
+            // A blank must never overtake a frame already handed over: the display would light up showing
+            // a frame the compositor thought it had suppressed. One channel gives that for free — this pins it so a future "fast path" for control messages can't silently break it.
+            let resizes = Arc::new(Mutex::new(Vec::new()));
+            let dpms = Arc::new(Mutex::new(Vec::new()));
+            let seen = Arc::new(AtomicU64::new(0));
+            let gate = Arc::new(Mutex::new(()));
+            // See the note above about declaration order and `shutdown`.
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: gate.clone(),
+                seen: seen.clone(),
+                resizes: resizes.clone(),
+                dpms: dpms.clone(),
+            }));
+            let held = gate.lock().expect("hold the presenter inside `present`");
+            pipe.submit(Scene::new(), OutputId(0));
+            pipe.resize((800, 600));
+            pipe.set_dpms(false);
+            // Nothing may have run yet: the frame is blocking the thread.
+            assert!(resizes.lock().expect("resizes").is_empty());
+            assert!(dpms.lock().expect("dpms").is_empty());
+            drop(held);
+            tilo_test_env::wait_until("the dpms message to be handled after the frame", || {
+                dpms.lock().expect("dpms").len() == 1
+            });
+            assert_eq!(seen.load(Ordering::Acquire), 1, "the frame ran first");
+            assert_eq!(*resizes.lock().expect("resizes"), vec![(800, 600)]);
+            assert_eq!(*dpms.lock().expect("dpms"), vec![false]);
+            pipe.shutdown();
+        }
+
+        fn the_loop_is_woken_after_the_capacity_is_restored_not_before() {
+            // The wakeup exists so a back-pressured loop doesn't park out the whole frame interval — only
+            // useful if, by the time the loop wakes, `has_capacity` is already true. A signal sent before
+            // the in-flight count drops would wake the loop into the same "no room" state, and the frame would still wait a full interval.
+            let wakeups = Arc::new(AtomicU64::new(0));
+            let counter = wakeups.clone();
+            let gate = Arc::new(Mutex::new(()));
+            // See the note above about declaration order and `shutdown`.
+            let mut pipe = PresentPipe::spawn(
+                Box::new(Blocking {
+                    gate: gate.clone(),
+                    seen: Arc::new(AtomicU64::new(0)),
+                    resizes: Arc::new(Mutex::new(Vec::new())),
+                    dpms: Arc::new(Mutex::new(Vec::new())),
+                }),
+                Box::new(move || {
+                    counter.fetch_add(1, Ordering::Release);
+                }),
+            );
+            let held = gate.lock().expect("hold the presenter inside `present`");
+            // Fill the pipe while the presenter is stuck. Bounded rather than `while has_capacity()`: a regression making capacity unconditional would turn an unbounded fill into a hang that reports nothing.
+            let mut accepted = 0;
+            for _ in 0..8 {
+                if !pipe.has_capacity() {
+                    break;
+                }
+                assert!(pipe.submit(Scene::new(), OutputId(0)));
+                accepted += 1;
+            }
+            assert_eq!(
+                accepted,
+                QUEUE_DEPTH + 1,
+                "the stuck presenter must stop admitting frames after the queue fills"
+            );
+            assert_eq!(
+                wakeups.load(Ordering::Acquire),
+                0,
+                "nothing has retired, so the loop must not have been woken — a \
+                 spurious wakeup would spin it against a still-full pipe"
+            );
+            drop(held);
+            tilo_test_env::wait_until("one wakeup per retired frame", || {
                 usize::try_from(wakeups.load(Ordering::Acquire))
                     .is_ok_and(|wakeups| wakeups == accepted)
-            },
-            "one wakeup per retired frame",
-        );
-        assert!(
-            pipe.has_capacity(),
-            "the decrement happens-before the signal, so a loop woken by it \
-             must find room; signalling first would wake it into the same \
-             full pipe it just parked from"
-        );
-        pipe.shutdown();
+            });
+            assert!(
+                pipe.has_capacity(),
+                "the decrement happens-before the signal, so a loop woken by it \
+                 must find room; signalling first would wake it into the same \
+                 full pipe it just parked from"
+            );
+            pipe.shutdown();
+        }
+
+        the_pipe_refuses_more_than_queue_depth_frames_beyond_the_one_in_flight();
+        resize_and_dpms_are_ordered_behind_queued_frames();
+        the_loop_is_woken_after_the_capacity_is_restored_not_before();
     }
 
     #[test]
-    fn shutdown_returns_even_when_the_presenter_never_finishes() {
-        // Guards against a compositor that won't exit when its GPU driver wedges: hold the presenter forever and assert `shutdown` still returns, within a bound comfortably above SHUTDOWN_GRACE.
-        let gate = Arc::new(Mutex::new(()));
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: gate.clone(),
-            seen: Arc::new(AtomicU64::new(0)),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        let held = gate.lock().expect("wedge the presenter");
-        assert!(pipe.submit(Scene::new(), OutputId(0)));
-        // The channel is FIFO, so the render thread must take this frame — and block on the gate
-        // inside `present` — before it can see the `Stop` `shutdown` is about to send, so it's
-        // guaranteed wedged. A short grace means this test can't be confused with a regression: it
-        // finishes in a tenth of a second, while a fallback onto the real `SHUTDOWN_GRACE` stands out as a two-second outlier.
-        let grace = Duration::from_millis(100);
-        let t0 = Instant::now();
-        pipe.shutdown_with_grace(grace);
-        let took = t0.elapsed();
-        assert!(
-            took >= grace,
-            "shutdown must actually wait out its grace before giving up; \
-             returning in {took:?} means it never waited for the frame at all, \
-             which would abandon a frame that was about to finish"
-        );
-        assert!(
-            took < Duration::from_millis(1_500),
-            "shutdown must give up on a wedged render thread, not block on it; \
-             took {took:?} against a {grace:?} grace"
-        );
-        // Releasing afterwards must not panic or double-free anything.
-        drop(held);
-    }
+    fn present_shutdown_returns_and_later_submits_fail_cleanly() {
+        fn shutdown_returns_even_when_the_presenter_never_finishes() {
+            // Guards against a compositor that won't exit when its GPU driver wedges: hold the presenter forever and assert `shutdown` still returns, within a bound comfortably above SHUTDOWN_GRACE.
+            let gate = Arc::new(Mutex::new(()));
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: gate.clone(),
+                seen: Arc::new(AtomicU64::new(0)),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
+            let held = gate.lock().expect("wedge the presenter");
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            // The channel is FIFO, so the render thread must take this frame — and block on the gate
+            // inside `present` — before it can see the `Stop` `shutdown` is about to send, so it's
+            // guaranteed wedged. A short grace means this test can't be confused with a regression: it
+            // finishes in a tenth of a second, while a fallback onto the real `SHUTDOWN_GRACE` stands out as a two-second outlier.
+            let grace = Duration::from_millis(100);
+            let t0 = Instant::now();
+            pipe.shutdown_with_grace(grace);
+            let took = t0.elapsed();
+            assert!(
+                took >= grace,
+                "shutdown must actually wait out its grace before giving up; \
+                 returning in {took:?} means it never waited for the frame at all, \
+                 which would abandon a frame that was about to finish"
+            );
+            assert!(
+                took < Duration::from_millis(1_500),
+                "shutdown must give up on a wedged render thread, not block on it; \
+                 took {took:?} against a {grace:?} grace"
+            );
+            // Releasing afterwards must not panic or double-free anything.
+            drop(held);
+        }
 
-    #[test]
-    fn submit_after_shutdown_reports_failure_instead_of_panicking() {
-        // Presentation dying must not take the session with it: clients stay served, the operator gets a log line.
-        let mut pipe = spawn_with_retire(Box::new(Blocking {
-            gate: Arc::new(Mutex::new(())),
-            seen: Arc::new(AtomicU64::new(0)),
-            resizes: Arc::new(Mutex::new(Vec::new())),
-            dpms: Arc::new(Mutex::new(Vec::new())),
-        }));
-        pipe.shutdown();
-        assert!(
-            !pipe.submit(Scene::new(), OutputId(0)),
-            "a submit into a stopped pipe must report failure, not panic"
-        );
-        assert_eq!(
-            pipe.inflight(),
-            0,
-            "a failed submit must not leave a phantom frame in flight, which \
-             would wedge the capacity check forever"
-        );
+        fn submit_after_shutdown_reports_failure_instead_of_panicking() {
+            // Presentation dying must not take the session with it: clients stay served, the operator gets a log line.
+            let mut pipe = spawn_with_retire(Box::new(Blocking {
+                gate: Arc::new(Mutex::new(())),
+                seen: Arc::new(AtomicU64::new(0)),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }));
+            pipe.shutdown();
+            assert!(
+                !pipe.submit(Scene::new(), OutputId(0)),
+                "a submit into a stopped pipe must report failure, not panic"
+            );
+            assert_eq!(
+                pipe.inflight(),
+                0,
+                "a failed submit must not leave a phantom frame in flight, which \
+                 would wedge the capacity check forever"
+            );
+        }
+
+        shutdown_returns_even_when_the_presenter_never_finishes();
+        submit_after_shutdown_reports_failure_instead_of_panicking();
     }
 }

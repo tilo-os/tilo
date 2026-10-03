@@ -42,7 +42,15 @@ fn drag_from_to(h: &mut Harness, source: Point, target: Point) {
     h.release();
 }
 
+/// Each drag scenario runs on its own fresh fixture directory and harness.
 #[test]
+fn drag_and_drop_moves_files_selections_and_up_but_not_into_itself() {
+    dragging_a_file_onto_a_folder_moves_it();
+    dragging_a_multi_selection_moves_every_item();
+    dropping_on_the_up_affordance_moves_to_the_parent();
+    dropping_a_folder_on_itself_is_a_noop();
+}
+
 fn dragging_a_file_onto_a_folder_moves_it() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("dest")).unwrap(); // folder → row 0
@@ -69,7 +77,6 @@ fn dragging_a_file_onto_a_folder_moves_it() {
     );
 }
 
-#[test]
 fn dragging_a_multi_selection_moves_every_item() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("dest")).unwrap(); // row 0
@@ -96,7 +103,6 @@ fn dragging_a_multi_selection_moves_every_item() {
     );
 }
 
-#[test]
 fn dropping_on_the_up_affordance_moves_to_the_parent() {
     let d = tempfile::tempdir().unwrap();
     let sub = d.path().join("sub");
@@ -118,7 +124,6 @@ fn dropping_on_the_up_affordance_moves_to_the_parent() {
     assert!(!sub.join("up.txt").exists(), "and left the subdirectory");
 }
 
-#[test]
 fn dropping_a_folder_on_itself_is_a_noop() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("keep")).unwrap(); // row 0

@@ -90,45 +90,51 @@ mod tests {
         }]
     }
     #[test]
-    fn persisted_shader_round_trip_and_compiler_invalidation() {
-        let bytes = encode(&[1; 32], &sample()).unwrap();
-        let entries = decode(&bytes, &[1; 32]).unwrap();
-        assert_eq!(entries[0].key, sample()[0].key);
-        assert_eq!(entries[0].shader, sample()[0].shader);
-        assert!(decode(&bytes, &[2; 32]).is_none());
-    }
-    #[test]
-    fn rejects_truncation_bit_corruption_and_trailing_data() {
-        let bytes = encode(&[1; 32], &sample()).unwrap();
-        for length in 0..bytes.len() {
-            assert!(decode(&bytes[..length], &[1; 32]).is_none());
+    fn shader_cache_codec_round_trips_and_rejects_every_corruption() {
+        // Case `persisted_shader_round_trip_and_compiler_invalidation`.
+        {
+            let bytes = encode(&[1; 32], &sample()).unwrap();
+            let entries = decode(&bytes, &[1; 32]).unwrap();
+            assert_eq!(entries[0].key, sample()[0].key);
+            assert_eq!(entries[0].shader, sample()[0].shader);
+            assert!(decode(&bytes, &[2; 32]).is_none());
         }
-        for index in 0..bytes.len() {
-            let mut corrupt = bytes.clone();
-            corrupt[index] ^= 1;
-            assert!(decode(&corrupt, &[1; 32]).is_none());
+
+        // Case `rejects_truncation_bit_corruption_and_trailing_data`.
+        {
+            let bytes = encode(&[1; 32], &sample()).unwrap();
+            for length in 0..bytes.len() {
+                assert!(decode(&bytes[..length], &[1; 32]).is_none());
+            }
+            for index in 0..bytes.len() {
+                let mut corrupt = bytes.clone();
+                corrupt[index] ^= 1;
+                assert!(decode(&corrupt, &[1; 32]).is_none());
+            }
+            let mut extended = bytes;
+            extended.push(0);
+            assert!(decode(&extended, &[1; 32]).is_none());
         }
-        let mut extended = bytes;
-        extended.push(0);
-        assert!(decode(&extended, &[1; 32]).is_none());
-    }
-    #[test]
-    fn rejects_duplicate_keys_empty_shaders_and_oversized_entries() {
-        let mut duplicate = sample();
-        duplicate.extend(sample());
-        assert!(decode(&encode(&[1; 32], &duplicate).unwrap(), &[1; 32]).is_none());
-        let mut entry = sample();
-        entry[0].shader.clear();
-        assert!(encode(&[1; 32], &entry).is_none());
-        entry[0].shader.resize(ENTRY_LIMIT + 1, 0);
-        assert!(encode(&[1; 32], &entry).is_none());
-    }
-    #[test]
-    fn rejects_valid_checksum_over_invalid_structure() {
-        let mut bytes = encode(&[1; 32], &sample()).unwrap();
-        bytes[72..76].copy_from_slice(&u32::MAX.to_le_bytes());
-        let hash = blake3::hash(&bytes[72..]);
-        bytes[40..72].copy_from_slice(hash.as_bytes());
-        assert!(decode(&bytes, &[1; 32]).is_none());
+
+        // Case `rejects_duplicate_keys_empty_shaders_and_oversized_entries`.
+        {
+            let mut duplicate = sample();
+            duplicate.extend(sample());
+            assert!(decode(&encode(&[1; 32], &duplicate).unwrap(), &[1; 32]).is_none());
+            let mut entry = sample();
+            entry[0].shader.clear();
+            assert!(encode(&[1; 32], &entry).is_none());
+            entry[0].shader.resize(ENTRY_LIMIT + 1, 0);
+            assert!(encode(&[1; 32], &entry).is_none());
+        }
+
+        // Case `rejects_valid_checksum_over_invalid_structure`.
+        {
+            let mut bytes = encode(&[1; 32], &sample()).unwrap();
+            bytes[72..76].copy_from_slice(&u32::MAX.to_le_bytes());
+            let hash = blake3::hash(&bytes[72..]);
+            bytes[40..72].copy_from_slice(hash.as_bytes());
+            assert!(decode(&bytes, &[1; 32]).is_none());
+        }
     }
 }

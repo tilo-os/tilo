@@ -3,8 +3,8 @@
 Rust bindings to the **FUTO swipe-library** on ExecuTorch through a C-ABI shim.
 Used by the Tilo on-screen keyboard (`apps/osk`).
 
-The FUTO swipe-library is GPL-3.0-or-later; Tilo is AGPL-3.0-or-later, which
-incorporates it cleanly.
+The FUTO swipe-library is GPL-3.0-or-later; Tilo is AGPL-3.0-only. Section 13
+of the GPL-3.0 permits combining the two, so it incorporates cleanly.
 
 ## How it works
 

@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::tokens::SpringParams;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -40,6 +40,15 @@ impl WorkspaceView {
             ),
             rect: Rect::ZERO,
         }
+    }
+    /// Apply the canonical workspace count and host-local selection.
+    pub fn reconcile(&mut self, count: usize, active: usize) -> bool {
+        let count = count.max(1);
+        let active = active.min(count.saturating_sub(1));
+        let changed = self.workspace_count != count || self.active_index != active;
+        self.workspace_count = count;
+        self.active_index = active;
+        changed
     }
     pub fn active_index(&self) -> usize {
         self.active_index
@@ -82,8 +91,13 @@ impl WorkspaceView {
 }
 
 impl Widget for WorkspaceView {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-    fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn update(&mut self, _s: &mut AppModel, _p: &ModelPath) -> bool {
         if self.slide.is_settled() {
             false
         } else {
@@ -141,18 +155,7 @@ impl Widget for WorkspaceView {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _sf: f64,
-        modifiers: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _f: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {
@@ -162,18 +165,18 @@ impl Widget for WorkspaceView {
                 },
             ..
         } = event
-            && (modifiers.state().super_key() || modifiers.state().control_key())
+            && (ctx.modifiers.state().super_key() || ctx.modifiers.state().control_key())
         {
             match k {
                 winit::keyboard::NamedKey::ArrowUp => {
                     if self.switch(WorkspaceSwitchDirection::Up) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
                 winit::keyboard::NamedKey::ArrowDown
                     if self.switch(WorkspaceSwitchDirection::Down) =>
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }

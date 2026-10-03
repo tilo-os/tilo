@@ -309,10 +309,14 @@ mod tests {
         MentionRef::new("agent_scribe", 0, 7, true)
     }
 
-    /// Asserted on the structured target, not on rendered text, so it keeps
-    /// holding when the wording changes.
+    /// What the selector shows is what gets delivered: target and privacy
+    /// agree, mentions direct inside a channel without making it private,
+    /// and a participant destination is private for people and agents alike.
     #[test]
-    fn the_displayed_destination_is_the_delivered_destination() {
+    fn delivery_goes_where_the_selector_says_with_the_privacy_it_shows() {
+        // Phase: the displayed destination is the delivered destination.
+        // Asserted on the structured target, not on rendered text, so it keeps
+        // holding when the wording changes.
         let cases = [
             Destination::channel("c_general", "general"),
             Destination::participant("u_ada", "Ada", false),
@@ -338,10 +342,8 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn a_mention_directs_without_leaving_the_channel() {
+        // Phase: a mention directs without leaving the channel.
         let dest = Destination::channel("c_general", "general");
         let d = deliver(&dest, &[ada()]);
         assert_eq!(
@@ -353,10 +355,8 @@ mod tests {
         );
         assert!(!d.is_private(), "a mention must not make a message private");
         assert_eq!(d.target(), Target::Channel("c_general"));
-    }
 
-    #[test]
-    fn no_mention_is_a_plain_channel_post() {
+        // Phase: no mention is a plain channel post.
         let dest = Destination::channel("c_general", "general");
         assert_eq!(
             deliver(&dest, &[]),
@@ -364,21 +364,22 @@ mod tests {
                 channel: "c_general".into()
             }
         );
-    }
 
-    #[test]
-    fn a_participant_destination_is_private_for_person_and_agent_alike() {
+        // Phase: repeated mentions of one person ping once.
+        let dest = Destination::channel("c_general", "general");
+        let d = deliver(&dest, &[ada(), MentionRef::new("u_ada", 20, 4, false)]);
+        assert_eq!(d.addressed(), ["u_ada".to_string()]);
+
+        // Phase: a participant destination is private for person and agent alike.
         for (id, name, is_agent) in [("u_ada", "Ada", false), ("agent_scribe", "Scribe", true)] {
             let dest = Destination::participant(id, name, is_agent);
             let d = deliver(&dest, &[ada(), scribe()]);
-            assert_eq!(d, Delivery::Private { to: id.into() });
-            assert!(d.is_private());
-            assert_eq!(d.addressed(), [id.to_string()]);
+            assert_eq!(d, Delivery::Private { to: id.into() }, "case {id}");
+            assert!(d.is_private(), "case {id}");
+            assert_eq!(d.addressed(), [id.to_string()], "case {id}");
         }
-    }
 
-    #[test]
-    fn the_selector_states_privacy_plainly() {
+        // Phase: the selector states privacy plainly.
         let channel = Destination::channel("c_general", "general");
         let room = channel.display();
         assert_eq!(room.name, "general");
@@ -403,47 +404,41 @@ mod tests {
         ]
     }
 
+    /// `@name` resolves only to someone in the room, by longest name, at a
+    /// word start, with byte offsets — and a resolved agent mention directs
+    /// within the channel.
     #[test]
-    fn an_agents_name_resolves_to_its_participant_id() {
+    fn mentions_resolve_only_to_named_room_members() {
+        // Case: an agent's name resolves to its participant id.
         let m = resolve_mentions("@claude make square and put in open document", &room());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].user, "agent_claude");
         assert!(m[0].is_agent, "the mention says it names software");
         assert_eq!(m[0].start, 0);
         assert_eq!(m[0].len, "@claude".len());
-    }
 
-    #[test]
-    fn a_name_nobody_in_the_room_has_is_not_a_mention() {
+        // Case: a name nobody in the room has is not a mention.
         assert!(resolve_mentions("@nobody are you there", &room()).is_empty());
-    }
 
-    #[test]
-    fn the_longest_matching_name_wins() {
+        // Case: the longest matching name wins.
         let m = resolve_mentions("@Ada Lovelace look", &room());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].user, "u_lovelace");
-    }
 
-    /// Both cases would otherwise ping somebody who was never named.
-    #[test]
-    fn an_at_that_does_not_open_a_word_is_not_a_mention() {
+        // Case: an `@` that does not open a word is not a mention. Both inputs
+        // would otherwise ping somebody who was never named.
         assert!(resolve_mentions("write to ada@example.com", &room()).is_empty());
         assert!(resolve_mentions("@adamant about it", &room()).is_empty());
-    }
 
-    /// Multi-byte characters before the `@`, so an offset counted in anything but
-    /// bytes slices the wrong run.
-    #[test]
-    fn the_offsets_slice_the_run_they_name() {
+        // Case: the offsets slice the run they name. Multi-byte characters
+        // before the `@`, so an offset counted in anything but bytes slices the
+        // wrong run.
         let text = "café — @Claude take a look";
         let m = resolve_mentions(text, &room());
         assert_eq!(m.len(), 1);
         assert_eq!(&text[m[0].start..m[0].start + m[0].len], "@Claude");
-    }
 
-    #[test]
-    fn a_resolved_agent_mention_directs_within_the_channel() {
+        // Case: a resolved agent mention directs within the channel.
         let mentions = resolve_mentions("@claude make square", &room());
         let d = deliver(&Destination::channel("c_general", "general"), &mentions);
         assert_eq!(
@@ -454,12 +449,5 @@ mod tests {
             }
         );
         assert!(!d.is_private(), "the room must still be able to read it");
-    }
-
-    #[test]
-    fn repeated_mentions_of_one_person_ping_once() {
-        let dest = Destination::channel("c_general", "general");
-        let d = deliver(&dest, &[ada(), MentionRef::new("u_ada", 20, 4, false)]);
-        assert_eq!(d.addressed(), ["u_ada".to_string()]);
     }
 }

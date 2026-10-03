@@ -139,7 +139,7 @@ if [ "$TILO_HARDWARE_PROFILE" != generic ]; then
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] \
       || die "TILO_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
     python3 "$TILO_OS_DIR/dev/hardware_profile.py" "$TILO_HARDWARE_PROFILE" \
-      "$TILO_OS_DIR/hardware/profiles" "$(uname -m)" "$TILO_OS_DIR/hardware/firmware" \
+      "$TILO_OS_DIR/hardware/profiles" "${TILO_BUILD_ARCH:-$(uname -m)}" "$TILO_OS_DIR/hardware/firmware" \
       "${TILO_TARGET_IMGREF:-}" "${_tilo_profile_args[@]}" \
       || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
 fi
@@ -152,11 +152,20 @@ fi
 # Rust resolve pinned (the tracked Cargo.lock), two builds of the same commit
 # yield the same image (modulo dnf package drift over time — see
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+# A zero clock is what a non-git mirror produces. DNF then rejects every RPM
+# header. A cargo drop-in sets this from the real checkout; refuse the fallback.
+case "$SOURCE_DATE_EPOCH" in
+  ''|0|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
+    ;;
+esac
 export SOURCE_DATE_EPOCH
 # Resolve Windows providers before downloading assets or starting compilation.
 # No ARM payload pins are fabricated: supply published, validated digest refs.
-TILO_WINDOWS_ARCH="$(uname -m)"
+TILO_WINDOWS_ARCH="${TILO_BUILD_ARCH:-$(uname -m)}"
 case "${TILO_NATIVE_BUILDER_ONLY:-0}" in
   0) ;;
   1)
@@ -178,7 +187,9 @@ if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ];
   [ "$TILO_WITH_WINDOWS" = 1 ] \
     || warn "no FEX_PAYLOAD_REF/WINDOWS_GUEST_REF: this $TILO_WINDOWS_ARCH image is built without Windows apps"
 fi
-if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+# Disk-only installation uses an image with its external assets already baked
+# in, so it does not need the build-context downloads.
+if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
   [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
   _tilo_sccache_version=$(sed -nE 's/^ARG SCCACHE_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
@@ -192,7 +203,7 @@ if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   [[ "$_tilo_mold_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned mold version"
   _tilo_native_assets+=("mold-${_tilo_mold_version}-${TILO_WINDOWS_ARCH}-linux.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
-else
+elif [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
 fi
 # The digest-pinned base the build starts FROM — the mirror of the Fedora
@@ -207,9 +218,20 @@ fi
 # An explicit RPMS_REF is useful for validating a just-built snapshot before it
 # is published and pinned. Do not let the tracked default silently overwrite it.
 _tilo_rpms_ref_override="${RPMS_REF:-}"
-[ -f "$TILO_OS_DIR/rpms-snapshot.env" ] && . "$TILO_OS_DIR/rpms-snapshot.env"
-RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run the snapshot-rpms workflow or follow os/docs/rpm-snapshot-packaging.md"
+if [ -n "$_tilo_rpms_ref_override" ]; then
+  RPMS_REF="$_tilo_rpms_ref_override"
+elif [ "${TILO_SKIP_BUILD:-0}" = 1 ]; then
+  # Imaging an image that already exists installs nothing from a snapshot, and
+  # the one it was built from (possibly local to another machine) need not
+  # resolve here.
+  RPMS_REF=""
+elif RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"; then
+  :
+else
+  die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+fi
+[ -n "${RPMS_REF:-}" ] || [ "${TILO_SKIP_BUILD:-0}" = 1 ] \
+  || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
@@ -374,13 +396,27 @@ esac
   || die "a publication (TILO_REQUIRE_PCR_PREDICTION=1) is built with TILO_RUST_LTO=thin"
 # Link jobs: a thin-LTO link holds a binary's whole program in memory, so the
 # Containerfile's default stays conservative; without LTO a link is light, and
-# the compile may use the machine.
+# the compile may use the machine: a CPU per job, as far as memory holds out at
+# about 2 GiB a job (8 jobs when memory cannot be read).
 if [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] && [ "$TILO_RUST_LTO" = off ]; then
-  TILO_CARGO_BUILD_JOBS="$(nproc 2>/dev/null || echo 4)"
-  [ "$TILO_CARGO_BUILD_JOBS" -le 8 ] || TILO_CARGO_BUILD_JOBS=8
+  TILO_CARGO_BUILD_JOBS="$(cargo_build_jobs 2)"
 fi
 _tilo_jobs_args=()
 [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
+# The release profile's debug info (os/Containerfile TILO_RUST_DEBUGINFO) when set.
+[ -z "${TILO_RUST_DEBUGINFO:-}" ] || _tilo_jobs_args+=(--build-arg "TILO_RUST_DEBUGINFO=$TILO_RUST_DEBUGINFO")
+# CI's compiler cache, read-only: TILO_IMAGE_SCCACHE_URL is its Actions cache
+# endpoint (for tilo/tilo: https://code.tilo.so/ci-cache/r/tilo/tilo/) and
+# TILO_IMAGE_SCCACHE_TOKEN_FILE a file holding a Forgejo token that can read the
+# repository. Both reach the Rust compile as build secrets, never as layers.
+if [ -n "${TILO_IMAGE_SCCACHE_URL:-}" ]; then
+  [ -r "${TILO_IMAGE_SCCACHE_TOKEN_FILE:-}" ] \
+    || die "TILO_IMAGE_SCCACHE_URL needs TILO_IMAGE_SCCACHE_TOKEN_FILE, a readable file with a Forgejo token"
+  export TILO_IMAGE_SCCACHE_URL
+  _tilo_jobs_args+=(--secret "id=actions_cache_url,env=TILO_IMAGE_SCCACHE_URL"
+    --secret "id=actions_runtime_token,src=$TILO_IMAGE_SCCACHE_TOKEN_FILE")
+  msg "compiler cache: $TILO_IMAGE_SCCACHE_URL"
+fi
 # Retained development payloads have their own provenance, including an unknown
 # original compilation epoch. Never present them as a current producer build.
 if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
@@ -411,7 +447,7 @@ if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUI
     WPE_BUILDROOT_REF="$("$TILO_OS_DIR/dev/build-wpe-buildroot.sh")"
   else
     die "no promoted WPE buildroot for $(uname -m).
-Run the snapshot-wpe-buildroot workflow, or explicitly bootstrap a local-only
+Run the build-buildroots workflow, or explicitly bootstrap a local-only
 build with TILO_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
   fi
 fi
@@ -429,6 +465,31 @@ fi
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
 # base image plainly has are missing — TILO_BUILD_ARGS=--no-cache is the way out.
 read -r -a _tilo_build_args <<< "${TILO_BUILD_ARGS:-}"
+# The Rust compile's target cache (os/Containerfile TILO_BUILD_CACHE_KEY) is
+# named by what changes the artifacts cargo produces, so builds with different
+# settings sharing one podman store do not rebuild each other's target
+# directory. Build arguments in TILO_BUILD_ARGS override the resolved values.
+declare -A _tilo_cache_inputs=(
+  [arch]="$(uname -m)"
+  [TILO_RUST_LTO]="$TILO_RUST_LTO"
+  [TILO_RUST_DEBUGINFO]="${TILO_RUST_DEBUGINFO:-line-tables-only}"
+  [TILO_WITH_BROWSER]="$TILO_WITH_BROWSER"
+  [TILO_PREBUILT_APPS]=0
+  [TILO_PREBUILT_DESKTOP]=0
+  [TILO_CARGO_FRESHNESS]=clean
+  [TILO_COMPILER_CACHE]=shared
+)
+for ((_i = 0; _i < ${#_tilo_build_args[@]}; _i++)); do
+  case "${_tilo_build_args[_i]}" in
+    --build-arg) _kv="${_tilo_build_args[_i + 1]:-}"; _i=$((_i + 1)) ;;
+    --build-arg=*) _kv="${_tilo_build_args[_i]#--build-arg=}" ;;
+    *) continue ;;
+  esac
+  _k="${_kv%%=*}"
+  [ -z "$_k" ] || [ -z "${_tilo_cache_inputs[$_k]+set}" ] || _tilo_cache_inputs[$_k]="${_kv#*=}"
+done
+TILO_BUILD_CACHE_KEY="$(for _k in "${!_tilo_cache_inputs[@]}"; do printf '%s=%s\n' "$_k" "${_tilo_cache_inputs[$_k]}"; done \
+  | LC_ALL=C sort | sha256sum | cut -c1-12)"
 _tilo_wpe_args=()
 if [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
   [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
@@ -460,7 +521,20 @@ build_image() {
   [ -z "$image_tag" ] || tag_args=(-t "$image_tag")
   [ "$#" -eq 0 ] || shift
   [ "$#" -eq 0 ] || shift
-  local layer_epoch="$SOURCE_DATE_EPOCH"
+  local layer_epoch="$SOURCE_DATE_EPOCH" build_epoch="$SOURCE_DATE_EPOCH"
+  # TILO_LAYER_EPOCH=base (local builds, os/dev/local-inputs.sh): layers and the
+  # build's SOURCE_DATE_EPOCH take the base image's creation time instead of the
+  # commit's. podman keys every cached layer on its epoch, so the commit time
+  # rebuilt the whole image after every commit; the base's time changes only
+  # with the base. The commit time stays in the org.tilo.source-date-epoch label.
+  case "${TILO_LAYER_EPOCH:-commit}" in
+    commit) ;;
+    base)
+      [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] || die "a publication dates its layers by its commit (TILO_LAYER_EPOCH=commit)"
+      layer_epoch="$(tilo_image_epoch "$BASE_REF")" || die "could not read the creation time of $BASE_REF"
+      build_epoch="$layer_epoch" ;;
+    *) die "TILO_LAYER_EPOCH must be commit or base, not '${TILO_LAYER_EPOCH}'" ;;
+  esac
   if [ -n "${TILO_RAW_LAYER_EPOCH:-}" ]; then
     # Normalize only raw assembly layers; source inputs and signing keep their epoch.
     [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ] &&
@@ -473,9 +547,10 @@ build_image() {
       (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
     layer_epoch="$TILO_RAW_LAYER_EPOCH"
   fi
-  podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
+  podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "TILO_RUST_LTO=$TILO_RUST_LTO" \
+    --build-arg "TILO_BUILD_CACHE_KEY=$TILO_BUILD_CACHE_KEY" \
     "${_tilo_jobs_args[@]}" \
     "${_tilo_build_args[@]}" \
     "${_tilo_wpe_args[@]}" \
@@ -483,7 +558,9 @@ build_image() {
     "${_tilo_trust_args[@]}" \
     --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
     --label "org.tilo.rpms.trust=$TILO_RPMS_TRUST" \
-    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    --label "org.tilo.rpms.ref=$RPMS_REF" \
+    --label "org.tilo.source-date-epoch=$SOURCE_DATE_EPOCH" \
+    --build-arg "SOURCE_DATE_EPOCH=$build_epoch" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
@@ -525,7 +602,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  registry.tilo.so/tilo/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; generation=$TILO_GENERATION)"
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; cargo-target-cache=$TILO_BUILD_CACHE_KEY; generation=$TILO_GENERATION)"
   if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
       --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \
@@ -545,8 +622,26 @@ else
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/prepare-wpe-stage.py" \
       --architecture "$TILO_WINDOWS_ARCH" --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" \
       --cache "$TILO_WPE_BUILD_CACHE_REF" --repo "$TILO_REPO" \
-      --assets "$TILO_REPO/os/external-assets/cache" \
-      --base "$BASE_REF" --rpms "$RPMS_REF" --kernel "$KERNEL_RPMS_REF" --wpe "$WPE_BUILDROOT_REF")
+      --assets "$TILO_REPO/os/external-assets/cache" --wpe "$WPE_BUILDROOT_REF")
+    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
+    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  elif [ "$TILO_WITH_BROWSER" = 1 ]; then
+    # Compile only from os/Containerfile.wpe, then consume the immutable stage.
+    # Never fall back into a second compile recipe inside os/Containerfile.
+    : "${TILO_WPE_SOURCE_DATE_EPOCH:=0}"
+    _tilo_wpe_iid="$(mktemp)"
+    podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile.wpe" \
+      --layers --skip-unused-stages=true --network=none --target wpe-builder-1 \
+      --iidfile "$_tilo_wpe_iid" \
+      --source-date-epoch "$TILO_WPE_SOURCE_DATE_EPOCH" --rewrite-timestamp \
+      --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+      --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
+      --build-arg "TILO_WPE_SOURCE_DATE_EPOCH=$TILO_WPE_SOURCE_DATE_EPOCH" \
+      --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
+      "$TILO_REPO" \
+      || { rm -f "$_tilo_wpe_iid"; die "isolated WPE recipe build failed"; }
+    _tilo_wpe_id="$(tr -d '[:space:]' < "$_tilo_wpe_iid")"
+    rm -f "$_tilo_wpe_iid"
     [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
     _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
   fi
@@ -616,6 +711,12 @@ rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
 OUTDIR="$(dirname "$TILO_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
 disk_args=(--user "$TILO_ACCOUNT")
+if [ -n "${TILO_DISK_ROOTFS:-}" ]; then
+  case "$TILO_DISK_ROOTFS" in
+    btrfs|ext4) disk_args+=(--rootfs "$TILO_DISK_ROOTFS") ;;
+    *) die "TILO_DISK_ROOTFS must be btrfs or ext4" ;;
+  esac
+fi
 if [ -n "${TILO_DEV_DIRECT_BUNDLE_DIR:-}" ]; then
   disk_args+=(--direct-boot-bundle "$TILO_DEV_DIRECT_BUNDLE_DIR")
 fi
@@ -633,6 +734,22 @@ fi
 if [ -n "${TILO_DISK_SIZE:-}" ]; then
   disk_args+=(--size "$TILO_DISK_SIZE")
 fi
+# Rockchip boards: the mask ROM loads U-Boot from fixed LBAs in front of the
+# ESP. TILO_ROCKCHIP_LOADER names the loader directory for an image built
+# elsewhere (TILO_SKIP_BUILD); the loader is rebuilt only when its pinned
+# sources change.
+if [ "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 ] || [ -n "${TILO_ROCKCHIP_LOADER:-}" ]; then
+  loader="${TILO_ROCKCHIP_LOADER:-$TILO_OUTPUT/orangepi-3b-loader}"
+  "$TILO_OS_DIR/dev/build-orangepi-uboot.sh" "$loader"
+  disk_args+=(--boot-gap 16M --rockchip-loader "$loader")
+fi
+
+# A bootc built from os/Containerfile.bootc-helper closes the seal in this one
+# pass: install rewrites the UKI's stale composefs= digest to the one it computes
+# and prints it, and the same rewrite is then applied to the image.
+if [ -n "${TILO_BOOTC_HELPER:-}" ]; then
+  disk_args+=(--bootc-helper "$TILO_BOOTC_HELPER" --reseal-uki)
+fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
@@ -640,19 +757,18 @@ fi
 # value. disk-image.sh recognises that failure and prints the digest to seal, so
 # the recovery is to rebuild the UKI with it and install again.
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  want="$(composefs_expected_digest "$INSTALL_LOG")"
   [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
   seal; see the message above and $INSTALL_LOG"
-  had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  had="$(composefs_sealed_digest "$INSTALL_LOG")"
   msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
   msg "pass 2: rewriting that digest into the UKI the image already carries"
   # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
   # layer, so install then computes a third digest, and a fourth — measured here as
-  # 0196…, then 40b1…, then 317b… . Rewriting the digest inside the existing UKI
-  # cannot move the target, because the added layer touches only /boot and /boot is
-  # the one tree excluded from the composefs digest. So this converges in exactly two
-  # passes, and it does not depend on the layer cache holding the rootfs identical
-  # between them.
+  # 0196…, then 40b1…, then 317b… . reseal-image.sh extracts the existing UKI,
+  # edits its command line, and adds it with COPY. A RUN layer copies up /etc and
+  # changes its directory mtime in Podman, which moves bootc's composefs digest
+  # even when the command edits only /boot. COPY leaves that metadata unchanged.
   #
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
   # layout is untouched; uki-cmdline.py refuses anything else.
@@ -661,7 +777,7 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
     printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"
   fi
   if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-    want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    want2="$(composefs_expected_digest "$INSTALL_LOG")"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
   even though the only thing that changed was the UKI under /boot. That means the
@@ -671,6 +787,14 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
     die "the second install pass failed too; see above and $INSTALL_LOG"
   fi
   msg "seal closed in two passes (install's expected digest was stable)"
+fi
+resealed="$(sed -n 's/^bootc: resealed UKI composefs digest: \([0-9a-f]\{128\}\)$/\1/p' "$INSTALL_LOG" | tail -n1)"
+if [ -n "$resealed" ]; then
+  msg "bootc#2334: install resealed the UKI to sha512:${resealed:0:32}…; applying it to $TILO_IMAGE"
+  reseal_uki "$resealed" || die "could not rewrite the sealed composefs digest"
+  if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
+    printf '%s\n' "$resealed" > "$TILO_RESEALED_DIGEST_FILE"
+  fi
 fi
 
 # Publish the normal update image with the same authority sidecars as installer

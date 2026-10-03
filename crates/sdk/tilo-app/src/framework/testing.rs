@@ -205,6 +205,110 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
+    /// What an agent sees of the running app: every published action with
+    /// its address, label, description and typed parameters, in a stable
+    /// order. Snapshot it so a change shows how it altered the vocabulary an
+    /// agent, a script or a screen reader works with, and what it costs in
+    /// context.
+    pub fn agent_surface(&mut self) -> serde_json::Value {
+        let resources = self.harness().resources();
+        let mut rows: Vec<serde_json::Value> = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .map(|descriptor| {
+                serde_json::json!({
+                    "resource": descriptor.address.resource.as_str(),
+                    "action": descriptor.address.action,
+                    "resource_kind": descriptor.resource_kind,
+                    "label": descriptor.action_label,
+                    "description": descriptor.description,
+                    "operation": descriptor.kind,
+                    "params": descriptor.params,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| (row["resource"].to_string(), row["action"].to_string()));
+        serde_json::Value::Array(rows)
+    }
+
+    /// Run a view or effect operation (`look`, `export`) through the host
+    /// door, as an agent or script does, and answer with what it produced;
+    /// `None` while it is still running.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn operate(
+        &mut self,
+        invoke: Invoke<A::Resource>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+        };
+        let harness = self.harness();
+        let started = harness.invoke_bound_action(&address, &arguments)?;
+        harness.relayout();
+        Ok(started.completed())
+    }
+
+    /// Invoke any published action of the resource by id with JSON
+    /// arguments, as an agent's `tilo_invoke` does — the framework's own
+    /// (`undo`, `history`, `render`) as well as the app's — and answer with
+    /// what it reported.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call(
+        &mut self,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_within(None, id, arguments)
+    }
+
+    /// [`Self::call`] as one agent run: every call naming the same `run`
+    /// belongs to it, the way an agent's connection groups its invocations.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call_in_run(
+        &mut self,
+        run: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        let ambient = tilo_actions::ActionContext::default().with_group(
+            run,
+            run,
+            ui_core::history_source::steps::AGENT_RUN,
+        );
+        self.call_within(Some(&ambient), id, arguments)
+    }
+
+    fn call_within(
+        &mut self,
+        ambient: Option<&tilo_actions::ActionContext>,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+        };
+        let harness = self.harness();
+        let started = match ambient {
+            Some(ambient) => harness.invoke_bound_action_within(&address, &arguments, ambient)?,
+            None => harness.invoke_bound_action(&address, &arguments)?,
+        };
+        harness.relayout();
+        Ok(started.completed().and_then(|output| output.value))
+    }
+
     fn invoke_as(
         &mut self,
         invoke: Invoke<A::Resource>,
@@ -242,6 +346,45 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("resource reads")
     }
 
+    /// Read the stored document itself — the parts of a large resource its
+    /// state does not hold until a view demands them.
+    ///
+    /// # Panics
+    /// Panics when the record is not open, which the API does not allow.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test harness surfaces a closed record loudly"
+    )]
+    pub fn read_document<T>(&self, read: impl FnOnce(&tilo_resource::Doc) -> T) -> T {
+        self.records
+            .read(&self.checkout.id, read)
+            .expect("record is open")
+    }
+
+    /// A copy of the stored document written by another participant: a
+    /// collaborator's replica, for a test to edit and [`Self::merge_peer`]
+    /// back.
+    pub fn peer_document(&self) -> tilo_resource::Doc {
+        self.read_document(|doc| doc.clone().fork())
+    }
+
+    /// Exchange edits with a collaborator's replica, as sync does both ways:
+    /// the peer's edits arrive in the running app (and its views), and the
+    /// app's edits arrive in `peer`.
+    ///
+    /// # Errors
+    /// Returns why either side refused the other's document.
+    pub fn merge_peer(&mut self, peer: &mut tilo_resource::Doc) -> Result<(), String> {
+        use tilo_automerge::ApplyIncoming;
+        let mut ours = self.read_document(Clone::clone);
+        peer.merge_incoming(&mut ours)
+            .map_err(|error| error.to_string())?;
+        self.records
+            .merge_peer_document(&self.checkout, peer.save())?;
+        self.harness().relayout();
+        Ok(())
+    }
+
     /// The record's version history.
     pub fn versions(&self) -> Vec<tilo_resource::history::Version> {
         self.records
@@ -259,6 +402,50 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns the host's refusal of a scenario action.
     pub fn stage(&mut self, scenario: Option<&str>) -> Result<(), LaunchError> {
         super::stage::stage::<A>(self.harness(), scenario)
+    }
+
+    /// The version at `heads` as History mode previews it: the app's own
+    /// view, read-only, over the document as it was then.
+    ///
+    /// # Errors
+    /// Returns why that version cannot be read or drawn.
+    pub fn past_version(
+        &self,
+        heads: &[ui_core::automerge::ChangeHash],
+    ) -> Result<super::preview::PastVersion<A::Resource>, String> {
+        let past = self
+            .records
+            .read(&self.checkout.id, |doc| doc.clone().fork_at(heads))
+            .ok_or("the record is not open")?
+            .map_err(|error| error.to_string())?;
+        super::preview::render_past::<A>(past, A::SHOT_VIEWPORT)
+    }
+
+    /// A collaborator's edit arriving: `edit` writes on their own replica of
+    /// the record as it stands now, under their own actor, and the change is
+    /// merged in as sync merges a peer's. It is not the local participant's
+    /// action, so it never lands on their undo stack.
+    ///
+    /// # Panics
+    /// Panics when the record is not open or the change does not merge,
+    /// which a test should surface.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test harness surfaces a failed merge loudly"
+    )]
+    pub fn merge_peer_edit(&mut self, edit: impl FnOnce(&mut tilo_resource::Doc)) {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut peer = self
+            .records
+            .with(&self.checkout.id, tilo_resource::Doc::fork)
+            .expect("record is open");
+        edit(&mut peer);
+        peer.commit();
+        self.records
+            .with(&self.checkout.id, |doc| doc.merge_incoming(&mut peer))
+            .expect("record is open")
+            .expect("a peer's change merges");
+        self.harness().relayout();
     }
 
     /// Undo the local participant's last action, as Ctrl+Z does.

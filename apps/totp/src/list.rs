@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -25,7 +24,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
 
@@ -514,16 +513,15 @@ impl AccountList {
         let code_x = l.code_right - f64::from(code_w);
         // The code and the ring share one centre line (`l.ring_c.y`).
         let code_y = l.ring_c.y - f64::from(code_h) / 2.0;
-        text_renderer.draw_text_styled(
+        text_renderer.draw_style(
             scene,
             &grouped,
-            code_size,
             code_color,
             transform * Affine::translate((code_x, code_y)),
             None,
-            TextWeight::Bold,
-            false,
-            true,
+            &TextStyle::new(code_size)
+                .with_weight(TextWeight::Bold)
+                .with_family(FontChoice::Monospace),
         );
         // "Copy" affordance under the code on hover.
         if copy_hot {
@@ -800,8 +798,6 @@ fn stroke(w: f64) -> vello::kurbo::Stroke {
 }
 
 impl Widget for AccountList {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -868,21 +864,10 @@ impl Widget for AccountList {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 let hit = self.hit(p);
                 let (row, zone) = match hit {
@@ -892,7 +877,7 @@ impl Widget for AccountList {
                 if row != self.hover_row || zone != self.hover_zone {
                     self.hover_row = row;
                     self.hover_zone = zone;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -921,7 +906,7 @@ impl Widget for AccountList {
                         self.selected = Some(id);
                     }
                     self.events.push(ev);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -929,10 +914,10 @@ impl Widget for AccountList {
             {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / ctx.scale_factor,
                 };
                 self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -957,6 +942,7 @@ impl Widget for AccountList {
 mod tests {
     use super::*;
     use crate::model::demo_accounts;
+    use automerge::AutoCommit;
 
     fn list_with_demo() -> AccountList {
         let mut l = AccountList::new();
@@ -965,157 +951,218 @@ mod tests {
         l
     }
 
+    /// Row metrics: identity band, stacking, narrow layout, text scale, and the empty list.
     #[test]
-    fn the_stacked_identity_band_is_unchanged_at_one_x_and_grows_with_the_disc() {
-        // 1×: a 48 px disc on a 40.25 px block keeps the block's height (the
-        // disc's one-`gap` overhang per side is the accepted 1× look).
-        assert_eq!(stacked_identity_band(40.25, AVATAR_R, 4.0), 40.25);
-        // 2×: the 96 px disc now decides, so the code line lands under it.
-        assert_eq!(stacked_identity_band(80.5, 2.0 * AVATAR_R, 4.0), 88.0);
-        // The pre-paint rules carry the 1× radius.
-        assert_eq!(RowMetrics::fallback(300.0).avatar_r, AVATAR_R);
+    fn row_metrics_stack_and_grow_with_text_scale() {
+        // Case `the_stacked_identity_band_is_unchanged_at_one_x_and_grows_with_the_disc`.
+        {
+            // 1×: a 48 px disc on a 40.25 px block keeps the block's height (the
+            // disc's one-`gap` overhang per side is the accepted 1× look).
+            assert_eq!(stacked_identity_band(40.25, AVATAR_R, 4.0), 40.25);
+            // 2×: the 96 px disc now decides, so the code line lands under it.
+            assert_eq!(stacked_identity_band(80.5, 2.0 * AVATAR_R, 4.0), 88.0);
+            // The pre-paint rules carry the 1× radius.
+            assert_eq!(RowMetrics::fallback(300.0).avatar_r, AVATAR_R);
+        }
+
+        // Case `rows_stack_without_overlap`.
+        {
+            let l = list_with_demo();
+            let r0 = l.row_rect(0);
+            let r1 = l.row_rect(1);
+            assert!(r1.y0 >= r0.y1, "row 1 must start at/after row 0 ends");
+        }
+
+        // Case `narrow_rows_put_codes_on_a_separate_copy_line`.
+        {
+            let mut l = AccountList::new();
+            l.set_viewport(Rect::new(0.0, 0.0, 390.0, 800.0));
+            l.set_accounts(demo_accounts());
+            let r = l.row_rect(0);
+            let layout = l.row_layout(r);
+            assert_eq!(r.height(), NARROW_ROW_HEIGHT);
+            assert!(layout.ring_c.y > layout.avatar_c.y + AVATAR_R);
+            // Identity taps remain body selection; code taps are explicitly on the
+            // lower line and reach the same Copy event path as wide rows.
+            assert_eq!(
+                l.hit(Point::new(layout.text_x + 4.0, r.y0 + 36.0)),
+                Some((0, Zone::Body))
+            );
+            assert_eq!(
+                l.hit(Point::new(layout.code_right - 20.0, r.y0 + 74.0)),
+                Some((0, Zone::Copy))
+            );
+        }
+
+        // Case `measured_rows_match_the_authored_shape_at_normal_text`.
+        {
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let m = RowMetrics::measure(&mut tr, &theme, 568.0);
+            assert!(
+                !m.stacked,
+                "a 600px viewport keeps identity and code on one line"
+            );
+            assert_eq!(m.row_h, ROW_HEIGHT, "1× rows keep their authored height");
+            assert_eq!(m.ring_r, RING_R);
+            let narrow = RowMetrics::measure(&mut tr, &theme, 358.0);
+            assert!(narrow.stacked);
+            assert_eq!(narrow.row_h, NARROW_ROW_HEIGHT);
+        }
+
+        // Case `large_text_grows_rows_and_stacks_before_the_code_meets_the_identity`.
+        {
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            // The renderer scales text the way the launch harness does for a
+            // 200% theme (`FrameHarness` mirrors `theme.text_scale` into it).
+            tr.set_text_scale(theme.text_scale);
+            // A laptop-wide row at 200% no longer fits identity + code + ring on
+            // one line, so it stacks and grows instead of overlapping.
+            let m = RowMetrics::measure(&mut tr, &theme, 700.0);
+            assert!(m.stacked, "200% text stacks a 700px row");
+            assert!(
+                m.row_h > NARROW_ROW_HEIGHT,
+                "stacked row grows with its text"
+            );
+            assert!(
+                m.ring_r > RING_R,
+                "the ring grows so its seconds fit inside"
+            );
+            assert!(
+                m.code_top >= STACKED_TOP + m.issuer_h + m.gap + m.label_h,
+                "the code line starts below the identity block"
+            );
+            // A very wide row still fits on one line and is taller than at 1×.
+            let wide = RowMetrics::measure(&mut tr, &theme, 1400.0);
+            assert!(!wide.stacked);
+            assert!(wide.row_h > ROW_HEIGHT);
+            assert!(
+                wide.copy_zone_w > COPY_ZONE_W,
+                "copy target follows the wider code"
+            );
+        }
+
+        // Case `empty_list_reports_empty`.
+        {
+            let mut l = AccountList::new();
+            l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
+            assert!(l.is_empty());
+        }
     }
 
+    /// Hit-testing follows painted metrics; clicks and the wheel emit copy/reorder/delete and scroll.
     #[test]
-    fn rows_stack_without_overlap() {
-        let l = list_with_demo();
-        let r0 = l.row_rect(0);
-        let r1 = l.row_rect(1);
-        assert!(r1.y0 >= r0.y1, "row 1 must start at/after row 0 ends");
-    }
+    fn row_hit_testing_and_pointer_events_emit_actions_and_scroll() {
+        // Case `copy_zone_and_action_zones_hit_test_correctly`.
+        {
+            let l = list_with_demo();
+            let r = l.row_rect(0);
+            let layout = l.row_layout(r);
+            // Just left of the ring → copy zone.
+            let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
+            assert_eq!(l.hit(copy_p), Some((0, Zone::Copy)));
+            // The avatar/text area → body (select).
+            let body_p = Point::new(layout.text_x + 4.0, r.center().y);
+            assert_eq!(l.hit(body_p), Some((0, Zone::Body)));
+            // Top of the action column → reorder-up.
+            let up_p = Point::new(
+                f64::midpoint(layout.actions_x0, layout.actions_x1),
+                r.y0 + 6.0,
+            );
+            assert_eq!(l.hit(up_p), Some((0, Zone::Up)));
+            // Bottom of the action column → delete.
+            let del_p = Point::new(
+                f64::midpoint(layout.actions_x0, layout.actions_x1),
+                r.y1 - 6.0,
+            );
+            assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
+        }
 
-    #[test]
-    fn copy_zone_and_action_zones_hit_test_correctly() {
-        let l = list_with_demo();
-        let r = l.row_rect(0);
-        let layout = l.row_layout(r);
-        // Just left of the ring → copy zone.
-        let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
-        assert_eq!(l.hit(copy_p), Some((0, Zone::Copy)));
-        // The avatar/text area → body (select).
-        let body_p = Point::new(layout.text_x + 4.0, r.center().y);
-        assert_eq!(l.hit(body_p), Some((0, Zone::Body)));
-        // Top of the action column → reorder-up.
-        let up_p = Point::new(
-            f64::midpoint(layout.actions_x0, layout.actions_x1),
-            r.y0 + 6.0,
-        );
-        assert_eq!(l.hit(up_p), Some((0, Zone::Up)));
-        // Bottom of the action column → delete.
-        let del_p = Point::new(
-            f64::midpoint(layout.actions_x0, layout.actions_x1),
-            r.y1 - 6.0,
-        );
-        assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
-    }
+        // Case `painted_metrics_drive_hit_testing`.
+        {
+            // After a paint at 200%, the hit-test uses the measured (stacked)
+            // geometry: the code line is where it was painted, not at the 1× y.
+            let mut l = AccountList::new();
+            l.set_viewport(Rect::new(0.0, 0.0, 732.0, 800.0));
+            l.set_accounts(demo_accounts());
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            tr.set_text_scale(theme.text_scale);
+            l.metrics = Some(RowMetrics::measure(&mut tr, &theme, l.row_width()));
+            let r = l.row_rect(0);
+            let layout = l.row_layout(r);
+            let m = l.metrics();
+            assert!(m.stacked);
+            assert_eq!(r.height(), m.row_h);
+            // Identity area above the code line selects; the code line copies.
+            assert_eq!(
+                l.hit(Point::new(layout.text_x + 4.0, r.y0 + STACKED_TOP + 4.0)),
+                Some((0, Zone::Body))
+            );
+            assert_eq!(
+                l.hit(Point::new(
+                    layout.code_right - 20.0,
+                    r.y0 + m.code_top + 4.0
+                )),
+                Some((0, Zone::Copy))
+            );
+            // The ring sits on the code's centre line, clear of the identity.
+            assert!(layout.ring_c.y > layout.avatar_c.y + AVATAR_R);
+        }
 
-    #[test]
-    fn narrow_rows_put_codes_on_a_separate_copy_line() {
-        let mut l = AccountList::new();
-        l.set_viewport(Rect::new(0.0, 0.0, 390.0, 800.0));
-        l.set_accounts(demo_accounts());
-        let r = l.row_rect(0);
-        let layout = l.row_layout(r);
-        assert_eq!(r.height(), NARROW_ROW_HEIGHT);
-        assert!(layout.ring_c.y > layout.avatar_c.y + AVATAR_R);
-        // Identity taps remain body selection; code taps are explicitly on the
-        // lower line and reach the same Copy event path as wide rows.
-        assert_eq!(
-            l.hit(Point::new(layout.text_x + 4.0, r.y0 + 36.0)),
-            Some((0, Zone::Body))
-        );
-        assert_eq!(
-            l.hit(Point::new(layout.code_right - 20.0, r.y0 + 74.0)),
-            Some((0, Zone::Copy))
-        );
-    }
+        // Case `mouse_click_in_the_copy_zone_emits_a_copy_event`.
+        {
+            let mut l = list_with_demo();
+            let id = l.account_at(0).unwrap().id;
+            let r = l.row_rect(0);
+            let layout = l.row_layout(r);
+            let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
+            dispatch(&mut l, &cursor_at(copy_p));
+            let handled = dispatch(&mut l, &left_press());
+            assert!(handled, "a click on a real row is handled");
+            assert_eq!(l.take_events(), vec![ListEvent::Copy(id)]);
+            assert_eq!(l.selected(), Some(id), "copying also selects the row");
+        }
 
-    #[test]
-    fn measured_rows_match_the_authored_shape_at_normal_text() {
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let m = RowMetrics::measure(&mut tr, &theme, 568.0);
-        assert!(
-            !m.stacked,
-            "a 600px viewport keeps identity and code on one line"
-        );
-        assert_eq!(m.row_h, ROW_HEIGHT, "1× rows keep their authored height");
-        assert_eq!(m.ring_r, RING_R);
-        let narrow = RowMetrics::measure(&mut tr, &theme, 358.0);
-        assert!(narrow.stacked);
-        assert_eq!(narrow.row_h, NARROW_ROW_HEIGHT);
-    }
+        // Case `mouse_clicks_in_the_action_column_emit_reorder_and_delete`.
+        {
+            let mut l = list_with_demo();
+            let id = l.account_at(0).unwrap().id;
+            let r = l.row_rect(0);
+            let layout = l.row_layout(r);
+            let col_x = f64::midpoint(layout.actions_x0, layout.actions_x1);
+            // Top third of the action column → move up.
+            dispatch(&mut l, &cursor_at(Point::new(col_x, r.y0 + 4.0)));
+            dispatch(&mut l, &left_press());
+            assert_eq!(l.take_events(), vec![ListEvent::MoveUp(id)]);
+            // Bottom third → delete.
+            dispatch(&mut l, &cursor_at(Point::new(col_x, r.y1 - 4.0)));
+            dispatch(&mut l, &left_press());
+            assert_eq!(l.take_events(), vec![ListEvent::Delete(id)]);
+        }
 
-    #[test]
-    fn large_text_grows_rows_and_stacks_before_the_code_meets_the_identity() {
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        // The renderer scales text the way the launch harness does for a
-        // 200% theme (`FrameHarness` mirrors `theme.text_scale` into it).
-        tr.set_text_scale(theme.text_scale);
-        // A laptop-wide row at 200% no longer fits identity + code + ring on
-        // one line, so it stacks and grows instead of overlapping.
-        let m = RowMetrics::measure(&mut tr, &theme, 700.0);
-        assert!(m.stacked, "200% text stacks a 700px row");
-        assert!(
-            m.row_h > NARROW_ROW_HEIGHT,
-            "stacked row grows with its text"
-        );
-        assert!(
-            m.ring_r > RING_R,
-            "the ring grows so its seconds fit inside"
-        );
-        assert!(
-            m.code_top >= STACKED_TOP + m.issuer_h + m.gap + m.label_h,
-            "the code line starts below the identity block"
-        );
-        // A very wide row still fits on one line and is taller than at 1×.
-        let wide = RowMetrics::measure(&mut tr, &theme, 1400.0);
-        assert!(!wide.stacked);
-        assert!(wide.row_h > ROW_HEIGHT);
-        assert!(
-            wide.copy_zone_w > COPY_ZONE_W,
-            "copy target follows the wider code"
-        );
-    }
+        // Case `wheel_scrolls_and_clamps_through_handle_event`.
+        {
+            let mut l = AccountList::new();
+            // A viewport shorter than the content so scrolling is possible.
+            l.set_viewport(Rect::new(0.0, 0.0, 600.0, 220.0));
+            l.set_accounts(demo_accounts());
+            assert!(l.max_scroll() > 0.0, "five rows overflow a 220px viewport");
 
-    #[test]
-    fn painted_metrics_drive_hit_testing() {
-        // After a paint at 200%, the hit-test uses the measured (stacked)
-        // geometry: the code line is where it was painted, not at the 1× y.
-        let mut l = AccountList::new();
-        l.set_viewport(Rect::new(0.0, 0.0, 732.0, 800.0));
-        l.set_accounts(demo_accounts());
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        tr.set_text_scale(theme.text_scale);
-        l.metrics = Some(RowMetrics::measure(&mut tr, &theme, l.row_width()));
-        let r = l.row_rect(0);
-        let layout = l.row_layout(r);
-        let m = l.metrics();
-        assert!(m.stacked);
-        assert_eq!(r.height(), m.row_h);
-        // Identity area above the code line selects; the code line copies.
-        assert_eq!(
-            l.hit(Point::new(layout.text_x + 4.0, r.y0 + STACKED_TOP + 4.0)),
-            Some((0, Zone::Body))
-        );
-        assert_eq!(
-            l.hit(Point::new(
-                layout.code_right - 20.0,
-                r.y0 + m.code_top + 4.0
-            )),
-            Some((0, Zone::Copy))
-        );
-        // The ring sits on the code's centre line, clear of the identity.
-        assert!(layout.ring_c.y > layout.avatar_c.y + AVATAR_R);
-    }
-
-    #[test]
-    fn empty_list_reports_empty() {
-        let mut l = AccountList::new();
-        l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
-        assert!(l.is_empty());
+            // The wheel handler only acts when the pointer is over the list.
+            dispatch(&mut l, &cursor_at(Point::new(300.0, 110.0)));
+            // Scroll far down: the offset clamps to the bottom, never past it.
+            dispatch(&mut l, &wheel(-100.0));
+            assert_eq!(
+                l.scroll,
+                l.max_scroll(),
+                "scrolling down clamps to the bottom"
+            );
+            // Scroll far up: clamps to the top, never negative.
+            dispatch(&mut l, &wheel(100.0));
+            assert_eq!(l.scroll, 0.0, "scrolling up clamps to the top");
+        }
     }
 
     // ---- pointer routing through the real `handle_event` ----------------
@@ -1135,68 +1182,17 @@ mod tests {
         let mut handled = false;
         l.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut None,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
-    }
-
-    #[test]
-    fn mouse_click_in_the_copy_zone_emits_a_copy_event() {
-        let mut l = list_with_demo();
-        let id = l.account_at(0).unwrap().id;
-        let r = l.row_rect(0);
-        let layout = l.row_layout(r);
-        let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
-        dispatch(&mut l, &cursor_at(copy_p));
-        let handled = dispatch(&mut l, &left_press());
-        assert!(handled, "a click on a real row is handled");
-        assert_eq!(l.take_events(), vec![ListEvent::Copy(id)]);
-        assert_eq!(l.selected(), Some(id), "copying also selects the row");
-    }
-
-    #[test]
-    fn mouse_clicks_in_the_action_column_emit_reorder_and_delete() {
-        let mut l = list_with_demo();
-        let id = l.account_at(0).unwrap().id;
-        let r = l.row_rect(0);
-        let layout = l.row_layout(r);
-        let col_x = f64::midpoint(layout.actions_x0, layout.actions_x1);
-        // Top third of the action column → move up.
-        dispatch(&mut l, &cursor_at(Point::new(col_x, r.y0 + 4.0)));
-        dispatch(&mut l, &left_press());
-        assert_eq!(l.take_events(), vec![ListEvent::MoveUp(id)]);
-        // Bottom third → delete.
-        dispatch(&mut l, &cursor_at(Point::new(col_x, r.y1 - 4.0)));
-        dispatch(&mut l, &left_press());
-        assert_eq!(l.take_events(), vec![ListEvent::Delete(id)]);
-    }
-
-    #[test]
-    fn wheel_scrolls_and_clamps_through_handle_event() {
-        let mut l = AccountList::new();
-        // A viewport shorter than the content so scrolling is possible.
-        l.set_viewport(Rect::new(0.0, 0.0, 600.0, 220.0));
-        l.set_accounts(demo_accounts());
-        assert!(l.max_scroll() > 0.0, "five rows overflow a 220px viewport");
-
-        // The wheel handler only acts when the pointer is over the list.
-        dispatch(&mut l, &cursor_at(Point::new(300.0, 110.0)));
-        // Scroll far down: the offset clamps to the bottom, never past it.
-        dispatch(&mut l, &wheel(-100.0));
-        assert_eq!(
-            l.scroll,
-            l.max_scroll(),
-            "scrolling down clamps to the bottom"
-        );
-        // Scroll far up: clamps to the top, never negative.
-        dispatch(&mut l, &wheel(100.0));
-        assert_eq!(l.scroll, 0.0, "scrolling up clamps to the top");
     }
 }

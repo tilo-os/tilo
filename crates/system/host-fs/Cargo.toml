@@ -1,0 +1,19 @@
+[package]
+name = "host-fs"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links, extended attributes, no-replace rename, trash"
+
+[dependencies]
+trash = "5.2.6"
+tilo-xdg-paths = { path = "../xdg-paths" }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+xattr = "1.6.1"
+
+[lints]
+workspace = true

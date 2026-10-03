@@ -528,110 +528,118 @@ pub fn fmt_hours(hours: i64) -> String {
 mod tests {
     use super::*;
 
+    /// The sample topology: drive mix, partition classes, free tail, clamped usage and JSON round-trip.
     #[test]
-    fn sample_has_four_drives_with_mixed_kinds() {
-        let t = Topology::sample();
-        assert_eq!(t.drives.len(), 4);
-        let kinds: Vec<_> = t.drives.iter().map(|d| d.kind).collect();
-        assert!(kinds.contains(&DriveKind::Nvme));
-        assert!(kinds.contains(&DriveKind::Ssd));
-        assert!(kinds.contains(&DriveKind::Hdd));
-        assert!(kinds.contains(&DriveKind::Usb));
+    fn sample_topology_geometry_and_serialisation() {
+        // --- phase: sample_has_four_drives_with_mixed_kinds ---
+        {
+            let t = Topology::sample();
+            assert_eq!(t.drives.len(), 4);
+            let kinds: Vec<_> = t.drives.iter().map(|d| d.kind).collect();
+            assert!(kinds.contains(&DriveKind::Nvme));
+            assert!(kinds.contains(&DriveKind::Ssd));
+            assert!(kinds.contains(&DriveKind::Hdd));
+            assert!(kinds.contains(&DriveKind::Usb));
+        }
+
+        // --- phase: nvme_partitions_classify_correctly ---
+        {
+            let t = Topology::sample();
+            let nvme = &t.drives[0];
+            let roles: Vec<_> = nvme.partitions.iter().map(super::Partition::role).collect();
+            assert_eq!(roles[0], PartRole::Efi);
+            assert_eq!(roles[1], PartRole::Root);
+            assert_eq!(roles[2], PartRole::Home);
+            assert_eq!(roles[3], PartRole::Swap);
+        }
+
+        // --- phase: free_tail_is_non_negative_and_correct ---
+        {
+            let t = Topology::sample();
+            let nvme = &t.drives[0];
+            assert!(nvme.free_tail() > 0, "sample NVMe leaves unallocated tail");
+            assert_eq!(nvme.allocated() + nvme.free_tail(), nvme.size);
+        }
+
+        // --- phase: used_frac_clamped ---
+        {
+            let p = Partition {
+                name: "x".into(),
+                size: 100,
+                fstype: None,
+                label: None,
+                mountpoint: None,
+                used: Some(150),
+                uuid: None,
+            };
+            assert_eq!(p.used_frac(), Some(1.0));
+        }
+
+        // --- phase: round_trips_through_json ---
+        {
+            let t = Topology::sample();
+            let json = serde_json::to_string(&t).unwrap();
+            let back: Topology = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.drives.len(), t.drives.len());
+            assert_eq!(back.drives[0].name, "nvme0n1");
+        }
     }
 
+    /// Mountpoint roles and lsblk device kinds classify atomic Fedora, media and virtual devices.
     #[test]
-    fn nvme_partitions_classify_correctly() {
-        let t = Topology::sample();
-        let nvme = &t.drives[0];
-        let roles: Vec<_> = nvme.partitions.iter().map(super::Partition::role).collect();
-        assert_eq!(roles[0], PartRole::Efi);
-        assert_eq!(roles[1], PartRole::Root);
-        assert_eq!(roles[2], PartRole::Home);
-        assert_eq!(roles[3], PartRole::Swap);
-    }
+    fn lsblk_classification_of_roles_and_kinds() {
+        // --- phase: role_recognises_atomic_fedora_mountpoints ---
+        {
+            let part = |mp: &str, fs: &str| Partition {
+                name: "p".into(),
+                size: 100,
+                fstype: Some(fs.into()),
+                label: None,
+                mountpoint: Some(mp.into()),
+                used: None,
+                uuid: None,
+            };
+            // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
+            assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);
+            assert_eq!(part("/home", "ext4").role(), PartRole::Home);
+            assert_eq!(part("/sysroot", "btrfs").role(), PartRole::Root);
+            assert_eq!(part("/boot/efi", "vfat").role(), PartRole::Efi);
+            assert_eq!(part("[SWAP]", "swap").role(), PartRole::Swap);
+            assert_eq!(part("/mnt/data", "xfs").role(), PartRole::Data);
+        }
 
-    #[test]
-    fn free_tail_is_non_negative_and_correct() {
-        let t = Topology::sample();
-        let nvme = &t.drives[0];
-        assert!(nvme.free_tail() > 0, "sample NVMe leaves unallocated tail");
-        assert_eq!(nvme.allocated() + nvme.free_tail(), nvme.size);
-    }
-
-    #[test]
-    fn used_frac_clamped() {
-        let p = Partition {
-            name: "x".into(),
-            size: 100,
-            fstype: None,
-            label: None,
-            mountpoint: None,
-            used: Some(150),
-            uuid: None,
-        };
-        assert_eq!(p.used_frac(), Some(1.0));
-    }
-
-    #[test]
-    fn round_trips_through_json() {
-        let t = Topology::sample();
-        let json = serde_json::to_string(&t).unwrap();
-        let back: Topology = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.drives.len(), t.drives.len());
-        assert_eq!(back.drives[0].name, "nvme0n1");
-    }
-
-    #[test]
-    fn role_recognises_atomic_fedora_mountpoints() {
-        let part = |mp: &str, fs: &str| Partition {
-            name: "p".into(),
-            size: 100,
-            fstype: Some(fs.into()),
-            label: None,
-            mountpoint: Some(mp.into()),
-            used: None,
-            uuid: None,
-        };
-        // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
-        assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);
-        assert_eq!(part("/home", "ext4").role(), PartRole::Home);
-        assert_eq!(part("/sysroot", "btrfs").role(), PartRole::Root);
-        assert_eq!(part("/boot/efi", "vfat").role(), PartRole::Efi);
-        assert_eq!(part("[SWAP]", "swap").role(), PartRole::Swap);
-        assert_eq!(part("/mnt/data", "xfs").role(), PartRole::Data);
-    }
-
-    #[test]
-    fn kind_from_lsblk_covers_media_and_virtual_devices() {
-        // Physical media by transport / rotation.
-        assert_eq!(
-            DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
-            DriveKind::Nvme
-        );
-        assert_eq!(
-            DriveKind::from_lsblk("sda", false, Some("sata")),
-            DriveKind::Ssd
-        );
-        assert_eq!(
-            DriveKind::from_lsblk("sdb", true, Some("sata")),
-            DriveKind::Hdd
-        );
-        assert_eq!(
-            DriveKind::from_lsblk("sdc", false, Some("usb")),
-            DriveKind::Usb
-        );
-        // A zram swap device is non-rotational but must NOT read as an SSD.
-        assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
-        assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
-        // Loop / device-mapper / MD are virtual.
-        assert_eq!(
-            DriveKind::from_lsblk("loop0", false, None),
-            DriveKind::Virtual
-        );
-        assert_eq!(
-            DriveKind::from_lsblk("dm-0", false, None),
-            DriveKind::Virtual
-        );
-        assert!(!DriveKind::from_lsblk("nvme0n1", false, Some("nvme")).is_virtual());
+        // --- phase: kind_from_lsblk_covers_media_and_virtual_devices ---
+        {
+            // Physical media by transport / rotation.
+            assert_eq!(
+                DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
+                DriveKind::Nvme
+            );
+            assert_eq!(
+                DriveKind::from_lsblk("sda", false, Some("sata")),
+                DriveKind::Ssd
+            );
+            assert_eq!(
+                DriveKind::from_lsblk("sdb", true, Some("sata")),
+                DriveKind::Hdd
+            );
+            assert_eq!(
+                DriveKind::from_lsblk("sdc", false, Some("usb")),
+                DriveKind::Usb
+            );
+            // A zram swap device is non-rotational but must NOT read as an SSD.
+            assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
+            assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
+            // Loop / device-mapper / MD are virtual.
+            assert_eq!(
+                DriveKind::from_lsblk("loop0", false, None),
+                DriveKind::Virtual
+            );
+            assert_eq!(
+                DriveKind::from_lsblk("dm-0", false, None),
+                DriveKind::Virtual
+            );
+            assert!(!DriveKind::from_lsblk("nvme0n1", false, Some("nvme")).is_virtual());
+        }
     }
 }

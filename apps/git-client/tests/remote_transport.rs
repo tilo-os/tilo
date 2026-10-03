@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use git2::{Repository, Signature};
 use ui::widget::Widget;
@@ -49,6 +49,8 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
     command
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/http_remote.py"))
         .arg(root)
+        .arg("--hang-bound")
+        .arg(tilo_test_env::hang_bound().as_secs().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(
@@ -67,11 +69,11 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
             .spawn()
             .expect("Python 3 is required for Git HTTP tests"),
     );
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     let ready = root.join("ready.json");
     while !ready.exists() {
         assert!(
-            server.0.try_wait().unwrap().is_none() && Instant::now() < deadline,
+            server.0.try_wait().unwrap().is_none() && ui::time::now() < deadline,
             "Git HTTP fixture failed: {}",
             fs::read_to_string(root.join("server.log")).unwrap()
         );
@@ -171,7 +173,17 @@ fn checkout_main(client: &Repository) {
     client.checkout_head(None).unwrap();
 }
 
+/// Remote operations against a real server: fetch with configured credentials,
+/// rejected credentials fail without retrying, push transfers objects and reports
+/// rejection, and pull preserves conflicting local edits. Each phase is a former test with its own fresh fixture.
 #[test]
+fn remote_fetch_push_pull_move_real_objects_and_respect_credentials() {
+    fetch_uses_configured_credentials_and_downloads_real_objects();
+    rejected_credentials_fail_without_retrying_forever();
+    push_transfers_real_objects_and_reports_remote_rejection();
+    pull_preserves_conflicting_local_edits_and_head();
+}
+
 fn fetch_uses_configured_credentials_and_downloads_real_objects() {
     let root = tempfile::Builder::new()
         .prefix("tilo git user's credentials ")
@@ -194,7 +206,6 @@ fn fetch_uses_configured_credentials_and_downloads_real_objects() {
     );
 }
 
-#[test]
 fn rejected_credentials_fail_without_retrying_forever() {
     let root = tempfile::tempdir().unwrap();
     seed_remote(&root.path().join("remote.git"));
@@ -208,7 +219,6 @@ fn rejected_credentials_fail_without_retrying_forever() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
-#[test]
 fn push_transfers_real_objects_and_reports_remote_rejection() {
     let root = tempfile::tempdir().unwrap();
     let remote_path = root.path().join("remote.git");
@@ -247,7 +257,6 @@ fn push_transfers_real_objects_and_reports_remote_rejection() {
     assert_eq!(remote.head().unwrap().target(), Some(pushed));
 }
 
-#[test]
 fn pull_preserves_conflicting_local_edits_and_head() {
     let root = tempfile::tempdir().unwrap();
     let remote_path = root.path().join("remote.git");
@@ -280,7 +289,21 @@ fn pull_preserves_conflicting_local_edits_and_head() {
     );
 }
 
+/// The production transport backend: HTTPS and SSH remotes are supported and an
+/// untrusted server certificate is rejected. Each phase is a former test with its own fresh fixture.
 #[test]
+fn production_backend_supports_https_and_ssh_and_rejects_untrusted_tls() {
+    // The SSH phase re-runs this test in a child process with the fixture's HOME and
+    // agent; that child performs only the SSH verification the parent is waiting on.
+    if std::env::var_os(ssh_remote::CHILD_ROOT).is_some() {
+        production_backend_supports_ssh_remotes();
+        return;
+    }
+    production_backend_supports_https_remotes();
+    production_backend_supports_ssh_remotes();
+    https_rejects_an_untrusted_server_certificate();
+}
+
 fn production_backend_supports_https_remotes() {
     let root = tempfile::tempdir().unwrap();
     let expected = seed_remote(&root.path().join("remote.git"));
@@ -313,12 +336,10 @@ fn production_backend_supports_https_remotes() {
     );
 }
 
-#[test]
 fn production_backend_supports_ssh_remotes() {
     ssh_remote::verify_transport();
 }
 
-#[test]
 fn https_rejects_an_untrusted_server_certificate() {
     let root = tempfile::tempdir().unwrap();
     seed_remote(&root.path().join("remote.git"));
@@ -334,7 +355,15 @@ fn https_rejects_an_untrusted_server_certificate() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
+/// Remote operations from the app: a fetch keeps the app responsive and reports
+/// completion after sync, and a failure reaches the invocation and visible status.
+/// Each phase is a former test with its own fresh fixture.
 #[test]
+fn app_remote_operations_stay_responsive_and_report_outcomes() {
+    remote_fetch_keeps_app_responsive_and_reports_completion_after_sync();
+    remote_failure_is_reported_to_the_invocation_and_visible_status();
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one production lifecycle scenario checks admission, responsiveness, isolation and completion in order"
@@ -357,12 +386,14 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
     .unwrap();
     fs::write(root.path().join("block"), "").unwrap();
     let started = app
-        .start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &payload,
-            &doc,
+        .start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap();
@@ -371,46 +402,59 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
     assert!(app.needs_animation_frame());
-    let request_deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let request_deadline = tilo_test_env::hang_deadline();
     while !root.path().join("request-started").exists() {
         assert!(
-            Instant::now() < request_deadline,
+            ui::time::now() < request_deadline,
             "worker never contacted the server"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
     let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    assert!(
-        app.invoke_resource_operation(
-            OperationKind::View,
-            GIT_CLIENT_OPERATION_TYPE,
-            &view,
-            &doc,
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::View,
+                GIT_CLIENT_OPERATION_TYPE,
+                &view
+            ),
+            &mut doc,
             &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     let mutation = serde_json::to_vec(&GitClientOperation::StageAll).unwrap();
     assert!(
-        app.invoke_resource_operation(
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &mutation,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &mutation
+            ),
+            &mut doc,
             &automerge::ROOT
         )
         .is_err()
     );
     app.test_stage_all();
     assert!(
-        app.invoke_resource_operation(
-            OperationKind::View,
-            GIT_CLIENT_OPERATION_TYPE,
-            &view,
-            &doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
+        matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    GIT_CLIENT_OPERATION_TYPE,
+                    &view
+                ),
+                &mut doc,
+                &automerge::ROOT
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ),
         "a rejected mutation must not disable navigation"
     );
     assert_eq!(
@@ -432,7 +476,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             .is_none()
     );
     fs::write(root.path().join("release"), "").unwrap();
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(&mut doc, &automerge::ROOT);
         if let Some(update) = app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
@@ -444,7 +488,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "remote operation did not complete"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -461,20 +505,23 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             .is_none()
     );
     assert!(!app.needs_animation_frame());
-    assert!(
-        app.invoke_resource_operation(
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &mutation,
-            &doc,
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &mutation
+            ),
+            &mut doc,
             &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     assert_eq!(Repository::open(path).unwrap().index().unwrap().len(), 1);
 }
 
-#[test]
 fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     use git_client::actions::{GIT_CLIENT_OPERATION_TYPE, GitClientOperation};
     use tilo_actions::{InvocationId, InvocationUpdate, OperationKind};
@@ -487,11 +534,14 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     // Settle the initial collapsed sidebar through a real view action so its
     // startup animation does not keep requesting frames after the job ends.
     let view = serde_json::to_vec(&GitClientOperation::ShowHistory).unwrap();
-    app.invoke_resource_operation(
-        OperationKind::View,
-        GIT_CLIENT_OPERATION_TYPE,
-        &view,
-        &doc,
+    app.start_operation(
+        &ui::widget::ResourceOperation::local(
+            ui::tilo_actions::InvocationId::new(),
+            OperationKind::View,
+            GIT_CLIENT_OPERATION_TYPE,
+            &view,
+        ),
+        &mut doc,
         &automerge::ROOT,
     )
     .unwrap();
@@ -502,18 +552,20 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     })
     .unwrap();
     assert!(matches!(
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            &payload,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
+                &payload
+            ),
+            &mut doc,
             &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(&mut doc, &automerge::ROOT);
         // A cancellation request is not evidence of cancellation: authentication
@@ -533,7 +585,7 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
             assert_eq!(app.test_last_error(), Some(error.message.as_str()));
             break;
         }
-        assert!(Instant::now() < deadline, "failure was not delivered");
+        assert!(ui::time::now() < deadline, "failure was not delivered");
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!app.needs_animation_frame());

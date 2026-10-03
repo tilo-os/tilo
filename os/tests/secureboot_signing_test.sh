@@ -5,6 +5,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 secureboot="$repo/os/usr/libexec/tilo-secureboot"
 grep -Fq 'tilo-crypto durable-rename "$signed_output" "$a"' "$secureboot"
+# The read-only ESP is written only by tilo-esp-write@secureboot-sign.
+grep -Fq 'esp_install_signed "$signed_output" "${a#"$ESP"/}"' "$secureboot"
 grep -Fq 'tilo-crypto durable-rename "$temporary" "$output"' "$secureboot"
 grep -Fq 'exec 8<"$ESP"' "$secureboot"
 if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
@@ -109,12 +111,30 @@ cp -- "${@: -2:1}" "${@: -1}"
 EOF
 chmod +x "$work/bin/systemd-creds"
 
+# The ESP writer runs for real against the fixture ESP; a corrupted
+# publication is modelled after it wrote.
+mkdir -p "$work/plans/secureboot-sign"
+chmod 0700 "$work/plans/secureboot-sign"
+cat >"$work/bin/esp-write" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+dst="\$(sed -n 's/.*"dst": "\([^"]*\)".*/\1/p' "$work/plans/secureboot-sign/plan.json")"
+TILO_ESP="\$TILO_SB_ESP" TILO_ESP_PLAN_ROOT="$work/plans" TILO_ESP_PLAN_OWNER="\$(id -u)" \\
+  TILO_ESP_WRITE_NO_REMOUNT=1 "$repo/os/usr/libexec/tilo-esp-write" secureboot-sign
+if [[ \${TILO_TEST_CORRUPT_DURABLE_RENAME:-0} == 1 ]]; then
+  printf 'corrupt published artifact\n' >"\$TILO_SB_ESP/\$dst"
+fi
+EOF
+chmod +x "$work/bin/esp-write"
+
 run_sign() {
   PATH="$work/bin:$PATH" \
     TILO_SB_KEYDIR="$work/keys" \
     TILO_SB_BOOT="$work/boot" \
     TILO_SB_ESP="$work/boot" \
     TILO_SB_LOCK="$work/run/sign.lock" \
+    TILO_ESP_PLAN_DIR="$work/plans/secureboot-sign" \
+    TILO_ESP_WRITE_CMD="$work/bin/esp-write" \
     "$repo/os/usr/libexec/tilo-secureboot" sign
 }
 

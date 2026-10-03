@@ -305,75 +305,74 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn accepts_the_imager_contract_and_names_the_host() {
-        let handoff = handoff();
-        assert_eq!(handoff.host(), HostOs::Windows);
-        assert_eq!(handoff.host().display_name(), "Windows");
-        let profile = handoff.media_profile().unwrap();
-        assert_eq!(profile.username.as_deref(), Some("ada"));
-        assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
-    }
+    fn internal_handoff_accepts_the_imager_contract_and_fails_closed() {
+        // Phase `accepts_the_imager_contract_and_names_the_host`.
+        {
+            let handoff = handoff();
+            assert_eq!(handoff.host(), HostOs::Windows);
+            assert_eq!(handoff.host().display_name(), "Windows");
+            let profile = handoff.media_profile().unwrap();
+            assert_eq!(profile.username.as_deref(), Some("ada"));
+            assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
+        }
+        // Phase `unknown_duplicate_and_mistyped_fields_fail_closed`.
+        {
+            assert!(rejects(|v| v["target_disk"] = "/dev/sda".into()).contains("unknown field"));
+            assert!(rejects(|v| v["disk_size_bytes"] = true.into()).contains("malformed"));
+            assert!(rejects(|v| v["disk_size_bytes"] = (-1).into()).contains("malformed"));
+            assert!(rejects(|v| v["staging_esp"]["extra"] = 1.into()).contains("unknown field"));
+            let text = serde_json::to_string(&document()).unwrap();
+            let duplicated = format!("{}, \"schema\": 1}}", text.trim_end_matches('}'));
+            assert!(parse(duplicated.as_bytes()).is_err());
+            let oversized = format!("{text}{}", " ".repeat(MAX_HANDOFF_BYTES));
+            assert!(parse(oversized.as_bytes()).unwrap_err().contains("large"));
+        }
+        // Phase `structural_rules_are_enforced`.
+        {
+            assert!(rejects(|v| v["schema"] = 2.into()).contains("version"));
+            assert!(rejects(|v| v["host_os"] = "macos".into()).contains("host"));
+            assert!(rejects(|v| v["disk_guid"] = "not-a-guid".into()).contains("identity"));
+            assert!(rejects(|v| v["owned_boot_entry"] = "04".into()).contains("firmware"));
+            assert!(rejects(|v| v["owned_boot_entry"] = "000a".into()).contains("firmware"));
+            assert!(
+                rejects(|v| v["original_boot_order"] = serde_json::json!(["0104"]))
+                    .contains("firmware")
+            );
+            assert!(
+                rejects(|v| v["target_extent"]["last_lba"] = STAGING_ESP.0.into())
+                    .contains("overlaps")
+            );
+            assert!(
+                rejects(|v| v["staging_root"]["partuuid"] =
+                    "AAAAAAAA-0000-4000-8000-000000000001".into())
+                .contains("share")
+            );
+            assert!(rejects(|v| v["staging_esp"]["first_lba"] = 0.into()).contains("malformed"));
+        }
+        // Phase `profile_outside_the_media_contract_is_rejected_but_bad_values_are_repairs`.
+        {
+            let mut value = document();
+            value["profile"]["password"] = "hunter2".into();
+            let handoff = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(handoff.media_profile().is_err());
 
-    #[test]
-    fn unknown_duplicate_and_mistyped_fields_fail_closed() {
-        assert!(rejects(|v| v["target_disk"] = "/dev/sda".into()).contains("unknown field"));
-        assert!(rejects(|v| v["disk_size_bytes"] = true.into()).contains("malformed"));
-        assert!(rejects(|v| v["disk_size_bytes"] = (-1).into()).contains("malformed"));
-        assert!(rejects(|v| v["staging_esp"]["extra"] = 1.into()).contains("unknown field"));
-        let text = serde_json::to_string(&document()).unwrap();
-        let duplicated = format!("{}, \"schema\": 1}}", text.trim_end_matches('}'));
-        assert!(parse(duplicated.as_bytes()).is_err());
-        let oversized = format!("{text}{}", " ".repeat(MAX_HANDOFF_BYTES));
-        assert!(parse(oversized.as_bytes()).unwrap_err().contains("large"));
-    }
-
-    #[test]
-    fn structural_rules_are_enforced() {
-        assert!(rejects(|v| v["schema"] = 2.into()).contains("version"));
-        assert!(rejects(|v| v["host_os"] = "macos".into()).contains("host"));
-        assert!(rejects(|v| v["disk_guid"] = "not-a-guid".into()).contains("identity"));
-        assert!(rejects(|v| v["owned_boot_entry"] = "04".into()).contains("firmware"));
-        assert!(rejects(|v| v["owned_boot_entry"] = "000a".into()).contains("firmware"));
-        assert!(
-            rejects(|v| v["original_boot_order"] = serde_json::json!(["0104"]))
-                .contains("firmware")
-        );
-        assert!(
-            rejects(|v| v["target_extent"]["last_lba"] = STAGING_ESP.0.into()).contains("overlaps")
-        );
-        assert!(
-            rejects(
-                |v| v["staging_root"]["partuuid"] = "AAAAAAAA-0000-4000-8000-000000000001".into()
-            )
-            .contains("share")
-        );
-        assert!(rejects(|v| v["staging_esp"]["first_lba"] = 0.into()).contains("malformed"));
-    }
-
-    #[test]
-    fn profile_outside_the_media_contract_is_rejected_but_bad_values_are_repairs() {
-        let mut value = document();
-        value["profile"]["password"] = "hunter2".into();
-        let handoff = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(handoff.media_profile().is_err());
-
-        let mut value = document();
-        value["profile"]["hostname"] = "bad host".into();
-        let handoff = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-        let profile = handoff.media_profile().unwrap();
-        assert!(profile.hostname.is_none());
-        assert!(
-            profile
-                .repairs
-                .contains(&crate::media_profile::MediaProfileField::Hostname)
-        );
-    }
-
-    #[test]
-    fn missing_copy_is_the_ordinary_usb_case() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load_from(&dir.path().join("handoff.json")), Ok(None));
-        std::fs::write(dir.path().join("handoff.json"), b"{").unwrap();
-        assert!(load_from(&dir.path().join("handoff.json")).is_err());
+            let mut value = document();
+            value["profile"]["hostname"] = "bad host".into();
+            let handoff = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let profile = handoff.media_profile().unwrap();
+            assert!(profile.hostname.is_none());
+            assert!(
+                profile
+                    .repairs
+                    .contains(&crate::media_profile::MediaProfileField::Hostname)
+            );
+        }
+        // Phase `missing_copy_is_the_ordinary_usb_case`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(load_from(&dir.path().join("handoff.json")), Ok(None));
+            std::fs::write(dir.path().join("handoff.json"), b"{").unwrap();
+            assert!(load_from(&dir.path().join("handoff.json")).is_err());
+        }
     }
 }

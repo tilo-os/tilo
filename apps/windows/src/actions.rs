@@ -16,6 +16,8 @@ use tilo_actions::{
 };
 
 pub const WINDOWS_ACTION_TYPE: &str = "windows.compat.action";
+/// Stable id of the manager resource published by [`tilo_resource::publish`].
+pub const MANAGER_RESOURCE_ID: &str = "windows.manager";
 const ROOT_KEY: &str = "windows-compat";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +65,7 @@ pub fn encode(action: &WindowsAction) -> EncodedAction {
         payload: Vec::new(),
     })
 }
-fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
+pub(crate) fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
     ActionSpec::immediate(id, label, WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| {
         ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
     })
@@ -110,9 +112,119 @@ fn effect(
     .with_contract(contract)
 }
 
+/// Standalone / contract-test tree: manager root with live catalogue children.
+/// Prefer [`crate::resource::provide_resources`] / surface `publish_resources`
+/// once document state is available — this keeps `SampleProvider` fixtures working.
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
     let apps = catalogue.apps.iter().map(app_resource).collect();
     vec![manager_resource(catalogue, apps)]
+}
+
+/// Install Effect on the manager door (no document delta). Appliance Effects
+/// ride the `windows.appliance` child from [`appliance_publish_child`].
+pub fn manager_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        path_operation(
+            "install",
+            "Install Windows application",
+            "windows.install",
+            "installer path",
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged(),
+    ]
+}
+
+/// Appliance lifecycle Effects. `ready` gates availability the same way the
+/// live appliance child does.
+pub fn appliance_effect_specs(ready: bool) -> Vec<ActionSpec> {
+    let mut specs = vec![
+        path_operation(
+            "import-iso",
+            "Import Windows ISO",
+            "windows.import-iso",
+            "ISO path",
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged(),
+    ];
+    for (id, label, type_id) in [
+        ("recovery", "Open recovery desktop", "windows.recovery"),
+        ("start", "Start Windows", "windows.start"),
+        ("restart", "Restart Windows", "windows.restart"),
+        ("suspend", "Suspend Windows", "windows.suspend"),
+        ("resume", "Resume Windows", "windows.resume"),
+        ("shutdown", "Shut down Windows", "windows.shutdown"),
+        (
+            "temporary-network",
+            "Connect temporarily for activation",
+            "windows.temporary-network",
+        ),
+        (
+            "update-network",
+            "Connect temporarily for Windows Update",
+            "windows.update-network",
+        ),
+        (
+            "revoke-network",
+            "Disconnect temporary network access",
+            "windows.revoke-network",
+        ),
+    ] {
+        let contract = ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::AtMostOnce,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            availability: availability(ready, Some("Set up the managed Windows appliance first")),
+            ..ActionContract::default()
+        };
+        specs.push(effect(id, label, type_id, "", contract));
+    }
+    specs
+}
+
+/// Document-bound route shortcuts for one override already in shared state.
+pub fn override_app_resource(app_id: &str, route: Route) -> Resource {
+    let _ = route;
+    let mut resource = Resource::new(
+        format!("windows.app:{app_id}"),
+        "windows.compat-app",
+        app_id.to_owned(),
+    );
+    for candidate in Route::ALL {
+        resource = resource.with_action(immediate(
+            &format!("route-{}", candidate.short().to_ascii_lowercase()),
+            &format!("Use {}", candidate.label()),
+            &WindowsAction::SetRoute {
+                app_id: app_id.to_owned(),
+                route: candidate,
+            },
+        ));
+    }
+    // An override is recorded in the document, so reset is always offered.
+    resource.with_action(immediate(
+        "reset-route",
+        "Use catalogue recommendation",
+        &WindowsAction::ResetRoute {
+            app_id: app_id.to_owned(),
+        },
+    ))
+}
+
+/// Live catalogue projection without a `windows.manager` root: appliance,
+/// pending install, and compat-app rows. Hosted [`PublishesResources`] returns
+/// these beside [`tilo_resource::publish`]; standalone overlays them as children.
+pub fn live_catalogue_extras(catalogue: &Catalogue) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    if let Some(confirmation) = &catalogue.vm_install_confirmation {
+        extras.push(pending_install_resource(confirmation));
+    }
+    extras.push(appliance_resource(catalogue));
+    extras.extend(catalogue.apps.iter().map(app_resource));
+    extras
 }
 
 fn app_resource(app: &crate::model::WindowsApp) -> Resource {
@@ -340,17 +452,10 @@ fn add_prefix_resource(resource: Resource, app: &crate::model::WindowsApp) -> Re
 }
 
 fn manager_resource(catalogue: &Catalogue, apps: Vec<Resource>) -> Resource {
-    let mut manager = Resource::new("windows.manager", "windows.manager", "Windows manager")
-        .with_action(
-            path_operation(
-                "install",
-                "Install Windows application",
-                "windows.install",
-                "installer path",
-            )
-            .requiring(PermissionRequirement::Admin)
-            .privileged(),
-        );
+    let mut manager = Resource::new(MANAGER_RESOURCE_ID, "windows.manager", "Windows manager");
+    for spec in manager_effect_specs() {
+        manager = manager.with_action(spec);
+    }
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
         manager = manager.with_child(pending_install_resource(confirmation));
     }
@@ -420,54 +525,23 @@ fn appliance_resource(catalogue: &Catalogue) -> Resource {
         "windows.appliance",
         "windows.appliance",
         "Managed Windows appliance",
-    )
-    .with_action(
-        path_operation(
-            "import-iso",
-            "Import Windows ISO",
-            "windows.import-iso",
-            "ISO path",
-        )
-        .requiring(PermissionRequirement::Admin)
-        .privileged(),
     );
-    for (id, label, type_id) in [
-        ("recovery", "Open recovery desktop", "windows.recovery"),
-        ("start", "Start Windows", "windows.start"),
-        ("restart", "Restart Windows", "windows.restart"),
-        ("suspend", "Suspend Windows", "windows.suspend"),
-        ("resume", "Resume Windows", "windows.resume"),
-        ("shutdown", "Shut down Windows", "windows.shutdown"),
-        (
-            "temporary-network",
-            "Connect temporarily for activation",
-            "windows.temporary-network",
-        ),
-        (
-            "update-network",
-            "Connect temporarily for Windows Update",
-            "windows.update-network",
-        ),
-        (
-            "revoke-network",
-            "Disconnect temporary network access",
-            "windows.revoke-network",
-        ),
-    ] {
-        let contract = ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            availability: availability(
-                catalogue.vm.ready,
-                Some("Set up the managed Windows appliance first"),
-            ),
-            ..ActionContract::default()
-        };
-        appliance = appliance.with_action(effect(id, label, type_id, "", contract));
+    for spec in appliance_effect_specs(catalogue.vm.ready) {
+        appliance = appliance.with_action(spec);
+    }
+    appliance
+}
+
+/// Static appliance child for [`tilo_resource::publish`] (availability enforced
+/// at invoke time / refined by live extras).
+pub fn appliance_publish_child() -> Resource {
+    let mut appliance = Resource::new(
+        "windows.appliance",
+        "windows.appliance",
+        "Managed Windows appliance",
+    );
+    for spec in appliance_effect_specs(true) {
+        appliance = appliance.with_action(spec);
     }
     appliance
 }
@@ -511,7 +585,7 @@ mod tests {
         let mut app = crate::app::WindowsApp::new_offline();
         let mut doc = doc.clone();
         ui::widget::Widget::sync(&mut app, &mut doc, &ROOT);
-        ui::widget::Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     ui::action_contract_tests! {
@@ -545,137 +619,140 @@ mod tests {
     }
 
     #[test]
-    fn route_policy_is_deterministic_and_reset_removes_it() {
-        let mut doc = Doc::new();
-        WindowsAction::SetRoute {
-            app_id: "reader".into(),
-            route: Route::Proton,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
-        assert_eq!(
-            doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
-            Some("Proton")
-        );
-        WindowsAction::ResetRoute {
-            app_id: "reader".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(doc.get(&map, "reader").unwrap().is_none());
-    }
-    #[test]
-    fn every_catalogue_app_has_explicit_routes() {
-        let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let flattened = tilo_actions::flatten(&res);
-        let manager = res.first().expect("manager root");
-        assert!(
-            manager
-                .children
-                .iter()
-                .filter(|resource| resource.kind == "windows.compat-app")
-                .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
-        );
-        assert!(flattened.iter().map(|action| action.action).any(|action| {
-            action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
-        }));
-    }
-
-    #[test]
-    fn every_background_operation_declares_a_job_result() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        for action in tilo_actions::flatten(&resources)
-            .into_iter()
-            .map(|action| action.action)
+    fn route_policy_is_explicit_deterministic_and_resettable() {
+        // Case `route_policy_is_deterministic_and_reset_removes_it`.
         {
-            if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
-                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
-                assert!(
-                    action.contract.validate_declaration().is_empty(),
-                    "{}",
-                    action.id
-                );
+            let mut doc = Doc::new();
+            WindowsAction::SetRoute {
+                app_id: "reader".into(),
+                route: Route::Proton,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
+            assert_eq!(
+                doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
+                Some("Proton")
+            );
+            WindowsAction::ResetRoute {
+                app_id: "reader".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            assert!(doc.get(&map, "reader").unwrap().is_none());
+        }
+        // Case `every_catalogue_app_has_explicit_routes`.
+        {
+            let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let flattened = tilo_actions::flatten(&res);
+            let manager = res.first().expect("manager root");
+            assert!(
+                manager
+                    .children
+                    .iter()
+                    .filter(|resource| resource.kind == "windows.compat-app")
+                    .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
+            );
+            assert!(flattened.iter().map(|action| action.action).any(|action| {
+                action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
+            }));
+        }
+        // Case `every_background_operation_declares_a_job_result`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            for action in tilo_actions::flatten(&resources)
+                .into_iter()
+                .map(|action| action.action)
+            {
+                if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
+                    assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                    assert!(
+                        action.contract.validate_declaration().is_empty(),
+                        "{}",
+                        action.id
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn resources_form_a_manager_appliance_application_hierarchy() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        assert_eq!(manager.id.as_str(), "windows.manager");
-        let appliance = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.appliance")
-            .expect("appliance child");
-        for expected in [
-            "start",
-            "restart",
-            "suspend",
-            "resume",
-            "shutdown",
-            "temporary-network",
-            "update-network",
-            "revoke-network",
-        ] {
-            assert!(
-                appliance.actions.iter().any(|action| action.id == expected),
-                "missing appliance action {expected}"
-            );
-        }
-        assert_eq!(
-            manager
+    fn windows_resources_form_an_honest_hierarchy() {
+        // Case `resources_form_a_manager_appliance_application_hierarchy`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            assert_eq!(manager.id.as_str(), "windows.manager");
+            let appliance = manager
                 .children
                 .iter()
-                .filter(|resource| resource.kind == "windows.compat-app")
-                .count(),
-            3
-        );
-    }
-
-    #[test]
-    fn private_capsules_are_hierarchical_resources_with_recovery_actions() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        let reader = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.app:adobe-reader")
-            .expect("reader resource");
-        let prefix = reader
-            .children
-            .iter()
-            .find(|resource| resource.kind == "windows.prefix")
-            .expect("private prefix resource");
-        assert!(
-            prefix
+                .find(|resource| resource.id.as_str() == "windows.appliance")
+                .expect("appliance child");
+            for expected in [
+                "start",
+                "restart",
+                "suspend",
+                "resume",
+                "shutdown",
+                "temporary-network",
+                "update-network",
+                "revoke-network",
+            ] {
+                assert!(
+                    appliance.actions.iter().any(|action| action.id == expected),
+                    "missing appliance action {expected}"
+                );
+            }
+            assert_eq!(
+                manager
+                    .children
+                    .iter()
+                    .filter(|resource| resource.kind == "windows.compat-app")
+                    .count(),
+                3
+            );
+        }
+        // Case `private_capsules_are_hierarchical_resources_with_recovery_actions`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            let reader = manager
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "windows.app:adobe-reader")
+                .expect("reader resource");
+            let prefix = reader
+                .children
+                .iter()
+                .find(|resource| resource.kind == "windows.prefix")
+                .expect("private prefix resource");
+            assert!(
+                prefix
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-data")
+            );
+            assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
+        }
+        // Case `unavailable_guest_file_bridge_is_not_advertised_as_actionable`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            let studio = manager
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "windows.app:visual-studio")
+                .expect("Visual Studio resource");
+            let open_file = studio
                 .actions
                 .iter()
-                .any(|action| action.id == "delete-data")
-        );
-        assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
-    }
-
-    #[test]
-    fn unavailable_guest_file_bridge_is_not_advertised_as_actionable() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        let studio = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.app:visual-studio")
-            .expect("Visual Studio resource");
-        let open_file = studio
-            .actions
-            .iter()
-            .find(|action| action.id == "open-file")
-            .expect("file operation is published for the guest application");
-        assert!(matches!(
-            open_file.contract.availability,
-            Availability::Unavailable { .. }
-        ));
-        assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+                .find(|action| action.id == "open-file")
+                .expect("file operation is published for the guest application");
+            assert!(matches!(
+                open_file.contract.availability,
+                Availability::Unavailable { .. }
+            ));
+            assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+        }
     }
 }

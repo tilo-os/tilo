@@ -274,23 +274,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn focus_reports_when_its_period_ends() {
-        let f = FocusSchedule {
-            enabled: true,
-            ..FocusSchedule::default()
-        };
-        assert_eq!(f.active_until(23 * 60, 0), Some(7 * 60));
-        assert_eq!(f.active_until(12 * 60, 0), None);
-        let all_day = FocusSchedule {
-            enabled: true,
-            start_minute: 0,
-            end_minute: 0,
-            ..FocusSchedule::default()
-        };
-        assert_eq!(all_day.active_until(12 * 60, 0), None);
-    }
-
-    #[test]
     fn do_not_disturb_persists_without_touching_other_notification_keys() {
         let dir = std::env::temp_dir().join(format!("tilo-dnd-{}-{}", std::process::id(), line!()));
         let path = dir.join("settings.json");
@@ -308,105 +291,124 @@ mod tests {
     }
 
     #[test]
-    fn overnight_focus_crosses_midnight() {
-        let f = FocusSchedule {
-            enabled: true,
-            ..FocusSchedule::default()
-        };
-        assert!(f.active_at(23 * 60, 0));
-        assert!(f.active_at(6 * 60, 0));
-        assert!(!f.active_at(12 * 60, 0));
-    }
-
-    #[test]
-    fn app_priority_is_user_policy_not_sender_metadata() {
-        let mut p = NotificationPolicy {
-            focus: FocusSchedule {
+    fn focus_priority_and_mutes_follow_user_policy() {
+        // Phase `focus_reports_when_its_period_ends`.
+        {
+            let f = FocusSchedule {
+                enabled: true,
+                ..FocusSchedule::default()
+            };
+            assert_eq!(f.active_until(23 * 60, 0), Some(7 * 60));
+            assert_eq!(f.active_until(12 * 60, 0), None);
+            let all_day = FocusSchedule {
                 enabled: true,
                 start_minute: 0,
                 end_minute: 0,
                 ..FocusSchedule::default()
-            },
-            ..NotificationPolicy::default()
-        };
-        p.per_app.insert(
-            "so.tilo.chat".into(),
-            AppNotificationRule {
-                priority: true,
-                ..AppNotificationRule::default()
-            },
-        );
-        assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
-        assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
-    }
-
-    #[test]
-    fn temporary_mute_expires_without_a_cleanup_write() {
-        let mut p = NotificationPolicy::default();
-        p.per_app.insert(
-            "so.tilo.mail".into(),
-            AppNotificationRule {
-                muted_until: Some(200),
-                ..AppNotificationRule::default()
-            },
-        );
-        assert!(p.effective_for(Some("so.tilo.mail"), 199, 0, 0).quiet);
-        assert!(!p.effective_for(Some("so.tilo.mail"), 200, 0, 0).quiet);
-    }
-
-    #[test]
-    fn contact_only_pierces_for_a_verified_match_and_authorized_app() {
-        let mut p = NotificationPolicy {
-            focus: FocusSchedule {
+            };
+            assert_eq!(all_day.active_until(12 * 60, 0), None);
+        }
+        // Phase `overnight_focus_crosses_midnight`.
+        {
+            let f = FocusSchedule {
                 enabled: true,
-                start_minute: 0,
-                end_minute: 0,
                 ..FocusSchedule::default()
-            },
-            ..NotificationPolicy::default()
-        };
-        p.per_app.insert(
-            "so.tilo.mail".into(),
-            AppNotificationRule {
-                priority_contacts: true,
-                ..AppNotificationRule::default()
-            },
-        );
-        assert!(
-            !p.effective_for_context(Some("so.tilo.mail"), true, 0, 500, 0)
-                .quiet
-        );
-        assert!(
-            p.effective_for_context(Some("so.tilo.mail"), false, 0, 500, 0)
-                .quiet
-        );
-        assert!(
-            p.effective_for_context(Some("so.tilo.other"), true, 0, 500, 0)
-                .quiet
-        );
+            };
+            assert!(f.active_at(23 * 60, 0));
+            assert!(f.active_at(6 * 60, 0));
+            assert!(!f.active_at(12 * 60, 0));
+        }
+        // Phase `app_priority_is_user_policy_not_sender_metadata`.
+        {
+            let mut p = NotificationPolicy {
+                focus: FocusSchedule {
+                    enabled: true,
+                    start_minute: 0,
+                    end_minute: 0,
+                    ..FocusSchedule::default()
+                },
+                ..NotificationPolicy::default()
+            };
+            p.per_app.insert(
+                "so.tilo.chat".into(),
+                AppNotificationRule {
+                    priority: true,
+                    ..AppNotificationRule::default()
+                },
+            );
+            assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
+            assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
+        }
+        // Phase `temporary_mute_expires_without_a_cleanup_write`.
+        {
+            let mut p = NotificationPolicy::default();
+            p.per_app.insert(
+                "so.tilo.mail".into(),
+                AppNotificationRule {
+                    muted_until: Some(200),
+                    ..AppNotificationRule::default()
+                },
+            );
+            assert!(p.effective_for(Some("so.tilo.mail"), 199, 0, 0).quiet);
+            assert!(!p.effective_for(Some("so.tilo.mail"), 200, 0, 0).quiet);
+        }
     }
 
     #[test]
-    fn cross_device_requires_verified_identity_and_honours_per_app_policy() {
-        let mut policy = NotificationPolicy::default();
-        assert!(
-            policy
-                .effective_for(Some("so.tilo.mail"), 0, 0, 0)
-                .cross_device
-        );
-        assert!(!policy.effective_for(None, 0, 0, 0).cross_device);
+    fn breakthroughs_require_verified_identity_and_authorized_apps() {
+        // Phase `contact_only_pierces_for_a_verified_match_and_authorized_app`.
+        {
+            let mut p = NotificationPolicy {
+                focus: FocusSchedule {
+                    enabled: true,
+                    start_minute: 0,
+                    end_minute: 0,
+                    ..FocusSchedule::default()
+                },
+                ..NotificationPolicy::default()
+            };
+            p.per_app.insert(
+                "so.tilo.mail".into(),
+                AppNotificationRule {
+                    priority_contacts: true,
+                    ..AppNotificationRule::default()
+                },
+            );
+            assert!(
+                !p.effective_for_context(Some("so.tilo.mail"), true, 0, 500, 0)
+                    .quiet
+            );
+            assert!(
+                p.effective_for_context(Some("so.tilo.mail"), false, 0, 500, 0)
+                    .quiet
+            );
+            assert!(
+                p.effective_for_context(Some("so.tilo.other"), true, 0, 500, 0)
+                    .quiet
+            );
+        }
+        // Phase `cross_device_requires_verified_identity_and_honours_per_app_policy`.
+        {
+            let mut policy = NotificationPolicy::default();
+            assert!(
+                policy
+                    .effective_for(Some("so.tilo.mail"), 0, 0, 0)
+                    .cross_device
+            );
+            assert!(!policy.effective_for(None, 0, 0, 0).cross_device);
 
-        policy.per_app.insert(
-            "so.tilo.mail".into(),
-            AppNotificationRule {
-                cross_device: Some(false),
-                ..AppNotificationRule::default()
-            },
-        );
-        assert!(
-            !policy
-                .effective_for(Some("so.tilo.mail"), 0, 0, 0)
-                .cross_device
-        );
+            policy.per_app.insert(
+                "so.tilo.mail".into(),
+                AppNotificationRule {
+                    cross_device: Some(false),
+                    ..AppNotificationRule::default()
+                },
+            );
+            assert!(
+                !policy
+                    .effective_for(Some("so.tilo.mail"), 0, 0, 0)
+                    .cross_device
+            );
+        }
     }
 }

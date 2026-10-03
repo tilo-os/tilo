@@ -25,7 +25,9 @@ The catalogue may describe artifacts, compatibility, display metadata, and
 fixed typed launch fields. It may not contain scripts or arbitrary command
 lines. Every accepted extension has:
 
-- an Ed25519 signature from a key already trusted by the installed Tilo image;
+- a signature from a key already trusted by the installed Tilo image (Ed25519
+  release keys in `trust.d/` for BootPacks and runtimes; the OS update key
+  itself for downloaded system extensions, see below);
 - an HTTPS retrieval location, exact byte length, and SHA-256 digest;
 - an immutable model revision or OCI manifest digest—never a mutable tag;
 - explicit base-image, architecture, kernel, accelerator, memory, and storage
@@ -44,6 +46,14 @@ software, the signed catalogue points at the vendor's official source and the
 device downloads it only after the user accepts the displayed terms. Acceptance
 records identify the license and catalogue revision; they never contain
 credentials.
+
+Downloaded system extensions (`/usr/share/tilo/system-extensions/sysext.d/`)
+apply this to content Tilo cannot distribute at all, such as patent-encumbered
+media codecs: CI resolves the publishers' packages for each image and signs a
+manifest pinning them by URL, length and SHA-256; the device fetches the bytes
+from the publishers' own hosts only, and rebuilds the read-only sysext from
+verified bytes at every activation. The contract is in
+`os/usr/share/tilo/system-extensions/README.md`.
 
 ## One-click local setup
 

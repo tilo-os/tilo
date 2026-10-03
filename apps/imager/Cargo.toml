@@ -25,8 +25,12 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+uuid.workspace = true
+base64.workspace = true
+crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
@@ -34,21 +38,24 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
+tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
+tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 cap-std = "3.4.6"
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
-# The imager only decodes current installer payloads. Legacy Zstd decoders
-# pull in older C sources that fail to cross-compile for Windows ARM64.
-zstd = { version = "0.13", default-features = false }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
+# Pure Rust: a thin app gets the `zstd` crate from libruntime_dylib.so, which
+# exports Rust symbols only, so zstd's C decoder would not link.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -56,17 +63,19 @@ tempfile.workspace = true
 block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(windows)'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["dx12-shader-cache"] }
 windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 # The cargo-xwin Clang sysroot's NEON header cannot compile blake3's C

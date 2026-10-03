@@ -11,7 +11,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::RevocationList;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use wire_frame::{FrameError, Framing};
 
 use crate::identity::PeerCredentials;
 use crate::peer_auth::{
@@ -149,7 +150,6 @@ where
 /// [`authenticate_fs_peer_at`].
 // The split-stream entry point keeps the two I/O halves and the six
 // independently authenticated handshake inputs explicit at this trust boundary.
-#[allow(clippy::too_many_arguments)]
 pub async fn authenticate_fs_peer_parts_at<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -244,6 +244,22 @@ where
     Ok(incoming)
 }
 
+/// Each handshake frame: a big-endian `u32` length, then the postcard-encoded
+/// [`AuthFrame`], bounded by the configured frame limit.
+const AUTH_FRAMING: Framing = Framing::big_endian(MAX_AUTH_FRAME_BYTES);
+
+fn frame_error(error: FrameError, maximum: usize) -> AuthenticatedTransportError {
+    match error {
+        FrameError::TooLarge(announced) | FrameError::PayloadTooLarge(announced) => {
+            AuthenticatedTransportError::FrameTooLarge { announced, maximum }
+        }
+        FrameError::Encode(error) | FrameError::Decode(error) => {
+            AuthenticatedTransportError::Codec(error)
+        }
+        other => AuthenticatedTransportError::Io(other.into()),
+    }
+}
+
 async fn write_frame<W>(
     writer: &mut W,
     frame: &AuthFrame,
@@ -252,20 +268,11 @@ async fn write_frame<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = postcard::to_stdvec(frame)?;
-    if payload.len() > maximum {
-        return Err(AuthenticatedTransportError::FrameTooLarge {
-            announced: payload.len(),
-            maximum,
-        });
-    }
-    let length =
-        u32::try_from(payload.len()).map_err(|_| AuthenticatedTransportError::FrameTooLarge {
-            announced: payload.len(),
-            maximum,
-        })?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
+    AUTH_FRAMING
+        .with_max_len(maximum)
+        .write_value_async(writer, frame)
+        .await
+        .map_err(|error| frame_error(error, maximum))?;
     writer.flush().await?;
     Ok(())
 }
@@ -277,15 +284,12 @@ async fn read_frame<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut prefix = [0u8; 4];
-    reader.read_exact(&mut prefix).await?;
-    let announced = u32::from_be_bytes(prefix) as usize;
-    if announced > maximum {
-        return Err(AuthenticatedTransportError::FrameTooLarge { announced, maximum });
-    }
-    let mut payload = vec![0u8; announced];
-    reader.read_exact(&mut payload).await?;
-    postcard::from_bytes(&payload).map_err(AuthenticatedTransportError::from)
+    AUTH_FRAMING
+        .with_max_len(maximum)
+        .read_value_async(reader)
+        .await
+        .and_then(|frame| frame.ok_or(FrameError::Closed))
+        .map_err(|error| frame_error(error, maximum))
 }
 
 #[cfg(test)]
@@ -298,6 +302,67 @@ mod tests {
     };
 
     const NOW: u64 = 5_000_000;
+
+    #[tokio::test]
+    async fn auth_frames_are_big_endian_length_then_postcard() {
+        let challenge = AuthFrame::Challenge(PeerAuthChallenge {
+            verifier_endpoint: [1; 32],
+            nonce: [2; 32],
+            expires_at_ns: 300,
+        });
+        let mut expected = vec![0, 0, 0, 67, 0];
+        expected.extend_from_slice(&[1; 32]);
+        expected.extend_from_slice(&[2; 32]);
+        expected.extend_from_slice(&[0xac, 0x02]);
+
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &challenge, MAX_AUTH_FRAME_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(wire, expected);
+
+        let AuthFrame::Challenge(decoded) = read_frame(&mut expected.as_slice(), 67).await.unwrap()
+        else {
+            panic!("expected a challenge");
+        };
+        assert_eq!(decoded.nonce, [2; 32]);
+        assert_eq!(decoded.expires_at_ns, 300);
+
+        // The configured limit bounds both directions.
+        assert!(matches!(
+            write_frame(&mut Vec::new(), &challenge, 66).await,
+            Err(AuthenticatedTransportError::FrameTooLarge {
+                announced: 67,
+                maximum: 66
+            })
+        ));
+        assert!(matches!(
+            read_frame(&mut expected.as_slice(), 66).await,
+            Err(AuthenticatedTransportError::FrameTooLarge {
+                announced: 67,
+                maximum: 66
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn closed_and_truncated_auth_streams_are_io_errors() {
+        let mut truncated = vec![0, 0, 0, 67, 0];
+        truncated.extend_from_slice(&[1; 10]);
+        for wire in [&[][..], &[0, 0][..], &truncated[..]] {
+            assert!(
+                matches!(
+                    read_frame(&mut &wire[..], MAX_AUTH_FRAME_BYTES).await,
+                    Err(AuthenticatedTransportError::Io(ref error)) if error.kind() == io::ErrorKind::UnexpectedEof
+                ),
+                "{wire:?}"
+            );
+        }
+        assert!(matches!(
+            read_frame(&mut &[0, 0, 0, 1, 9][..], MAX_AUTH_FRAME_BYTES).await,
+            Err(AuthenticatedTransportError::Codec(_))
+        ));
+    }
 
     struct Party {
         root: SigningKey,
@@ -340,248 +405,254 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplex_peers_mutually_establish_certified_identity() {
-        // Capacity 1 proves neither phase relies on both full frames being
-        // buffered before either side begins reading.
-        let (mut a_stream, mut b_stream) = tokio::io::duplex(1);
-        let a = party(1, 2, "Alice laptop");
-        let b = party(3, 4, "Bob phone");
-        let empty_a = RevocationList::new();
-        let empty_b = RevocationList::new();
+    async fn duplex_handshake_certifies_identity_within_bounds_and_deadlines() {
+        // Phase `duplex_peers_mutually_establish_certified_identity`.
+        {
+            // Capacity 1 proves neither phase relies on both full frames being
+            // buffered before either side begins reading.
+            let (mut a_stream, mut b_stream) = tokio::io::duplex(1);
+            let a = party(1, 2, "Alice laptop");
+            let b = party(3, 4, "Bob phone");
+            let empty_a = RevocationList::new();
+            let empty_b = RevocationList::new();
 
-        let (a_result, b_result) = tokio::join!(
-            authenticate_fs_peer_at(
-                &mut a_stream,
-                &a.credentials,
-                a.endpoint,
-                b.endpoint,
-                &empty_a,
-                NOW,
-                fast_config(),
-            ),
-            authenticate_fs_peer_at(
-                &mut b_stream,
-                &b.credentials,
-                b.endpoint,
-                a.endpoint,
-                &empty_b,
-                NOW,
-                fast_config(),
-            )
-        );
+            let (a_result, b_result) = tokio::join!(
+                authenticate_fs_peer_at(
+                    &mut a_stream,
+                    &a.credentials,
+                    a.endpoint,
+                    b.endpoint,
+                    &empty_a,
+                    NOW,
+                    fast_config(),
+                ),
+                authenticate_fs_peer_at(
+                    &mut b_stream,
+                    &b.credentials,
+                    b.endpoint,
+                    a.endpoint,
+                    &empty_b,
+                    NOW,
+                    fast_config(),
+                )
+            );
 
-        let seen_b = a_result.unwrap();
-        let seen_a = b_result.unwrap();
-        assert_eq!(seen_b.device_public_key, b.endpoint);
-        assert_eq!(seen_b.user_public_key, b.credentials.user_public_key());
-        assert_eq!(seen_a.device_public_key, a.endpoint);
-        assert_eq!(seen_a.user_public_key, a.credentials.user_public_key());
-    }
-
-    #[tokio::test]
-    async fn oversized_frame_is_rejected_before_payload_allocation() {
-        let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
-        let local = party(5, 6, "Local");
-        let remote = party(7, 8, "Remote");
-        let config = AuthenticatedTransportConfig {
-            max_frame_bytes: 1024,
-            ..fast_config()
-        };
-
-        let attacker = tokio::spawn(async move {
-            // Drain the local frame concurrently so even a tiny duplex buffer
-            // cannot obscure the actual oversize-header rejection.
-            let _ = read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES).await;
-            attacker_stream
-                .write_all(&(1025u32).to_be_bytes())
-                .await
-                .unwrap();
-        });
-        let result = authenticate_fs_peer_at(
-            &mut local_stream,
-            &local.credentials,
-            local.endpoint,
-            remote.endpoint,
-            &RevocationList::new(),
-            NOW,
-            config,
-        )
-        .await;
-        attacker.await.unwrap();
-        assert!(matches!(
-            result,
-            Err(AuthenticatedTransportError::FrameTooLarge {
-                announced: 1025,
-                maximum: 1024
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn silent_peer_hits_whole_handshake_timeout() {
-        let (mut local_stream, _silent_stream) = tokio::io::duplex(64);
-        let local = party(9, 10, "Local");
-        let config = AuthenticatedTransportConfig {
-            timeout: Duration::from_millis(20),
-            ..AuthenticatedTransportConfig::default()
-        };
-        let result = authenticate_fs_peer_at(
-            &mut local_stream,
-            &local.credentials,
-            local.endpoint,
-            [77; 32],
-            &RevocationList::new(),
-            NOW,
-            config,
-        )
-        .await;
-        assert!(matches!(result, Err(AuthenticatedTransportError::Timeout)));
-    }
-
-    #[tokio::test]
-    async fn challenge_for_another_endpoint_is_not_signed() {
-        let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
-        let a = party(11, 12, "A");
-        let b = party(13, 14, "B");
-        let wrong_observed_b = [99; 32];
-        let empty_a = RevocationList::new();
-        let empty_b = RevocationList::new();
-
-        let (a_result, _b_result) = tokio::join!(
-            authenticate_fs_peer_at(
-                &mut a_stream,
-                &a.credentials,
-                a.endpoint,
-                wrong_observed_b,
-                &empty_a,
-                NOW,
-                fast_config(),
-            ),
-            authenticate_fs_peer_at(
-                &mut b_stream,
-                &b.credentials,
-                b.endpoint,
-                a.endpoint,
-                &empty_b,
-                NOW,
-                fast_config(),
-            )
-        );
-        assert!(matches!(
-            a_result,
-            Err(AuthenticatedTransportError::RemoteVerifierEndpointMismatch)
-        ));
-    }
-
-    #[tokio::test]
-    async fn effective_revocation_rejects_otherwise_valid_peer() {
-        let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
-        let a = party(15, 16, "A");
-        let b = party(17, 18, "B");
-        let mut revocations = RevocationList::new();
-        let mut entry = RevocationEntry {
-            user_public_key: b.credentials.user_public_key(),
-            revoked_device_public_key: b.endpoint,
-            revoked_at_ns: NOW - 1,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut entry, &b.root).unwrap();
-        revocations.insert(entry).unwrap();
-        let empty = RevocationList::new();
-
-        let (a_result, b_result) = tokio::join!(
-            authenticate_fs_peer_at(
-                &mut a_stream,
-                &a.credentials,
-                a.endpoint,
-                b.endpoint,
-                &revocations,
-                NOW,
-                fast_config(),
-            ),
-            authenticate_fs_peer_at(
-                &mut b_stream,
-                &b.credentials,
-                b.endpoint,
-                a.endpoint,
-                &empty,
-                NOW,
-                fast_config(),
-            )
-        );
-        assert!(matches!(
-            a_result,
-            Err(AuthenticatedTransportError::Authentication(
-                PeerAuthError::Revoked
-            ))
-        ));
-        assert!(
-            b_result.is_ok(),
-            "revocation is evaluated by the admitting side"
-        );
-    }
-
-    #[tokio::test]
-    async fn tampered_proof_is_rejected() {
-        let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
-        let local = party(19, 20, "Local");
-        let attacker = party(21, 22, "Attacker");
-        let attacker_endpoint = attacker.endpoint;
-
-        let malicious = tokio::spawn(async move {
-            let AuthFrame::Challenge(local_challenge) =
-                read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES)
-                    .await
-                    .unwrap()
-            else {
-                panic!("expected challenge");
+            let seen_b = a_result.unwrap();
+            let seen_a = b_result.unwrap();
+            assert_eq!(seen_b.device_public_key, b.endpoint);
+            assert_eq!(seen_b.user_public_key, b.credentials.user_public_key());
+            assert_eq!(seen_a.device_public_key, a.endpoint);
+            assert_eq!(seen_a.user_public_key, a.credentials.user_public_key());
+        }
+        // Phase `oversized_frame_is_rejected_before_payload_allocation`.
+        {
+            let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
+            let local = party(5, 6, "Local");
+            let remote = party(7, 8, "Remote");
+            let config = AuthenticatedTransportConfig {
+                max_frame_bytes: 1024,
+                ..fast_config()
             };
-            let mut verifier = PendingPeerChallenges::new(attacker_endpoint, 1, 1_000);
-            let attacker_challenge = verifier.register([42; 32], NOW, 1_000).unwrap();
-            write_frame(
-                &mut attacker_stream,
-                &AuthFrame::Challenge(attacker_challenge),
-                MAX_AUTH_FRAME_BYTES,
+
+            let attacker = tokio::spawn(async move {
+                // Drain the local frame concurrently so even a tiny duplex buffer
+                // cannot obscure the actual oversize-header rejection.
+                let _ = read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES).await;
+                attacker_stream
+                    .write_all(&(1025u32).to_be_bytes())
+                    .await
+                    .unwrap();
+            });
+            let result = authenticate_fs_peer_at(
+                &mut local_stream,
+                &local.credentials,
+                local.endpoint,
+                remote.endpoint,
+                &RevocationList::new(),
+                NOW,
+                config,
             )
-            .await
-            .unwrap();
-            let _local_proof = read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES)
+            .await;
+            attacker.await.unwrap();
+            assert!(matches!(
+                result,
+                Err(AuthenticatedTransportError::FrameTooLarge {
+                    announced: 1025,
+                    maximum: 1024
+                })
+            ));
+        }
+        // Phase `silent_peer_hits_whole_handshake_timeout`.
+        {
+            let (mut local_stream, _silent_stream) = tokio::io::duplex(64);
+            let local = party(9, 10, "Local");
+            let config = AuthenticatedTransportConfig {
+                timeout: Duration::from_millis(20),
+                ..AuthenticatedTransportConfig::default()
+            };
+            let result = authenticate_fs_peer_at(
+                &mut local_stream,
+                &local.credentials,
+                local.endpoint,
+                [77; 32],
+                &RevocationList::new(),
+                NOW,
+                config,
+            )
+            .await;
+            assert!(matches!(result, Err(AuthenticatedTransportError::Timeout)));
+        }
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn handshake_rejects_misdirected_revoked_and_tampered_proofs() {
+        // Phase `challenge_for_another_endpoint_is_not_signed`.
+        {
+            let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
+            let a = party(11, 12, "A");
+            let b = party(13, 14, "B");
+            let wrong_observed_b = [99; 32];
+            let empty_a = RevocationList::new();
+            let empty_b = RevocationList::new();
+
+            let (a_result, _b_result) = tokio::join!(
+                authenticate_fs_peer_at(
+                    &mut a_stream,
+                    &a.credentials,
+                    a.endpoint,
+                    wrong_observed_b,
+                    &empty_a,
+                    NOW,
+                    fast_config(),
+                ),
+                authenticate_fs_peer_at(
+                    &mut b_stream,
+                    &b.credentials,
+                    b.endpoint,
+                    a.endpoint,
+                    &empty_b,
+                    NOW,
+                    fast_config(),
+                )
+            );
+            assert!(matches!(
+                a_result,
+                Err(AuthenticatedTransportError::RemoteVerifierEndpointMismatch)
+            ));
+        }
+        // Phase `effective_revocation_rejects_otherwise_valid_peer`.
+        {
+            let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
+            let a = party(15, 16, "A");
+            let b = party(17, 18, "B");
+            let mut revocations = RevocationList::new();
+            let mut entry = RevocationEntry {
+                user_public_key: b.credentials.user_public_key(),
+                revoked_device_public_key: b.endpoint,
+                revoked_at_ns: NOW - 1,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &b.root).unwrap();
+            revocations.insert(entry).unwrap();
+            let empty = RevocationList::new();
+
+            let (a_result, b_result) = tokio::join!(
+                authenticate_fs_peer_at(
+                    &mut a_stream,
+                    &a.credentials,
+                    a.endpoint,
+                    b.endpoint,
+                    &revocations,
+                    NOW,
+                    fast_config(),
+                ),
+                authenticate_fs_peer_at(
+                    &mut b_stream,
+                    &b.credentials,
+                    b.endpoint,
+                    a.endpoint,
+                    &empty,
+                    NOW,
+                    fast_config(),
+                )
+            );
+            assert!(matches!(
+                a_result,
+                Err(AuthenticatedTransportError::Authentication(
+                    PeerAuthError::Revoked
+                ))
+            ));
+            assert!(
+                b_result.is_ok(),
+                "revocation is evaluated by the admitting side"
+            );
+        }
+        // Phase `tampered_proof_is_rejected`.
+        {
+            let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
+            let local = party(19, 20, "Local");
+            let attacker = party(21, 22, "Attacker");
+            let attacker_endpoint = attacker.endpoint;
+
+            let malicious = tokio::spawn(async move {
+                let AuthFrame::Challenge(local_challenge) =
+                    read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES)
+                        .await
+                        .unwrap()
+                else {
+                    panic!("expected challenge");
+                };
+                let mut verifier = PendingPeerChallenges::new(attacker_endpoint, 1, 1_000);
+                let attacker_challenge = verifier.register([42; 32], NOW, 1_000).unwrap();
+                write_frame(
+                    &mut attacker_stream,
+                    &AuthFrame::Challenge(attacker_challenge),
+                    MAX_AUTH_FRAME_BYTES,
+                )
                 .await
                 .unwrap();
-            let mut proof = PeerAuthProof::respond(
-                attacker.credentials.cert().clone(),
-                attacker.endpoint,
-                local_challenge,
-                attacker.credentials.signing_key(),
-            )
-            .unwrap();
-            proof.signature[0] ^= 1;
-            write_frame(
-                &mut attacker_stream,
-                &AuthFrame::Proof(Box::new(proof)),
-                MAX_AUTH_FRAME_BYTES,
-            )
-            .await
-            .unwrap();
-        });
+                let _local_proof = read_frame(&mut attacker_stream, MAX_AUTH_FRAME_BYTES)
+                    .await
+                    .unwrap();
+                let mut proof = PeerAuthProof::respond(
+                    attacker.credentials.cert().clone(),
+                    attacker.endpoint,
+                    local_challenge,
+                    attacker.credentials.signing_key(),
+                )
+                .unwrap();
+                proof.signature[0] ^= 1;
+                write_frame(
+                    &mut attacker_stream,
+                    &AuthFrame::Proof(Box::new(proof)),
+                    MAX_AUTH_FRAME_BYTES,
+                )
+                .await
+                .unwrap();
+            });
 
-        let result = authenticate_fs_peer_at(
-            &mut local_stream,
-            &local.credentials,
-            local.endpoint,
-            attacker_endpoint,
-            &RevocationList::new(),
-            NOW,
-            fast_config(),
-        )
-        .await;
-        malicious.await.unwrap();
-        assert!(matches!(
-            result,
-            Err(AuthenticatedTransportError::Authentication(
-                PeerAuthError::BadProofSignature
-            ))
-        ));
+            let result = authenticate_fs_peer_at(
+                &mut local_stream,
+                &local.credentials,
+                local.endpoint,
+                attacker_endpoint,
+                &RevocationList::new(),
+                NOW,
+                fast_config(),
+            )
+            .await;
+            malicious.await.unwrap();
+            assert!(matches!(
+                result,
+                Err(AuthenticatedTransportError::Authentication(
+                    PeerAuthError::BadProofSignature
+                ))
+            ));
+        }
     }
 }

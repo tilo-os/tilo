@@ -185,187 +185,182 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_active_starts_active() {
-        let s = SessionState::new_active();
-        assert!(s.is_active());
-    }
-
-    #[test]
-    fn new_paused_starts_paused() {
-        let s = SessionState::new_paused();
-        assert!(!s.is_active());
-    }
-
-    #[test]
-    fn pause_then_activate_returns_to_active() {
-        let s = SessionState::new_active();
-        s.apply(SeatTick::Pause);
-        assert!(!s.is_active());
-        s.apply(SeatTick::Activate);
-        assert!(s.is_active());
-    }
-
-    #[test]
-    fn repeated_activate_stays_active() {
-        let s = SessionState::new_active();
-        s.apply(SeatTick::Activate);
-        s.apply(SeatTick::Activate);
-        assert!(s.is_active());
-    }
-
-    #[test]
-    fn repeated_pause_stays_paused() {
-        let s = SessionState::new_active();
-        s.apply(SeatTick::Pause);
-        s.apply(SeatTick::Pause);
-        assert!(!s.is_active());
-    }
-
-    #[test]
-    fn apply_returns_new_state() {
-        let s = SessionState::new_active();
-        assert!(!s.apply(SeatTick::Pause));
-        assert!(s.apply(SeatTick::Activate));
-    }
-
-    #[test]
-    fn shared_flag_reflects_apply() {
-        // Simulate a render thread reading the same atomic the
-        // dispatch thread writes.
-        let s = SessionState::new_active();
-        let flag = s.shared_flag();
-        assert!(flag.load(Ordering::Acquire));
-        s.apply(SeatTick::Pause);
-        assert!(!flag.load(Ordering::Acquire));
+    fn session_state_flag_tracks_pause_and_activate() {
+        // Phase `new_active_starts_active`.
+        {
+            let s = SessionState::new_active();
+            assert!(s.is_active());
+        }
+        // Phase `new_paused_starts_paused`.
+        {
+            let s = SessionState::new_paused();
+            assert!(!s.is_active());
+        }
+        // Phase `pause_then_activate_returns_to_active`.
+        {
+            let s = SessionState::new_active();
+            s.apply(SeatTick::Pause);
+            assert!(!s.is_active());
+            s.apply(SeatTick::Activate);
+            assert!(s.is_active());
+        }
+        // Phase `repeated_activate_stays_active`.
+        {
+            let s = SessionState::new_active();
+            s.apply(SeatTick::Activate);
+            s.apply(SeatTick::Activate);
+            assert!(s.is_active());
+        }
+        // Phase `repeated_pause_stays_paused`.
+        {
+            let s = SessionState::new_active();
+            s.apply(SeatTick::Pause);
+            s.apply(SeatTick::Pause);
+            assert!(!s.is_active());
+        }
+        // Phase `apply_returns_new_state`.
+        {
+            let s = SessionState::new_active();
+            assert!(!s.apply(SeatTick::Pause));
+            assert!(s.apply(SeatTick::Activate));
+        }
+        // Phase `shared_flag_reflects_apply`.
+        {
+            // Simulate a render thread reading the same atomic the
+            // dispatch thread writes.
+            let s = SessionState::new_active();
+            let flag = s.shared_flag();
+            assert!(flag.load(Ordering::Acquire));
+            s.apply(SeatTick::Pause);
+            assert!(!flag.load(Ordering::Acquire));
+        }
     }
 
     // ---------------- pause / resume sequencing ----------------
 
     #[test]
-    fn a_vt_switch_away_stops_scanout_before_giving_up_master() {
-        // Order is the contract: dropping master first would leave the
-        // presenter queuing flips against a device it no longer owns, and
-        // the kernel answers those with EACCES rather than a frame.
-        let s = SessionState::new_active();
-        let actions = s.apply_with_actions(SeatTick::Pause);
-        assert_eq!(
-            actions,
-            vec![SessionAction::PauseScanout, SessionAction::DropMaster]
-        );
-        assert!(!s.is_active());
+    fn vt_switch_plans_stop_scanout_first_and_repaint_last() {
+        // Phase `a_vt_switch_away_stops_scanout_before_giving_up_master`.
+        {
+            // Order is the contract: dropping master first would leave the
+            // presenter queuing flips against a device it no longer owns, and
+            // the kernel answers those with EACCES rather than a frame.
+            let s = SessionState::new_active();
+            let actions = s.apply_with_actions(SeatTick::Pause);
+            assert_eq!(
+                actions,
+                vec![SessionAction::PauseScanout, SessionAction::DropMaster]
+            );
+            assert!(!s.is_active());
+        }
+        // Phase `a_vt_switch_back_rebuilds_everything_in_order`.
+        {
+            // The screen after a VT switch has no mode set, no framebuffer
+            // bound, and holds whatever the other session drew. Each step is
+            // load-bearing and the order is what makes them work.
+            let s = SessionState::new_active();
+            s.apply_with_actions(SeatTick::Pause);
+            let actions = s.apply_with_actions(SeatTick::Activate);
+            assert_eq!(
+                actions,
+                vec![
+                    SessionAction::AcquireMaster,
+                    SessionAction::ResetOutputs,
+                    SessionAction::RestoreDpms,
+                    SessionAction::ResumeScanout,
+                    SessionAction::FullDamage,
+                ]
+            );
+            assert!(s.is_active());
+        }
+        // Phase `master_is_taken_before_the_modeset_that_needs_it`.
+        {
+            let s = SessionState::new_paused();
+            let actions = s.apply_with_actions(SeatTick::Activate);
+            let master = actions
+                .iter()
+                .position(|a| *a == SessionAction::AcquireMaster)
+                .expect("activation must acquire master");
+            let modeset = actions
+                .iter()
+                .position(|a| *a == SessionAction::ResetOutputs)
+                .expect("activation must re-modeset");
+            assert!(
+                master < modeset,
+                "set_crtc without DRM master returns EACCES: {actions:?}"
+            );
+        }
+        // Phase `the_repaint_comes_last`.
+        {
+            // Painting before the modeset writes into a buffer no CRTC is
+            // scanning out, which looks exactly like the bug it is meant to
+            // fix — a black screen after resume.
+            let s = SessionState::new_paused();
+            let actions = s.apply_with_actions(SeatTick::Activate);
+            assert_eq!(actions.last(), Some(&SessionAction::FullDamage));
+        }
+        // Phase `a_redundant_tick_implies_no_work`.
+        {
+            // libseat re-announces activation on some paths. Re-modesetting
+            // there is a visible flicker for nothing.
+            let s = SessionState::new_active();
+            assert!(s.apply_with_actions(SeatTick::Activate).is_empty());
+            s.apply_with_actions(SeatTick::Pause);
+            assert!(s.apply_with_actions(SeatTick::Pause).is_empty());
+        }
     }
 
     #[test]
-    fn a_vt_switch_back_rebuilds_everything_in_order() {
-        // The screen after a VT switch has no mode set, no framebuffer
-        // bound, and holds whatever the other session drew. Each step is
-        // load-bearing and the order is what makes them work.
-        let s = SessionState::new_active();
-        s.apply_with_actions(SeatTick::Pause);
-        let actions = s.apply_with_actions(SeatTick::Activate);
-        assert_eq!(
-            actions,
-            vec![
-                SessionAction::AcquireMaster,
-                SessionAction::ResetOutputs,
-                SessionAction::RestoreDpms,
-                SessionAction::ResumeScanout,
-                SessionAction::FullDamage,
-            ]
-        );
-        assert!(s.is_active());
-    }
-
-    #[test]
-    fn master_is_taken_before_the_modeset_that_needs_it() {
-        let s = SessionState::new_paused();
-        let actions = s.apply_with_actions(SeatTick::Activate);
-        let master = actions
-            .iter()
-            .position(|a| *a == SessionAction::AcquireMaster)
-            .expect("activation must acquire master");
-        let modeset = actions
-            .iter()
-            .position(|a| *a == SessionAction::ResetOutputs)
-            .expect("activation must re-modeset");
-        assert!(
-            master < modeset,
-            "set_crtc without DRM master returns EACCES: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn the_repaint_comes_last() {
-        // Painting before the modeset writes into a buffer no CRTC is
-        // scanning out, which looks exactly like the bug it is meant to
-        // fix — a black screen after resume.
-        let s = SessionState::new_paused();
-        let actions = s.apply_with_actions(SeatTick::Activate);
-        assert_eq!(actions.last(), Some(&SessionAction::FullDamage));
-    }
-
-    #[test]
-    fn a_redundant_tick_implies_no_work() {
-        // libseat re-announces activation on some paths. Re-modesetting
-        // there is a visible flicker for nothing.
-        let s = SessionState::new_active();
-        assert!(s.apply_with_actions(SeatTick::Activate).is_empty());
-        s.apply_with_actions(SeatTick::Pause);
-        assert!(s.apply_with_actions(SeatTick::Pause).is_empty());
-    }
-
-    #[test]
-    fn resume_from_sleep_runs_the_full_sequence_without_a_prior_pause() {
-        // The lid-close bug: a suspend never pauses the seat, so the
-        // session is still marked active on the way back — and a state
-        // machine that only acts on transitions does nothing, leaving the
-        // panel dark.
-        let s = SessionState::new_active();
-        assert!(s.is_active(), "suspend does not pause the seat");
-        assert_eq!(s.resume_actions(), ACTIVATE_SEQUENCE.to_vec());
-    }
-
-    #[test]
-    fn resume_and_vt_activate_run_the_same_sequence() {
-        // Two entry points, one recovery. Any divergence would mean one of
-        // them is missing a step nobody notices until the hardware differs.
-        let vt = SessionState::new_paused();
-        let vt_actions = vt.apply_with_actions(SeatTick::Activate);
-        let sleep = SessionState::new_active();
-        assert_eq!(vt_actions, sleep.resume_actions());
-    }
-
-    #[test]
-    fn a_session_blanked_for_idle_comes_back_blanked() {
-        // Restore must put back what the session had, not light the panel:
-        // a VT switch while the screen was idle-blanked must not wake it.
-        let s = SessionState::new_active();
-        s.set_dpms(false);
-        s.apply_with_actions(SeatTick::Pause);
-        let actions = s.apply_with_actions(SeatTick::Activate);
-        assert!(actions.contains(&SessionAction::RestoreDpms));
-        assert!(
-            !s.dpms_on(),
-            "the remembered power state must survive the pause"
-        );
-    }
-
-    #[test]
-    fn a_lit_session_comes_back_lit() {
-        let s = SessionState::new_active();
-        s.set_dpms(true);
-        s.apply_with_actions(SeatTick::Pause);
-        s.apply_with_actions(SeatTick::Activate);
-        assert!(s.dpms_on());
-    }
-
-    #[test]
-    fn resume_marks_the_session_active_even_if_it_was_not() {
-        // A resume that arrives while the seat still reads paused (the
-        // ordering is not guaranteed) must not leave the compositor
-        // refusing to paint.
-        let s = SessionState::new_paused();
-        s.resume_actions();
-        assert!(s.is_active());
+    fn resume_runs_the_vt_activate_sequence_and_keeps_the_blank_state() {
+        // Phase `resume_from_sleep_runs_the_full_sequence_without_a_prior_pause`.
+        {
+            // The lid-close bug: a suspend never pauses the seat, so the
+            // session is still marked active on the way back — and a state
+            // machine that only acts on transitions does nothing, leaving the
+            // panel dark.
+            let s = SessionState::new_active();
+            assert!(s.is_active(), "suspend does not pause the seat");
+            assert_eq!(s.resume_actions(), ACTIVATE_SEQUENCE.to_vec());
+        }
+        // Phase `resume_and_vt_activate_run_the_same_sequence`.
+        {
+            // Two entry points, one recovery. Any divergence would mean one of
+            // them is missing a step nobody notices until the hardware differs.
+            let vt = SessionState::new_paused();
+            let vt_actions = vt.apply_with_actions(SeatTick::Activate);
+            let sleep = SessionState::new_active();
+            assert_eq!(vt_actions, sleep.resume_actions());
+        }
+        // Phase `a_session_blanked_for_idle_comes_back_blanked`.
+        {
+            // Restore must put back what the session had, not light the panel:
+            // a VT switch while the screen was idle-blanked must not wake it.
+            let s = SessionState::new_active();
+            s.set_dpms(false);
+            s.apply_with_actions(SeatTick::Pause);
+            let actions = s.apply_with_actions(SeatTick::Activate);
+            assert!(actions.contains(&SessionAction::RestoreDpms));
+            assert!(
+                !s.dpms_on(),
+                "the remembered power state must survive the pause"
+            );
+        }
+        // Phase `a_lit_session_comes_back_lit`.
+        {
+            let s = SessionState::new_active();
+            s.set_dpms(true);
+            s.apply_with_actions(SeatTick::Pause);
+            s.apply_with_actions(SeatTick::Activate);
+            assert!(s.dpms_on());
+        }
+        // Phase `resume_marks_the_session_active_even_if_it_was_not`.
+        {
+            // A resume that arrives while the seat still reads paused (the
+            // ordering is not guaranteed) must not leave the compositor
+            // refusing to paint.
+            let s = SessionState::new_paused();
+            s.resume_actions();
+            assert!(s.is_active());
+        }
     }
 }

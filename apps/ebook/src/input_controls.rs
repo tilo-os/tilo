@@ -14,16 +14,143 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, ColorPicker, ColorPickerOutcome, ColorSwatch, NumberInput, TextInput,
-    Widget,
+    BlockEditor, Button, ButtonFace, ColorPicker, ColorPickerOutcome, ColorSwatch, CursorPlacement,
+    Embedded, NumberInput, Widget,
 };
 
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
+
+/// The SDK editor a note or comment is written in, bound to the note's rich
+/// text: each keystroke is an [`EbookAction::EditNoteText`] the field
+/// dispatches, undone a word at a time. Enter asks to finish, Shift+Enter
+/// breaks the line and Escape cancels.
+///
+/// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
+pub(crate) struct NoteEditor {
+    id: Uuid,
+    host: Embedded<RichTextSurface<RichTextField<crate::actions::EbookAction>>>,
+    /// The caret has been placed at the end of the note, once it was read.
+    placed: bool,
+}
+
+impl NoteEditor {
+    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str) -> Self {
+        let context = tilo_actions::ActionContext::for_action(
+            "so.tilo.ebook",
+            "Ebook",
+            &crate::actions::edit_note_action(id, ""),
+        );
+        let field = RichTextField::new(
+            crate::actions::EBOOK_ACTION_TYPE,
+            move |doc| crate::doc::BooksDoc::annotation_text(doc, id),
+            move |edit| crate::actions::edit_note_text_action(id, edit),
+        )
+        .with_context(context);
+        let mut surface = RichTextSurface::field(field)
+            .with_editor(
+                BlockEditor::new()
+                    .with_wrap_lines(true)
+                    .with_compact_paragraph_spacing(true)
+                    .with_body_size(body_size),
+            )
+            .with_placeholder(hint)
+            .with_submit(SubmitKey::Enter);
+        surface.set_focus(true);
+        Self {
+            id,
+            host: Embedded::new(surface),
+            placed: false,
+        }
+    }
+
+    pub(crate) fn id(&self) -> Uuid {
+        self.id
+    }
+
+    /// Read the note from the document, placing the caret at its end the
+    /// first time.
+    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.host.sync(state, root);
+        if !self.placed && self.host.widget().source().revision().is_some() {
+            self.placed = true;
+            self.host
+                .widget_mut()
+                .editor_mut()
+                .focus_block(usize::MAX, CursorPlacement::End);
+        }
+    }
+
+    /// Route one event to the editor; returns whether the person finished
+    /// (Enter) or cancelled (Escape).
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Option<FieldOutcome> {
+        self.sync(ctx.state, ctx.root);
+        self.host.handle_event(
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.root,
+            ctx.handled,
+        );
+        self.sync(ctx.state, ctx.root);
+        self.host.widget_mut().take_outcome()
+    }
+
+    pub(crate) fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        self.host.layout(rect, theme, text)
+    }
+
+    pub(crate) fn rect(&self) -> Rect {
+        self.host.rect()
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.host.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+    }
+
+    /// The undo boundary the note's last edit opened, for the host.
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        ui::undo::take_committed_action(self.host.widget_mut())
+    }
+
+    /// Whether a typed word keeps its undo step open.
+    pub(crate) fn keeps_step_open(&self) -> bool {
+        ui::undo::keeps_undo_step_open(self.host.widget())
+    }
+
+    pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.host.widget().accessibility()
+    }
+
+    /// An assistive technology's action on the text (focus, set value).
+    pub(crate) fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        self.sync(state, root);
+        self.host.widget_mut().perform_action(action, state, root)
+    }
+}
 
 /// Native event services shared by the reader's retained input widgets.
 ///
@@ -175,10 +302,6 @@ impl NumberControls {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The numeric-control painter takes field identity, current value, bounds, and the scene, transform, text renderer, and theme."
-    )]
     pub(crate) fn draw(
         &mut self,
         field: &NumberField,
@@ -227,14 +350,16 @@ impl NumberControls {
             let mut focus_target = None;
             control.input.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut local_handled,
-                &mut focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut local_handled,
+                    focus_target: &mut focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -264,20 +389,18 @@ pub(crate) enum NoteAction {
 }
 
 pub(crate) enum NoteSemanticOutcome {
-    Changed(String),
     Save,
     Delete(Uuid),
     Focused,
 }
 
-/// On-page note editor backed by the toolkit's multiline `TextInput`.
+/// On-page note editor: the SDK rich-text editor bound to the note, in a
+/// card with Delete and Save.
 ///
-/// The component owns text state, selection/clipboard/IME behavior, geometry,
-/// drawing, and hit-testing. It emits content changes and semantic actions;
-/// only CRDT persistence remains in the app domain layer.
+/// The component owns geometry, drawing and hit-testing; the editor writes
+/// the note as the person types.
 pub(crate) struct NoteComposer {
-    id: Option<Uuid>,
-    input: TextInput,
+    editor: Option<NoteEditor>,
     card: Rect,
     delete: Rect,
     save: Rect,
@@ -298,14 +421,7 @@ struct NoteLayout {
 impl Default for NoteComposer {
     fn default() -> Self {
         Self {
-            id: None,
-            input: TextInput::local()
-                .with_id("ebook_note_composer")
-                .with_font_size(13.5)
-                .with_plain_chrome()
-                .multiline(true)
-                .with_enter_submits(true)
-                .with_placeholder("Write a note…"),
+            editor: None,
             card: Rect::ZERO,
             delete: Rect::ZERO,
             save: Rect::ZERO,
@@ -317,16 +433,16 @@ impl Default for NoteComposer {
 impl NoteComposer {
     pub(crate) fn accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let Some(id) = self.id else {
+        let Some(editor) = self.editor.as_ref() else {
             return Vec::new();
         };
-        let mut input = self
-            .input
+        let id = editor.id();
+        let mut input = editor
             .accessibility()
             .unwrap_or_else(|| AccessNode::new(Role::MultilineTextInput));
         input.name = Some("Note text".into());
         input = input
-            .with_bounds(self.input.get_rect())
+            .with_bounds(editor.rect())
             .with_action_target(format!("books.note.input:{id}"));
         let button = |name: &str, target: String, bounds: Rect| {
             AccessNode::new(Role::Button)
@@ -358,15 +474,12 @@ impl NoteComposer {
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> Option<NoteSemanticOutcome> {
-        let id = self.id?;
+        let editor = self.editor.as_mut()?;
+        let id = editor.id();
         if target == format!("books.note.input:{id}") {
-            if self.input.perform_action(action, state, root) {
-                if let Some(text) = self.input.take_dirty() {
-                    return Some(NoteSemanticOutcome::Changed(text));
-                }
-                return Some(NoteSemanticOutcome::Focused);
-            }
-            return None;
+            return editor
+                .perform_action(action, state, root)
+                .then_some(NoteSemanticOutcome::Focused);
         }
         if !matches!(action, ui::a11y::Action::Activate) {
             return None;
@@ -380,30 +493,47 @@ impl NoteComposer {
         }
     }
 
-    pub(crate) fn open(&mut self, id: Uuid, text: &str) {
-        self.id = Some(id);
-        self.input.set_text(text);
-        self.input.set_focus(true);
+    /// Open the editor on note `id`; it shows the note on the next sync.
+    pub(crate) fn open(&mut self, id: Uuid) {
+        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…"));
     }
 
     pub(crate) fn close(&mut self) {
-        self.id = None;
-        self.input.set_focus(false);
+        self.editor = None;
         self.card = Rect::ZERO;
         self.delete = Rect::ZERO;
         self.save = Rect::ZERO;
     }
 
     pub(crate) fn id(&self) -> Option<Uuid> {
-        self.id
+        self.editor.as_ref().map(NoteEditor::id)
     }
 
     pub(crate) fn is_open(&self) -> bool {
-        self.id.is_some()
+        self.editor.is_some()
+    }
+
+    /// Bring the open note's text up to date with the document.
+    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.sync(state, root);
+        }
+    }
+
+    /// The undo boundary the note's last edit opened, for the host.
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.editor.as_mut().and_then(NoteEditor::take_committed)
+    }
+
+    /// Whether a typed word keeps its undo step open.
+    pub(crate) fn keeps_step_open(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(NoteEditor::keeps_step_open)
     }
 
     pub(crate) fn hit_test(&self, point: Point) -> Option<NoteAction> {
-        let id = self.id?;
+        let id = self.id()?;
         if self.delete.contains(point) {
             Some(NoteAction::Delete(id))
         } else if self.save.contains(point) {
@@ -415,30 +545,15 @@ impl NoteComposer {
         }
     }
 
-    /// Returns a changed text value and whether Enter requested Save.
-    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> (Option<String>, bool) {
-        if self.id.is_none() {
-            return (None, false);
-        }
+    /// Whether the person finished the note (Enter or Escape).
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
         if let WindowEvent::CursorMoved { position, .. } = ctx.event {
             self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        let mut focus_target = None;
-        self.input.handle_event(
-            ctx.event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            ctx.state,
-            ctx.root,
-            ctx.handled,
-            &mut focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
-        if focus_target.is_some() {
-            self.input.set_focus(true);
-        }
-        (self.input.take_dirty(), self.input.take_submit())
+        editor.handle_event(ctx).is_some()
     }
 
     /// Geometry for the card, header excerpt and input box — pure so it can
@@ -529,14 +644,10 @@ impl NoteComposer {
             Some(layout.inner_width),
         );
 
-        self.input.apply_layout_external(layout.input_rect);
-        self.input.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
+        if let Some(editor) = self.editor.as_mut() {
+            editor.layout(layout.input_rect, theme, text_renderer);
+            editor.draw(scene, transform, text_renderer, theme);
+        }
     }
 
     /// Delete/Save buttons beneath the input box.
@@ -580,10 +691,6 @@ impl NoteComposer {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The note editor combines render context with viewport bounds, optional anchor position, and the annotation being edited."
-    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -594,11 +701,8 @@ impl NoteComposer {
         anchor_y: Option<f64>,
         annotation: &Annotation,
     ) {
-        if self.id != Some(annotation.id) {
+        if self.id() != Some(annotation.id) {
             return;
-        }
-        if !self.input.is_focused() && self.input.value() != annotation.note {
-            self.input.set_text(&annotation.note);
         }
         let layout = Self::compute_note_layout(text_renderer, bounds, anchor_y, annotation);
         self.card = layout.card;
@@ -634,62 +738,93 @@ mod tests {
         }
     }
 
+    /// The note composer writes the note as it is typed and Enter finishes; hit testing keeps the card modal and tap-away saves.
     #[test]
-    fn note_composer_uses_shared_selection_editing_and_submit() {
-        let mut composer = NoteComposer::default();
-        composer.open(Uuid::new_v4(), "hello");
-        composer.input.select_all();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::new();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let (changed, submitted) = composer.handle_event(&mut InputEventCtx {
-            event: &key(Key::Character("world".into())),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &root,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert_eq!(changed.as_deref(), Some("world"));
-        assert!(!submitted);
-        let (_, submitted) = composer.handle_event(&mut InputEventCtx {
-            event: &key(Key::Named(NamedKey::Enter)),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &root,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert!(submitted);
-    }
+    fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
+        // --- phase: note_composer_writes_the_note_as_typed_and_enter_finishes ---
+        {
+            let mut doc = AutoCommit::new();
+            let note = crate::model::Annotation::new("book:x", crate::model::AnnoKind::Note, 0, 0)
+                .with_note("hello");
+            let id = note.id;
+            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
+            doc.commit();
+            let mut composer = NoteComposer::default();
+            composer.open(id);
+            let root = automerge::ROOT;
+            composer.sync(&mut doc, &root);
+            let taffy = TaffyTree::new();
+            let modifiers = Modifiers::default();
+            let press = |composer: &mut NoteComposer, doc: &mut AutoCommit, key: WindowEvent| {
+                let mut handled = false;
+                composer.handle_event(&mut InputEventCtx {
+                    event: &key,
+                    scale_factor: 1.0,
+                    modifiers,
+                    state: doc,
+                    root: &root,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                    handled: &mut handled,
+                })
+            };
+            for ch in ["w", "o", "r", "l", "d"] {
+                assert!(!press(
+                    &mut composer,
+                    &mut doc,
+                    key(Key::Character(ch.into()))
+                ));
+            }
+            let stored = |doc: &AutoCommit| {
+                crate::doc::BooksDoc::list_annotations(doc)
+                    .into_iter()
+                    .find(|annotation| annotation.id == id)
+                    .unwrap()
+                    .note
+            };
+            assert_eq!(
+                stored(&doc),
+                "helloworld",
+                "typed at the end, written as typed"
+            );
+            assert!(press(
+                &mut composer,
+                &mut doc,
+                key(Key::Named(NamedKey::Enter))
+            ));
+            assert_eq!(
+                stored(&doc),
+                "helloworld",
+                "Enter finishes, it does not break"
+            );
+            assert!(
+                composer.take_committed().is_some(),
+                "the typing is an undo step"
+            );
+        }
 
-    #[test]
-    fn note_hit_testing_keeps_card_modal_and_tap_away_saves() {
-        let id = Uuid::new_v4();
-        let mut composer = NoteComposer::default();
-        composer.open(id, "");
-        composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
-        composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
-        composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
-        assert_eq!(
-            composer.hit_test(Point::new(40.0, 120.0)),
-            Some(NoteAction::Delete(id))
-        );
-        assert_eq!(
-            composer.hit_test(Point::new(140.0, 120.0)),
-            Some(NoteAction::Save)
-        );
-        assert_eq!(
-            composer.hit_test(Point::new(90.0, 60.0)),
-            Some(NoteAction::Swallow)
-        );
-        assert_eq!(composer.hit_test(Point::ZERO), Some(NoteAction::Save));
+        // --- phase: note_hit_testing_keeps_card_modal_and_tap_away_saves ---
+        {
+            let id = Uuid::new_v4();
+            let mut composer = NoteComposer::default();
+            composer.open(id);
+            composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
+            composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
+            composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
+            assert_eq!(
+                composer.hit_test(Point::new(40.0, 120.0)),
+                Some(NoteAction::Delete(id))
+            );
+            assert_eq!(
+                composer.hit_test(Point::new(140.0, 120.0)),
+                Some(NoteAction::Save)
+            );
+            assert_eq!(
+                composer.hit_test(Point::new(90.0, 60.0)),
+                Some(NoteAction::Swallow)
+            );
+            assert_eq!(composer.hit_test(Point::ZERO), Some(NoteAction::Save));
+        }
     }
 }
 
@@ -913,14 +1048,16 @@ impl SchemeColorSheet {
             let mut local_handled = false;
             picker.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut local_handled,
-                &mut focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut local_handled,
+                    focus_target: &mut focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             if focus_target.is_some() {
                 picker.set_focus(true);

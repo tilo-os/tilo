@@ -42,6 +42,14 @@ const BTN_MODE: u16 = 0x13c;
 const BTN_THUMBL: u16 = 0x13d;
 const BTN_THUMBR: u16 = 0x13e;
 
+// Nintendo's Joy-Con halves as the kernel hid-nintendo driver exposes them.
+// joycond claims exactly these (os/usr/lib/udev/rules.d/72-joycond.rules).
+const NINTENDO_VENDOR: u16 = 0x057e;
+const JOYCON_LEFT_PRODUCT: u16 = 0x2006;
+const JOYCON_RIGHT_PRODUCT: u16 = 0x2007;
+const JOYCON_GRIP_PRODUCT: u16 = 0x200e;
+const JOYCOND_UDEV_TAG: &str = "joycond";
+
 const AXES: [(u16, GamepadAxis, AxisKind); 6] = [
     (ABS_X, GamepadAxis::LeftX, AxisKind::Stick),
     (ABS_Y, GamepadAxis::LeftY, AxisKind::Stick),
@@ -110,15 +118,22 @@ impl LinuxPhysicalGamepadCatalog {
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            if !metadata.file_type().is_char_device() || !self.is_controller_rdev(metadata.rdev()) {
+            if !metadata.file_type().is_char_device() {
                 continue;
             }
+            let Some(udev_properties) = self.controller_udev_properties(metadata.rdev()) else {
+                continue;
+            };
             let device = self.sys_class_input.join(file_name).join("device");
             let vendor_id = read_hex_id(&device.join("id/vendor"));
             let product_id = read_hex_id(&device.join("id/product"));
-            // A granted lease re-creates a remote controller here for one
-            // app. It is that app's input, never a controller in this room.
-            if is_forwarded_gamepad(vendor_id, product_id) {
+            let descriptor = EvdevDescriptor {
+                vendor_id,
+                product_id,
+                udev_properties: &udev_properties,
+                mode: metadata.mode(),
+            };
+            if !is_room_controller(&descriptor) {
                 continue;
             }
             let name = fs::read_to_string(device.join("name"))
@@ -187,12 +202,18 @@ impl LinuxPhysicalGamepadCatalog {
     }
 
     fn is_controller_rdev(&self, rdev: u64) -> bool {
+        self.controller_udev_properties(rdev).is_some()
+    }
+
+    /// The udev database record of an exclusive controller, or `None` when
+    /// the device is not one.
+    fn controller_udev_properties(&self, rdev: u64) -> Option<String> {
         let major = libc::major(rdev as libc::dev_t);
         let minor = libc::minor(rdev as libc::dev_t);
         let path = self.udev_data.join(format!("c{major}:{minor}"));
         fs::read_to_string(path)
             .ok()
-            .is_some_and(|properties| is_exclusive_controller(&properties))
+            .filter(|properties| is_exclusive_controller(properties))
     }
 }
 
@@ -448,6 +469,64 @@ fn is_exclusive_controller(properties: &str) -> bool {
     joystick && !forbidden
 }
 
+/// What discovery knows about one exclusive-controller evdev node.
+struct EvdevDescriptor<'a> {
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+    /// The node's udev database record (`E:` properties, `G:`/`Q:` tags).
+    udev_properties: &'a str,
+    /// The node's `st_mode`.
+    mode: u32,
+}
+
+/// Whether a classified controller is one a person in this room holds, as
+/// opposed to another component's input.
+fn is_room_controller(device: &EvdevDescriptor<'_>) -> bool {
+    // A granted lease re-creates a remote controller here for one app. It is
+    // that app's input, never a controller in this room.
+    !is_forwarded_gamepad(device.vendor_id, device.product_id) && !held_by_joycond(device)
+}
+
+/// joycond grabs every raw Joy-Con half udev tags for it (on the device's
+/// "add" event) and keeps the node root-only until the person decides how to
+/// hold it. Pressing both halves' shoulder buttons folds them into one uinput
+/// "Nintendo Switch Combined Joy-Cons" device (057e:2008, virtual bus) while
+/// both halves stay grabbed. A half used on its own is released: joycond opens
+/// its node to everyone and re-announces it with a "change" event, whose rule
+/// pass no longer applies the tag. Only the combined device and released
+/// halves are controllers; a held half yields no events, and listing it would
+/// count one pair as three.
+fn held_by_joycond(device: &EvdevDescriptor<'_>) -> bool {
+    let joycon_half = device.vendor_id == Some(NINTENDO_VENDOR)
+        && matches!(
+            device.product_id,
+            Some(JOYCON_LEFT_PRODUCT | JOYCON_RIGHT_PRODUCT | JOYCON_GRIP_PRODUCT)
+        );
+    let opened_to_everyone = device.mode & 0o006 == 0o006;
+    joycon_half
+        && has_current_udev_tag(device.udev_properties, JOYCOND_UDEV_TAG)
+        && !opened_to_everyone
+}
+
+/// Whether udev's latest rule pass applied `tag`. The database lists those
+/// tags as `Q:` lines and every tag the device ever had as sticky `G:` lines;
+/// a record without `Q:` lines predates that split, so `G:` is all there is.
+fn has_current_udev_tag(properties: &str, tag: &str) -> bool {
+    let tags = |prefix: &str| {
+        properties
+            .lines()
+            .filter_map(|line| line.strip_prefix(prefix))
+            .collect::<Vec<_>>()
+    };
+    let current = tags("Q:");
+    let tags = if current.is_empty() {
+        tags("G:")
+    } else {
+        current
+    };
+    tags.contains(&tag)
+}
+
 fn is_forwarded_gamepad(vendor: Option<u16>, product: Option<u16>) -> bool {
     vendor == Some(FORWARDED_GAMEPAD_VENDOR) && product == Some(FORWARDED_GAMEPAD_PRODUCT)
 }
@@ -524,68 +603,6 @@ mod tests {
     }
 
     #[test]
-    fn udev_classification_requires_joystick_and_rejects_hybrid_input() {
-        assert!(is_exclusive_controller(
-            "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
-        ));
-        assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
-        for hybrid in [
-            "ID_INPUT_KEYBOARD=1",
-            "ID_INPUT_MOUSE=1",
-            "ID_INPUT_TOUCHPAD=1",
-            "ID_INPUT_TOUCHSCREEN=1",
-            "ID_INPUT_TABLET=1",
-        ] {
-            assert!(!is_exclusive_controller(&format!(
-                "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
-            )));
-        }
-    }
-
-    #[test]
-    fn stick_calibration_scales_asymmetrically_and_applies_deadzone() {
-        let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
-            .expect("valid calibration");
-        assert_eq!(axis.center, 100);
-        assert_eq!(axis.normalize(-100), i16::MIN);
-        assert_eq!(axis.normalize(300), i16::MAX);
-        assert_eq!(axis.normalize(89), 0);
-        assert_eq!(axis.normalize(112), 0);
-        assert!(axis.normalize(50) < 0);
-        assert!(axis.normalize(200) > 0);
-    }
-
-    #[test]
-    fn trigger_calibration_uses_zero_as_neutral() {
-        let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
-            .expect("valid calibration");
-        assert_eq!(trigger.normalize(0), 0);
-        assert_eq!(trigger.normalize(255), i16::MAX);
-        assert!((16_300..=16_500).contains(&trigger.normalize(128)));
-    }
-
-    #[test]
-    fn invalid_axis_calibration_fails_closed() {
-        assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
-        assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
-    }
-
-    #[test]
-    fn hats_are_clamped_to_fixed_typed_range() {
-        for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
-            let normalized = raw.signum() as i8;
-            assert!((-1..=1).contains(&normalized));
-            assert!(
-                ForwardedGamepadEvent::Hat {
-                    x: normalized,
-                    y: -normalized,
-                }
-                .is_valid()
-            );
-        }
-    }
-
-    #[test]
     fn forwarded_virtual_gamepads_are_not_room_hardware() {
         assert!(is_forwarded_gamepad(
             Some(FORWARDED_GAMEPAD_VENDOR),
@@ -594,6 +611,74 @@ mod tests {
         assert!(!is_forwarded_gamepad(Some(0x045e), Some(0x028e)));
         assert!(!is_forwarded_gamepad(Some(FORWARDED_GAMEPAD_VENDOR), None));
         assert!(!is_forwarded_gamepad(None, None));
+    }
+
+    #[test]
+    fn a_joycond_pair_is_one_controller_and_its_raw_halves_are_hidden() {
+        const JOYSTICK: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:uaccess\nQ:uaccess\n";
+        const HELD: &str = "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nQ:joycond\n";
+        const RELEASED: &str =
+            "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:joycond\nG:uaccess\nQ:uaccess\n";
+        let device = |product, udev_properties, mode| EvdevDescriptor {
+            vendor_id: Some(NINTENDO_VENDOR),
+            product_id: Some(product),
+            udev_properties,
+            mode,
+        };
+        let room = |devices: &[EvdevDescriptor<'_>]| {
+            devices
+                .iter()
+                .filter(|device| is_room_controller(device))
+                .count()
+        };
+
+        // Both halves grabbed and combined: only joycond's uinput device.
+        assert_eq!(
+            room(&[
+                device(JOYCON_LEFT_PRODUCT, HELD, 0o020_600),
+                device(JOYCON_RIGHT_PRODUCT, HELD, 0o020_600),
+                device(0x2008, JOYSTICK, 0o020_660),
+            ]),
+            1
+        );
+        assert!(is_room_controller(&device(0x2008, JOYSTICK, 0o020_660)));
+        // Halves in the charging grip enumerate under the grip's product id.
+        assert!(!is_room_controller(&device(
+            JOYCON_GRIP_PRODUCT,
+            HELD,
+            0o020_600
+        )));
+        // A half released to be used alone is a controller of its own,
+        // whether or not udev's change pass reset the node's mode.
+        assert!(is_room_controller(&device(
+            JOYCON_LEFT_PRODUCT,
+            RELEASED,
+            0o020_660
+        )));
+        assert!(is_room_controller(&device(
+            JOYCON_RIGHT_PRODUCT,
+            HELD,
+            0o020_666
+        )));
+        // A record from before udev split current tags off still counts.
+        assert!(!is_room_controller(&device(
+            JOYCON_LEFT_PRODUCT,
+            "E:ID_INPUT_JOYSTICK=1\nG:joycond\n",
+            0o020_600
+        )));
+        // Without joycond's tag the kernel device is the only one there is.
+        assert!(is_room_controller(&device(
+            JOYCON_RIGHT_PRODUCT,
+            JOYSTICK,
+            0o020_600
+        )));
+        // The Pro Controller stays with hid-nintendo and Steam; a stray tag
+        // on it must not hide it either.
+        assert!(is_room_controller(&device(0x2009, HELD, 0o020_600)));
+        assert!(!has_current_udev_tag(
+            "E:TAGS=:joycond:\nQ:joycondx\n",
+            "joycond"
+        ));
     }
 
     #[test]
@@ -608,10 +693,70 @@ mod tests {
     }
 
     #[test]
-    fn kernel_codes_map_only_to_fixed_schema() {
-        assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
-        assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
-        assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
-        assert_eq!(gamepad_button(0xffff), None);
+    fn physical_gamepads_classify_and_calibrate_into_the_fixed_schema() {
+        // Phase `udev_classification_requires_joystick_and_rejects_hybrid_input`.
+        {
+            assert!(is_exclusive_controller(
+                "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
+            ));
+            assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
+            for hybrid in [
+                "ID_INPUT_KEYBOARD=1",
+                "ID_INPUT_MOUSE=1",
+                "ID_INPUT_TOUCHPAD=1",
+                "ID_INPUT_TOUCHSCREEN=1",
+                "ID_INPUT_TABLET=1",
+            ] {
+                assert!(!is_exclusive_controller(&format!(
+                    "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
+                )));
+            }
+        }
+        // Phase `stick_calibration_scales_asymmetrically_and_applies_deadzone`.
+        {
+            let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
+                .expect("valid calibration");
+            assert_eq!(axis.center, 100);
+            assert_eq!(axis.normalize(-100), i16::MIN);
+            assert_eq!(axis.normalize(300), i16::MAX);
+            assert_eq!(axis.normalize(89), 0);
+            assert_eq!(axis.normalize(112), 0);
+            assert!(axis.normalize(50) < 0);
+            assert!(axis.normalize(200) > 0);
+        }
+        // Phase `trigger_calibration_uses_zero_as_neutral`.
+        {
+            let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
+                .expect("valid calibration");
+            assert_eq!(trigger.normalize(0), 0);
+            assert_eq!(trigger.normalize(255), i16::MAX);
+            assert!((16_300..=16_500).contains(&trigger.normalize(128)));
+        }
+        // Phase `invalid_axis_calibration_fails_closed`.
+        {
+            assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
+            assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
+        }
+        // Phase `hats_are_clamped_to_fixed_typed_range`.
+        {
+            for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
+                let normalized = raw.signum() as i8;
+                assert!((-1..=1).contains(&normalized));
+                assert!(
+                    ForwardedGamepadEvent::Hat {
+                        x: normalized,
+                        y: -normalized,
+                    }
+                    .is_valid()
+                );
+            }
+        }
+        // Phase `kernel_codes_map_only_to_fixed_schema`.
+        {
+            assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
+            assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
+            assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
+            assert_eq!(gamepad_button(0xffff), None);
+        }
     }
 }

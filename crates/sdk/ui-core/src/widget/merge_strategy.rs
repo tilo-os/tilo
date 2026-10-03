@@ -168,106 +168,110 @@ mod tests {
     }
 
     #[test]
-    fn surface_banner_text_strategy_never_surfaces() {
-        let s = MergeStrategy::Text;
-        assert!(!surface_banner(&s, &ConflictKind::Auto));
-        assert!(!surface_banner(
-            &s,
-            &ConflictKind::PickOne {
-                alternatives: vec![alt("A", "Alice"), alt("B", "Bob")]
-            }
-        ));
-        assert!(!surface_banner(
-            &s,
-            &ConflictKind::MergeOrPick {
-                alternatives: vec![alt("A", "Alice")],
-                merge_preview: Some("merged".into())
-            }
-        ));
-    }
+    fn surface_banner_follows_the_resolver_family() {
+        fn surface_banner_text_strategy_never_surfaces() {
+            let s = MergeStrategy::Text;
+            assert!(!surface_banner(&s, &ConflictKind::Auto));
+            assert!(!surface_banner(
+                &s,
+                &ConflictKind::PickOne {
+                    alternatives: vec![alt("A", "Alice"), alt("B", "Bob")]
+                }
+            ));
+            assert!(!surface_banner(
+                &s,
+                &ConflictKind::MergeOrPick {
+                    alternatives: vec![alt("A", "Alice")],
+                    merge_preview: Some("merged".into())
+                }
+            ));
+        }
 
-    #[test]
-    fn surface_banner_set_strategy_never_surfaces() {
-        let s = MergeStrategy::Set;
-        assert!(!surface_banner(&s, &ConflictKind::Auto));
-        assert!(!surface_banner(
-            &s,
-            &ConflictKind::PickOne {
-                alternatives: vec![alt("A", "Alice")]
-            }
-        ));
-    }
+        fn surface_banner_set_strategy_never_surfaces() {
+            let s = MergeStrategy::Set;
+            assert!(!surface_banner(&s, &ConflictKind::Auto));
+            assert!(!surface_banner(
+                &s,
+                &ConflictKind::PickOne {
+                    alternatives: vec![alt("A", "Alice")]
+                }
+            ));
+        }
 
-    #[test]
-    fn surface_banner_lww_surfaces_when_flag_true_and_kind_is_not_auto() {
-        let s = MergeStrategy::LastWriterWins {
-            surface_on_conflict: true,
-        };
-        assert!(!surface_banner(&s, &ConflictKind::Auto));
-        assert!(surface_banner(
-            &s,
-            &ConflictKind::PickOne {
-                alternatives: vec![alt("A", "Alice"), alt("B", "Bob")]
-            }
-        ));
-        assert!(surface_banner(
-            &s,
-            &ConflictKind::MergeOrPick {
-                alternatives: vec![alt("A", "Alice")],
-                merge_preview: None
-            }
-        ));
-    }
+        fn surface_banner_lww_surfaces_when_flag_true_and_kind_is_not_auto() {
+            let s = MergeStrategy::LastWriterWins {
+                surface_on_conflict: true,
+            };
+            assert!(!surface_banner(&s, &ConflictKind::Auto));
+            assert!(surface_banner(
+                &s,
+                &ConflictKind::PickOne {
+                    alternatives: vec![alt("A", "Alice"), alt("B", "Bob")]
+                }
+            ));
+            assert!(surface_banner(
+                &s,
+                &ConflictKind::MergeOrPick {
+                    alternatives: vec![alt("A", "Alice")],
+                    merge_preview: None
+                }
+            ));
+        }
 
-    #[test]
-    fn surface_banner_lww_quiet_when_flag_false() {
-        let s = MergeStrategy::LastWriterWins {
-            surface_on_conflict: false,
-        };
-        assert!(!surface_banner(&s, &ConflictKind::Auto));
-        assert!(!surface_banner(
-            &s,
-            &ConflictKind::PickOne {
-                alternatives: vec![alt("A", "Alice")]
-            }
-        ));
-        assert!(!surface_banner(
-            &s,
-            &ConflictKind::MergeOrPick {
-                alternatives: vec![alt("A", "Alice")],
-                merge_preview: Some("merged".into())
-            }
-        ));
-    }
+        fn surface_banner_lww_quiet_when_flag_false() {
+            let s = MergeStrategy::LastWriterWins {
+                surface_on_conflict: false,
+            };
+            assert!(!surface_banner(&s, &ConflictKind::Auto));
+            assert!(!surface_banner(
+                &s,
+                &ConflictKind::PickOne {
+                    alternatives: vec![alt("A", "Alice")]
+                }
+            ));
+            assert!(!surface_banner(
+                &s,
+                &ConflictKind::MergeOrPick {
+                    alternatives: vec![alt("A", "Alice")],
+                    merge_preview: Some("merged".into())
+                }
+            ));
+        }
 
-    #[test]
-    fn surface_banner_custom_surfaces_for_pick_one() {
-        let resolver = Arc::new(StubResolver {
-            kind: ConflictKind::PickOne {
-                alternatives: vec![alt("Move", "Alice"), alt("Move", "Bob")],
-            },
-        });
-        let s = MergeStrategy::Custom(resolver.clone());
-        let kind = resolver.classify(&[op("Alice", "moved card"), op("Bob", "moved card")]);
-        assert!(surface_banner(&s, &kind));
-        let auto = Arc::new(StubResolver {
-            kind: ConflictKind::Auto,
-        });
-        assert!(!surface_banner(
-            &MergeStrategy::Custom(auto.clone()),
-            &auto.classify(&[])
-        ));
-    }
+        fn surface_banner_custom_surfaces_for_pick_one() {
+            let resolver = Arc::new(StubResolver {
+                kind: ConflictKind::PickOne {
+                    alternatives: vec![alt("Move", "Alice"), alt("Move", "Bob")],
+                },
+            });
+            let s = MergeStrategy::Custom(resolver.clone());
+            let kind = resolver.classify(&[op("Alice", "moved card"), op("Bob", "moved card")]);
+            assert!(surface_banner(&s, &kind));
+            let auto = Arc::new(StubResolver {
+                kind: ConflictKind::Auto,
+            });
+            assert!(!surface_banner(
+                &MergeStrategy::Custom(auto.clone()),
+                &auto.classify(&[])
+            ));
+        }
 
-    #[test]
-    fn resolver_family_name_round_trips_through_debug() {
-        // Debug must include the resolver family name.
-        let resolver = Arc::new(StubResolver {
-            kind: ConflictKind::Auto,
-        });
-        let s = MergeStrategy::Custom(resolver);
-        let printed = format!("{s:?}");
-        assert!(printed.contains("Stub"), "got: {printed}");
-        assert!(printed.contains("Custom"), "got: {printed}");
+        fn resolver_family_name_round_trips_through_debug() {
+            // Debug must include the resolver family name.
+            let resolver = Arc::new(StubResolver {
+                kind: ConflictKind::Auto,
+            });
+            let s = MergeStrategy::Custom(resolver);
+            let printed = format!("{s:?}");
+            assert!(printed.contains("Stub"), "got: {printed}");
+            assert!(printed.contains("Custom"), "got: {printed}");
+        }
+
+        surface_banner_text_strategy_never_surfaces();
+        surface_banner_set_strategy_never_surfaces();
+        surface_banner_lww_surfaces_when_flag_true_and_kind_is_not_auto();
+        surface_banner_lww_quiet_when_flag_false();
+        surface_banner_custom_surfaces_for_pick_one();
+        resolver_family_name_round_trips_through_debug();
     }
 }

@@ -110,21 +110,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn null_provider_mints_nothing_and_cannot_stream() {
-        let p = NullPoToken;
-        let ctx = PoTokenContext {
-            video_id: "abc".into(),
-            visitor_data: None,
-        };
-        assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
-        assert!(!p.can_stream());
-    }
-
-    #[test]
-    fn default_provider_is_null_in_offline_build() {
-        // In the default (non-`live`) build the swappable default is the null
-        // provider, keeping the hermetic path dependency-free.
-        let p = default_provider();
-        assert_eq!(p.name(), "null (metadata-only)");
+    fn offline_build_uses_the_null_potoken_provider() {
+        // Case `null_provider_mints_nothing_and_cannot_stream`.
+        {
+            let p = NullPoToken;
+            let ctx = PoTokenContext {
+                video_id: "abc".into(),
+                visitor_data: None,
+            };
+            assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
+            assert!(!p.can_stream());
+        }
+        // Case `default_provider_is_null_in_offline_build`.
+        {
+            // In the default (non-`live`) build the swappable default is the null
+            // provider, keeping the hermetic path dependency-free.
+            let p = default_provider();
+            assert_eq!(p.name(), "null (metadata-only)");
+        }
     }
 }

@@ -56,19 +56,18 @@ pub mod art;
 pub mod audio;
 pub mod backend;
 pub mod doc;
+mod files;
 pub mod icon;
 pub mod local_file;
 pub mod lyrics;
 pub mod model;
 pub mod mpris;
 pub mod net;
+pub mod resource;
 pub mod search_type;
 pub mod seed;
 pub mod storage;
 pub mod stream;
-#[cfg(test)]
-mod sync;
-
 pub use app::{MusicApp, View};
 pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
 
@@ -95,6 +94,13 @@ pub fn app_root() -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     app.enable_mpris();
     Box::new(app)
+}
+
+/// The app as every host mounts it: the live player and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.music", app_root)
+        .component_actions(actions::register)
+        .as_definition("Music")
 }
 
 /// Build the live root from a validated app-owned resource argument. The
@@ -209,3 +215,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 pub fn live_shot_app() -> MusicApp {
     MusicApp::new()
 }
+pub use resource::{Music, MusicShell, launch_spec, standalone_launch};
+
+#[cfg(test)]
+mod sync;

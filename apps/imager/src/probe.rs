@@ -22,37 +22,6 @@ use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, 
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The platform's own file dialog for a disk image; `None` when dismissed.
-#[cfg(target_os = "macos")]
-pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"try
-set picked to choose file with prompt "Choose a Tilo or disk image"
-POSIX path of picked
-on error number -128
-return ""
-end try"#;
-    let out = Command::new("osascript").args(["-e", script]).output()?;
-    if !out.status.success() {
-        return Err(std::io::Error::other("macOS file dialog failed"));
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
-}
-
-/// The platform's own file dialog for a disk image; `None` when dismissed.
-#[cfg(target_os = "windows")]
-pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
-    let out = Command::new("powershell.exe")
-        .args(["-NoProfile", "-STA", "-Command", script])
-        .output()?;
-    if !out.status.success() {
-        return Err(std::io::Error::other("Windows file dialog failed"));
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
-}
-
 /// Enumerate candidate write targets. Returns `None` when the platform probe
 /// is unavailable or malformed, and `Some(Vec::new())` when it succeeded but
 /// found no usable disks.
@@ -530,131 +499,159 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    /// Flatpak host reconciliation.
     #[test]
-    fn flatpak_host_reconciliation_rejects_every_unknown_or_mismatch() {
-        let complete = (Some(32_000), Some(false), Some(false), Some(false));
-        assert_eq!(
-            reconcile_flatpak_host_safety(32_000, complete.0, complete.1, complete.2, complete.3),
-            Some(false)
-        );
-        assert_eq!(
-            reconcile_flatpak_host_safety(
-                32_000,
-                Some(32_000),
-                Some(false),
-                Some(true),
-                Some(false)
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            reconcile_flatpak_host_safety(
-                32_000,
-                Some(32_000),
-                Some(false),
-                Some(false),
-                Some(true)
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            reconcile_flatpak_host_safety(
-                32_000,
-                Some(31_999),
-                Some(false),
-                Some(false),
-                Some(false)
-            ),
-            None
-        );
-        assert_eq!(
-            reconcile_flatpak_host_safety(
-                32_000,
-                Some(32_000),
-                Some(true),
-                Some(false),
-                Some(false)
-            ),
-            None
-        );
-        for missing in 0..4 {
-            let mut facts = complete;
-            match missing {
-                0 => facts.0 = None,
-                1 => facts.1 = None,
-                2 => facts.2 = None,
-                _ => facts.3 = None,
-            }
+    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    fn flatpak_host_reconciliation_and_mount_classification_fail_closed() {
+        // Phase `flatpak_host_reconciliation_rejects_every_unknown_or_mismatch`.
+        {
+            let complete = (Some(32_000), Some(false), Some(false), Some(false));
             assert_eq!(
-                reconcile_flatpak_host_safety(32_000, facts.0, facts.1, facts.2, facts.3),
-                None,
-                "missing host safety fact {missing} must reject the drive"
+                reconcile_flatpak_host_safety(
+                    32_000, complete.0, complete.1, complete.2, complete.3
+                ),
+                Some(false)
             );
+            assert_eq!(
+                reconcile_flatpak_host_safety(
+                    32_000,
+                    Some(32_000),
+                    Some(false),
+                    Some(true),
+                    Some(false)
+                ),
+                Some(true)
+            );
+            assert_eq!(
+                reconcile_flatpak_host_safety(
+                    32_000,
+                    Some(32_000),
+                    Some(false),
+                    Some(false),
+                    Some(true)
+                ),
+                Some(true)
+            );
+            assert_eq!(
+                reconcile_flatpak_host_safety(
+                    32_000,
+                    Some(31_999),
+                    Some(false),
+                    Some(false),
+                    Some(false)
+                ),
+                None
+            );
+            assert_eq!(
+                reconcile_flatpak_host_safety(
+                    32_000,
+                    Some(32_000),
+                    Some(true),
+                    Some(false),
+                    Some(false)
+                ),
+                None
+            );
+            for missing in 0..4 {
+                let mut facts = complete;
+                match missing {
+                    0 => facts.0 = None,
+                    1 => facts.1 = None,
+                    2 => facts.2 = None,
+                    _ => facts.3 = None,
+                }
+                assert_eq!(
+                    reconcile_flatpak_host_safety(32_000, facts.0, facts.1, facts.2, facts.3),
+                    None,
+                    "missing host safety fact {missing} must reject the drive"
+                );
+            }
+        }
+
+        // Phase `host_mount_classification_uses_host_paths_and_tolerates_nul`.
+        {
+            assert!(host_mount_is_system(b"/\0"));
+            assert!(host_mount_is_system(b"/var/home\0"));
+            assert!(!host_mount_is_system(b"/run/media/alice/USB\0"));
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    /// Linux lsblk parsing.
     #[test]
-    fn host_mount_classification_uses_host_paths_and_tolerates_nul() {
-        assert!(host_mount_is_system(b"/\0"));
-        assert!(host_mount_is_system(b"/var/home\0"));
-        assert!(!host_mount_is_system(b"/run/media/alice/USB\0"));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn linux_lsblk_inventory_parses_and_may_authoritatively_be_empty() {
+        // Phase `parses_usb_and_nvme_from_fixture`.
+        {
+            // A trimmed `lsblk -J -b` document: one USB stick + one NVMe.
+            let json: Value = serde_json::from_str(
+                r#"{
+                  "blockdevices": [
+                    {"name":"sdb","model":"SanDisk Ultra","size":30752000000,"type":"disk",
+                     "rota":false,"tran":"usb","rm":true,
+                     "children":[{"name":"sdb1","size":30745000000,"type":"part","fstype":"exfat","label":"ULTRA","mountpoint":null}]},
+                    {"name":"nvme0n1","model":"Samsung 990","size":1000204886016,"type":"disk",
+                     "rota":false,"tran":"nvme","rm":false,
+                     "children":[
+                       {"name":"nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"EFI","mountpoint":"/boot/efi"},
+                       {"name":"nvme0n1p2","size":999000000000,"type":"part","fstype":"btrfs","label":"root","mountpoint":"/"}
+                     ]}
+                  ]
+                }"#,
+            )
+            .unwrap();
+            let drives = parse_lsblk(&json).unwrap();
+            assert_eq!(drives.len(), 2);
+            assert_eq!(drives[0].kind, TargetKind::Usb);
+            assert!(drives[0].removable);
+            assert!(!drives[0].is_system);
+            assert_eq!(drives[1].kind, TargetKind::Nvme);
+            // The NVMe is mounted at / and /boot/efi → flagged as the system disk.
+            assert!(drives[1].is_system);
+        }
 
-    #[test]
-    fn parses_usb_and_nvme_from_fixture() {
-        // A trimmed `lsblk -J -b` document: one USB stick + one NVMe.
-        let json: Value = serde_json::from_str(
-            r#"{
-              "blockdevices": [
-                {"name":"sdb","model":"SanDisk Ultra","size":30752000000,"type":"disk",
-                 "rota":false,"tran":"usb","rm":true,
-                 "children":[{"name":"sdb1","size":30745000000,"type":"part","fstype":"exfat","label":"ULTRA","mountpoint":null}]},
-                {"name":"nvme0n1","model":"Samsung 990","size":1000204886016,"type":"disk",
-                 "rota":false,"tran":"nvme","rm":false,
-                 "children":[
-                   {"name":"nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"EFI","mountpoint":"/boot/efi"},
-                   {"name":"nvme0n1p2","size":999000000000,"type":"part","fstype":"btrfs","label":"root","mountpoint":"/"}
-                 ]}
-              ]
-            }"#,
-        )
-        .unwrap();
-        let drives = parse_lsblk(&json).unwrap();
-        assert_eq!(drives.len(), 2);
-        assert_eq!(drives[0].kind, TargetKind::Usb);
-        assert!(drives[0].removable);
-        assert!(!drives[0].is_system);
-        assert_eq!(drives[1].kind, TargetKind::Nvme);
-        // The NVMe is mounted at / and /boot/efi → flagged as the system disk.
-        assert!(drives[1].is_system);
-    }
+        // Phase `parse_lsblk_matches_the_captured_inventory`.
+        {
+            // Real `lsblk` output for exactly the Linux probe's columns, and the
+            // targets this module derived from it before the shared parser existed.
+            let input: Value = serde_json::from_str(include_str!(
+                "../../../crates/system/block-devices/tests/fixtures/imager.json"
+            ))
+            .unwrap();
+            let expected: Value =
+                serde_json::from_str(include_str!("../tests/fixtures/lsblk-targets.json")).unwrap();
+            assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
+        }
 
-    #[test]
-    fn parse_lsblk_matches_the_captured_inventory() {
-        // Real `lsblk` output for exactly the Linux probe's columns, and the
-        // targets this module derived from it before the shared parser existed.
-        let input: Value = serde_json::from_str(include_str!(
-            "../../../crates/system/block-devices/tests/fixtures/imager.json"
-        ))
-        .unwrap();
-        let expected: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/lsblk-targets.json")).unwrap();
-        assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
-    }
+        // Phase `successful_linux_probe_can_authoritatively_return_no_drives`.
+        {
+            let json: Value = serde_json::from_str(
+                r#"{"blockdevices":[
+                     {"name":"loop0","size":0,"type":"loop"},
+                     {"name":"sr0","size":0,"type":"rom"}
+                ]}"#,
+            )
+            .unwrap();
+            assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
+            assert!(parse_lsblk(&serde_json::json!({})).is_none());
+        }
 
-    #[test]
-    fn successful_linux_probe_can_authoritatively_return_no_drives() {
-        let json: Value = serde_json::from_str(
-            r#"{"blockdevices":[
-                 {"name":"loop0","size":0,"type":"loop"},
-                 {"name":"sr0","size":0,"type":"rom"}
-            ]}"#,
-        )
-        .unwrap();
-        assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
-        assert!(parse_lsblk(&serde_json::json!({})).is_none());
+        // Phase `accepts_string_flags_from_older_lsblk`.
+        {
+            let json: Value = serde_json::from_str(
+                r#"{"blockdevices":[
+                     {"name":"sdc","model":"Old Stick","size":"8000000000","type":"disk",
+                      "rota":"0","tran":"usb","rm":"1"}
+                ]}"#,
+            )
+            .unwrap();
+            let drives = parse_lsblk(&json).unwrap();
+            assert_eq!(drives.len(), 1);
+            assert_eq!(drives[0].size, 8_000_000_000);
+            assert!(drives[0].removable);
+        }
     }
 
     /// Build a file whose ISO-9660 PVD carries `label`, so the real reader
@@ -681,46 +678,67 @@ mod tests {
         f
     }
 
+    /// Source inspection of ISO labels, foreign and non-image files.
     #[test]
-    fn reads_real_iso9660_volume_label() {
-        let iso = iso_with_label("TILO_1_0_X86_64");
-        assert_eq!(
-            read_iso_label(iso.path()).as_deref(),
-            Some("TILO_1_0_X86_64")
-        );
-    }
+    fn inspect_source_classifies_local_images_without_trusting_names() {
+        // Phase `reads_real_iso9660_volume_label`.
+        {
+            let iso = iso_with_label("TILO_1_0_X86_64");
+            assert_eq!(
+                read_iso_label(iso.path()).as_deref(),
+                Some("TILO_1_0_X86_64")
+            );
+        }
 
-    #[test]
-    fn tilo_looking_local_source_remains_unverified_and_write_only() {
-        let iso = iso_with_label("TILO_1_0");
-        let src = inspect_source(iso.path()).expect("inspect");
-        assert_eq!(src.kind, SourceKind::IsoFile);
-        assert!(!src.installable);
-        assert!(src.expected_sha256.is_none());
-        assert_eq!(src.label, "TILO_1_0");
-        assert!(src.size > 0);
-        assert!(
-            std::path::Path::new(&src.name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
-        );
-    }
+        // Phase `tilo_looking_local_source_remains_unverified_and_write_only`.
+        {
+            let iso = iso_with_label("TILO_1_0");
+            let src = inspect_source(iso.path()).expect("inspect");
+            assert_eq!(src.kind, SourceKind::IsoFile);
+            assert!(!src.installable);
+            assert!(src.expected_sha256.is_none());
+            assert_eq!(src.label, "TILO_1_0");
+            assert!(src.size > 0);
+            assert!(
+                std::path::Path::new(&src.name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+            );
+        }
 
-    #[test]
-    fn inspect_source_treats_foreign_iso_as_write_only() {
-        // No CD001 magic, but a `.iso` extension → still a valid image source,
-        // just not installable, and it falls back to the file stem for a label.
-        let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        let src = inspect_source(f.path()).expect("inspect");
-        assert_eq!(src.kind, SourceKind::IsoFile);
-        assert!(!src.installable);
+        // Phase `inspect_source_treats_foreign_iso_as_write_only`.
+        {
+            // No CD001 magic, but a `.iso` extension → still a valid image source,
+            // just not installable, and it falls back to the file stem for a label.
+            let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+            let src = inspect_source(f.path()).expect("inspect");
+            assert_eq!(src.kind, SourceKind::IsoFile);
+            assert!(!src.installable);
+        }
+
+        // Phase `inspect_source_rejects_non_image_files`.
+        {
+            let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
+            assert!(inspect_source(f.path()).is_none());
+            assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
+        }
+
+        // Phase `tilo_filename_does_not_turn_non_image_into_official_media`.
+        {
+            let f = tempfile::Builder::new()
+                .prefix("tilo-official-")
+                .suffix(".txt")
+                .tempfile()
+                .unwrap();
+            assert!(inspect_source(f.path()).is_none());
+        }
     }
 
     #[cfg(unix)]
     #[test]
     fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
         use std::os::unix::ffi::OsStrExt;
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         const CHILD_FIFO: &str = "TILO_IMAGER_TEST_INSPECTION_FIFO";
         if let Some(path) = std::env::var_os(CHILD_FIFO) {
@@ -742,14 +760,14 @@ mod tests {
                 "probe::tests::inspect_source_rejects_fifo_without_waiting_for_a_writer",
             ])
             .env(CHILD_FIFO, &fifo)
-            .stdout(std::process::Stdio::null())
+            .stdout(std::fs::File::create(root.path().join("child.stdout")).unwrap())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
+                Ok(None) if ui::time::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 _ => break None,
@@ -767,114 +785,96 @@ mod tests {
             status.unwrap().success(),
             "FIFO inspection must reject the source"
         );
+        let stdout = std::fs::read_to_string(root.path().join("child.stdout")).unwrap();
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test: {stdout}"
+        );
     }
 
+    /// diskutil and Get-Disk parsing.
     #[test]
-    fn inspect_source_rejects_non_image_files() {
-        let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
-        assert!(inspect_source(f.path()).is_none());
-        assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
-    }
-
-    #[test]
-    fn tilo_filename_does_not_turn_non_image_into_official_media() {
-        let f = tempfile::Builder::new()
-            .prefix("tilo-official-")
-            .suffix(".txt")
-            .tempfile()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn macos_and_windows_inventories_parse_and_may_authoritatively_be_empty() {
+        // Phase `parses_macos_external_diskutil_inventory`.
+        {
+            let json: Value = serde_json::from_str(
+                r#"{
+              "AllDisksAndPartitions":[{"DeviceIdentifier":"disk4","Size":64000000000,
+                "MediaName":"SanDisk USB","Partitions":[{"DeviceIdentifier":"disk4s1",
+                "Size":63900000000,"Content":"ExFAT","VolumeName":"TRANSFER"}]}]}
+            "#,
+            )
             .unwrap();
-        assert!(inspect_source(f.path()).is_none());
-    }
+            let drives = parse_diskutil(&json).unwrap();
+            assert_eq!(drives[0].name, "disk4");
+            assert!(drives[0].removable);
+            assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
+        }
 
-    #[test]
-    fn accepts_string_flags_from_older_lsblk() {
-        let json: Value = serde_json::from_str(
-            r#"{"blockdevices":[
-                 {"name":"sdc","model":"Old Stick","size":"8000000000","type":"disk",
-                  "rota":"0","tran":"usb","rm":"1"}
-            ]}"#,
-        )
-        .unwrap();
-        let drives = parse_lsblk(&json).unwrap();
-        assert_eq!(drives.len(), 1);
-        assert_eq!(drives[0].size, 8_000_000_000);
-        assert!(drives[0].removable);
-    }
+        // Phase `successful_macos_probe_can_authoritatively_return_no_external_drives`.
+        {
+            let empty = serde_json::json!({"AllDisksAndPartitions": []});
+            assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
+            assert!(parse_diskutil(&serde_json::json!({})).is_none());
+        }
 
-    #[test]
-    fn parses_macos_external_diskutil_inventory() {
-        let json: Value = serde_json::from_str(
-            r#"{
-          "AllDisksAndPartitions":[{"DeviceIdentifier":"disk4","Size":64000000000,
-            "MediaName":"SanDisk USB","Partitions":[{"DeviceIdentifier":"disk4s1",
-            "Size":63900000000,"Content":"ExFAT","VolumeName":"TRANSFER"}]}]}
-        "#,
-        )
-        .unwrap();
-        let drives = parse_diskutil(&json).unwrap();
-        assert_eq!(drives[0].name, "disk4");
-        assert!(drives[0].removable);
-        assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
-    }
+        // Phase `parses_windows_get_disk_and_flags_system_disk`.
+        {
+            let json: Value = serde_json::from_str(r#"[
+              {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
+              {"Number":2,"FriendlyName":"USB Stick","UniqueId":"usb-stick-serial","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
+               "Partitions":[
+                 {"Name":"E:","Size":16000000000,"FileSystem":"exFAT","Label":"TRANSFER"},
+                 {"Name":"Partition 2","Size":"15900000000","FileSystem":null,"Label":null}
+               ]},
+              {"Number":3,"FriendlyName":"Locked card","Size":16000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":true}
+            ]"#).unwrap();
+            let drives = parse_windows_disks(&json).unwrap();
+            assert_eq!(drives.len(), 2, "read-only disks are not write targets");
+            assert!(drives[0].is_system);
+            assert_eq!(drives[1].name, "PhysicalDrive2");
+            assert_eq!(drives[1].stable_id.as_deref(), Some("usb-stick-serial"));
+            assert!(drives[1].removable);
+            assert_eq!(drives[1].partitions.len(), 2);
+            assert_eq!(drives[1].partitions[0].name, "E:");
+            assert_eq!(drives[1].partitions[0].fstype.as_deref(), Some("exFAT"));
+            assert_eq!(drives[1].partitions[0].label.as_deref(), Some("TRANSFER"));
+            assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
+            assert_eq!(
+                drives[1].contents_summary(),
+                "2 partition(s): TRANSFER, data"
+            );
+        }
 
-    #[test]
-    fn successful_macos_probe_can_authoritatively_return_no_external_drives() {
-        let empty = serde_json::json!({"AllDisksAndPartitions": []});
-        assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
-        assert!(parse_diskutil(&serde_json::json!({})).is_none());
-    }
+        // Phase `parses_windows_single_partition_object_from_older_json_producer`.
+        {
+            let json: Value = serde_json::from_str(
+                r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
+                    "Partitions":{"Name":"F:","Size":63900000000,"FileSystem":"FAT32","Label":"CAMERA"}}"#,
+            )
+            .unwrap();
 
-    #[test]
-    fn parses_windows_get_disk_and_flags_system_disk() {
-        let json: Value = serde_json::from_str(r#"[
-          {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
-          {"Number":2,"FriendlyName":"USB Stick","UniqueId":"usb-stick-serial","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
-           "Partitions":[
-             {"Name":"E:","Size":16000000000,"FileSystem":"exFAT","Label":"TRANSFER"},
-             {"Name":"Partition 2","Size":"15900000000","FileSystem":null,"Label":null}
-           ]},
-          {"Number":3,"FriendlyName":"Locked card","Size":16000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":true}
-        ]"#).unwrap();
-        let drives = parse_windows_disks(&json).unwrap();
-        assert_eq!(drives.len(), 2, "read-only disks are not write targets");
-        assert!(drives[0].is_system);
-        assert_eq!(drives[1].name, "PhysicalDrive2");
-        assert_eq!(drives[1].stable_id.as_deref(), Some("usb-stick-serial"));
-        assert!(drives[1].removable);
-        assert_eq!(drives[1].partitions.len(), 2);
-        assert_eq!(drives[1].partitions[0].name, "E:");
-        assert_eq!(drives[1].partitions[0].fstype.as_deref(), Some("exFAT"));
-        assert_eq!(drives[1].partitions[0].label.as_deref(), Some("TRANSFER"));
-        assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
-        assert_eq!(
-            drives[1].contents_summary(),
-            "2 partition(s): TRANSFER, data"
-        );
-    }
+            let drives = parse_windows_disks(&json).unwrap();
+            assert_eq!(drives.len(), 1);
+            assert_eq!(drives[0].name, "PhysicalDrive7");
+            assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
+            assert_eq!(drives[0].partitions.len(), 1);
+            assert_eq!(drives[0].partitions[0].name, "F:");
+            assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
+        }
 
-    #[test]
-    fn parses_windows_single_partition_object_from_older_json_producer() {
-        let json: Value = serde_json::from_str(
-            r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
-                "Partitions":{"Name":"F:","Size":63900000000,"FileSystem":"FAT32","Label":"CAMERA"}}"#,
-        )
-        .unwrap();
-
-        let drives = parse_windows_disks(&json).unwrap();
-        assert_eq!(drives.len(), 1);
-        assert_eq!(drives[0].name, "PhysicalDrive7");
-        assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
-        assert_eq!(drives[0].partitions.len(), 1);
-        assert_eq!(drives[0].partitions[0].name, "F:");
-        assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
-    }
-
-    #[test]
-    fn successful_windows_probe_can_authoritatively_return_no_drives() {
-        assert_eq!(
-            parse_windows_disks(&serde_json::json!([])).unwrap().len(),
-            0
-        );
-        assert!(parse_windows_disks(&serde_json::json!({})).is_none());
+        // Phase `successful_windows_probe_can_authoritatively_return_no_drives`.
+        {
+            assert_eq!(
+                parse_windows_disks(&serde_json::json!([])).unwrap().len(),
+                0
+            );
+            assert!(parse_windows_disks(&serde_json::json!({})).is_none());
+        }
     }
 }

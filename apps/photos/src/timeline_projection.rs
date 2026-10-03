@@ -499,92 +499,98 @@ mod tests {
     }
 
     #[test]
-    fn date_markers_use_exact_variable_height_day_offsets() {
-        let mut projection = TimelineProjection::default();
-        projection.set_geometry(geometry(600.0));
-        projection.replace([
-            photo("wide", "2026-06-18", 3.0),
-            photo("portrait", "2026-06-18", 0.4),
-            photo("old", "2025-01-02", 1.0),
-        ]);
-        let viewport = 200.0;
-        let old_top = projection.day_offset("2025-01-02", viewport).unwrap();
-        let old_marker = projection
-            .date_markers(viewport)
-            .into_iter()
-            .find(|(day, _, _)| day == "2025-01-02")
-            .unwrap();
-        assert!((old_marker.1 * projection.max_scroll(viewport) - old_top).abs() < 0.001);
+    fn timeline_rows_have_exact_bounded_geometry() {
+        eprintln!("phase date_markers_use_exact_variable_height_day_offsets");
+        {
+            let mut projection = TimelineProjection::default();
+            projection.set_geometry(geometry(600.0));
+            projection.replace([
+                photo("wide", "2026-06-18", 3.0),
+                photo("portrait", "2026-06-18", 0.4),
+                photo("old", "2025-01-02", 1.0),
+            ]);
+            let viewport = 200.0;
+            let old_top = projection.day_offset("2025-01-02", viewport).unwrap();
+            let old_marker = projection
+                .date_markers(viewport)
+                .into_iter()
+                .find(|(day, _, _)| day == "2025-01-02")
+                .unwrap();
+            assert!((old_marker.1 * projection.max_scroll(viewport) - old_top).abs() < 0.001);
+        }
+
+        eprintln!("phase virtual_window_is_bounded_and_keeps_canonical_row_geometry");
+        {
+            let mut projection = TimelineProjection::default();
+            projection.set_geometry(geometry(900.0));
+            projection.replace((0..2_000).map(|index| {
+                photo(
+                    &format!("photo-{index:04}"),
+                    &format!("2026-{:02}-{:02}", 12 - (index / 600), 28 - (index % 27)),
+                    0.5 + f64::from((index % 6) as u32) * 0.45,
+                )
+            }));
+            let visible = projection.visible_photos(12_000.0, 800.0);
+            assert!(!visible.is_empty());
+            assert!(
+                visible.len() <= 48,
+                "overscan decoded {} photos",
+                visible.len()
+            );
+            assert!(visible.iter().all(|entry| entry.width >= 44.0));
+        }
     }
 
     #[test]
-    fn virtual_window_is_bounded_and_keeps_canonical_row_geometry() {
-        let mut projection = TimelineProjection::default();
-        projection.set_geometry(geometry(900.0));
-        projection.replace((0..2_000).map(|index| {
-            photo(
-                &format!("photo-{index:04}"),
-                &format!("2026-{:02}-{:02}", 12 - (index / 600), 28 - (index % 27)),
-                0.5 + f64::from((index % 6) as u32) * 0.45,
-            )
-        }));
-        let visible = projection.visible_photos(12_000.0, 800.0);
-        assert!(!visible.is_empty());
-        assert!(
-            visible.len() <= 48,
-            "overscan decoded {} photos",
-            visible.len()
-        );
-        assert!(visible.iter().all(|entry| entry.width >= 44.0));
-    }
+    fn timeline_updates_repack_and_restore_the_anchor_photo() {
+        eprintln!("phase density_change_restores_the_same_photo_at_the_same_screen_y");
+        {
+            let mut projection = TimelineProjection::default();
+            projection.set_geometry(geometry(720.0));
+            projection.replace((0..80).map(|index| {
+                photo(
+                    &format!("p-{index:02}"),
+                    if index < 40 {
+                        "2026-06-18"
+                    } else {
+                        "2026-06-17"
+                    },
+                    0.6 + f64::from((index % 5) as u32) * 0.5,
+                )
+            }));
+            let before = 900.0;
+            let anchor = projection.anchor_at(before).unwrap();
+            projection.set_geometry(TimelineGeometry {
+                target_height: 110.0,
+                ..geometry(720.0)
+            });
+            let restored = projection.restore_anchor(&anchor, 600.0).unwrap();
+            let after = projection.anchor_at(restored).unwrap();
+            assert_eq!(after.photo_id, anchor.photo_id);
+            assert!((after.screen_y - anchor.screen_y).abs() < 0.001);
+        }
 
-    #[test]
-    fn density_change_restores_the_same_photo_at_the_same_screen_y() {
-        let mut projection = TimelineProjection::default();
-        projection.set_geometry(geometry(720.0));
-        projection.replace((0..80).map(|index| {
-            photo(
-                &format!("p-{index:02}"),
-                if index < 40 {
-                    "2026-06-18"
-                } else {
-                    "2026-06-17"
-                },
-                0.6 + f64::from((index % 5) as u32) * 0.5,
-            )
-        }));
-        let before = 900.0;
-        let anchor = projection.anchor_at(before).unwrap();
-        projection.set_geometry(TimelineGeometry {
-            target_height: 110.0,
-            ..geometry(720.0)
-        });
-        let restored = projection.restore_anchor(&anchor, 600.0).unwrap();
-        let after = projection.anchor_at(restored).unwrap();
-        assert_eq!(after.photo_id, anchor.photo_id);
-        assert!((after.screen_y - anchor.screen_y).abs() < 0.001);
-    }
-
-    #[test]
-    fn sparse_updates_repack_only_the_affected_day_semantically() {
-        let mut projection = TimelineProjection::default();
-        projection.set_geometry(geometry(600.0));
-        projection.replace([
-            photo("a", "2026-06-18", 1.0),
-            photo("c", "2026-06-18", 3.0),
-            photo("b", "2026-06-17", 1.0),
-        ]);
-        let first_old = projection.day_offset("2026-06-17", 100.0).unwrap();
-        projection.upsert(photo("a", "2026-06-18", 2.0));
-        let second_old = projection.day_offset("2026-06-17", 100.0).unwrap();
-        assert!(
-            (first_old - second_old).abs() > f64::EPSILON,
-            "changed aspect updates following prefixes"
-        );
-        projection.upsert(photo("a", "2026-06-16", 2.0));
-        assert!(projection.day_offset("2026-06-18", 100.0).is_some());
-        assert!(projection.day_offset("2026-06-16", 100.0).is_some());
-        assert!(projection.remove("b"));
-        assert_eq!(projection.len(), 2);
+        eprintln!("phase sparse_updates_repack_only_the_affected_day_semantically");
+        {
+            let mut projection = TimelineProjection::default();
+            projection.set_geometry(geometry(600.0));
+            projection.replace([
+                photo("a", "2026-06-18", 1.0),
+                photo("c", "2026-06-18", 3.0),
+                photo("b", "2026-06-17", 1.0),
+            ]);
+            let first_old = projection.day_offset("2026-06-17", 100.0).unwrap();
+            projection.upsert(photo("a", "2026-06-18", 2.0));
+            let second_old = projection.day_offset("2026-06-17", 100.0).unwrap();
+            assert!(
+                (first_old - second_old).abs() > f64::EPSILON,
+                "changed aspect updates following prefixes"
+            );
+            projection.upsert(photo("a", "2026-06-16", 2.0));
+            assert!(projection.day_offset("2026-06-18", 100.0).is_some());
+            assert!(projection.day_offset("2026-06-16", 100.0).is_some());
+            assert!(projection.remove("b"));
+            assert_eq!(projection.len(), 2);
+        }
     }
 }

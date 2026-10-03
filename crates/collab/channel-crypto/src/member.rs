@@ -82,8 +82,14 @@ pub struct ChannelMember {
     steward: Ed25519PublicKey,
     journal: GovernanceJournal,
     record: MemberRecord,
-    record_path: PathBuf,
+    /// `None` for a member kept only in memory.
+    record_path: Option<PathBuf>,
     buffered: BTreeMap<[u8; 32], MlsGovernanceFrameV1>,
+    /// The `issued_at` of the last request minted here. A steward keeps
+    /// only a request newer than the one a device was admitted with, so a
+    /// request minted again in the same second (after a Welcome this device
+    /// could not open, or a removal) must still be newer.
+    issued: u64,
 }
 
 impl ChannelMember {
@@ -123,8 +129,97 @@ impl ChannelMember {
             steward,
             journal,
             record,
-            record_path,
+            record_path: Some(record_path),
             buffered: BTreeMap::new(),
+            issued: 0,
+        })
+    }
+
+    /// A waiting member with a fresh member key whose state and journal
+    /// mirror stay in memory, for a device with no private filesystem (a
+    /// browser page). A new session starts waiting again and asks anew;
+    /// the vault passed to its other methods is not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the member key cannot be minted.
+    pub fn in_memory(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        steward: Ed25519PublicKey,
+    ) -> Result<Self> {
+        Ok(Self {
+            channel,
+            device,
+            steward,
+            journal: GovernanceJournal::in_memory(),
+            record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
+            record_path: None,
+            buffered: BTreeMap::new(),
+            issued: 0,
+        })
+    }
+
+    /// This member's state sealed under `vault` together with its mirror
+    /// of the steward's journal, for a device that keeps state in a store
+    /// rather than files ([`Self::restore_in_memory`] reads it back).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be encoded or sealed.
+    pub fn export_sealed(&self, vault: &VaultKey) -> Result<Vec<u8>> {
+        let exported = ExportedMember {
+            record: self.record.seal(vault)?,
+            frames: self.journal.frames().to_vec(),
+        };
+        postcard::to_allocvec(&exported).map_err(|error| Error::Serialization(error.to_string()))
+    }
+
+    /// An in-memory member restored from [`Self::export_sealed`]: its MLS
+    /// state and journal mirror as they were, so it neither asks again nor
+    /// loses the keys it held.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` do not open under `vault`, name another
+    /// channel, or hold a journal that does not verify.
+    pub fn restore_in_memory(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        steward: Ed25519PublicKey,
+        bytes: &[u8],
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        let exported: ExportedMember =
+            postcard::from_bytes(bytes).map_err(|error| Error::Serialization(error.to_string()))?;
+        let record = MemberRecord::open_sealed(&exported.record, vault)?;
+        if let MemberRecord::Joined(group) = &record
+            && group.channel_id() != channel
+        {
+            return Err(Error::InvalidState(
+                "member state names another channel".into(),
+            ));
+        }
+        let mut journal = GovernanceJournal::in_memory();
+        for frame in exported.frames {
+            if !matches!(
+                journal.append_mirrored(channel, steward, frame)?,
+                MirrorAppend::Appended(_)
+            ) {
+                return Err(Error::InvalidState(
+                    "exported journal is out of order".into(),
+                ));
+            }
+        }
+        Ok(Self {
+            channel,
+            device,
+            steward,
+            journal,
+            record,
+            record_path: None,
+            buffered: BTreeMap::new(),
+            issued: 0,
         })
     }
 
@@ -198,7 +293,8 @@ impl ChannelMember {
         let package = crate::encode_key_package(&member.fresh_key_package()?)?;
         // The package's HPKE secret now lives in the member key's storage;
         // it must be durable before the package leaves the device.
-        self.record.save_sealed(&self.record_path, vault)?;
+        self.save(vault)?;
+        let issued_at = self.next_issued(issued_at);
         MlsAccessRequestV1::signed(self.channel, package, issued_at, device_key)
             .map(Some)
             .map_err(|error| Error::Serialization(error.to_string()))
@@ -294,7 +390,7 @@ impl ChannelMember {
                 let Some((recipient, welcome, _, key_history)) = action.admission() else {
                     return Ok(MemberEvent::Recorded);
                 };
-                if *recipient != me {
+                if *recipient != me || !ChannelGroup::welcome_names(welcome, pending) {
                     return Ok(MemberEvent::Recorded);
                 }
                 let attempt = pending.duplicate()?;
@@ -341,18 +437,73 @@ impl ChannelMember {
                     return Ok(MemberEvent::Desynchronised);
                 }
                 let epoch = group.epoch();
-                self.record.save_sealed(&self.record_path, vault)?;
+                self.save(vault)?;
                 Ok(MemberEvent::Advanced { epoch })
             }
             (_, MemberRecord::Removed) => Ok(MemberEvent::Recorded),
         }
     }
 
+    /// `issued_at`, or later when a request was already minted at or after it.
+    fn next_issued(&mut self, issued_at: u64) -> u64 {
+        self.issued = issued_at.max(self.issued.saturating_add(1));
+        self.issued
+    }
+
     fn store(&mut self, record: MemberRecord, vault: &VaultKey) -> Result<()> {
-        record.save_sealed(&self.record_path, vault)?;
+        if let Some(path) = &self.record_path {
+            record.save_sealed(path, vault)?;
+        }
         self.record = record;
         Ok(())
     }
+
+    fn save(&self, vault: &VaultKey) -> Result<()> {
+        match &self.record_path {
+            Some(path) => self.record.save_sealed(path, vault),
+            None => Ok(()),
+        }
+    }
+
+    /// Mint a fresh key package and return the access request for it,
+    /// unsigned (see [`MlsAccessRequestV1::unsigned`]), or `None` when the
+    /// device is already admitted. For a device key held outside this
+    /// process; [`Self::access_request`] otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when minting or persisting the key package fails.
+    pub fn unsigned_access_request(
+        &mut self,
+        issued_at: u64,
+        vault: &VaultKey,
+    ) -> Result<Option<MlsAccessRequestV1>> {
+        if matches!(self.record, MemberRecord::Removed) {
+            self.store(
+                MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
+                vault,
+            )?;
+        }
+        let MemberRecord::Waiting(member) = &self.record else {
+            return Ok(None);
+        };
+        let package = crate::encode_key_package(&member.fresh_key_package()?)?;
+        self.save(vault)?;
+        let issued_at = self.next_issued(issued_at);
+        Ok(Some(MlsAccessRequestV1::unsigned(
+            self.channel,
+            self.device,
+            package,
+            issued_at,
+        )))
+    }
+}
+
+/// What [`ChannelMember::export_sealed`] writes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ExportedMember {
+    record: Vec<u8>,
+    frames: Vec<MlsGovernanceFrameV1>,
 }
 
 impl std::fmt::Debug for ChannelMember {

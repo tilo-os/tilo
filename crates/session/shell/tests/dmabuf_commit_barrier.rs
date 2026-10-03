@@ -18,7 +18,6 @@ use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
@@ -249,7 +248,7 @@ fn the_first_dmabuf_commit_returns_to_the_compositor_loop() {
     std::thread::spawn(move || {
         let _ = done.send(commit_first_dmabuf());
     });
-    match finished.recv_timeout(Duration::from_secs(20)) {
+    match finished.recv_timeout(tilo_test_env::hang_bound()) {
         Ok(true) => {}
         Ok(false) => eprintln!("skipping: no advertisable render node on this machine"),
         Err(mpsc::RecvTimeoutError::Timeout) => panic!(

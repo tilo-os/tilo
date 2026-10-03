@@ -112,7 +112,7 @@ mental model: *pull the wheel down to reveal the next workspace below*.
 1. ~~**CRDT write-back**~~ — **resolved in `65d105d`**. The widget
    now takes `Rc<RefCell<ChromeState>>` via `with_chrome(...)` and
    calls `chrome.borrow_mut().tree.set_active(ws_id)` on snap. Tested
-   by `snap_publishes_active_workspace_to_chrome`.
+   by `snapping_publishes_to_chrome_only_when_the_workspace_changes` (phase `snap_publishes_active_workspace_to_chrome`).
 
 2. ~~**Label readability**~~ — **resolved in `65d105d`**. Labels whose
    spoke angle lands in (90°, 270°) get an extra π rotation so glyphs
@@ -133,22 +133,22 @@ mental model: *pull the wheel down to reveal the next workspace below*.
    commit synchronously at release time; only the visual rotation eases.
    Grabbing the hub still feels instant (no ease-in) — keeping that gap
    open is intentional: physical knobs don't ease *into* drag. Covered
-   by `snap_animates_rotation_over_multiple_ticks`.
+   by `drags_and_clicks_settle_on_a_spoke` (phase `snap_animates_rotation_over_multiple_ticks`).
 
 ## Test coverage
 
 | Test | Lives in | Asserts |
 |---|---|---|
-| `new_starts_with_active_idx_zero_and_rotation_zero` | `sidebar_wheel_disc.rs` module tests | Default state |
-| `drag_and_release_snaps_to_nearest_spoke` | same | Full-diameter drag advances `active_idx` by exactly 1 |
-| `drag_without_release_keeps_rotation_continuous` | same | During drag, `rotation_deg` is non-snapped; `active_idx` unchanged |
-| `single_spoke_disc_never_snaps_past_itself` | same | n=1 case — `spoke_gap_deg` doesn't divide by zero |
-| `snap_publishes_active_workspace_to_chrome` | same | `chrome.tree.active` receives the snapped workspace id |
-| `disc_without_chrome_snaps_without_panicking` | same | `with_chrome` is optional — `snap_to_nearest` no-ops cleanly when unset |
-| `snap_animates_rotation_over_multiple_ticks` | same | Release starts a spring; `rotation_deg` reaches target within 1° after `update` pumps at 60 Hz |
-| `sidebar_wheel_disc_renders_a_spoke_per_workspace` | `tests/sidebar_wheel_disc_snapshot.rs` | Snapshot test: 3 spokes labelled Home/Research/Design, active arc at Home's angle |
-| `disc_renders_dot_per_seeded_peer_on_workspace` | `sidebar_wheel_disc.rs` module tests | Seeds 2 peers on `PresenceKey::Workspace { id: "77" }`; `presence_dot_hit_count` returns 2 (closes known-gap #3) |
-| `disc_caps_presence_dots_at_three_per_spoke` | same | Seeds 5 peers on the same workspace; helper still caps at 3 dots per spoke |
+| `pointer_capture_starts_idle_and_ends_on_release` (phase `new_starts_with_active_idx_zero_and_rotation_zero`) | `sidebar_wheel_disc.rs` module tests | Default state |
+| `drags_and_clicks_settle_on_a_spoke` (phase `drag_and_release_snaps_to_nearest_spoke`) | same | Full-diameter drag advances `active_idx` by exactly 1 |
+| `drags_and_clicks_settle_on_a_spoke` (phase `drag_without_release_keeps_rotation_continuous`) | same | During drag, `rotation_deg` is non-snapped; `active_idx` unchanged |
+| `drags_and_clicks_settle_on_a_spoke` (phase `single_spoke_disc_never_snaps_past_itself`) | same | n=1 case — `spoke_gap_deg` doesn't divide by zero |
+| `snapping_publishes_to_chrome_only_when_the_workspace_changes` (phase `snap_publishes_active_workspace_to_chrome`) | same | `chrome.tree.active` receives the snapped workspace id |
+| `snapping_publishes_to_chrome_only_when_the_workspace_changes` (phase `disc_without_chrome_snaps_without_panicking`) | same | `with_chrome` is optional — `snap_to_nearest` no-ops cleanly when unset |
+| `drags_and_clicks_settle_on_a_spoke` (phase `snap_animates_rotation_over_multiple_ticks`) | same | Release starts a spring; `rotation_deg` reaches target within 1° after `update` pumps at 60 Hz |
+| `sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band` (phase `sidebar_wheel_disc_renders_a_spoke_per_workspace`) | `tests/sidebar_wheel_disc_snapshot.rs` | Snapshot test: 3 spokes labelled Home/Research/Design, active arc at Home's angle |
+| `presence_dots_follow_seeded_peers_up_to_three_per_spoke` (phase `disc_renders_dot_per_seeded_peer_on_workspace`) | `sidebar_wheel_disc.rs` module tests | Seeds 2 peers on `PresenceKey::Workspace { id: "77" }`; `presence_dot_hit_count` returns 2 (closes known-gap #3) |
+| `presence_dots_follow_seeded_peers_up_to_three_per_spoke` (phase `disc_caps_presence_dots_at_three_per_spoke`) | same | Seeds 5 peers on the same workspace; helper still caps at 3 dots per spoke |
 
 ## Removing the old sidebar
 

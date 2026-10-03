@@ -23,65 +23,73 @@ def binding():
 
 
 class BrokerTests(unittest.TestCase):
-    def test_strict_identity_command_allowlist(self):
-        unpinned = binding()
-        unpinned.pop('cluster')
-        with self.assertRaisesRegex(ValueError, 'pinned broker target'):
-            b.BrokerRunner(unpinned)
-        runner = b.BrokerRunner(binding())
-        client = b.transport.Transport(b.CONTEXT, binding(), runner)
-        valid = client.exec_prefix() + ['docker', 'exec', '-i', 'c'*64, '/usr/bin/python3',
-            '/work/helpers/os/dev/stage-finalization-worker.py', 'receive']
-        self.assertEqual(runner.operation(valid)[0], 'exec')
-        for bad in (valid[:-1]+['unknown'], ['sh','-c','true'],
-                    [x.replace('c'*64, 'e'*64) for x in valid],
-                    [x.replace('broker-authenticated-api','other') for x in valid]):
-            with self.assertRaises(ValueError): runner.operation(bad)
-
-    def test_public_input_and_transient_token_stream_with_bound_failure(self):
-        events = []
-        token_commands = []
-        def process(argv, sink, limit, source=None, timeout=120):
-            self.assertGreater(timeout, 0)
-            self.assertLessEqual(timeout, 30)
-            self.assertNotIn('k8s-aws-v1.fixture', str(argv))
-            if 'aws' in argv:
-                token_commands.append(argv)
-                sink.write(json.dumps({'status': {'token': 'k8s-aws-v1.' + argv[argv.index('--region') + 1]}}).encode())
-                return 42
-            header = json.loads(source.readline())
-            self.assertIn('--context=admin@tupo-production', argv)
-            data = source.read()
-            events.append((header,data))
-            self.assertEqual(set(header['auth']), {'aws-us-west-2'})
-            self.assertEqual(header['target'], 'aws-us-west-2')
-            self.assertEqual(header['container'], 'dind')
-            self.assertEqual(header['input_bytes'], len(data))
-            sink.write(b'public reply')
-            return 12
-        runner = b.BrokerRunner(binding(), process=process)
-        client = b.transport.Transport(b.CONTEXT, binding(), runner)
-        argv = client.exec_prefix()+['docker','exec','-i','c'*64,'/usr/bin/python3',
-            '/work/helpers/os/dev/stage-finalization-worker.py','receive']
-        output = io.BytesIO()
-        data = bytes(range(256))*1024
-        class SeekableSource(io.BytesIO):
-            def read(self, *args):
-                self.assert_token()
-                return super().read(*args)
-            def assert_token(self):
-                if len(token_commands) != 1:
-                    raise AssertionError('seekable input was staged before token acquisition')
-        runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
-        self.assertEqual({(x[x.index('--region') + 1], x[x.index('--cluster-name') + 1]) for x in token_commands},
-                         {('us-west-2', 'burst-us')})
-        self.assertEqual(events[0][1], data)
-        self.assertEqual(output.getvalue(), b'public reply')
-        with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):
-            runner(argv, io.BytesIO(), 10, source=io.BytesIO(b'12345678901'))
-        def failed(*args, **kwargs): raise ValueError('bounded process failure')
-        runner.process = failed
-        with self.assertRaises(ValueError): runner(argv, io.BytesIO(), 10)
+    def test_broker_command_and_input_contract(self):
+        with self.subTest(phase="strict_identity_command_allowlist"):
+            unpinned = binding()
+            unpinned.pop('cluster')
+            with self.assertRaisesRegex(ValueError, 'pinned broker target'):
+                b.BrokerRunner(unpinned)
+            runner = b.BrokerRunner(binding())
+            client = b.transport.Transport(b.CONTEXT, binding(), runner)
+            valid = client.exec_prefix() + ['docker', 'exec', '-i', 'c'*64, '/usr/bin/python3',
+                '/work/helpers/os/dev/stage-finalization-worker.py', 'receive']
+            self.assertEqual(runner.operation(valid)[0], 'exec')
+            for bad in (valid[:-1]+['unknown'], ['sh','-c','true'],
+                        [x.replace('c'*64, 'e'*64) for x in valid],
+                        [x.replace('broker-authenticated-api','other') for x in valid]):
+                with self.assertRaises(ValueError): runner.operation(bad)
+        with self.subTest(phase="public_input_and_transient_token_stream_with_bound_failure"):
+            events = []
+            token_commands = []
+            def process(argv, sink, limit, source=None, timeout=120):
+                self.assertGreater(timeout, 0)
+                self.assertLessEqual(timeout, 30)
+                self.assertNotIn('k8s-aws-v1.fixture', str(argv))
+                if 'aws' in argv:
+                    token_commands.append(argv)
+                    sink.write(json.dumps({'status': {'token': 'k8s-aws-v1.' + argv[argv.index('--region') + 1]}}).encode())
+                    return 42
+                header = json.loads(source.readline())
+                self.assertIn('--context=admin@tupo-production', argv)
+                data = source.read()
+                events.append((header,data))
+                self.assertEqual(set(header['auth']), {'aws-us-west-2'})
+                self.assertEqual(header['target'], 'aws-us-west-2')
+                self.assertEqual(header['container'], 'dind')
+                self.assertEqual(header['input_bytes'], len(data))
+                sink.write(b'public reply')
+                return 12
+            runner = b.BrokerRunner(binding(), process=process)
+            client = b.transport.Transport(b.CONTEXT, binding(), runner)
+            argv = client.exec_prefix()+['docker','exec','-i','c'*64,'/usr/bin/python3',
+                '/work/helpers/os/dev/stage-finalization-worker.py','receive']
+            output = io.BytesIO()
+            data = bytes(range(256))*1024
+            class SeekableSource(io.BytesIO):
+                def read(self, *args):
+                    self.assert_token()
+                    return super().read(*args)
+                def assert_token(self):
+                    if len(token_commands) != 1:
+                        raise AssertionError('seekable input was staged before token acquisition')
+            runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
+            self.assertEqual({(x[x.index('--region') + 1], x[x.index('--cluster-name') + 1]) for x in token_commands},
+                             {('us-west-2', 'burst-us')})
+            self.assertEqual(events[0][1], data)
+            self.assertEqual(output.getvalue(), b'public reply')
+            with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):
+                runner(argv, io.BytesIO(), 10, source=io.BytesIO(b'12345678901'))
+            def failed(*args, **kwargs): raise ValueError('bounded process failure')
+            runner.process = failed
+            with self.assertRaises(ValueError): runner(argv, io.BytesIO(), 10)
+        with self.subTest(phase="real_input_wrapper_eof_and_output"):
+            self.assertEqual(self.bridge(b'public\x00input'), b'public\x00input')
+        with self.subTest(phase="nested_eof_wrapper_runs_inside_exact_worker"):
+            self.assertEqual(self.bridge(b'nested public input', nested=True), b'nested public input')
+        with self.subTest(phase="empty_input_exec_uses_no_stdin_channel"):
+            # List/inspect commands need no stdin. The simulated API executes the
+            # unwrapped command with an empty input pipe, just as stdin=False does.
+            self.assertEqual(self.bridge(b''), b'')
 
     def bridge(self, data, *, fail=False, limit=4096, nested=False, profiles=None,
                target='aws-us-west-2'):
@@ -151,31 +159,36 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(captured['stdin'], bool(data))
         return output.getvalue()
 
-    def test_real_input_wrapper_eof_and_output(self):
-        self.assertEqual(self.bridge(b'public\x00input'), b'public\x00input')
+    def test_broker_rejects_remote_failures_and_bad_targets(self):
+        with self.subTest(phase="remote_failure_and_output_bound_rejected"):
+            with self.assertRaises(ValueError): self.bridge(b'public',fail=True)
+            with self.assertRaises(ValueError): self.bridge(b'public',limit=1)
+        with self.subTest(phase="bridge_rejects_unknown_disabled_and_mismatched_pinned_targets"):
+            with self.assertRaises(ValueError):
+                self.bridge(b'', profiles=[{'name':'unknown','ci_enabled':True}])
+            with self.assertRaises(ValueError):
+                self.bridge(b'', profiles=[{'name':'aws-us-west-2','ci_enabled':False,
+                                            'kubeconfig':b.TARGETS['aws-us-west-2']['kubeconfig']}])
 
-    def test_nested_eof_wrapper_runs_inside_exact_worker(self):
-        self.assertEqual(self.bridge(b'nested public input', nested=True), b'nested public input')
+            with self.assertRaises(ValueError):
+                self.bridge(b'', target='aws-eu-central-1')
 
-    def test_empty_input_exec_uses_no_stdin_channel(self):
-        # List/inspect commands need no stdin. The simulated API executes the
-        # unwrapped command with an empty input pipe, just as stdin=False does.
-        self.assertEqual(self.bridge(b''), b'')
 
-    def test_remote_failure_and_output_bound_rejected(self):
-        with self.assertRaises(ValueError): self.bridge(b'public',fail=True)
-        with self.assertRaises(ValueError): self.bridge(b'public',limit=1)
 
-    def test_bridge_rejects_unknown_disabled_and_mismatched_pinned_targets(self):
-        with self.assertRaises(ValueError):
-            self.bridge(b'', profiles=[{'name':'unknown','ci_enabled':True}])
-        with self.assertRaises(ValueError):
-            self.bridge(b'', profiles=[{'name':'aws-us-west-2','ci_enabled':False,
-                                        'kubeconfig':b.TARGETS['aws-us-west-2']['kubeconfig']}])
+def alive(pid):
+    """Whether pid is a running process; an unreaped zombie is dead."""
+    try:
+        state=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return state not in ('Z','X')
 
-        with self.assertRaises(ValueError):
-            self.bridge(b'', target='aws-eu-central-1')
 
+# Deadlines here bound hangs, not speed: every process the tests start sleeps
+# far past them, so a runner that waited for its child, a descendant or an
+# inherited pipe is caught however slowly the host starts interpreters.
+HANG=60
+LONG_SLEEP=2*HANG
 
 
 class RemoteDeadlineTests(unittest.TestCase):
@@ -183,36 +196,52 @@ class RemoteDeadlineTests(unittest.TestCase):
         return [sys.executable, '-c', b.REMOTE_WRAPPER, str(payload_bytes), str(timeout),
                 json.dumps([sys.executable, '-c', code])]
 
-    def test_binary_input_and_real_eof(self):
-        data=bytes(range(256))*4097
-        result=subprocess.run(self.command(len(data), 3, 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'),
-                              input=data, capture_output=True, timeout=5)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, data)
-
-    def test_stalled_input_has_worker_deadline(self):
-        child=subprocess.Popen(self.command(5, .2, 'raise AssertionError("must not run")'),
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            self.assertNotEqual(child.wait(timeout=2), 0)
-        finally:
-            child.kill();child.communicate()
-
-    def test_timeout_kills_child_and_descendant(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            marker=Path(tmp)/'escaped'
-            descendant='import time,pathlib;time.sleep(.7);pathlib.Path('+repr(str(marker))+').write_text("escaped")'
-            code='import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);time.sleep(30)'
-            before=time.monotonic()
-            result=subprocess.run(self.command(0,.2,code),input=b'',capture_output=True,timeout=2)
-            self.assertNotEqual(result.returncode,0)
-            self.assertLess(time.monotonic()-before,1)
-            time.sleep(.8)
-            self.assertFalse(marker.exists())
-
-    def test_exited_leader_does_not_leave_descendant_pipe_open(self):
-        code='import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"])'
-        result=subprocess.run(self.command(0,1,code),input=b'',capture_output=True,timeout=2)
-        self.assertEqual(result.returncode,0)
+    def test_remote_input_and_deadlines(self):
+        with self.subTest(phase="binary_input_and_real_eof"):
+            data=bytes(range(256))*4097
+            result=subprocess.run(self.command(len(data), HANG, 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'),
+                                  input=data, capture_output=True, timeout=HANG)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, data)
+        with self.subTest(phase="stalled_input_has_worker_deadline"):
+            # stdin stays open and short, so only the input deadline ends it.
+            child=subprocess.Popen(self.command(5, .2, 'raise AssertionError("must not run")'),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertNotEqual(child.wait(timeout=HANG), 0)
+            finally:
+                child.kill();child.communicate()
+        with self.subTest(phase="timeout_kills_child_and_descendant"):
+            with tempfile.TemporaryDirectory() as tmp:
+                started=Path(tmp)/'descendant'
+                descendant=('import os,pathlib,time;pathlib.Path('+repr(str(started))+').write_text(str(os.getpid()));'
+                            'time.sleep('+str(LONG_SLEEP)+')')
+                code=('import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);'
+                      'time.sleep('+str(LONG_SLEEP)+')')
+                # The kill must reach a descendant that exists. Lengthen the
+                # deadline until one started inside it; each attempt still
+                # asserts the full contract.
+                for deadline in (.5, 1, 2, 4, 8, 16):
+                    # The descendant holds the runner's stdout, so waiting for
+                    # it or its pipe would outlast HANG.
+                    result=subprocess.run(self.command(0,deadline,code),input=b'',capture_output=True,timeout=HANG)
+                    self.assertNotEqual(result.returncode,0)
+                    if started.exists():
+                        pid=int(started.read_text())
+                        # SIGKILL was sent before the runner returned; the
+                        # process finishes exiting asynchronously.
+                        gone=time.monotonic()+HANG
+                        while alive(pid) and time.monotonic()<gone:
+                            time.sleep(.05)
+                        self.assertFalse(alive(pid), 'the descendant must be killed with the child')
+                        break
+                else:
+                    self.fail('no descendant started within a 16 s deadline')
+        with self.subTest(phase="exited_leader_does_not_leave_descendant_pipe_open"):
+            # The leader exits at once; its descendant keeps the runner's
+            # stdout open far past HANG unless the runner kills its group.
+            code='import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep('+str(LONG_SLEEP)+')"])'
+            result=subprocess.run(self.command(0,HANG,code),input=b'',capture_output=True,timeout=HANG)
+            self.assertEqual(result.returncode,0)
 
 if __name__=='__main__': unittest.main()

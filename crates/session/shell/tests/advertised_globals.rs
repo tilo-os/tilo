@@ -49,6 +49,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
 /// Bring up the compositor state on one end of a socket pair, connect a
 /// client to the other, and return the interfaces the registry offered.
 fn advertised_globals() -> Vec<String> {
+    advertised_globals_to(Arc::new(shell::compositor::state::ClientState::default()))
+}
+
+/// [`advertised_globals`] for a client accepted with `client` state — the
+/// privileged socket, the OSK socket, or an ordinary app.
+fn advertised_globals_to(client: Arc<shell::compositor::state::ClientState>) -> Vec<String> {
     let event_loop: EventLoop<'static, shell::compositor::state::State> =
         EventLoop::try_new().expect("calloop");
     let mut display: Display<shell::compositor::state::State> = Display::new().expect("display");
@@ -57,10 +63,7 @@ fn advertised_globals() -> Vec<String> {
     let (server_side, client_side) = UnixStream::pair().expect("socketpair");
     display
         .handle()
-        .insert_client(
-            server_side,
-            Arc::new(shell::compositor::state::ClientState::default()),
-        )
+        .insert_client(server_side, client)
         .expect("insert client");
 
     let conn = Connection::from_socket(client_side).expect("client connection");
@@ -111,50 +114,92 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     // Toolkits (GTK 4.14+, Qt 6.8+, SDL3, winit) name their cursor through
     // it instead of loading an Xcursor theme the sandbox may not contain.
     "wp_cursor_shape_manager_v1",
+    // Games, emulators and remote-desktop clients lock the pointer and read
+    // raw deltas; SDL and Proton refuse mouse-look without these.
+    "zwp_pointer_constraints_v1",
+    "zwp_relative_pointer_manager_v1",
+    // Krita, GIMP, Xournal++ and every GTK/Qt app read pen pressure and
+    // tilt only through tablet-v2.
+    "zwp_tablet_manager_v2",
+    // virt-manager, RDP clients and Moonlight capture Super through it.
+    "zwp_keyboard_shortcuts_inhibit_manager_v1",
+    "wp_content_type_manager_v1",
 ];
 
 #[test]
-fn every_interface_a_toolkit_requires_is_advertised() {
-    let globals = advertised_globals();
-    assert!(
-        !globals.is_empty(),
-        "the client saw no globals at all — the harness failed to talk to \
-         the compositor, so this test proved nothing. Fix the harness \
-         rather than the assertion."
-    );
-    let missing: Vec<&str> = REQUIRED_AT_CONSTRUCTION
-        .iter()
-        .copied()
-        .filter(|want| !globals.iter().any(|g| g == want))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "missing {missing:?}. A toolkit that requires these refuses the \
-         display outright rather than degrading, so an application using \
-         it cannot start. Advertised: {globals:?}"
-    );
+fn every_toolkit_interface_and_the_clipboard_global_is_advertised() {
+    // Phase `every_interface_a_toolkit_requires_is_advertised`.
+    {
+        let globals = advertised_globals();
+        assert!(
+            !globals.is_empty(),
+            "the client saw no globals at all — the harness failed to talk to \
+             the compositor, so this test proved nothing. Fix the harness \
+             rather than the assertion."
+        );
+        let missing: Vec<&str> = REQUIRED_AT_CONSTRUCTION
+            .iter()
+            .copied()
+            .filter(|want| !globals.iter().any(|g| g == want))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "missing {missing:?}. A toolkit that requires these refuses the \
+             display outright rather than degrading, so an application using \
+             it cannot start. Advertised: {globals:?}"
+        );
+    }
+
+    // Phase `the_idle_inhibit_global_is_advertised`.
+    // Video players and presentations keep the screen on with this; without it
+    // they fall back to nothing and the session locks mid-film.
+    {
+        let globals = advertised_globals();
+        assert!(
+            globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
+            "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
+        );
+    }
+
+    // Phase `the_toplevel_icon_global_is_advertised`.
+    // Windows no desktop entry describes set their own tab icon through it.
+    {
+        let globals = advertised_globals();
+        assert!(
+            globals.iter().any(|g| g == "xdg_toplevel_icon_manager_v1"),
+            "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
+        );
+    }
+    // Phase `the_clipboard_global_is_advertised`.
+    // Keep this check separate so its failure identifies the clipboard global.
+    {
+        let globals = advertised_globals();
+        assert!(
+            globals.iter().any(|g| g == "wl_data_device_manager"),
+            "wl_data_device_manager is not advertised. GTK checks for it \
+             alongside wl_compositor and wl_shm and refuses the display when \
+             it is absent, so every GTK application — which is most Flatpaks \
+             — fails to open a window. Advertised: {globals:?}"
+        );
+    }
 }
 
-/// Video players and presentations keep the screen on with this; without it
-/// they fall back to nothing and the session locks mid-film.
+/// Display configuration and panel power can black out every screen, so
+/// only the privileged socket (session tools such as kanshi) sees them; an
+/// app on the public socket must not.
 #[test]
-fn the_idle_inhibit_global_is_advertised() {
-    let globals = advertised_globals();
-    assert!(
-        globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
-        "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
-    );
-}
-
-/// Keep this check separate so its failure identifies the clipboard global.
-#[test]
-fn the_clipboard_global_is_advertised() {
-    let globals = advertised_globals();
-    assert!(
-        globals.iter().any(|g| g == "wl_data_device_manager"),
-        "wl_data_device_manager is not advertised. GTK checks for it \
-         alongside wl_compositor and wl_shm and refuses the display when \
-         it is absent, so every GTK application — which is most Flatpaks \
-         — fails to open a window. Advertised: {globals:?}"
-    );
+fn display_configuration_globals_reach_only_privileged_clients() {
+    const DISPLAY_CONTROL: [&str; 2] = ["zwlr_output_manager_v1", "zwlr_output_power_manager_v1"];
+    let public = advertised_globals();
+    let privileged = advertised_globals_to(shell::compositor::state::ClientState::privileged_arc());
+    for interface in DISPLAY_CONTROL {
+        assert!(
+            !public.iter().any(|g| g == interface),
+            "{interface} is advertised on the public socket. Advertised: {public:?}"
+        );
+        assert!(
+            privileged.iter().any(|g| g == interface),
+            "{interface} is missing for privileged clients. Advertised: {privileged:?}"
+        );
+    }
 }

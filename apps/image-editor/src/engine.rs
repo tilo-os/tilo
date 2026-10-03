@@ -13,10 +13,34 @@ pub enum EvalError {
     Save(String),
 }
 
+/// A source image kept in the app's state instead of at a path: one opened
+/// by contents, where files have no path (a browser page).
+pub const OPENED_SOURCE: &str = "opened:";
+
+/// Decode the source at `path`, or the kept image an [`OPENED_SOURCE`] names.
+pub fn open_source(path: &str) -> Result<RgbaImage, EvalError> {
+    open_bounded(path)
+}
+
 fn open_bounded(path: &str) -> Result<RgbaImage, EvalError> {
-    let mut reader = image::ImageReader::open(path)
+    if let Some(name) = path.strip_prefix(OPENED_SOURCE) {
+        let file = crate::web_file::recall()
+            .filter(|file| file.name == name)
+            .ok_or_else(|| EvalError::Open("the opened image is no longer kept".into()))?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(file.bytes))
+            .with_guessed_format()
+            .map_err(|error| EvalError::Open(error.to_string()))?;
+        return decode_bounded(reader);
+    }
+    let reader = image::ImageReader::open(path)
         .and_then(image::ImageReader::with_guessed_format)
         .map_err(|error| EvalError::Open(error.to_string()))?;
+    decode_bounded(reader)
+}
+
+fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+) -> Result<RgbaImage, EvalError> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
@@ -125,6 +149,14 @@ fn map(mut image: RgbaImage, f: impl Fn(u8) -> u8) -> RgbaImage {
     }
     image
 }
+/// The evaluated image as PNG bytes, for a save by contents.
+pub fn export_png(project: &Project) -> Result<Vec<u8>, EvalError> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    evaluate(project)?
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| EvalError::Save(e.to_string()))?;
+    Ok(out.into_inner())
+}
 pub fn export(project: &Project, path: &std::path::Path) -> Result<(), EvalError> {
     evaluate(project)?
         .save(path)
@@ -145,7 +177,15 @@ pub fn evaluate_at(project: &Project, node: &str) -> Result<RgbaImage, EvalError
 mod tests {
     use super::*;
     use image::Rgba;
+    /// Graph evaluation: upstream changes keep later steps, intermediate previews are
+    /// the named step, and oversized inputs are rejected before allocation.
     #[test]
+    fn evaluation_follows_the_graph_and_bounds_inputs() {
+        changing_upstream_preserves_later_steps();
+        intermediate_preview_is_the_named_step_not_the_final_output();
+        oversized_dimensions_are_rejected_before_editor_allocation();
+    }
+
     fn changing_upstream_preserves_later_steps() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("in.png");
@@ -165,7 +205,6 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(b.get_pixel(0, 0)[0], b.get_pixel(0, 0)[1]);
     }
-    #[test]
     fn intermediate_preview_is_the_named_step_not_the_final_output() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("in.png");
@@ -188,7 +227,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn oversized_dimensions_are_rejected_before_editor_allocation() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("too-wide.png");

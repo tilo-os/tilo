@@ -16,7 +16,7 @@ grep -Fq 'PROJECTOR_TIMEOUT' "$projection"
 
 grep -Fq 'bounded_command::run_prepared(' "$capture"
 grep -Fq '.process_group(0)' "$capture"
-grep -Fq 'libc::kill(group, libc::SIGKILL)' "$capture"
+grep -Fq 'bounded_command::terminate_tree(' "$capture"
 
 grep -Fq 'bounded_command::run_prepared(' "$catalogue"
 grep -Fq 'LIST_OUTPUT_LIMIT' "$catalogue"

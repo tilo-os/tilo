@@ -1,0 +1,116 @@
+# Settings for `cargo hakari`: https://docs.rs/cargo-hakari/latest/cargo_hakari/config
+#
+# crates/workspace-hack depends on every third-party crate that workspace
+# members build with more than one feature set, with the union of those
+# features, and every managed member depends on it. Any selection of `-p`
+# packages then compiles each shared dependency identically, so CI slots and
+# sccache reuse one build instead of one per package set. After changing a
+# dependency or its features, run `cargo hakari generate` and
+# `cargo hakari manage-deps`; CI / fast quality fails until both are clean.
+
+hakari-package = "workspace-hack"
+dep-format-version = "4"
+resolver = "2"
+
+# Members name `workspace-hack = { version = "0.1" }` and the root manifest's
+# `[patch.crates-io]` points it at crates/workspace-hack. Workspaces outside
+# this one that reach members by path (fuzz/, tilo-doc-codec-markdown-wasm) have no
+# patch and resolve crates.io's empty workspace-hack 0.1.0 instead, so neither
+# their lockfiles nor a wasm32 build take on the host dependency set.
+workspace-hack-line-style = "version-only"
+#
+# The unified set is native (tokio `net` pulls mio, which refuses wasm32), and
+# most of it lands in the hack's unconditional `[dependencies]`. Members the
+# browser also builds for wasm32 therefore name the hack under
+# `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`; manage-deps
+# accepts that, and tools/policy/check_wasm_workspace_hack.py names a member
+# that picked up the unconditional line.
+
+# CI builds and tests Linux on both architectures. Other hosts (Imager on
+# Windows and macOS) still receive the platform-independent section.
+platforms = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+# unify-target-host stays at its default, which replicates target features on
+# the host because the workspace has a proc macro. Native builds, all of CI,
+# then share host and target units; syn, serde and every proc macro built on
+# them no longer vary with the selection. A cross build (Imager for Windows or
+# macOS) compiles the unified set for its Linux or macOS host as well.
+
+[traversal-excludes]
+# Every managed member builds every crate listed in the hack, so none may need
+# a system library: server containers (tilo-relay, registry-server) and cross
+# builds have no desktop development packages. Media stays optional
+# everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
+third-party = [
+    { name = "gstreamer" },
+    { name = "gstreamer-app" },
+    { name = "gstreamer-base" },
+    { name = "gstreamer-video" },
+    # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
+    # bundled sources and wayland-sys is dlopen-only, so both may stay.
+    { name = "smithay-client-toolkit" },
+    # The peer transport belongs to the hosts: tilo-desktop is managed and
+    # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
+    { name = "iroh" },
+    { name = "iroh-base" },
+    { name = "iroh-dns" },
+    { name = "iroh-metrics" },
+    { name = "iroh-relay" },
+    # A git-pinned YouTube client only the Tube app uses; server images and
+    # the builder canary must not compile it.
+    { name = "rustypipe", git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
+]
+
+[final-excludes]
+# These members keep their own dependency graph. Built with managed members
+# they still receive the unified features; built alone they do not.
+# - tilo-desktop-model must not reach host stacks through any dependency
+#   (tools/policy/check_desktop_model_dependencies.py), so neither it nor any
+#   member it depends on may depend on workspace-hack. When that policy reports
+#   a host stack after desktop-model gains a member dependency, list it here.
+# - tilo-crypto is also built standalone from registry dependencies only
+#   (os/kernel/project-crate.py).
+# - tilo-vm, its protocol and tilo-xdg-paths are the tilo-vm Windows CLI's whole
+#   workspace graph; keep that cross build to the crates it uses.
+# - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
+#   an empty namespace (build-ci-builder.yml); it must stay small.
+workspace-members = [
+    # tilo-desktop-model and its member dependencies
+    "collab-types",
+    "desktop-policy",
+    "tilo-actions",
+    "tilo-automation",
+    "tilo-automerge",
+    "tilo-clock",
+    "tilo-desktop-model",
+    "wire-frame",
+    # standalone registry-only build
+    "tilo-crypto",
+    # tilo-vm Windows CLI
+    "tilo-vm",
+    "tilo-vm-protocol",
+    "tilo-xdg-paths",
+    # builder sccache canary
+    "tilo-advisory-lock",
+    # The [patch.crates-io] replacement for rustls-native-certs sits below
+    # third-party crates the hack itself depends on (rustls-platform-verifier),
+    # so depending on the hack would be a cycle.
+    "rustls-native-certs",
+    # browser wasm32 registry verifier and its member dependency: the hack's
+    # native features pull mio there
+    "registry-types",
+    "registry-web",
+    "registry-web-bindgen",
+]
+# A -sys crate in the hack is linked into runtime-dylib, whose exports carry
+# Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's
+# zstd Reader) then references C symbols no library provides and fails to link.
+# Keep such crates out of the hack so each user links its own copy.
+third-party = [
+    { name = "zstd" },
+    { name = "zstd-safe" },
+    { name = "zstd-sys" },
+]

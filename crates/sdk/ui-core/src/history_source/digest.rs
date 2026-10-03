@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{
-    GroupingConfig, HistoryGroup, NamedRange, OpFamily, group_entries,
+    GroupingConfig, HistoryGroup, NamedRange, OpFamily, authors_more, authors_pair, group_entries,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,10 +54,8 @@ impl ActivityBrief {
         let who = match self.authors.as_slice() {
             [] => String::new(),
             [author] => author.name.clone(),
-            [first, second] => format!("{} and {}", first.name, second.name),
-            [first, second, rest @ ..] => {
-                format!("{}, {} + {}", first.name, second.name, rest.len())
-            }
+            [first, second] => authors_pair(&first.name, &second.name),
+            [first, second, rest @ ..] => authors_more(&first.name, &second.name, rest.len()),
         };
         if who.is_empty() {
             self.title.clone()
@@ -111,8 +109,10 @@ impl ActivityDigest {
     }
 
     fn from_recent(recent: &[HistoryEntry], limit: usize, named_ranges: &[NamedRange]) -> Self {
+        // People are the participants history could name.
         let people = recent
             .iter()
+            .filter(|entry| entry.author.name != super::UNKNOWN_AUTHOR_NAME)
             .map(|entry| {
                 (
                     entry.author.name.clone(),
@@ -155,10 +155,13 @@ impl ActivityDigest {
                 let group_detail = group.subtitle(recent);
                 let detail = if title == group.title(recent) {
                     group_detail
-                } else if group_detail.is_empty() {
-                    format!("{} changes", group.len())
                 } else {
-                    format!("{} changes · {group_detail}", group.len())
+                    let count = crate::i18n!("history-group-changes", "count" => group.len());
+                    if group_detail.is_empty() {
+                        count
+                    } else {
+                        format!("{count} · {group_detail}")
+                    }
                 };
                 ActivityBrief {
                     title,
@@ -209,21 +212,25 @@ fn digest_outcome_title(
         [only] => Some(only.as_str()),
         _ => None,
     };
-    match group.families.as_slice() {
-        [OpFamily::Governance] => "Updated workspace access".to_string(),
-        [OpFamily::Comment] => subject.map_or_else(
-            || "Continued the discussion".to_string(),
-            |resource| format!("Discussed {resource}"),
+    let (general, about) = match group.families.as_slice() {
+        [OpFamily::Governance] => ("history-outcome-access", None),
+        [OpFamily::Comment] => (
+            "history-outcome-discussion",
+            Some("history-outcome-discussed"),
         ),
-        [OpFamily::Deletion] => subject.map_or_else(
-            || "Organized shared content".to_string(),
-            |resource| format!("Organized {resource}"),
+        [OpFamily::Deletion] => (
+            "history-outcome-organized-content",
+            Some("history-outcome-organized"),
         ),
-        [OpFamily::Edit] => subject.map_or_else(
-            || "Updated shared content".to_string(),
-            |resource| format!("Worked on {resource}"),
+        [OpFamily::Edit] => (
+            "history-outcome-updated-content",
+            Some("history-outcome-worked-on"),
         ),
-        _ => "Updated the workspace".to_string(),
+        _ => ("history-outcome-workspace", None),
+    };
+    match (about, subject) {
+        (Some(key), Some(resource)) => crate::i18n!(key, "resource" => resource),
+        _ => crate::i18n!(general),
     }
 }
 
@@ -266,151 +273,207 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_uses_the_same_explicit_group_across_people() {
-        let entries = vec![entry(1, "Ada", 100), entry(2, "Maren", 110)];
-        let digest = ActivityDigest::from_entries(
-            &entries,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(digest.total_changes, 2);
-        assert_eq!(digest.people, 2);
-        assert_eq!(digest.briefs.len(), 1);
-        assert_eq!(digest.briefs[0].title, "Prepare launch brief");
-        assert_eq!(
-            digest.headline().as_deref(),
-            Some("Ada and Maren · Prepare launch brief")
-        );
-        assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
-        assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
-        assert_eq!(digest.briefs[0].actions.len(), 2);
-        assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
+    fn catch_up_names_people_groups_and_outcomes() {
+        // phase: catch_up_uses_the_same_explicit_group_across_people
+        {
+            let entries = vec![entry(1, "Ada", 100), entry(2, "Maren", 110)];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.total_changes, 2);
+            assert_eq!(digest.people, 2);
+            assert_eq!(digest.briefs.len(), 1);
+            assert_eq!(digest.briefs[0].title, "Prepare launch brief");
+            assert_eq!(
+                digest.headline().as_deref(),
+                Some("Ada and Maren · Prepare launch brief")
+            );
+            assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
+            assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
+            assert_eq!(digest.briefs[0].actions.len(), 2);
+            assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
+        }
+        // phase: catch_up_names_two_people_and_counts_the_rest
+        {
+            let entries = vec![
+                entry(1, "bob", 100),
+                entry(2, "ada", 101),
+                entry(3, "Sarah", 102),
+                entry(4, "Ada", 103),
+            ];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(
+                digest.headline().as_deref(),
+                Some("bob, ada + 2 · Prepare launch brief")
+            );
+        }
+        // phase: a_participant_history_cannot_name_is_not_counted_as_a_person
+        {
+            let entries = vec![
+                entry(1, "Ada", 100),
+                entry(2, super::super::UNKNOWN_AUTHOR_NAME, 101),
+            ];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.total_changes, 2);
+            assert_eq!(digest.people, 1);
+        }
+        // phase: unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts
+        {
+            let mut first = entry(1, "Ada", 100);
+            let mut second = entry(2, "Maren", 110);
+            // Automatic groups split on author identity; keep both changes in one
+            // unnamed group so this exercises the aggregate outcome title.
+            second.author = first.author.clone();
+            for item in [&mut first, &mut second] {
+                item.op_class = OpClass::Govern;
+                item.text_delta = None;
+                if let Some(context) = item.context.as_mut() {
+                    context.group = None;
+                }
+            }
+            let digest = ActivityDigest::from_entries(
+                &[first, second],
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.briefs[0].title, "Updated workspace access");
+            assert_eq!(digest.briefs[0].changes, 2);
+            assert!(
+                digest.briefs[0].detail.contains("2 changes"),
+                "the precise count remains available beneath the outcome title"
+            );
+        }
     }
 
     #[test]
-    fn catch_up_names_two_people_and_counts_the_rest() {
-        let entries = vec![
-            entry(1, "bob", 100),
-            entry(2, "ada", 101),
-            entry(3, "Sarah", 102),
-            entry(4, "Ada", 103),
-        ];
-        let digest = ActivityDigest::from_entries(
-            &entries,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(
-            digest.headline().as_deref(),
-            Some("bob, ada + 2 · Prepare launch brief")
-        );
+    fn catch_up_sessions_follow_named_boundaries_and_delayed_changes() {
+        // phase: unseen_digest_does_not_lose_a_delayed_concurrent_change
+        {
+            let first = entry(1, "Ada", 100);
+            let mut frontier = HistorySeenFrontier::default();
+            frontier.mark_seen(std::slice::from_ref(&first));
+            let delayed = entry(2, "Maren", 50);
+            let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
+            assert_eq!(digest.total_changes, 1);
+            assert_eq!(digest.people, 1);
+            assert_eq!(digest.briefs[0].authors[0].name, "Maren");
+        }
+        // phase: corrected_named_boundaries_redraw_catch_up_sessions_not_action_order
+        {
+            let mut entries = (1..=4)
+                .map(|id| entry(id, "Ada", u64::from(id) * 10))
+                .collect::<Vec<_>>();
+            for item in &mut entries {
+                if let Some(context) = item.context.as_mut() {
+                    context.group = None;
+                }
+            }
+            let named = |id: &str, label: &str, start: usize, end: usize| NamedRange {
+                id: id.to_string(),
+                label: label.to_string(),
+                start: entries[start].id,
+                end: Some(entries[end].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            };
+            let initial = vec![
+                named("finance", "Write Q3 financial report", 0, 1),
+                named("onboarding", "Onboard Sarah", 2, 3),
+            ];
+            let corrected = vec![
+                named("finance-v2", "Write Q3 financial report", 0, 0),
+                named("onboarding-v2", "Onboard Sarah", 1, 3),
+            ];
+
+            let before = ActivityDigest::from_entries_with_ranges(
+                &entries,
+                SystemTime::UNIX_EPOCH,
+                10,
+                &initial,
+            );
+            let after = ActivityDigest::from_entries_with_ranges(
+                &entries,
+                SystemTime::UNIX_EPOCH,
+                10,
+                &corrected,
+            );
+            let changes = |digest: &ActivityDigest, title: &str| {
+                digest
+                    .briefs
+                    .iter()
+                    .find(|brief| brief.title == title)
+                    .map(|brief| brief.changes)
+            };
+            assert_eq!(changes(&before, "Write Q3 financial report"), Some(2));
+            assert_eq!(changes(&before, "Onboard Sarah"), Some(2));
+            assert_eq!(changes(&after, "Write Q3 financial report"), Some(1));
+            assert_eq!(changes(&after, "Onboard Sarah"), Some(3));
+            let projected_ids = after
+                .briefs
+                .iter()
+                .flat_map(|brief| brief.entry_ids.iter().copied())
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(projected_ids.len(), entries.len());
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| projected_ids.contains(&entry.id))
+            );
+            assert!(
+                after
+                    .briefs
+                    .iter()
+                    .all(|brief| brief.work_session_id.is_some())
+            );
+        }
     }
 
     #[test]
-    fn unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts() {
-        let mut first = entry(1, "Ada", 100);
-        let mut second = entry(2, "Maren", 110);
-        // Automatic groups split on author identity; keep both changes in one
-        // unnamed group so this exercises the aggregate outcome title.
+    fn a_german_desktop_reads_its_catch_up_in_german() {
+        crate::i18n::I18nManager::install(
+            "en-US",
+            "de-DE",
+            &[
+                ("en-US", include_str!("../../locales/en-US.ftl")),
+                ("de-DE", include_str!("../../locales/de-DE.ftl")),
+            ],
+        )
+        .unwrap();
+        let shared = [entry(1, "Ada", 100), entry(2, "Maren", 110)];
+        let digest = ActivityDigest::from_entries(&shared, SystemTime::UNIX_EPOCH, 3);
+        assert_eq!(
+            digest.headline().as_deref(),
+            Some("Ada und Maren · Prepare launch brief")
+        );
+
+        let mut first = entry(3, "Ada", 100);
+        let mut second = entry(4, "Ada", 110);
         second.author = first.author.clone();
         for item in [&mut first, &mut second] {
-            item.op_class = OpClass::Govern;
-            item.text_delta = None;
             if let Some(context) = item.context.as_mut() {
                 context.group = None;
             }
         }
-        let digest = ActivityDigest::from_entries(
-            &[first, second],
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(digest.briefs[0].title, "Updated workspace access");
-        assert_eq!(digest.briefs[0].changes, 2);
-        assert!(
-            digest.briefs[0].detail.contains("2 changes"),
-            "the precise count remains available beneath the outcome title"
-        );
-    }
+        let digest = ActivityDigest::from_entries(&[first, second], SystemTime::UNIX_EPOCH, 3);
+        let brief = &digest.briefs[0];
+        assert_eq!(brief.title, "An Launch brief gearbeitet");
+        assert_eq!(brief.detail, "2 Änderungen · Ada · +2 −0 Zeichen");
 
-    #[test]
-    fn unseen_digest_does_not_lose_a_delayed_concurrent_change() {
-        let first = entry(1, "Ada", 100);
-        let mut frontier = HistorySeenFrontier::default();
-        frontier.mark_seen(std::slice::from_ref(&first));
-        let delayed = entry(2, "Maren", 50);
-        let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
-        assert_eq!(digest.total_changes, 1);
-        assert_eq!(digest.people, 1);
-        assert_eq!(digest.briefs[0].authors[0].name, "Maren");
-    }
-
-    #[test]
-    fn corrected_named_boundaries_redraw_catch_up_sessions_not_action_order() {
-        let mut entries = (1..=4)
-            .map(|id| entry(id, "Ada", u64::from(id) * 10))
-            .collect::<Vec<_>>();
-        for item in &mut entries {
-            if let Some(context) = item.context.as_mut() {
-                context.group = None;
-            }
-        }
-        let named = |id: &str, label: &str, start: usize, end: usize| NamedRange {
-            id: id.to_string(),
-            label: label.to_string(),
-            start: entries[start].id,
-            end: Some(entries[end].id),
-            named_by: None,
-            created: SystemTime::UNIX_EPOCH,
-        };
-        let initial = vec![
-            named("finance", "Write Q3 financial report", 0, 1),
-            named("onboarding", "Onboard Sarah", 2, 3),
-        ];
-        let corrected = vec![
-            named("finance-v2", "Write Q3 financial report", 0, 0),
-            named("onboarding-v2", "Onboard Sarah", 1, 3),
-        ];
-
-        let before = ActivityDigest::from_entries_with_ranges(
-            &entries,
-            SystemTime::UNIX_EPOCH,
-            10,
-            &initial,
-        );
-        let after = ActivityDigest::from_entries_with_ranges(
-            &entries,
-            SystemTime::UNIX_EPOCH,
-            10,
-            &corrected,
-        );
-        let changes = |digest: &ActivityDigest, title: &str| {
-            digest
-                .briefs
-                .iter()
-                .find(|brief| brief.title == title)
-                .map(|brief| brief.changes)
-        };
-        assert_eq!(changes(&before, "Write Q3 financial report"), Some(2));
-        assert_eq!(changes(&before, "Onboard Sarah"), Some(2));
-        assert_eq!(changes(&after, "Write Q3 financial report"), Some(1));
-        assert_eq!(changes(&after, "Onboard Sarah"), Some(3));
-        let projected_ids = after
-            .briefs
-            .iter()
-            .flat_map(|brief| brief.entry_ids.iter().copied())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(projected_ids.len(), entries.len());
-        assert!(
-            entries
-                .iter()
-                .all(|entry| projected_ids.contains(&entry.id))
-        );
-        assert!(
-            after
-                .briefs
-                .iter()
-                .all(|brief| brief.work_session_id.is_some())
+        use crate::widget::activity_timeline::ChipKind;
+        assert_eq!(ChipKind::Governance.label(), "Zugriff");
+        assert_eq!(
+            super::super::op_class_label(OpClass::Splice),
+            "Text / Struktur"
         );
     }
 }

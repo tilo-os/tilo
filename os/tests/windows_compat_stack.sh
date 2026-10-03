@@ -38,7 +38,8 @@ grep -Fq "x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;;" "
   && ok 'x86-64 image includes the native Wine and DXVK packages' \
   || bad 'x86-64 image lacks its native Wine or DXVK package selection'
 
-for package in qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
+for package in qemu-kvm-core qemu-ui-spice-core qemu-char-spice qemu-audio-spice \
+  libvirt-daemon-driver-qemu swtpm freerdp xwayland-satellite virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"

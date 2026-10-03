@@ -11,7 +11,7 @@
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -21,7 +21,8 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
-use ui::search::{FieldWeight, RankField};
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -39,8 +40,11 @@ pub struct HostApplicationsProvider {
 struct HostAppsSnapshot {
     source_generation: (u64, u64),
     apps: Vec<HostApp>,
+    /// Lower-cased ids of installed Tilo packages; a host app with one of
+    /// these ids is answered by the package instead.
     installed_ids: HashSet<String>,
-    index: ui::search::SearchTextIndex,
+    /// Apps no Tilo package answers for, keyed by position in `apps`.
+    index: SearchIndex,
 }
 
 #[cfg(test)]
@@ -147,19 +151,11 @@ impl HostApplicationsProvider {
         apps: Vec<HostApp>,
         installed: &[crate::shell::launcher::InstalledApp],
     ) -> HostAppsSnapshot {
-        let installed_ids = installed
+        let installed_ids: HashSet<String> = installed
             .iter()
             .map(|app| app.package_id.to_ascii_lowercase())
             .collect();
-        let index = ui::search::SearchTextIndex::new(apps.iter().map(|app| {
-            format!(
-                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                app.name,
-                app.desktop_id,
-                app.keywords.join(" "),
-                app.categories.join(" ")
-            )
-        }));
+        let index = index_apps(&apps, &installed_ids);
         HostAppsSnapshot {
             source_generation,
             apps,
@@ -224,105 +220,122 @@ impl HostApplicationsProvider {
     fn results_against(
         &self,
         needle: &str,
-        apps: Vec<HostApp>,
+        apps: &[HostApp],
         installed: &[crate::shell::launcher::InstalledApp],
     ) -> Vec<SearchResult> {
         let installed_ids = installed
             .iter()
             .map(|app| app.package_id.to_ascii_lowercase())
             .collect();
-        self.results_against_membership(needle, apps, &installed_ids)
+        let index = index_apps(apps, &installed_ids);
+        index
+            .search(needle, Page::first(apps.len()))
+            .hits
+            .iter()
+            .filter_map(|hit| {
+                let app = apps.get(usize::try_from(hit.key).ok()?)?;
+                Some(self.row(app, score_for(needle, hit.rank)))
+            })
+            .collect()
     }
 
-    fn results_against_membership(
-        &self,
-        needle: &str,
-        apps: Vec<HostApp>,
-        installed_ids: &HashSet<String>,
-    ) -> Vec<SearchResult> {
-        let needle_lower = needle.to_lowercase();
-        let mut out = Vec::new();
-        for app in apps {
-            if installed_ids.contains(&app.desktop_id.to_ascii_lowercase()) {
-                continue;
-            }
-            let name_lower = app.name.to_lowercase();
-            let id_lower = app.desktop_id.to_lowercase();
-            let Some(score) = match_score(&needle_lower, &name_lower, &id_lower, &app) else {
-                continue;
-            };
-            let desktop_id = app.desktop_id.clone();
-            let display_name = app.name.clone();
-            let notify_name = display_name.clone();
-            out.push(SearchResult::nullary(
-                ResourceKind::HostApplication,
-                self.id(),
-                app.desktop_id.clone(),
-                format!("Open {}", app.name),
-                // "Unconfined" is not decoration: this app is about to get
-                // the user's real home directory.
-                Some(format!(
-                    "{} · unconfined host app · {}",
-                    app.source_label, app.desktop_id
-                )),
-                score,
-                move |_doc, _root, chrome: &Chrome| {
-                    // Decided now, while the layout is still true; a
-                    // foreign toplevel announces an app-id Tilo did not
-                    // mint, so the note is keyed on every declared identity.
-                    let result = if let Some(app) = host_apps::find(&desktop_id) {
-                        let st = chrome.borrow();
-                        let tree = st.tree();
-                        let placement =
-                            crate::shell::placement::note_placement_for_launch_identities(
-                                &app.desktop_id,
-                                &app.window_identities,
-                                &tree,
-                                st.strip_viewport(),
-                            );
-                        let portal_workspace_id = tree
-                            .desktop
-                            .active_workspace()
-                            .map(|workspace| workspace.room.to_string());
-                        drop(tree);
-                        drop(st);
-                        host_apps::queue_launch(host_apps::QueuedLaunch {
-                            app,
-                            placement,
-                            portal_workspace_id,
-                            requested_at: std::time::Instant::now(),
-                        })
-                    } else {
-                        host_apps::launch(&desktop_id, None).map(|_| ())
-                    };
-                    if let Err(err) = result {
-                        crate::shell::launcher::clear_pending_placement(&desktop_id);
-                        tracing::error!(
-                            target: "tilo::app_launch",
-                            desktop_id = %desktop_id,
-                            display_name = %notify_name,
-                            detail = %err,
-                            "host application launch was refused before spawn"
-                        );
-                        let mut st = chrome.borrow_mut();
-                        st.push_notification_full(
-                            Notification::new(
-                                crate::shell::launcher::launch_failure_title(&notify_name),
-                                err.notification_message(),
-                            )
-                            .with_severity(NotificationSeverity::Error)
-                            .with_app_name(HOST_APPLICATIONS_KIND)
-                            .with_dismiss_after(
-                                crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME,
-                            ),
-                        );
-                        st.bump();
-                    }
-                },
-            ));
-        }
-        out
+    /// The open row for `app`.
+    fn row(&self, app: &HostApp, score: i32) -> SearchResult {
+        let desktop_id = app.desktop_id.clone();
+        let notify_name = app.name.clone();
+        SearchResult::nullary(
+            ResourceKind::HostApplication,
+            self.id(),
+            app.desktop_id.clone(),
+            t_args("search-host-app-open", &[("app", app.name.as_str().into())]),
+            // "Unconfined" is not decoration: this app is about to get
+            // the user's real home directory.
+            Some(t_args(
+                "search-host-app-subtitle",
+                &[
+                    ("source", app.source_display().into()),
+                    ("id", app.desktop_id.as_str().into()),
+                ],
+            )),
+            score,
+            move |_doc, _root, chrome: &Chrome| {
+                // Decided now, while the layout is still true; a
+                // foreign toplevel announces an app-id Tilo did not
+                // mint, so the note is keyed on every declared identity.
+                let result = if let Some(app) = host_apps::find(&desktop_id) {
+                    let st = chrome.borrow();
+                    let tree = st.tree();
+                    let placement = crate::shell::placement::note_placement_for_launch_identities(
+                        &app.desktop_id,
+                        &app.window_identities,
+                        &tree,
+                        st.strip_viewport(),
+                    );
+                    let portal_workspace_id = tree
+                        .desktop
+                        .active_workspace()
+                        .map(|workspace| workspace.room.to_string());
+                    drop(tree);
+                    drop(st);
+                    host_apps::queue_launch(host_apps::QueuedLaunch {
+                        app,
+                        placement,
+                        portal_workspace_id,
+                        requested_at: std::time::Instant::now(),
+                    })
+                } else {
+                    host_apps::launch(&desktop_id, None).map(|_| ())
+                };
+                if let Err(err) = result {
+                    crate::shell::launcher::clear_pending_placement(&desktop_id);
+                    tracing::error!(
+                        target: "tilo::app_launch",
+                        desktop_id = %desktop_id,
+                        display_name = %notify_name,
+                        detail = %err,
+                        "host application launch was refused before spawn"
+                    );
+                    let mut st = chrome.borrow_mut();
+                    st.push_notification_full(
+                        Notification::new(
+                            crate::shell::launcher::launch_failure_title(&notify_name),
+                            err.notification_message(),
+                        )
+                        .with_severity(NotificationSeverity::Error)
+                        .with_app_name(HOST_APPLICATIONS_KIND)
+                        .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+                    );
+                    st.bump();
+                }
+            },
+        )
     }
+}
+
+/// Index the apps no installed Tilo package shadows, keyed by position.
+/// `Keywords=` and categories are matched too: how typing "browser" finds
+/// Firefox.
+fn index_apps(apps: &[HostApp], installed_ids: &HashSet<String>) -> SearchIndex {
+    let mut index = SearchIndex::new(Matching::LOOSE);
+    index.replace_all(apps.iter().enumerate().filter_map(|(at, app)| {
+        if installed_ids.contains(&app.desktop_id.to_ascii_lowercase()) {
+            return None;
+        }
+        let desktop_id = app.desktop_id.as_str();
+        let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
+        Some(
+            Document::new(at as u64)
+                .field(app.name.as_str(), FieldWeight::TITLE)
+                .field(last_segment, FieldWeight::TITLE)
+                .field(desktop_id, super::applications::PACKAGE_ID_WEIGHT)
+                .field(app.keywords.join(" "), FieldWeight::METADATA)
+                .field(app.categories.join(" "), FieldWeight::METADATA),
+        )
+    }));
+    if let Err(error) = index.commit() {
+        tracing::error!(%error, "could not index host applications");
+    }
+    index
 }
 
 /// Whether an installed Tilo package already answers for this app. Names and
@@ -342,27 +355,15 @@ fn shadowed_by_a_tilo_package(
 /// sorts first.
 const HOST_APP_STEP: i32 = 5;
 
-/// The applications provider's ranking, one step lower so a confined Tilo
-/// app sorts first at an equal match. `Keywords=` and categories are matched
-/// too — how typing "browser" finds Firefox.
-fn match_score(needle: &str, name: &str, desktop_id: &str, app: &HostApp) -> Option<i32> {
+/// The applications provider's scale, one step lower so a confined Tilo
+/// app sorts first at an equal match. An empty needle lists every app at 0.
+fn score_for(needle: &str, rank: Option<i32>) -> i32 {
     if needle.trim().is_empty() {
-        return Some(0);
+        return 0;
     }
-    let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
-    let keywords = app.keywords.join(" ");
-    let categories = app.categories.join(" ");
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(name, FieldWeight::TITLE),
-            RankField::new(last_segment, FieldWeight::TITLE),
-            RankField::new(desktop_id, super::applications::PACKAGE_ID_WEIGHT),
-            RankField::new(&keywords, FieldWeight::METADATA),
-            RankField::new(&categories, FieldWeight::METADATA),
-        ],
-    )
-    .map(|rank| rank.saturating_sub(HOST_APP_STEP).max(1))
+    crate::shell::search::provider_score(rank.unwrap_or(0))
+        .saturating_sub(HOST_APP_STEP)
+        .max(1)
 }
 
 impl Default for HostApplicationsProvider {
@@ -377,6 +378,9 @@ impl SearchProvider for HostApplicationsProvider {
     }
     fn name(&self) -> &str {
         HOST_APPLICATIONS_KIND
+    }
+    fn display_name(&self) -> String {
+        t("search-provider-host-apps")
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
@@ -397,6 +401,27 @@ impl SearchProvider for HostApplicationsProvider {
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.refresh_snapshot();
+    }
+
+    /// An address is looked up in the whole snapshot. An empty query's first
+    /// page holds [`SearchBudget::PALETTE`] rows, fewer than a desktop has
+    /// host apps, so resolving through it left every later app unreachable
+    /// by id.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::HostApplication) {
+            return None;
+        }
+        let snapshot = self.snapshot()?;
+        snapshot
+            .apps
+            .iter()
+            .find(|app| {
+                app.desktop_id == id
+                    && !snapshot
+                        .installed_ids
+                        .contains(&app.desktop_id.to_ascii_lowercase())
+            })
+            .map(|app| self.row(app, score_for(ctx.needle, None)))
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -428,7 +453,7 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let after = match cursor {
+        let offset = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
             Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
                 token
@@ -436,49 +461,48 @@ impl SearchProvider for HostApplicationsProvider {
                     .filter(|(_, query)| *query == ctx.needle)
                     .and_then(|(offset, _)| offset.parse::<usize>().ok())
             }) {
-                Some(offset) => Some(offset),
+                Some(offset) => offset,
                 None => return SearchPage::stale(revision),
             },
-            None => None,
+            None => 0,
         };
-        let page =
-            snapshot
-                .index
-                .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
-        let mut next_after = page.next_after;
+        let found = snapshot.index.search(
+            ctx.needle,
+            Page {
+                offset,
+                limit: budget.max_work.min(budget.max_results),
+            },
+        );
+        let mut shown = 0usize;
         let mut bytes = 0usize;
         let mut results = Vec::new();
-        for id in page.ids {
-            let Some(app) = snapshot.apps.get(id) else {
+        for hit in &found.hits {
+            let Some(app) = usize::try_from(hit.key)
+                .ok()
+                .and_then(|at| snapshot.apps.get(at))
+            else {
                 continue;
             };
-            let mut rows = self.results_against_membership(
-                ctx.needle,
-                vec![app.clone()],
-                &snapshot.installed_ids,
-            );
-            let Some(row) = rows.pop() else { continue };
+            let row = self.row(app, score_for(ctx.needle, hit.rank));
             let row_bytes = row
                 .title
                 .len()
                 .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
             if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                // Skip this one too-large row once, and continue after the
-                // candidate actually considered rather than the index page's
-                // farther endpoint.
-                next_after = Some(id);
                 break;
             }
             bytes = bytes.saturating_add(row_bytes);
+            shown = shown.saturating_add(1);
             results.push(row);
         }
-        let exhausted = next_after.is_none();
+        let exhausted = !found.more && shown == found.hits.len();
+        let next = offset.saturating_add(shown);
         SearchPage {
             revision: revision.clone(),
             results,
-            next_cursor: next_after.map(|offset| SearchCursor {
+            next_cursor: (!exhausted).then(|| SearchCursor {
                 revision,
-                token: format!("host:{offset}\u{1f}{}", ctx.needle),
+                token: format!("host:{next}\u{1f}{}", ctx.needle),
             }),
             exhausted,
             stale_cursor: false,
@@ -489,6 +513,8 @@ impl SearchProvider for HostApplicationsProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -510,18 +536,75 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: vec![desktop_id.to_string()],
         }
     }
 
     #[test]
-    fn a_matching_host_app_offers_an_open_row() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].title, "Open Spotify");
-        assert_eq!(out[0].id, "com.spotify.Client");
-        assert_eq!(out[0].kind, ResourceKind::HostApplication);
+    fn host_app_matching_lists_offers_or_returns_nothing() {
+        // Phase `a_matching_host_app_offers_an_open_row`.
+        {
+            let p = HostApplicationsProvider::new();
+            let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].title, "Open Spotify");
+            assert_eq!(out[0].id, "com.spotify.Client");
+            assert_eq!(out[0].kind, ResourceKind::HostApplication);
+        }
+
+        // Phase `keywords_and_categories_are_matchable`.
+        {
+            let p = HostApplicationsProvider::new();
+            let mut firefox = app("org.mozilla.firefox", "Firefox");
+            firefox.keywords = vec!["Internet".into(), "WWW".into()];
+            firefox.categories = vec!["Network".into(), "WebBrowser".into()];
+            let by_keyword = p.results_against("internet", &[firefox.clone()], &[]);
+            assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
+            let by_category = p.results_against("webbrowser", &[firefox], &[]);
+            assert_eq!(by_category.len(), 1, "{by_category:?}");
+            assert!(
+                by_keyword[0].score > by_category[0].score,
+                "a declared keyword is a stronger signal than a category bucket"
+            );
+        }
+
+        // Phase `an_empty_needle_lists_every_host_app`.
+        {
+            let p = HostApplicationsProvider::new();
+            let out = p.results_against("", &[app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
+            assert_eq!(out.len(), 2);
+            assert!(out.iter().all(|r| r.score == 0));
+        }
+
+        // Phase `a_non_matching_needle_returns_nothing`.
+        {
+            let p = HostApplicationsProvider::new();
+            assert!(
+                p.results_against("zzzqqq", &[app("com.spotify.Client", "Spotify")], &[])
+                    .is_empty()
+            );
+        }
+
+        // Phase `unrequested_kind_returns_empty`.
+        {
+            let p = HostApplicationsProvider::new();
+            let c = chrome_rc();
+            let cs = c.borrow();
+            let doc = AutoCommit::new();
+            let out = p.query(SearchContext {
+                needle: "spotify",
+                wanted: &[ResourceKind::Application],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert!(
+                out.is_empty(),
+                "the Applications chip must not pull in host apps — that is \
+                 the distinction the separate kind exists to draw"
+            );
+        }
     }
 
     #[test]
@@ -541,7 +624,7 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let target = ResourceRef::new("host-applications", "org.fixture.Calculator");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let catalog = ActionCatalog::build(
                 &registry,
@@ -563,6 +646,85 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn every_host_app_is_addressable_past_the_first_palette_page() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let count = SearchBudget::PALETTE.max_results + 12;
+        let mut apps: Vec<HostApp> = (0..count)
+            .map(|index| {
+                app(
+                    &format!("org.fixture.App{index:03}"),
+                    &format!("App {index:03}"),
+                )
+            })
+            .collect();
+        apps.push(app("so.tilo.terminal", "Terminal"));
+        let source = HostAppsTestSource::new(apps, vec![installed("so.tilo.terminal", "Terminal")]);
+        let provider = Rc::new(HostApplicationsProvider::with_test_source(source));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                needle: "",
+                wanted: &[ResourceKind::HostApplication],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            let deadline = tilo_test_env::hang_deadline();
+            while !provider.search_revision(&ctx).starts_with("ready:") {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "host-app index never became ready"
+                );
+                provider.refresh_search_index(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                provider
+                    .query_page(ctx, None, SearchBudget::PALETTE)
+                    .results
+                    .len()
+                    < count,
+                "the fixture must not fit on the first page"
+            );
+        }
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let select = |id: &str| {
+            let resource = ResourceRef::new("host-applications", id);
+            ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string())
+        };
+        let last = format!("org.fixture.App{:03}", count - 1);
+        assert_eq!(
+            select(&last).as_deref(),
+            Some(format!("Open App {:03}", count - 1).as_str()),
+            "an app past the first page must still open by its address"
+        );
+        assert_eq!(
+            select("so.tilo.terminal"),
+            None,
+            "a host app an installed Tilo package answers for stays hidden"
+        );
+        assert_eq!(select("org.fixture.Missing"), None);
     }
 
     #[test]
@@ -601,10 +763,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let index = ui::search::SearchTextIndex::new(
-            apps.iter()
-                .map(|app| format!("{}\u{1f}{}", app.name, app.desktop_id)),
-        );
+        let index = index_apps(&apps, &HashSet::new());
         *provider.snapshot.borrow_mut() = Some(HostAppsSnapshot {
             source_generation: provider.source_generation(),
             apps,
@@ -717,128 +876,79 @@ mod tests {
         assert_eq!(page.results[0].title, "Open unique-source-tail");
     }
 
-    /// "Unconfined" in the subtitle is the whole point of the separate kind.
     #[test]
-    fn the_row_names_the_source_and_says_it_is_unconfined() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
-        let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-        assert!(subtitle.contains("Flatpak"), "{subtitle}");
-        assert!(
-            subtitle.contains("unconfined"),
-            "the user must be able to tell a confined Tilo app from an \
-             unconfined host app without opening anything: {subtitle}"
-        );
-        assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
-    }
+    fn host_app_rows_are_a_separate_lower_ranked_kind_that_names_its_provenance() {
+        // Phase `the_row_names_the_source_and_says_it_is_unconfined`.
+        // "Unconfined" in the subtitle is the whole point of the separate kind.
+        {
+            let p = HostApplicationsProvider::new();
+            let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
+            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
+            assert!(subtitle.contains("Flatpak"), "{subtitle}");
+            assert!(
+                subtitle.contains("unconfined"),
+                "the user must be able to tell a confined Tilo app from an \
+                 unconfined host app without opening anything: {subtitle}"
+            );
+            assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
+        }
 
-    #[test]
-    fn a_system_app_row_names_system_provenance() {
-        let p = HostApplicationsProvider::new();
-        let system = HostApp {
-            source_label: "System",
-            ..app("org.gnome.Console", "Terminal")
-        };
-        let out = p.results_against("terminal", vec![system], &[]);
-        let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-        assert!(subtitle.starts_with("System · unconfined host app ·"));
-    }
+        // Phase `a_system_app_row_names_system_provenance`.
+        {
+            let p = HostApplicationsProvider::new();
+            let system = HostApp {
+                source_label: "System",
+                ..app("org.gnome.Console", "Terminal")
+            };
+            let out = p.results_against("terminal", &[system], &[]);
+            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
+            assert!(subtitle.starts_with("System · unconfined host app ·"));
+        }
 
-    #[test]
-    fn host_apps_are_a_separate_kind_from_tilo_applications() {
-        let p = HostApplicationsProvider::new();
-        assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
-        assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
-        assert_ne!(
-            ResourceKind::HostApplication.label(),
-            ResourceKind::Application.label()
-        );
-    }
+        // Phase `host_apps_are_a_separate_kind_from_tilo_applications`.
+        {
+            let p = HostApplicationsProvider::new();
+            assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
+            assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
+            assert_ne!(
+                ResourceKind::HostApplication.label(),
+                ResourceKind::Application.label()
+            );
+        }
 
-    /// Equal-quality matches rank the confined app first — Enter takes the top row.
-    #[test]
-    fn a_host_app_scores_below_an_equally_good_tilo_match() {
-        use crate::shell::search::providers::applications::ApplicationsProvider;
-        let host = HostApplicationsProvider::new();
-        let tilo = ApplicationsProvider::new();
-        // Different name/id tail, so this measures the scale, not shadowing.
-        let host_rows =
-            host.results_against("term", vec![app("org.x.Terminator", "Terminator")], &[]);
-        let tilo_rows = tilo.results_for(
-            "term",
-            vec![crate::shell::launcher::InstalledApp {
-                package_id: "so.tilo.terminal".into(),
-                display_name: "Terminal".into(),
-                category: None,
-                version: "1".into(),
-                manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
-                payload_root: std::path::PathBuf::from("/x"),
-                has_gui: true,
-                opens_extensions: Vec::new(),
-                opens_mime_types: Vec::new(),
-                opens_uri_schemes: Vec::new(),
-            }],
-            crate::shell::chrome_state::OpenTarget::Beside,
-        );
-        assert!(
-            tilo_rows[0].score > host_rows[0].score,
-            "tilo {} must outrank host {}",
-            tilo_rows[0].score,
-            host_rows[0].score
-        );
-    }
-
-    #[test]
-    fn keywords_and_categories_are_matchable() {
-        let p = HostApplicationsProvider::new();
-        let mut firefox = app("org.mozilla.firefox", "Firefox");
-        firefox.keywords = vec!["Internet".into(), "WWW".into()];
-        firefox.categories = vec!["Network".into(), "WebBrowser".into()];
-        let by_keyword = p.results_against("internet", vec![firefox.clone()], &[]);
-        assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
-        let by_category = p.results_against("webbrowser", vec![firefox], &[]);
-        assert_eq!(by_category.len(), 1, "{by_category:?}");
-        assert!(
-            by_keyword[0].score > by_category[0].score,
-            "a declared keyword is a stronger signal than a category bucket"
-        );
-    }
-
-    #[test]
-    fn an_empty_needle_lists_every_host_app() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("", vec![app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|r| r.score == 0));
-    }
-
-    #[test]
-    fn a_non_matching_needle_returns_nothing() {
-        let p = HostApplicationsProvider::new();
-        assert!(
-            p.results_against("zzzqqq", vec![app("com.spotify.Client", "Spotify")], &[])
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn unrequested_kind_returns_empty() {
-        let p = HostApplicationsProvider::new();
-        let c = chrome_rc();
-        let cs = c.borrow();
-        let doc = AutoCommit::new();
-        let out = p.query(SearchContext {
-            needle: "spotify",
-            wanted: &[ResourceKind::Application],
-            chrome: &cs,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert!(
-            out.is_empty(),
-            "the Applications chip must not pull in host apps — that is \
-             the distinction the separate kind exists to draw"
-        );
+        // Phase `a_host_app_scores_below_an_equally_good_tilo_match`.
+        // Equal-quality matches rank the confined app first — Enter takes the top row.
+        {
+            use crate::shell::search::providers::applications::ApplicationsProvider;
+            let host = HostApplicationsProvider::new();
+            let tilo = ApplicationsProvider::new();
+            // Different name/id tail, so this measures the scale, not shadowing.
+            let host_rows =
+                host.results_against("term", &[app("org.x.Terminator", "Terminator")], &[]);
+            let tilo_rows = tilo.results_for(
+                "term",
+                vec![crate::shell::launcher::InstalledApp {
+                    package_id: "so.tilo.terminal".into(),
+                    display_name: "Terminal".into(),
+                    localized_names: BTreeMap::default(),
+                    category: None,
+                    version: "1".into(),
+                    manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
+                    payload_root: std::path::PathBuf::from("/x"),
+                    has_gui: true,
+                    opens_extensions: Vec::new(),
+                    opens_mime_types: Vec::new(),
+                    opens_uri_schemes: Vec::new(),
+                }],
+                crate::shell::chrome_state::OpenTarget::Beside,
+            );
+            assert!(
+                tilo_rows[0].score > host_rows[0].score,
+                "tilo {} must outrank host {}",
+                tilo_rows[0].score,
+                host_rows[0].score
+            );
+        }
     }
 
     /// Must surface a visible error, not fail silently. Drives the
@@ -848,7 +958,7 @@ mod tests {
         let p = HostApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
-        let out = p.results_against("ghost", vec![app("so.tilo.ghost-host-app", "Ghost")], &[]);
+        let out = p.results_against("ghost", &[app("so.tilo.ghost-host-app", "Ghost")], &[]);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(
@@ -872,6 +982,7 @@ mod tests {
         crate::shell::launcher::InstalledApp {
             package_id: package_id.into(),
             display_name: display_name.into(),
+            localized_names: BTreeMap::default(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
@@ -884,38 +995,41 @@ mod tests {
     }
 
     #[test]
-    fn only_an_exact_tilo_package_identity_hides_the_host_row() {
-        let installed = vec![installed("so.tilo.terminal", "Terminal")];
-        assert!(shadowed_by_a_tilo_package(
-            &app("so.tilo.terminal", "Terminal"),
-            &installed
-        ));
-    }
+    fn only_an_exact_tilo_package_identity_hides_a_host_row() {
+        // Phase `only_an_exact_tilo_package_identity_hides_the_host_row`.
+        {
+            let installed = vec![installed("so.tilo.terminal", "Terminal")];
+            assert!(shadowed_by_a_tilo_package(
+                &app("so.tilo.terminal", "Terminal"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn tilo_terminal_does_not_hide_a_distinct_host_terminal() {
-        let installed = vec![installed("so.tilo.terminal", "Terminal")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.gnome.Console", "Terminal"),
-            &installed
-        ));
-    }
+        // Phase `tilo_terminal_does_not_hide_a_distinct_host_terminal`.
+        {
+            let installed = vec![installed("so.tilo.terminal", "Terminal")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.gnome.Console", "Terminal"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn tilo_calendar_does_not_hide_gnome_calendar() {
-        let installed = vec![installed("so.tilo.calendar", "Calendar")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.gnome.Calendar", "Calendar"),
-            &installed
-        ));
-    }
+        // Phase `tilo_calendar_does_not_hide_gnome_calendar`.
+        {
+            let installed = vec![installed("so.tilo.calendar", "Calendar")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.gnome.Calendar", "Calendar"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn a_generic_shared_name_does_not_hide_a_host_app() {
-        let installed = vec![installed("so.tilo.notes", "Notes")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.example.PrivateNotes", "Notes"),
-            &installed
-        ));
+        // Phase `a_generic_shared_name_does_not_hide_a_host_app`.
+        {
+            let installed = vec![installed("so.tilo.notes", "Notes")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.example.PrivateNotes", "Notes"),
+                &installed
+            ));
+        }
     }
 }

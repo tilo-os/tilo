@@ -6,10 +6,9 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::tilo_actions::{
-    ControlInvocation, InvocationId, InvocationUpdate, OperationKind, Resource,
-};
-use ui::widget::{ResourceOperationStart, Widget};
+use ui::tilo_actions::{ControlInvocation, InvocationId, InvocationUpdate, Resource};
+use ui::widget::{AppModel, ModelPath};
+use ui::widget::{ResourceOperation, ResourceOperationStart, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -49,6 +48,9 @@ impl LiveStore {
         if let Some(id) = store_target {
             inner.open_catalogue_item(id);
         }
+        // First presented frame is the catalogue chrome ("Loading apps…"),
+        // not a cleared swapchain. The worker is already in flight.
+        inner.set_worker_busy(true);
         Self {
             inner,
             worker: StoreWorker::spawn(opened_ref, search_index),
@@ -57,37 +59,22 @@ impl LiveStore {
 }
 
 impl Widget for LiveStore {
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.inner.local_resource_operation_handlers()
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        self.inner.resources(doc)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        self.inner.start_operation(op, doc, path)
     }
 
     fn poll_resource_operation(
@@ -105,7 +92,8 @@ impl Widget for LiveStore {
         clippy::too_many_lines,
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         while let Some(snap) = self.worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner
@@ -283,26 +271,9 @@ impl Widget for LiveStore {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -311,10 +282,6 @@ impl Widget for LiveStore {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.inner.children_mut()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.inner.take_control_invocation()
     }
 
     fn name(&self) -> &'static str {
@@ -338,35 +305,51 @@ impl Widget for LiveStore {
     }
 }
 
+impl ui::resources::PublishesResources for LiveStore {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        self.inner.resources(doc)
+    }
+}
+
+impl ui::widget::controls::ActionControls for LiveStore {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.inner.take_control_invocation()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The live root is the real worker-backed host with its launch contract, and reconnects after drop.
     #[test]
-    fn app_root_is_the_real_worker_backed_store_host() {
-        let root = app_root();
-        assert_eq!(root.name(), "LiveStore");
-        assert!(
-            root.local_resource_operation_handlers()
-                .contains(&"store.refresh")
-        );
-    }
+    fn live_root_is_the_worker_backed_host_and_reconnects() {
+        // Case `app_root_is_the_real_worker_backed_store_host`.
+        {
+            let root = app_root();
+            assert_eq!(root.name(), "LiveStore");
+            assert!(
+                root.local_resource_operation_handlers()
+                    .contains(&"store.refresh")
+            );
+        }
 
-    #[test]
-    fn launch_context_keeps_the_real_host_contract() {
-        let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
-        assert_eq!(root.name(), "LiveStore");
-        assert!(root.needs_animation_frame());
-    }
+        // Case `launch_context_keeps_the_real_host_contract`.
+        {
+            let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
+            assert_eq!(root.name(), "LiveStore");
+            assert!(root.needs_animation_frame());
+        }
 
-    #[test]
-    fn a_fresh_root_reconnects_after_the_previous_host_is_dropped() {
-        // Dropping a Store root drops the worker request sender. The worker
-        // exits after its current operation; a reopened app must always own a
-        // fresh, independent host rather than retaining the old channel.
-        drop(app_root());
-        let reopened = app_root();
-        assert_eq!(reopened.name(), "LiveStore");
-        assert!(reopened.needs_animation_frame());
+        // Case `a_fresh_root_reconnects_after_the_previous_host_is_dropped`.
+        {
+            // Dropping a Store root drops the worker request sender. The worker
+            // exits after its current operation; a reopened app must always own a
+            // fresh, independent host rather than retaining the old channel.
+            drop(app_root());
+            let reopened = app_root();
+            assert_eq!(reopened.name(), "LiveStore");
+            assert!(reopened.needs_animation_frame());
+        }
     }
 }

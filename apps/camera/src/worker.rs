@@ -37,7 +37,9 @@ pub struct ScanResult {
 pub struct PhotoJob {
     pub invocation: Option<InvocationId>,
     pub generation: u64,
-    pub dir: PathBuf,
+    /// `None` keeps the photo only in the content store: a host whose files
+    /// have no native path (a browser page) has no directory to project to.
+    pub dir: Option<PathBuf>,
     pub frame: FrameBuf,
     pub format: PhotoFormat,
     pub facing: Facing,
@@ -51,7 +53,7 @@ pub struct PhotoResult {
 
 pub struct PhotoSaved {
     pub name: String,
-    pub local_path: PathBuf,
+    pub local_path: Option<PathBuf>,
     pub media_id: String,
     pub w: u32,
     pub h: u32,
@@ -112,7 +114,16 @@ pub struct CameraWorker {
     video_rx: Receiver<VideoResult>,
     recording: Arc<Mutex<RecordingControl>>,
     scan_rx: Receiver<ScanResult>,
+    /// Where there are no threads (a browser page) the loop runs each job
+    /// as it is admitted, on the caller's thread, and its jobs' queue is
+    /// drained there.
+    inline: Option<Mutex<(WorkerLoop, Receiver<WorkerJob>)>>,
 }
+
+/// Results a thread-free worker may hold before the UI drains them; each
+/// admitted job settles at once, so this only bounds a UI that stops
+/// draining.
+const INLINE_RESULTS: usize = 8;
 
 enum WorkerJob {
     Photo(PhotoJob),
@@ -191,25 +202,35 @@ impl WorkerLoop {
     fn process_job(&self, job: WorkerJob) -> bool {
         match job {
             WorkerJob::Photo(job) => {
-                let result = crate::library::write_photo(&job.dir, &job.frame, job.format)
-                    .map_err(|error| error.to_string())
-                    .and_then(|name| {
-                        let local_path = job.dir.join(&name);
-                        let saved_path = local_path.clone();
-                        crate::media::store_file(&self.content, &local_path)
-                            .map(|media_id| PhotoSaved {
-                                name,
-                                local_path: saved_path,
-                                media_id,
-                                w: job.frame.w,
-                                h: job.frame.h,
-                                facing: job.facing,
-                            })
-                            .ok_or_else(|| {
-                                let _ = std::fs::remove_file(&local_path);
-                                "couldn't verify portable media bytes".into()
-                            })
-                    });
+                let saved =
+                    |name: String, local_path: Option<PathBuf>, media_id: String| PhotoSaved {
+                        name,
+                        local_path,
+                        media_id,
+                        w: job.frame.w,
+                        h: job.frame.h,
+                        facing: job.facing,
+                    };
+                let result = match &job.dir {
+                    Some(dir) => crate::library::write_photo(dir, &job.frame, job.format)
+                        .map_err(|error| error.to_string())
+                        .and_then(|name| {
+                            let local_path = dir.join(&name);
+                            crate::media::store_file(&self.content, &local_path)
+                                .map(|media_id| saved(name, Some(local_path.clone()), media_id))
+                                .ok_or_else(|| {
+                                    crate::files::remove(&local_path);
+                                    "couldn't verify portable media bytes".into()
+                                })
+                        }),
+                    None => crate::library::encode_photo(&job.frame, job.format)
+                        .map_err(|error| error.to_string())
+                        .and_then(|(name, bytes)| {
+                            crate::media::store(&self.content, &bytes)
+                                .map(|media_id| saved(name, None, media_id))
+                                .ok_or_else(|| "couldn't verify portable media bytes".into())
+                        }),
+                };
                 self.photo_results
                     .send(PhotoResult {
                         invocation: job.invocation,
@@ -249,47 +270,76 @@ impl CameraWorker {
     pub fn new(content: ContentStore) -> Self {
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
+        let threads = matches!(
+            ui::rt::availability(ui::rt::Feature::Threads),
+            ui::rt::Availability::Available
+        );
+        let results = if threads { 1 } else { INLINE_RESULTS };
         let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
-        let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(1);
-        let (video_results, video_rx) = std::sync::mpsc::sync_channel::<VideoResult>(1);
-        let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(1);
+        let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(results);
+        let (video_results, video_rx) = std::sync::mpsc::sync_channel::<VideoResult>(results);
+        let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(results);
         let recording = Arc::new(Mutex::new(RecordingControl {
             start: false,
             finish: None,
             latest: None,
         }));
-        let worker_recording = Arc::clone(&recording);
-        let started = std::thread::Builder::new()
-            .name("camera-bounded-worker".into())
-            .spawn(move || {
-                let mut worker = WorkerLoop {
-                    recording: worker_recording,
-                    recorder: None,
-                    photo_results,
-                    video_results,
-                    scan_results,
-                    content,
+        let worker = WorkerLoop {
+            recording: Arc::clone(&recording),
+            recorder: None,
+            photo_results,
+            video_results,
+            scan_results,
+            content,
+        };
+        if !threads {
+            return Self {
+                tx: Some(tx),
+                rx,
+                video_rx,
+                recording,
+                scan_rx,
+                inline: Some(Mutex::new((worker, jobs))),
+            };
+        }
+        let started = ui::rt::spawn_thread("camera-bounded-worker", move || {
+            let mut worker = worker;
+            // Inspect recording state before blocking and after all jobs.
+            // A full unified queue can coalesce a recording wake, so this
+            // makes the slot observable even without a queued wake event.
+            while worker.process_recording_control() {
+                let Ok(job) = jobs.recv() else {
+                    break;
                 };
-                // Inspect recording state before blocking and after all jobs.
-                // A full unified queue can coalesce a recording wake, so this
-                // makes the slot observable even without a queued wake event.
-                while worker.process_recording_control() {
-                    let Ok(job) = jobs.recv() else {
-                        break;
-                    };
-                    if !worker.process_job(job) || !worker.process_recording_control() {
-                        break;
-                    }
+                if !worker.process_job(job) || !worker.process_recording_control() {
+                    break;
                 }
-            })
-            .is_ok();
+            }
+        })
+        .is_ok();
         Self {
             tx: started.then_some(tx),
             rx,
             video_rx,
             recording,
             scan_rx,
+            inline: None,
         }
+    }
+
+    /// A thread-free worker runs what was just admitted.
+    fn run_inline(&self) {
+        let Some(inline) = &self.inline else {
+            return;
+        };
+        let Ok(mut guard) = inline.lock() else {
+            return;
+        };
+        let (worker, jobs) = &mut *guard;
+        while let Ok(job) = jobs.try_recv() {
+            worker.process_job(job);
+        }
+        worker.process_recording_control();
     }
 
     /// # Errors
@@ -303,7 +353,10 @@ impl CameraWorker {
             .ok_or_else(|| "Camera background worker couldn't start".to_string())?
             .try_send(WorkerJob::Photo(job))
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.run_inline();
+                Ok(())
+            }
             Err(TrySendError::Full(_)) => Err("Camera is still saving the previous photo".into()),
             Err(TrySendError::Disconnected(_)) => {
                 Err("Camera background worker disconnected".into())
@@ -324,7 +377,10 @@ impl CameraWorker {
             .ok_or_else(|| "Camera video worker couldn't start".to_string())?
             .try_send(WorkerJob::RecordingWake)
         {
-            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Ok(()) | Err(TrySendError::Full(_)) => {
+                self.run_inline();
+                Ok(())
+            }
             Err(TrySendError::Disconnected(_)) => Err("Camera video worker disconnected".into()),
         }
     }
@@ -400,7 +456,10 @@ impl CameraWorker {
             .ok_or_else(|| "Camera code scanner couldn't start".to_string())?
             .try_send(WorkerJob::Scan(job))
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.run_inline();
+                Ok(())
+            }
             Err(TrySendError::Full(_)) => Err("A code scan is already running".into()),
             Err(TrySendError::Disconnected(_)) => Err("Camera code scanner disconnected".into()),
         }
@@ -416,43 +475,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recorder_ingress_keeps_only_the_newest_frame() {
-        let mut control = RecordingControl {
-            start: false,
-            finish: None,
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
+    fn recorder_control_coalesces_the_newest_frame_and_orders_start_then_finish() {
+        // Phase `recorder_ingress_keeps_only_the_newest_frame`.
+        {
+            let mut control = RecordingControl {
+                start: false,
+                finish: None,
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-        let newest = control.latest.as_ref().expect("latest frame");
-        assert_eq!((newest.w, newest.h), (48, 36));
-        assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
-    }
+            let newest = control.latest.as_ref().expect("latest frame");
+            assert_eq!((newest.w, newest.h), (48, 36));
+            assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
+        }
+        // Phase `recorder_control_orders_start_newest_frame_then_finish`.
+        {
+            let mut control = RecordingControl {
+                start: true,
+                finish: Some(VideoJob {
+                    invocation: None,
+                    generation: 7,
+                    dir: None,
+                    facing: Facing::Back,
+                }),
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-    #[test]
-    fn recorder_control_orders_start_newest_frame_then_finish() {
-        let mut control = RecordingControl {
-            start: true,
-            finish: Some(VideoJob {
-                invocation: None,
-                generation: 7,
-                dir: None,
-                facing: Facing::Back,
-            }),
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
-
-        let (start, frame, finish) = control.take_pending();
-        assert!(start, "worker creates Recorder before consuming frame");
-        assert_eq!(
-            frame.map(|frame| (frame.w, frame.h)),
-            Some((48, 36)),
-            "finish consumes the coalesced newest frame"
-        );
-        assert_eq!(finish.map(|job| job.generation), Some(7));
-        assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+            let (start, frame, finish) = control.take_pending();
+            assert!(start, "worker creates Recorder before consuming frame");
+            assert_eq!(
+                frame.map(|frame| (frame.w, frame.h)),
+                Some((48, 36)),
+                "finish consumes the coalesced newest frame"
+            );
+            assert_eq!(finish.map(|job| job.generation), Some(7));
+            assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+        }
     }
 }

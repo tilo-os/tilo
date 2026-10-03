@@ -228,111 +228,119 @@ mod tests {
         }
     }
 
+    /// Snippet documents round-trip every field and upserts neither duplicate nor grow the doc.
     #[test]
-    fn round_trips_all_fields() {
-        let mut doc = AutoCommit::new();
-        let s = sample();
-        SnippetsDoc::upsert(&mut doc, &s);
-        let got = SnippetsDoc::list(&doc);
-        assert_eq!(got.len(), 1);
-        let g = &got[0];
-        assert_eq!(g.id, s.id);
-        assert_eq!(g.title, "Deploy");
-        assert_eq!(g.language, Language::Shell);
-        assert_eq!(g.folder, "Ops");
-        assert_eq!(g.tags, vec!["k8s", "deploy"]);
-        assert_eq!(g.body, s.body);
-        assert_eq!(g.description, "Restart a deployment");
-        assert!(g.favorite);
-        assert_eq!(g.uses, 3);
-    }
-
-    #[test]
-    fn upsert_is_idempotent() {
-        let mut doc = AutoCommit::new();
-        let s = sample();
-        SnippetsDoc::upsert(&mut doc, &s);
-        SnippetsDoc::upsert(&mut doc, &s);
-        assert_eq!(
-            SnippetsDoc::list(&doc).len(),
-            1,
-            "second upsert must not duplicate"
-        );
-    }
-
-    #[test]
-    fn tags_update_replaces_set() {
-        let mut doc = AutoCommit::new();
-        let mut s = sample();
-        SnippetsDoc::upsert(&mut doc, &s);
-        s.tags = vec!["only".into()];
-        SnippetsDoc::upsert(&mut doc, &s);
-        assert_eq!(SnippetsDoc::list(&doc)[0].tags, vec!["only"]);
-    }
-
-    #[test]
-    fn editing_one_body_char_is_a_bounded_splice() {
-        // Appending one char to a long snippet body must diff-splice (grow the
-        // doc a little), not delete+reinsert the whole body every upsert — the
-        // O(len^2) tombstone churn that HIG §6 forbids.
-        let mut doc = AutoCommit::new();
-        let mut s = sample();
-        s.body = "x".repeat(200);
-        SnippetsDoc::upsert(&mut doc, &s);
-        let before = doc.save().len();
-        s.body.push('!');
-        SnippetsDoc::upsert(&mut doc, &s);
-        let grew = doc.save().len() - before;
-        assert_eq!(SnippetsDoc::list(&doc)[0].body, s.body);
-        assert!(
-            grew < 40,
-            "appending one char to a snippet body grew the doc by {grew} bytes (expected a single-char splice)"
-        );
-    }
-
-    #[test]
-    fn idempotent_upsert_does_not_grow_the_doc() {
-        // Change-guarded scalars + diff-spliced Text make a re-store of an
-        // unchanged snippet a true no-op (the old blind puts grew it forever).
-        let mut doc = AutoCommit::new();
-        let s = sample();
-        SnippetsDoc::upsert(&mut doc, &s);
-        let before = doc.save().len();
-        for _ in 0..25 {
+    fn snippet_doc_round_trips_and_upserts_idempotently() {
+        // Case `round_trips_all_fields`.
+        {
+            let mut doc = AutoCommit::new();
+            let s = sample();
             SnippetsDoc::upsert(&mut doc, &s);
+            let got = SnippetsDoc::list(&doc);
+            assert_eq!(got.len(), 1);
+            let g = &got[0];
+            assert_eq!(g.id, s.id);
+            assert_eq!(g.title, "Deploy");
+            assert_eq!(g.language, Language::Shell);
+            assert_eq!(g.folder, "Ops");
+            assert_eq!(g.tags, vec!["k8s", "deploy"]);
+            assert_eq!(g.body, s.body);
+            assert_eq!(g.description, "Restart a deployment");
+            assert!(g.favorite);
+            assert_eq!(g.uses, 3);
         }
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "idempotent upsert must not grow the document"
-        );
+
+        // Case `upsert_is_idempotent`.
+        {
+            let mut doc = AutoCommit::new();
+            let s = sample();
+            SnippetsDoc::upsert(&mut doc, &s);
+            SnippetsDoc::upsert(&mut doc, &s);
+            assert_eq!(
+                SnippetsDoc::list(&doc).len(),
+                1,
+                "second upsert must not duplicate"
+            );
+        }
+
+        // Case `tags_update_replaces_set`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut s = sample();
+            SnippetsDoc::upsert(&mut doc, &s);
+            s.tags = vec!["only".into()];
+            SnippetsDoc::upsert(&mut doc, &s);
+            assert_eq!(SnippetsDoc::list(&doc)[0].tags, vec!["only"]);
+        }
+
+        // Case `idempotent_upsert_does_not_grow_the_doc`.
+        {
+            // Change-guarded scalars + diff-spliced Text make a re-store of an
+            // unchanged snippet a true no-op (the old blind puts grew it forever).
+            let mut doc = AutoCommit::new();
+            let s = sample();
+            SnippetsDoc::upsert(&mut doc, &s);
+            let before = doc.save().len();
+            for _ in 0..25 {
+                SnippetsDoc::upsert(&mut doc, &s);
+            }
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "idempotent upsert must not grow the document"
+            );
+        }
     }
 
+    /// Body edits are bounded splices; remove deletes; two docs merge.
     #[test]
-    fn remove_deletes_snippet() {
-        let mut doc = AutoCommit::new();
-        let s = sample();
-        SnippetsDoc::upsert(&mut doc, &s);
-        SnippetsDoc::remove(&mut doc, s.id);
-        assert!(SnippetsDoc::list(&doc).is_empty());
-        assert!(SnippetsDoc::is_empty(&doc));
-    }
+    fn snippet_doc_edits_splice_remove_and_merge() {
+        // Case `editing_one_body_char_is_a_bounded_splice`.
+        {
+            // Appending one char to a long snippet body must diff-splice (grow the
+            // doc a little), not delete+reinsert the whole body every upsert — the
+            // O(len^2) tombstone churn that HIG §6 forbids.
+            let mut doc = AutoCommit::new();
+            let mut s = sample();
+            s.body = "x".repeat(200);
+            SnippetsDoc::upsert(&mut doc, &s);
+            let before = doc.save().len();
+            s.body.push('!');
+            SnippetsDoc::upsert(&mut doc, &s);
+            let grew = doc.save().len() - before;
+            assert_eq!(SnippetsDoc::list(&doc)[0].body, s.body);
+            assert!(
+                grew < 40,
+                "appending one char to a snippet body grew the doc by {grew} bytes (expected a single-char splice)"
+            );
+        }
 
-    #[test]
-    fn two_docs_merge_snippets() {
-        let mut a = AutoCommit::new();
-        SnippetsDoc::upsert(&mut a, &sample());
+        // Case `remove_deletes_snippet`.
+        {
+            let mut doc = AutoCommit::new();
+            let s = sample();
+            SnippetsDoc::upsert(&mut doc, &s);
+            SnippetsDoc::remove(&mut doc, s.id);
+            assert!(SnippetsDoc::list(&doc).is_empty());
+            assert!(SnippetsDoc::is_empty(&doc));
+        }
 
-        // B joins from A's state, adds its own snippet.
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut s2 = Snippet::blank("Git");
-        s2.title = "Amend".into();
-        SnippetsDoc::upsert(&mut b, &s2);
+        // Case `two_docs_merge_snippets`.
+        {
+            let mut a = AutoCommit::new();
+            SnippetsDoc::upsert(&mut a, &sample());
 
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let titles: Vec<_> = SnippetsDoc::list(&a).into_iter().map(|s| s.title).collect();
-        assert!(titles.contains(&"Deploy".to_string()));
-        assert!(titles.contains(&"Amend".to_string()));
+            // B joins from A's state, adds its own snippet.
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let mut s2 = Snippet::blank("Git");
+            s2.title = "Amend".into();
+            SnippetsDoc::upsert(&mut b, &s2);
+
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let titles: Vec<_> = SnippetsDoc::list(&a).into_iter().map(|s| s.title).collect();
+            assert!(titles.contains(&"Deploy".to_string()));
+            assert!(titles.contains(&"Amend".to_string()));
+        }
     }
 }

@@ -14,11 +14,9 @@
 //! frame-derived state the widget keeps.
 use crate::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::WindowEvent;
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -187,7 +185,10 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
 
     fn build_layout(
         &mut self,
@@ -319,20 +320,6 @@ impl Widget for ProgressBar {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "ProgressBar"
     }
@@ -398,20 +385,6 @@ impl Widget for ProgressBar {
         self.rect == Rect::ZERO
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -426,7 +399,7 @@ impl Widget for ProgressBar {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -439,12 +412,30 @@ impl Widget for ProgressBar {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for ProgressBar {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for ProgressBar {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 
@@ -492,223 +483,229 @@ mod tests {
         scene
     }
 
-    /// At `progress == 0.0` the bar must paint the track *only* — the
-    /// accent fill rect must be skipped entirely, pinned against the
-    /// encoding (not pixel colour) so a future "draws a zero-width rect
-    /// anyway" refactor trips the test.
     #[test]
-    fn progress_bar_at_zero_paints_no_fill() {
-        let mut zero = bar_at(0.0);
-        let zero_scene = render(&mut zero);
-        let zero_fills = count_color_fills(&zero_scene);
+    fn determinate_fill_tracks_progress_and_is_announced() {
+        // Case `progress_bar_at_zero_paints_no_fill`.
+        // At `progress == 0.0` the bar must paint the track *only* — the
+        // accent fill rect must be skipped entirely, pinned against the
+        // encoding (not pixel colour) so a future "draws a zero-width rect
+        // anyway" refactor trips the test.
+        {
+            let mut zero = bar_at(0.0);
+            let zero_scene = render(&mut zero);
+            let zero_fills = count_color_fills(&zero_scene);
 
-        // The track alone is one COLOR fill — no accent fill should
-        // appear.
-        assert_eq!(
-            zero_fills, 1,
-            "zero-progress bar must emit exactly the track COLOR fill \
+            // The track alone is one COLOR fill — no accent fill should
+            // appear.
+            assert_eq!(
+                zero_fills, 1,
+                "zero-progress bar must emit exactly the track COLOR fill \
              with no accent fill draw — got {zero_fills} COLOR tags",
-        );
+            );
 
-        // Cross-check: a half-progress bar emits *more* COLOR fills
-        // than the zero bar, proving the difference is the accent fill.
-        let mut half = bar_at(0.5);
-        let half_fills = count_color_fills(&render(&mut half));
-        assert!(
-            half_fills > zero_fills,
-            "non-zero progress must add an accent fill (half: {half_fills}, \
+            // Cross-check: a half-progress bar emits *more* COLOR fills
+            // than the zero bar, proving the difference is the accent fill.
+            let mut half = bar_at(0.5);
+            let half_fills = count_color_fills(&render(&mut half));
+            assert!(
+                half_fills > zero_fills,
+                "non-zero progress must add an accent fill (half: {half_fills}, \
              zero: {zero_fills})",
-        );
-    }
+            );
+        }
 
-    /// At `progress == 1.0` the accent fill must span the full track
-    /// width. Can't inspect the encoded rect directly, so this drives
-    /// the contract through the public `progress()` accessor, computing
-    /// the fill rectangle the same way `draw` does.
-    #[test]
-    fn progress_bar_at_full_paints_track_width_fill() {
-        let bar = bar_at(1.0);
-        let track_width = bar.rect.width();
-        let fill_width = f64::from(bar.progress()) * track_width;
-        assert!(
-            (fill_width - track_width).abs() < 1e-6,
-            "at progress=1.0 the fill must span the full track width \
+        // Case `progress_bar_at_full_paints_track_width_fill`.
+        // At `progress == 1.0` the accent fill must span the full track
+        // width. Can't inspect the encoded rect directly, so this drives
+        // the contract through the public `progress()` accessor, computing
+        // the fill rectangle the same way `draw` does.
+        {
+            let bar = bar_at(1.0);
+            let track_width = bar.rect.width();
+            let fill_width = f64::from(bar.progress()) * track_width;
+            assert!(
+                (fill_width - track_width).abs() < 1e-6,
+                "at progress=1.0 the fill must span the full track width \
              (track={track_width}, fill={fill_width})",
-        );
+            );
 
-        // And the scene actually paints an accent fill at full
-        // progress (i.e. the >0.0 branch fires, not the zero skip).
-        let mut full = bar_at(1.0);
-        let full_fills = count_color_fills(&render(&mut full));
-        let mut zero = bar_at(0.0);
-        let zero_fills = count_color_fills(&render(&mut zero));
-        assert!(
-            full_fills > zero_fills,
-            "full bar must emit at least one more COLOR fill than zero \
+            // And the scene actually paints an accent fill at full
+            // progress (i.e. the >0.0 branch fires, not the zero skip).
+            let mut full = bar_at(1.0);
+            let full_fills = count_color_fills(&render(&mut full));
+            let mut zero = bar_at(0.0);
+            let zero_fills = count_color_fills(&render(&mut zero));
+            assert!(
+                full_fills > zero_fills,
+                "full bar must emit at least one more COLOR fill than zero \
              bar — full: {full_fills}, zero: {zero_fills}",
-        );
-    }
+            );
+        }
 
-    /// At `progress == 0.5` the accent fill width must equal half the
-    /// track width within a ±1 px tolerance. The 1 px slack absorbs
-    /// rounding at sub-pixel layout boundaries; the underlying maths
-    /// is exact for the 200 px test rect.
-    #[test]
-    fn progress_bar_at_half_paints_half_fill_within_one_pixel() {
-        let bar = bar_at(0.5);
-        let track_width = bar.rect.width();
-        let fill_width = f64::from(bar.progress()) * track_width;
-        let expected = track_width / 2.0;
-        assert!(
-            (fill_width - expected).abs() <= 1.0,
-            "at progress=0.5 the fill width must be track_width/2 ± 1 px \
+        // Case `progress_bar_at_half_paints_half_fill_within_one_pixel`.
+        // At `progress == 0.5` the accent fill width must equal half the
+        // track width within a ±1 px tolerance. The 1 px slack absorbs
+        // rounding at sub-pixel layout boundaries; the underlying maths
+        // is exact for the 200 px test rect.
+        {
+            let bar = bar_at(0.5);
+            let track_width = bar.rect.width();
+            let fill_width = f64::from(bar.progress()) * track_width;
+            let expected = track_width / 2.0;
+            assert!(
+                (fill_width - expected).abs() <= 1.0,
+                "at progress=0.5 the fill width must be track_width/2 ± 1 px \
              (expected={expected}, got={fill_width})",
-        );
-    }
+            );
+        }
 
-    /// A determinate bar reports its progress as a percentage value with no
-    /// busy flag; an indeterminate bar omits the value and is marked busy.
-    #[test]
-    fn accessibility_reports_progressbar_role_value_and_busy() {
-        use crate::a11y::Role;
-        let half = ProgressBar::new(0.5);
-        let node = Widget::accessibility(&half).expect("progress bar is not presentational");
-        assert_eq!(node.role, Role::ProgressBar);
-        assert_eq!(node.value.as_deref(), Some("50%"));
-        assert!(!node.state.busy, "a determinate bar is not busy");
+        // Case `accessibility_reports_progressbar_role_value_and_busy`.
+        // A determinate bar reports its progress as a percentage value with no
+        // busy flag; an indeterminate bar omits the value and is marked busy.
+        {
+            use crate::a11y::Role;
+            let half = ProgressBar::new(0.5);
+            let node = Widget::accessibility(&half).expect("progress bar is not presentational");
+            assert_eq!(node.role, Role::ProgressBar);
+            assert_eq!(node.value.as_deref(), Some("50%"));
+            assert!(!node.state.busy, "a determinate bar is not busy");
 
-        let indet = ProgressBar::indeterminate();
-        let node = Widget::accessibility(&indet).unwrap();
-        assert_eq!(node.role, Role::ProgressBar);
-        assert_eq!(node.value, None, "an indeterminate bar exposes no value");
-        assert!(node.state.busy, "an indeterminate bar is busy");
-    }
+            let indet = ProgressBar::indeterminate();
+            let node = Widget::accessibility(&indet).unwrap();
+            assert_eq!(node.role, Role::ProgressBar);
+            assert_eq!(node.value, None, "an indeterminate bar exposes no value");
+            assert!(node.state.busy, "an indeterminate bar is busy");
+        }
 
-    /// Indeterminate bars must opt into the redraw loop via
-    /// `needs_animation_frame() == true`, otherwise `App` would stop
-    /// pumping frames and the segment would freeze partway across the
-    /// track. Determinate bars must *not* opt in — they're static.
-    #[test]
-    fn progress_bar_indeterminate_needs_animation_frame_returns_true() {
-        let indeterminate = ProgressBar::indeterminate();
-        assert!(
-            indeterminate.needs_animation_frame(),
-            "indeterminate bar must request animation frames",
-        );
+        // Case `determinate_bar_redraws_only_after_a_visible_value_change`.
+        {
+            let mut bar = bar_at(0.5);
+            assert!(bar.needs_redraw(), "a new bar needs its initial paint");
+            bar.mark_drawn();
+            assert!(!bar.needs_redraw(), "a painted determinate bar is static");
 
-        let determinate = ProgressBar::new(0.5);
-        assert!(
-            !determinate.needs_animation_frame(),
-            "determinate bar must not request animation frames",
-        );
-    }
-
-    #[test]
-    fn determinate_bar_redraws_only_after_a_visible_value_change() {
-        let mut bar = bar_at(0.5);
-        assert!(bar.needs_redraw(), "a new bar needs its initial paint");
-        bar.mark_drawn();
-        assert!(!bar.needs_redraw(), "a painted determinate bar is static");
-
-        bar.set_progress(0.5);
-        assert!(!bar.needs_redraw(), "setting the same value is a no-op");
-        bar.set_progress(0.75);
-        assert!(
-            bar.needs_redraw(),
-            "a visible value change invalidates the bar"
-        );
+            bar.set_progress(0.5);
+            assert!(!bar.needs_redraw(), "setting the same value is a no-op");
+            bar.set_progress(0.75);
+            assert!(
+                bar.needs_redraw(),
+                "a visible value change invalidates the bar"
+            );
+        }
     }
 
     #[test]
-    fn indeterminate_damage_tracks_only_the_moving_segment() {
-        let mut bar = ProgressBar::indeterminate();
-        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        let _ = render(&mut bar);
-        bar.mark_drawn();
+    fn indeterminate_segment_animates_with_tight_damage_unless_motion_is_reduced() {
+        // Case `progress_bar_indeterminate_needs_animation_frame_returns_true`.
+        // Indeterminate bars must opt into the redraw loop via
+        // `needs_animation_frame() == true`, otherwise `App` would stop
+        // pumping frames and the segment would freeze partway across the
+        // track. Determinate bars must *not* opt in — they're static.
+        {
+            let indeterminate = ProgressBar::indeterminate();
+            assert!(
+                indeterminate.needs_animation_frame(),
+                "indeterminate bar must request animation frames",
+            );
 
-        let mut regions = Vec::new();
-        bar.collect_damage(&mut regions);
-        assert!(!regions.is_empty(), "moving segment should report damage");
-        assert!(regions.len() <= 2);
-        assert!(regions.iter().all(|damage| {
-            damage.width() <= bar.rect.width() * INDETERMINATE_SEGMENT_FRAC * 2.0 + 1.0
-        }));
-    }
+            let determinate = ProgressBar::new(0.5);
+            assert!(
+                !determinate.needs_animation_frame(),
+                "determinate bar must not request animation frames",
+            );
+        }
 
-    #[test]
-    fn indeterminate_wrap_damage_is_available_immediately_after_draw() {
-        use crate::time::Duration;
+        // Case `indeterminate_damage_tracks_only_the_moving_segment`.
+        {
+            let mut bar = ProgressBar::indeterminate();
+            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            let _ = render(&mut bar);
+            bar.mark_drawn();
 
-        let mut bar = ProgressBar::indeterminate();
-        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
-        // Build everything `draw` needs first: loading the text renderer's
-        // fonts takes long enough to move the sweep off the wraparound phase
-        // this test backdates to.
-        let theme = Theme::dark().with_reduce_motion(false);
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        bar.start = crate::time::now()
-            .checked_sub(Duration::from_millis(300))
-            .expect("the test duration is far shorter than the monotonic clock");
-        bar.dirty = false;
-        // The frame owner must collect immediately after `draw`, before it
-        // clears dirty flags. `draw` is what records this frame's outgoing
-        // and incoming segment geometry.
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let mut regions = Vec::new();
+            bar.collect_damage(&mut regions);
+            assert!(!regions.is_empty(), "moving segment should report damage");
+            assert!(regions.len() <= 2);
+            assert!(regions.iter().all(|damage| {
+                damage.width() <= bar.rect.width() * INDETERMINATE_SEGMENT_FRAC * 2.0 + 1.0
+            }));
+        }
 
-        let mut regions = Vec::new();
-        bar.collect_damage(&mut regions);
-        assert_eq!(regions.len(), 2, "wraparound must not form one wide union");
-        assert!(regions.iter().all(|damage| damage.width() <= 61.0));
-    }
+        // Case `indeterminate_wrap_damage_is_available_immediately_after_draw`.
+        {
+            use crate::time::Duration;
 
-    #[test]
-    fn reduced_motion_stops_indeterminate_frame_requests_after_paint() {
-        let mut bar = ProgressBar::indeterminate();
-        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        let _ = render_with(&mut bar, true);
-        bar.mark_drawn();
+            let mut bar = ProgressBar::indeterminate();
+            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
+            // Build everything `draw` needs first: loading the text renderer's
+            // fonts takes long enough to move the sweep off the wraparound phase
+            // this test backdates to.
+            let theme = Theme::dark().with_reduce_motion(false);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            bar.start = crate::time::now()
+                .checked_sub(Duration::from_millis(300))
+                .expect("the test duration is far shorter than the monotonic clock");
+            bar.dirty = false;
+            // The frame owner must collect immediately after `draw`, before it
+            // clears dirty flags. `draw` is what records this frame's outgoing
+            // and incoming segment geometry.
+            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        assert!(!bar.needs_animation_frame());
-        assert!(!bar.needs_redraw());
-    }
+            let mut regions = Vec::new();
+            bar.collect_damage(&mut regions);
+            assert_eq!(regions.len(), 2, "wraparound must not form one wide union");
+            assert!(regions.iter().all(|damage| damage.width() <= 61.0));
+        }
 
-    /// With reduced motion an indeterminate bar holds its segment fixed:
-    /// a bar backdated by a full sweep paints the same geometry as a
-    /// fresh one. With motion on, the same backdate lands elsewhere —
-    /// proving the freeze is the reduced-motion path, not a no-op.
-    #[test]
-    fn reduce_motion_freezes_the_indeterminate_segment() {
-        use crate::time::Duration;
-        let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
-        // A quarter-sweep backdate so the moving segment is plainly off the
-        // resting position (a full sweep would alias back to phase 0).
-        let backdate = crate::time::now()
-            .checked_sub(one_sweep / 4)
-            .expect("process has been running longer than a quarter sweep");
+        // Case `reduced_motion_stops_indeterminate_frame_requests_after_paint`.
+        {
+            let mut bar = ProgressBar::indeterminate();
+            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            let _ = render_with(&mut bar, true);
+            bar.mark_drawn();
 
-        let mut fresh = ProgressBar::indeterminate();
-        fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        let fresh_geo = render_with(&mut fresh, true).encoding().path_data.clone();
+            assert!(!bar.needs_animation_frame());
+            assert!(!bar.needs_redraw());
+        }
 
-        let mut aged = ProgressBar::indeterminate();
-        aged.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        aged.start = backdate;
-        let aged_reduced = render_with(&mut aged, true).encoding().path_data.clone();
-        assert_eq!(
-            fresh_geo, aged_reduced,
-            "reduced motion must paint the resting segment regardless of elapsed time",
-        );
+        // Case `reduce_motion_freezes_the_indeterminate_segment`.
+        // With reduced motion an indeterminate bar holds its segment fixed:
+        // a bar backdated by a full sweep paints the same geometry as a
+        // fresh one. With motion on, the same backdate lands elsewhere —
+        // proving the freeze is the reduced-motion path, not a no-op.
+        {
+            use crate::time::Duration;
+            let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
+            // A quarter-sweep backdate so the moving segment is plainly off the
+            // resting position (a full sweep would alias back to phase 0).
+            let backdate = crate::time::now()
+                .checked_sub(one_sweep / 4)
+                .expect("process has been running longer than a quarter sweep");
 
-        let mut aged2 = ProgressBar::indeterminate();
-        aged2.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-        aged2.start = backdate;
-        let aged_moving = render_with(&mut aged2, false).encoding().path_data.clone();
-        assert_ne!(
-            fresh_geo, aged_moving,
-            "with motion on, a backdated bar's segment is at a different position",
-        );
+            let mut fresh = ProgressBar::indeterminate();
+            fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            let fresh_geo = render_with(&mut fresh, true).encoding().path_data.clone();
+
+            let mut aged = ProgressBar::indeterminate();
+            aged.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            aged.start = backdate;
+            let aged_reduced = render_with(&mut aged, true).encoding().path_data.clone();
+            assert_eq!(
+                fresh_geo, aged_reduced,
+                "reduced motion must paint the resting segment regardless of elapsed time",
+            );
+
+            let mut aged2 = ProgressBar::indeterminate();
+            aged2.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+            aged2.start = backdate;
+            let aged_moving = render_with(&mut aged2, false).encoding().path_data.clone();
+            assert_ne!(
+                fresh_geo, aged_moving,
+                "with motion on, a backdated bar's segment is at a different position",
+            );
+        }
     }
 }

@@ -15,6 +15,7 @@ while `system/fs/` owns the collaborative filesystem service.
 | `hosting/` | Relay and home-peer services |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
+| `platform/` | Per-capability platform crates with one API on Linux, macOS and the web; the only place app-reachable code may use target `cfg` |
 | `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |
 | `sdk/` | Public application SDK (`tilo-app`) and its private UI implementation (`ui-core`) |
 | `session/` | Desktop shell, greeter, installer, unlock helper, and power entrypoints |
@@ -29,6 +30,8 @@ while `system/fs/` owns the collaborative filesystem service.
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/sandboxed-app-collab.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
+- `dev/copy-lint`: the source scan that keeps English copy literals out of UI builders,
+  run from the shell's and desktop's tests with their own allow-lists.
 - `collab/collab-fixtures`: shared collaboration test fixtures.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
   packaging/SDK examples used by walkthroughs and integration scripts.

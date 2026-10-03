@@ -22,6 +22,10 @@ use ui::{
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if !image_editor::standalone_launch() {
+        ui::framework::run::<image_editor::ImageEditorShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new("so.tilo.image-editor", image_editor::app_root)
             .open_state_with_args(open_state)
@@ -66,7 +70,7 @@ fn render(
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("image-editor-shot-source.png");
     if let Some(parent) = staging.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_dir_all(parent)?;
     }
     image_editor::write_shot_image(&staging)?;
     let mut state = ui::State::new();
@@ -129,10 +133,15 @@ fn render(
         );
     }
     if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_dir_all(parent)?;
     }
     ui::offscreen::OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     Ok(())
+}
+
+fn create_dir_all(path: &std::path::Path) -> Result<(), tilo_files::FsError> {
+    let dir = tilo_files::Dir::open(tilo_files::Location::Native(path.to_path_buf()))?;
+    tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())
 }
 
 fn shot_theme(args: &LaunchArgs) -> Theme {

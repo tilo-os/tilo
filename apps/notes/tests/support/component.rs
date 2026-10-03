@@ -3,7 +3,7 @@
 pub mod canonical;
 pub use canonical::LegacyFixture;
 use std::rc::Rc;
-use ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
 use ui::record::RecordCheckout;
 
@@ -32,16 +32,18 @@ pub fn try_restored_component(
 ) -> Result<AppComponent, ui::launch::LaunchError> {
     let context = HostContext::prepare(
         notes::definition(),
-        f.records.clone(),
-        Rc::new(
-            InstanceViewStore::new(f.state_root.clone(), "fixture-device", canonical::ROOM)
-                .unwrap(),
-        ),
-        "fixture-device".into(),
-        instance,
-        f.authority.clone(),
-        f.author.clone(),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: f.records.clone(),
+            views: Rc::new(
+                InstanceViewStore::new(f.state_root.clone(), "fixture-device", canonical::ROOM)
+                    .unwrap(),
+            ),
+            device_id: "fixture-device".into(),
+            instance_id: instance,
+            permissions: f.authority.clone(),
+            author: f.author.clone(),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();
@@ -54,6 +56,38 @@ pub fn renderer() -> ui::TextRenderer {
         "en-US",
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()
+}
+/// Mount `editor` in the production frame host `width` wide at its content
+/// height, the way a scrolling page lays its body out, with its top-left
+/// corner at `(x, y)`, and run its first frame.
+pub fn framed_block_editor(
+    editor: ui::widget::BlockEditor,
+    width: f32,
+    (x, y): (f32, f32),
+    theme: ui::Theme,
+) -> ui::headless::Framed<ui::widget::BlockEditor> {
+    // Tall enough that the viewport cull never drops a fixture block.
+    const HEIGHT: f32 = 10_000.0;
+    ui::headless::Framed::with_options(
+        ui::State::new(),
+        editor,
+        ui::headless::viewport((x + width, HEIGHT)),
+        ui::headless::FrameOptions {
+            theme: Some(theme),
+            text: Some(renderer()),
+            host_style: Some(taffy::Style {
+                flex_direction: taffy::FlexDirection::Column,
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(x),
+                    top: taffy::LengthPercentage::length(y),
+                    right: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
+                },
+                ..Default::default()
+            }),
+            content_height: true,
+        },
+    )
 }
 pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
     ui::application::ComponentRunnerInputs {
@@ -85,7 +119,7 @@ pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     );
 }
 pub fn close_widget(widget: &mut dyn ui::Widget) {
-    let reports = widget.close_components();
+    let reports = ui::component_lifecycle::close_components(widget);
     assert!(!reports.is_empty());
     for report in &reports {
         assert_closed(report);
@@ -93,12 +127,17 @@ pub fn close_widget(widget: &mut dyn ui::Widget) {
 }
 
 pub fn driver(f: &LegacyFixture, instance: u64, checkout: &RecordCheckout) -> ui::headless::Driver {
-    ui::headless::Driver::from_component(
+    let mut driver = ui::headless::Driver::from_component(
         component(f, instance, existing(checkout)),
         (1000, 700),
         runner_inputs(),
     )
-    .unwrap()
+    .unwrap();
+    // These scenarios spell host shortcuts with Ctrl (Ctrl+Z undo). The
+    // driver otherwise follows the build host's conventions, where macOS
+    // binds undo to Cmd and a Ctrl+Z would never reach history.
+    driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+    driver
 }
 pub fn invoke(
     driver: &mut ui::headless::Driver,
@@ -132,6 +171,63 @@ pub fn close_driver(driver: &mut ui::headless::Driver) {
         assert_closed(report);
     }
 }
+/// Apply one rich-text edit to `page`'s body, as a collaborator's edit
+/// arrives.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers build the edit in place"
+)]
+pub fn edit_body(
+    doc: &mut automerge::AutoCommit,
+    page: notes::PageId,
+    edit: tilo_document::RichTextAction,
+) {
+    notes::doc::NotesDoc::edit_page_body(doc, page, &edit).unwrap();
+}
+
+/// Replace the whole text of `block`.
+pub fn replace_block_text(
+    doc: &mut automerge::AutoCommit,
+    page: notes::PageId,
+    block: &str,
+    text: &str,
+) {
+    let old = notes::doc::NotesDoc::page_block_snapshots(doc, page)
+        .into_iter()
+        .find(|(id, _)| id == block)
+        .map(|(_, text)| text)
+        .unwrap();
+    edit_body(
+        doc,
+        page,
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block: block.to_owned(),
+            at: 0,
+            del: old.chars().count(),
+            ins: text.to_owned(),
+        },
+    );
+}
+
+/// Remove `block` from `page`.
+pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block: &str) {
+    edit_body(
+        doc,
+        page,
+        tilo_document::RichTextAction::RemoveBlocks {
+            blocks: vec![block.to_owned()],
+        },
+    );
+}
+
+/// The stored spelling of the kind of `page`'s block at `index`.
+pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -> String {
+    notes::doc::NotesDoc::page_blocks(doc, page)[index]
+        .kind
+        .stored()
+}
+
 pub fn revision(f: &LegacyFixture, checkout: &RecordCheckout) -> u64 {
     f.records
         .read_history(&checkout.id, |_, history| history.revision())

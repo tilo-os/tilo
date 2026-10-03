@@ -14,9 +14,7 @@ pub struct AddressProfile {
     pub id: String,
     pub label: String,
     pub full_name: String,
-    #[serde(default)]
     pub given_name: String,
-    #[serde(default)]
     pub family_name: String,
     pub street: String,
     pub city: String,
@@ -175,7 +173,7 @@ impl AutofillStore {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or("Address profile directory is unavailable")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create address profile directory")?;
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|_| "Cannot save address profiles")?;
         self.saved = next;
         Ok(())
@@ -202,122 +200,119 @@ mod tests {
         }
     }
 
+    /// Profile lifecycle: opt-in, private isolation and capacity.
     #[test]
-    fn address_profiles_require_opt_in_and_survive_explicit_edits() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        assert!(!store.enabled());
-        assert!(store.put(profile("one")).is_err());
-        store.set_enabled(true).unwrap();
-        store.put(profile("one")).unwrap();
-        store.put(profile("two")).unwrap();
-        let mut edited = profile("one");
-        edited.city = "Changed".into();
-        store.put(edited).unwrap();
-        let mut reopened = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        assert!(reopened.enabled());
-        assert_eq!(reopened.profiles().len(), 2);
-        assert_eq!(reopened.profiles()[0].city, "Changed");
-        reopened.delete("one").unwrap();
-        assert_eq!(
-            AutofillStore::open(BrowsingMode::Normal, &path)
-                .unwrap()
-                .profiles()[0]
-                .id,
-            "two"
-        );
-        reopened.set_enabled(false).unwrap();
-        assert!(reopened.profile_for_fill("two").is_none());
-    }
-
-    #[test]
-    fn existing_profiles_without_split_names_remain_readable() {
-        let mut value = serde_json::to_value(profile("legacy")).unwrap();
-        value.as_object_mut().unwrap().remove("given_name");
-        value.as_object_mut().unwrap().remove("family_name");
-        let parsed: AddressProfile = serde_json::from_value(value).unwrap();
-        assert_eq!(parsed.full_name, "Synthetic Person");
-        assert!(parsed.given_name.is_empty());
-        assert!(parsed.family_name.is_empty());
-        assert!(parsed.valid());
-    }
-
-    #[test]
-    fn private_mode_never_reads_or_changes_normal_profiles() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        std::fs::write(&path, "deliberately invalid normal data").unwrap();
-        let mut private = AutofillStore::open(BrowsingMode::Private, &path).unwrap();
-        assert!(private.profiles().is_empty());
-        assert!(private.set_enabled(true).is_err());
-        assert!(private.put(profile("one")).is_err());
-        assert!(private.delete("one").is_err());
-        assert_eq!(
-            std::fs::read_to_string(path).unwrap(),
-            "deliberately invalid normal data"
-        );
-    }
-
-    #[test]
-    fn rejects_oversized_or_secret_fields_without_changing_saved_state() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        store.set_enabled(true).unwrap();
-        let before = std::fs::read(&path).unwrap();
-        let mut invalid = profile("one");
-        invalid.street = "x".repeat(1025);
-        assert!(store.put(invalid).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        let mut data = serde_json::to_value(profile("one")).unwrap();
-        data["password"] = "must never enter this store".into();
-        assert!(serde_json::from_value::<AddressProfile>(data).is_err());
-        #[cfg(unix)]
+    fn address_profiles_opt_in_edit_capacity_and_private_isolation() {
+        // Phase `address_profiles_require_opt_in_and_survive_explicit_edits`.
         {
-            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            assert!(!store.enabled());
+            assert!(store.put(profile("one")).is_err());
+            store.set_enabled(true).unwrap();
+            store.put(profile("one")).unwrap();
+            store.put(profile("two")).unwrap();
+            let mut edited = profile("one");
+            edited.city = "Changed".into();
+            store.put(edited).unwrap();
+            let mut reopened = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            assert!(reopened.enabled());
+            assert_eq!(reopened.profiles().len(), 2);
+            assert_eq!(reopened.profiles()[0].city, "Changed");
+            reopened.delete("one").unwrap();
             assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
+                AutofillStore::open(BrowsingMode::Normal, &path)
+                    .unwrap()
+                    .profiles()[0]
+                    .id,
+                "two"
+            );
+            reopened.set_enabled(false).unwrap();
+            assert!(reopened.profile_for_fill("two").is_none());
+        }
+
+        // Phase `private_mode_never_reads_or_changes_normal_profiles`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            std::fs::write(&path, "deliberately invalid normal data").unwrap();
+            let mut private = AutofillStore::open(BrowsingMode::Private, &path).unwrap();
+            assert!(private.profiles().is_empty());
+            assert!(private.set_enabled(true).is_err());
+            assert!(private.put(profile("one")).is_err());
+            assert!(private.delete("one").is_err());
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                "deliberately invalid normal data"
             );
         }
-    }
 
-    #[test]
-    fn failed_save_does_not_publish_an_unsaved_profile() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        store.set_enabled(true).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        assert!(store.put(profile("one")).is_err());
-        assert!(store.profiles().is_empty());
-    }
-    #[test]
-    fn malformed_or_oversized_store_is_reported_and_left_untouched() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        for bytes in [b"invalid".to_vec(), vec![b' '; 65537]] {
-            std::fs::write(&path, &bytes).unwrap();
-            assert!(AutofillStore::open(BrowsingMode::Normal, &path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // Phase `profile_capacity_still_allows_editing_and_deleting_existing_entries`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            store.set_enabled(true).unwrap();
+            for index in 0..16 {
+                store.put(profile(&format!("profile-{index}"))).unwrap();
+            }
+            assert!(store.put(profile("overflow")).is_err());
+            store.put(profile("profile-0")).unwrap();
+            store.delete("profile-0").unwrap();
+            store.put(profile("replacement")).unwrap();
+            assert_eq!(store.profiles().len(), 16);
         }
     }
 
+    /// Rejected input, failed saves and malformed stores.
     #[test]
-    fn profile_capacity_still_allows_editing_and_deleting_existing_entries() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("addresses.json");
-        let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        store.set_enabled(true).unwrap();
-        for index in 0..16 {
-            store.put(profile(&format!("profile-{index}"))).unwrap();
+    fn invalid_fields_failed_saves_and_bad_stores_leave_state_untouched() {
+        // Phase `rejects_oversized_or_secret_fields_without_changing_saved_state`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            store.set_enabled(true).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            let mut invalid = profile("one");
+            invalid.street = "x".repeat(1025);
+            assert!(store.put(invalid).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let mut data = serde_json::to_value(profile("one")).unwrap();
+            data["password"] = "must never enter this store".into();
+            assert!(serde_json::from_value::<AddressProfile>(data).is_err());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
         }
-        assert!(store.put(profile("overflow")).is_err());
-        store.put(profile("profile-0")).unwrap();
-        store.delete("profile-0").unwrap();
-        store.put(profile("replacement")).unwrap();
-        assert_eq!(store.profiles().len(), 16);
+
+        // Phase `failed_save_does_not_publish_an_unsaved_profile`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            store.set_enabled(true).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            assert!(store.put(profile("one")).is_err());
+            assert!(store.profiles().is_empty());
+        }
+
+        // Phase `malformed_or_oversized_store_is_reported_and_left_untouched`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("addresses.json");
+            for bytes in [b"invalid".to_vec(), vec![b' '; 65537]] {
+                std::fs::write(&path, &bytes).unwrap();
+                assert!(AutofillStore::open(BrowsingMode::Normal, &path).is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
     }
 }

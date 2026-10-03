@@ -65,7 +65,8 @@ What each picture is:
   `slot = "<name>"` in the worktree's `.tilo-vm` names another.
 - Every command that works on a slot accepts `--slot <name>`: `status`,
   `swap`, `input`, `control`, `rollback`, `logs`, `shot`,
-  `seat claim|release` and `slot create|show|exec|restart|rm`. All but
+  `seat claim|release`, `slot create|show|exec|restart|rm` and
+  `slot apps install`. All but
   `status`, `swap`, `input` and `control` also take the name as a
   positional argument (`tilo-vm logs review-a`).
 - After a command on a slot other than your default one, its `next:` hints
@@ -85,9 +86,11 @@ tilo-vm's state unless you pass `--raw`.
 
 Changed a Containerfile, a unit, `/etc` or the package list instead of a
 component? `tilo-vm vm upgrade --from local` rebuilds the image and moves the
-running VM onto it; once CI has built the commit, `tilo-vm vm upgrade --from
-sha:<commit>` moves it onto CI's build without building the OS here
-(`tilo-vm guide images`).
+running VM onto it; `tilo-vm image build` on another machine builds it there
+instead, for `tilo-vm vm upgrade --image
+target/tilo-vm/image` (`tilo-vm image disk` then writes a disk from it for `vm create --image`); once CI
+has built the commit, `tilo-vm vm upgrade --from sha:<commit>` moves it onto
+CI's build without building the OS here (`tilo-vm guide images`).
 
 Next: `tilo-vm guide concepts`, `tilo-vm guide swapping`,
 `tilo-vm guide driving`, `tilo-vm guide images`, `tilo-vm guide fedora-loop`

@@ -58,6 +58,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Default live path: framework-hosted ResourceApp. Shots, imports and
+    // explicit file opens keep the standalone widget launcher.
+    if !photos::standalone_launch() {
+        ui::framework::run::<photos::PhotosShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.photos", live_root)
             .history(&photos::framework_history::HISTORY)
@@ -296,7 +302,7 @@ fn render_scenario(
             &permission,
         );
         if settle_frames > 2 {
-            std::thread::sleep(std::time::Duration::from_millis(6));
+            let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(6));
         }
     }
 
@@ -308,8 +314,10 @@ fn render_scenario(
         &presence,
     );
 
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
+    if let Some(parent) = out.parent()
+        && let Ok((dir, name)) = tilo_files::file_at(parent)
+    {
+        let _ = tilo_files::blocking::create_dir_all(&dir, &name);
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);

@@ -7,14 +7,12 @@
 
 use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
-use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::dnd::DRAG_START_THRESHOLD_PX;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
 
 use crate::date;
 use crate::draw_util::{fill_rect, fill_round, hairline, stroke_line, stroke_round};
@@ -394,66 +392,53 @@ impl TimelineInteraction {
     /// emitted directly by pointer gestures.
     pub fn draw_timeline(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
     ) -> Vec<(Rect, TimelineEffect)> {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, area, colors.surfaces.base);
+        ctx.fill_rect(area, colors.surfaces.base);
 
         let geom = self.geometry(area);
-        let grid_x0 = area.x0 + geom.gutter;
-        let col_w = Self::column_width(area, model.days.len(), geom);
-        Self::draw_headers(
-            scene, transform, text, theme, area, model, grid_x0, col_w, geom, &mut hits,
-        );
+        Self::draw_headers(ctx, area, model, geom, &mut hits);
         hairline(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             colors.surfaces.base,
             Point::new(area.x0, geom.body_top),
             Point::new(geom.grid_right, geom.body_top),
         );
 
         let body = geom.body(area.x0, area.x1);
-        scene.push_layer(
+        ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            transform,
+            ctx.transform,
             &body,
         );
-        self.draw_grid(scene, transform, text, theme, area, model, geom);
-        self.draw_events(
-            scene, transform, text, theme, area, model, geom, body, &mut hits,
-        );
-        self.draw_drag_ghost(scene, transform, text, theme, area, model, geom);
-        scene.pop_layer();
-        self.viewport.draw(scene, transform, theme);
+        self.draw_grid(ctx, area, model, geom);
+        self.draw_events(ctx, area, model, &mut hits);
+        self.draw_drag_ghost(ctx, area, model, geom);
+        ctx.scene.pop_layer();
+        self.viewport.draw(ctx.scene, ctx.transform, theme);
         hits
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Header painting combines render context, visible days, column geometry, and the header action hit list."
-    )]
     fn draw_headers(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
-        grid_x0: f64,
-        col_w: f64,
         geom: TimelineGeom,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
+        let grid_x0 = area.x0 + geom.gutter;
+        let col_w = Self::column_width(area, model.days.len(), geom);
         // Weekday label, then the day number directly beneath it: both rows
         // come from the measured lines the header height was solved from.
         let weekday_h = f64::from(text.measure("Mon", TIMELINE_WEEKDAY_TEXT, None).1);
@@ -532,20 +517,15 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The time grid needs render context, visible days, viewport bounds, and measured hour/gutter geometry."
-    )]
     fn draw_grid(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
@@ -605,22 +585,17 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Event painting combines render context, day/event data, timeline and clipping geometry, and action hit regions."
-    )]
     fn draw_events(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
-        geom: TimelineGeom,
-        body: Rect,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let geom = self.geometry(area);
+        let body = geom.body(area.x0, area.x1);
         let colors = &theme.tokens.colors;
         let moving_id = self.moving_id();
         for (index, day) in model.days.iter().enumerate() {
@@ -711,20 +686,15 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The drag preview uses render context, visible days and events, viewport bounds, and measured timeline geometry."
-    )]
     fn draw_drag_ghost(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let Some(preview) = self.preview(area, model.days) else {
             return;
@@ -956,79 +926,79 @@ mod tests {
     }
 
     #[test]
-    fn create_drag_owns_threshold_day_mapping_and_snap() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let from = point_at(2, 9 * 60 + 7);
-        assert!(controller.begin_drag(area(), &days, &[], from));
-        controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
-        assert!(controller.preview(area(), &days).is_none());
-        controller.update_drag(point_at(2, 10 * 60 + 53));
-        assert_eq!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Create {
-                day: days[2],
-                start_min: 9 * 60,
-                end_min: 11 * 60,
-            })
-        );
-    }
-
-    #[test]
-    fn move_drag_preserves_duration_and_pointer_grab_offset() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let id = Uuid::new_v4();
-        let span = TimelineSpan {
-            id,
-            day: days[1],
-            start_min: 10 * 60,
-            end_min: 11 * 60,
-        };
-        let from = point_at(1, 10 * 60 + 15);
-        assert!(controller.begin_drag(area(), &days, &[span], from));
-        controller.update_drag(point_at(4, 14 * 60 + 15));
-        assert_eq!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Move {
+    fn drag_gestures_own_threshold_snap_grab_offset_select_and_cancel() {
+        // Case `create_drag_owns_threshold_day_mapping_and_snap`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let from = point_at(2, 9 * 60 + 7);
+            assert!(controller.begin_drag(area(), &days, &[], from));
+            controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
+            assert!(controller.preview(area(), &days).is_none());
+            controller.update_drag(point_at(2, 10 * 60 + 53));
+            assert_eq!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Create {
+                    day: days[2],
+                    start_min: 9 * 60,
+                    end_min: 11 * 60,
+                })
+            );
+        }
+        // Case `move_drag_preserves_duration_and_pointer_grab_offset`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let id = Uuid::new_v4();
+            let span = TimelineSpan {
                 id,
-                day: days[4],
-                start_min: 14 * 60,
-                dur_min: 60,
-            })
-        );
-    }
-
-    #[test]
-    fn pending_event_press_is_a_select_not_a_move() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let id = Uuid::new_v4();
-        let span = TimelineSpan {
-            id,
-            day: days[0],
-            start_min: 8 * 60,
-            end_min: 9 * 60,
-        };
-        let point = point_at(0, 8 * 60 + 30);
-        controller.pointer = point;
-        assert!(controller.begin_drag(area(), &days, &[span], point));
-        assert_eq!(
-            controller.finish_drag(area(), &days, &[span]),
-            Some(TimelineEffect::Select(id))
-        );
-    }
-
-    #[test]
-    fn cancel_discards_pending_drag_without_an_effect() {
-        let mut controller = TimelineInteraction::new();
-        let days = days();
-        assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
-        assert!(controller.cancel_drag());
-        assert!(controller.preview(area(), &days).is_none());
-        assert!(!controller.cancel_drag());
+                day: days[1],
+                start_min: 10 * 60,
+                end_min: 11 * 60,
+            };
+            let from = point_at(1, 10 * 60 + 15);
+            assert!(controller.begin_drag(area(), &days, &[span], from));
+            controller.update_drag(point_at(4, 14 * 60 + 15));
+            assert_eq!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Move {
+                    id,
+                    day: days[4],
+                    start_min: 14 * 60,
+                    dur_min: 60,
+                })
+            );
+        }
+        // Case `pending_event_press_is_a_select_not_a_move`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let id = Uuid::new_v4();
+            let span = TimelineSpan {
+                id,
+                day: days[0],
+                start_min: 8 * 60,
+                end_min: 9 * 60,
+            };
+            let point = point_at(0, 8 * 60 + 30);
+            controller.pointer = point;
+            assert!(controller.begin_drag(area(), &days, &[span], point));
+            assert_eq!(
+                controller.finish_drag(area(), &days, &[span]),
+                Some(TimelineEffect::Select(id))
+            );
+        }
+        // Case `cancel_discards_pending_drag_without_an_effect`.
+        {
+            let mut controller = TimelineInteraction::new();
+            let days = days();
+            assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
+            assert!(controller.cancel_drag());
+            assert!(controller.preview(area(), &days).is_none());
+            assert!(!controller.cancel_drag());
+        }
     }
 }

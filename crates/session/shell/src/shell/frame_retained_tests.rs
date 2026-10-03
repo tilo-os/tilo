@@ -4,6 +4,10 @@
     clippy::cast_sign_loss,
     reason = "fixed native-4K test allocation and index arithmetic"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use super::*;
 
@@ -20,8 +24,11 @@ fn xrgb_pitch() -> usize {
 }
 
 fn bridge() -> VelloDrmBridge {
-    let bridge = VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
+    let mut bridge = VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
         .expect("native retained-frame oracle requires a working wgpu adapter");
+    // These oracles compare native 4K pixels; how long llvmpipe takes to produce them on a
+    // loaded host is not what they check.
+    bridge.wait_for_gpu_completion_for_test();
     eprintln!(
         "retained renderer gate adapter: {:?}",
         bridge
@@ -344,6 +351,34 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     assert_legacy_and_segmented_match(&mut frame, "workspace root rebuild", false);
 }
 
+#[test]
+fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
+    let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.relayout();
+    let warm = frame.paint_with_damage();
+    assert!(
+        !warm.scene.encoding().is_empty(),
+        "the desktop before the switch records source commands"
+    );
+    frame.with_chrome(|chrome| {
+        chrome.add_workspace("clip after rebuild");
+    });
+    let mut document = AutoCommit::new();
+    let document_root = automerge::ROOT;
+    frame.pump_apps(&mut document, &document_root);
+    frame.relayout();
+    let rebuilt = frame.paint_with_damage();
+    assert!(
+        !rebuilt.scene.encoding().is_empty(),
+        "the rebuilt workspace root has to reach the screen before the clip run"
+    );
+    let following = frame.paint_with_damage();
+    assert!(
+        following.scene.encoding().is_empty() && following.workspace_hold,
+        "the rest of the switch stays on the content clip"
+    );
+}
+
 fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
@@ -405,6 +440,13 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         ]
     );
     assert!(tree.desktop.workspaces[2].collaborators.is_empty());
+    // The fixture is the owning action for its presented tabs: it creates
+    // exactly their records, and constructing the tree fabricates no others.
+    let expected_records = group
+        .tabs
+        .iter()
+        .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
+        .collect::<std::collections::BTreeSet<_>>();
     drop(tree);
     let actual_records = chrome
         .records()
@@ -413,9 +455,9 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         .map(|record| record.id.to_string())
         .collect::<std::collections::BTreeSet<_>>();
     drop(chrome);
-    assert!(
-        actual_records.is_empty(),
-        "constructing a fixture tree must not fabricate document authority; owning actions create records explicitly"
+    assert_eq!(
+        actual_records, expected_records,
+        "only the fixture's explicit creations may hold document authority"
     );
 }
 
@@ -448,42 +490,84 @@ fn assert_populated_control_targets(fixture: &PopulatedShellFixture) {
 }
 
 #[test]
-fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
-    let guard = DenyAmbientStarts::new();
-    let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
-    let initial_scene = fixture.paint();
-    assert!(!initial_scene.encoding().is_empty());
-    assert_populated_tree_inventory(&fixture);
-    assert_owned_files_fixture(&fixture);
-    assert_populated_control_targets(&fixture);
+fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
+    fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
+        let guard = DenyAmbientStarts::new();
+        let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+        let initial_scene = fixture.paint();
+        assert!(!initial_scene.encoding().is_empty());
+        assert_populated_tree_inventory(&fixture);
+        assert_owned_files_fixture(&fixture);
+        assert_populated_control_targets(&fixture);
 
-    let mut document = AutoCommit::new();
-    let mut focus = None;
-    let open_qs = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_tray_pill",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!open_qs.encoding().is_empty());
-    assert!(fixture.chrome().overlays.quick_settings);
-    let close_qs = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_tray_pill",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!close_qs.encoding().is_empty());
-    assert!(!fixture.chrome().overlays.quick_settings);
-    let open_overview = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_overview_button",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!open_overview.encoding().is_empty());
-    assert!(fixture.chrome().overlays.overview);
-    assert_eq!(guard.attempts(), 0);
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        let open_qs = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_tray_pill",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!open_qs.encoding().is_empty());
+        assert!(fixture.chrome().overlays.quick_settings);
+        let close_qs = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_tray_pill",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!close_qs.encoding().is_empty());
+        assert!(!fixture.chrome().overlays.quick_settings);
+        let open_overview = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_overview_button",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!open_overview.encoding().is_empty());
+        assert!(fixture.chrome().overlays.overview);
+        assert_eq!(guard.attempts(), 0);
+    }
+
+    fn damage_policy_allows_only_a_bounded_quick_settings_change() {
+        let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        let candidate = sections(rect_scene(), Scene::new());
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_some(),
+            "matching opaque sections and bounded Quick Settings change must establish a sparse baseline"
+        );
+
+        frame.last_produced_sections = Some(previous_sections(true, Scene::new(), Scene::new()));
+        let candidate = sections(rect_scene(), Scene::new());
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_none(),
+            "a prior whole-frame filter is an explicit retained boundary"
+        );
+    }
+
+    fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
+        let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        assert!(
+            frame
+                .damage_from_sections(&sections(rect_scene(), Scene::new()), false)
+                .is_some(),
+            "the baseline must prove the Quick Settings candidate itself is otherwise eligible"
+        );
+
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        assert!(
+            frame
+                .damage_from_sections(&sections(rect_scene(), rect_scene()), false)
+                .is_none(),
+            "a workspace recording change is opaque and must force a dense frame"
+        );
+    }
+
+    explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions();
+    damage_policy_allows_only_a_bounded_quick_settings_change();
+    damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline();
 }
 
 fn rect_scene() -> Scene {
@@ -532,42 +616,4 @@ fn previous_sections(
         global_filter,
         revision: 1,
     }
-}
-
-#[test]
-fn damage_policy_allows_only_a_bounded_quick_settings_change() {
-    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    let candidate = sections(rect_scene(), Scene::new());
-    assert!(
-        frame.damage_from_sections(&candidate, false).is_some(),
-        "matching opaque sections and bounded Quick Settings change must establish a sparse baseline"
-    );
-
-    frame.last_produced_sections = Some(previous_sections(true, Scene::new(), Scene::new()));
-    let candidate = sections(rect_scene(), Scene::new());
-    assert!(
-        frame.damage_from_sections(&candidate, false).is_none(),
-        "a prior whole-frame filter is an explicit retained boundary"
-    );
-}
-
-#[test]
-fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
-    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    assert!(
-        frame
-            .damage_from_sections(&sections(rect_scene(), Scene::new()), false)
-            .is_some(),
-        "the baseline must prove the Quick Settings candidate itself is otherwise eligible"
-    );
-
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    assert!(
-        frame
-            .damage_from_sections(&sections(rect_scene(), rect_scene()), false)
-            .is_none(),
-        "a workspace recording change is opaque and must force a dense frame"
-    );
 }

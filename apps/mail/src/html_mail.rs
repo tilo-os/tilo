@@ -118,97 +118,111 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scripts_are_always_blocked() {
-        for block in [true, false] {
-            let doc = sandbox_document("<script>steal()</script><p>hi</p>", block);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn html_content_policy_blocks_scripts_and_remote_until_opt_in() {
+        // Phase `scripts_are_always_blocked`.
+        {
+            for block in [true, false] {
+                let doc = sandbox_document("<script>steal()</script><p>hi</p>", block);
+                assert!(
+                    doc.contains("script-src 'none'"),
+                    "scripts must never be allowed"
+                );
+                // The CSP meta precedes the mail's own body markup.
+                let csp_at = doc.find("Content-Security-Policy").unwrap();
+                let body_at = doc.find("<body>").unwrap();
+                assert!(csp_at < body_at, "the CSP must be declared before the body");
+            }
+        }
+
+        // Phase `remote_content_blocked_by_default`.
+        {
+            let doc = sandbox_document("<img src=\"https://tracker.example/x.gif\">", true);
             assert!(
-                doc.contains("script-src 'none'"),
-                "scripts must never be allowed"
+                doc.contains("img-src data:;"),
+                "default policy blocks remote images"
             );
-            // The CSP meta precedes the mail's own body markup.
-            let csp_at = doc.find("Content-Security-Policy").unwrap();
-            let body_at = doc.find("<body>").unwrap();
-            assert!(csp_at < body_at, "the CSP must be declared before the body");
+            assert!(
+                !doc.contains("img-src data: https:"),
+                "no https image source by default"
+            );
+            assert!(doc.contains("connect-src 'none'"), "no network connections");
+        }
+
+        // Phase `opting_in_widens_images_only`.
+        {
+            let doc = sandbox_document("<img src=\"https://cdn.example/x.png\">", false);
+            assert!(
+                doc.contains("img-src data: https: http:"),
+                "opt-in allows remote images"
+            );
+            // Still no scripts and no remote styles/fonts.
+            assert!(doc.contains("script-src 'none'"));
+            assert!(doc.contains("font-src data:;") || doc.contains("font-src data: "));
+            assert!(
+                !doc.contains("style-src 'unsafe-inline' https"),
+                "remote styles stay blocked"
+            );
+        }
+
+        // Phase `content_filter_blocks_remote_by_default_and_frees_images_on_optin`.
+        {
+            let blocked = content_filter_json(true);
+            assert!(blocked.contains(r#""url-filter":"^https?://""#));
+            assert!(
+                !blocked.contains("resource-type"),
+                "block-all has no type restriction"
+            );
+            let opt_in = content_filter_json(false);
+            assert!(
+                opt_in.contains("resource-type"),
+                "opt-in keeps blocking non-image types"
+            );
+            assert!(
+                opt_in.contains("script"),
+                "scripts still blocked at the network layer"
+            );
         }
     }
 
     #[test]
-    fn remote_content_blocked_by_default() {
-        let doc = sandbox_document("<img src=\"https://tracker.example/x.gif\">", true);
-        assert!(
-            doc.contains("img-src data:;"),
-            "default policy blocks remote images"
-        );
-        assert!(
-            !doc.contains("img-src data: https:"),
-            "no https image source by default"
-        );
-        assert!(doc.contains("connect-src 'none'"), "no network connections");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn html_body_encodes_as_a_base64_data_url() {
+        // Phase `data_url_is_a_base64_html_document`.
+        {
+            let url = data_url("<p>Hello &amp; welcome</p>", true);
+            assert!(url.starts_with("data:text/html;charset=utf-8;base64,"));
+            let b64 = url.trim_start_matches("data:text/html;charset=utf-8;base64,");
+            // Round-trips back to a document that embeds the mail body + the CSP.
+            let decoded = String::from_utf8(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap(),
+            )
+            .unwrap();
+            assert!(decoded.contains("<p>Hello &amp; welcome</p>"));
+            assert!(decoded.contains("Content-Security-Policy"));
+        }
 
-    #[test]
-    fn opting_in_widens_images_only() {
-        let doc = sandbox_document("<img src=\"https://cdn.example/x.png\">", false);
-        assert!(
-            doc.contains("img-src data: https: http:"),
-            "opt-in allows remote images"
-        );
-        // Still no scripts and no remote styles/fonts.
-        assert!(doc.contains("script-src 'none'"));
-        assert!(doc.contains("font-src data:;") || doc.contains("font-src data: "));
-        assert!(
-            !doc.contains("style-src 'unsafe-inline' https"),
-            "remote styles stay blocked"
-        );
-    }
-
-    #[test]
-    fn data_url_is_a_base64_html_document() {
-        let url = data_url("<p>Hello &amp; welcome</p>", true);
-        assert!(url.starts_with("data:text/html;charset=utf-8;base64,"));
-        let b64 = url.trim_start_matches("data:text/html;charset=utf-8;base64,");
-        // Round-trips back to a document that embeds the mail body + the CSP.
-        let decoded = String::from_utf8(
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap(),
-        )
-        .unwrap();
-        assert!(decoded.contains("<p>Hello &amp; welcome</p>"));
-        assert!(decoded.contains("Content-Security-Policy"));
-    }
-
-    #[test]
-    fn content_filter_blocks_remote_by_default_and_frees_images_on_optin() {
-        let blocked = content_filter_json(true);
-        assert!(blocked.contains(r#""url-filter":"^https?://""#));
-        assert!(
-            !blocked.contains("resource-type"),
-            "block-all has no type restriction"
-        );
-        let opt_in = content_filter_json(false);
-        assert!(
-            opt_in.contains("resource-type"),
-            "opt-in keeps blocking non-image types"
-        );
-        assert!(
-            opt_in.contains("script"),
-            "scripts still blocked at the network layer"
-        );
-    }
-
-    #[test]
-    fn base64_matches_known_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
-        // Standard alphabet (`+`/`/`), padded.
-        assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
-        assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
-        // A data URL is one token: no MIME-style line wrapping at 76 columns.
-        let long = base64_encode(&[0x5a_u8; 300]);
-        assert_eq!(long.len(), 400);
-        assert!(!long.contains(['\r', '\n']));
+        // Phase `base64_matches_known_vectors`.
+        {
+            assert_eq!(base64_encode(b""), "");
+            assert_eq!(base64_encode(b"f"), "Zg==");
+            assert_eq!(base64_encode(b"fo"), "Zm8=");
+            assert_eq!(base64_encode(b"foo"), "Zm9v");
+            assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+            assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
+            // Standard alphabet (`+`/`/`), padded.
+            assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
+            assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
+            // A data URL is one token: no MIME-style line wrapping at 76 columns.
+            let long = base64_encode(&[0x5a_u8; 300]);
+            assert_eq!(long.len(), 400);
+            assert!(!long.contains(['\r', '\n']));
+        }
     }
 }

@@ -17,20 +17,20 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 # `decode` ships by default for GStreamer-backed playback. Shots render a
 # synthesized frame and do not decode a file.
-default = ["decode", "portal"]
+default = ["decode"]
 # GStreamer decode of the opened file/stream, via the shared media layer.
 decode = ["media/decode"]
-# Host-native file picking via the XDG FileChooser portal (ashpd). Hermetic
-# tests use `--no-default-features`; `--open PATH` supports direct launches.
-portal = ["ui/portal"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+fnv.workspace = true
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# Videos opened by contents in a page, kept in the cache location for Recent.
+tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-settings-store = { path = "../../crates/system/settings-store" }
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -43,9 +43,13 @@ taffy.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -1,24 +1,10 @@
 //! video-player — thin binary entry point. All logic lives in the library.
 //!
-//! Modes:
-//!   * default          — run the live winit event loop via `ui::App`.
-//!   * `--open PATH`     — open a local or `/var/workspace` file on launch.
-//!   * `--shots PATH`    — render one offscreen frame to a PNG and exit
-//!     (headless screenshot; identical passes to the live app).
-//!
-//! Optional flags for `--shots`:
-//!   * `--viewport WxH`  — render at a custom size (default 1280x800).
-//!   * `--open PATH`     — stage a file for the captured frame (else a
-//!     synthesized demo clip is shown).
+//! An empty window runs on the app framework (`VideoPlayerShell`). Opening a
+//! file (`--open`, a path, or a URL) and capture modes keep the standalone
+//! launcher, which is what actually starts that source.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -55,29 +41,57 @@ extern crate runtime_dylib;
 ///
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ui::launch::run(
-        &LaunchSpec::new_with_args("so.tilo.video-player", live_root)
-            .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
-            .shot_handler(render_shot)
-            .allowed_live_options(&["--open"])
-            .max_positionals(1)
-            .scenarios(&[
-                "empty",
-                "loading",
-                "error",
-                "native-error",
-                "playing",
-                "paused",
-                "settings",
-                "metadata",
-                "library",
-                "library-focus",
-                "recent",
-                "shared",
-                "fullscreen",
-            ]),
-    )?;
+    if standalone_capture() {
+        ui::launch::run(&standalone_launch_spec(live_root))?;
+        return Ok(());
+    }
+    ui::launch::run_or_exit(&video_player::framework_launch_spec());
     Ok(())
+}
+
+fn standalone_capture() -> bool {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" | "--open" => {
+                return true;
+            }
+            "--size" | "--viewport" | "--scenario" | "--data-dir" => {
+                let _ = args.next();
+            }
+            flag if flag.starts_with("--open=") => return true,
+            flag if flag.starts_with('-') => {}
+            // A positional path or URL is the file this window should play.
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn standalone_launch_spec(
+    root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
+) -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.video-player", root)
+        .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
+        .shot_handler(render_shot)
+        .allowed_live_options(&["--open"])
+        .max_positionals(1)
+        .scenarios(&[
+            "empty",
+            "loading",
+            "error",
+            "native-error",
+            "playing",
+            "paused",
+            "settings",
+            "metadata",
+            "library",
+            "library-focus",
+            "recent",
+            "shared",
+            "fullscreen",
+        ])
+        .history(&video_player::framework_history::HISTORY)
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
@@ -134,13 +148,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // Real decode prerolls asynchronously; pump until its first picture is
     // ready. The synthesized fallback produces one on the first pass.
     let mut warm = ui::State::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(5);
     loop {
         app.sync(&mut warm.doc, &warm.root);
-        if app.has_media_frame() || std::time::Instant::now() >= deadline {
+        if app.has_media_frame()
+            || ui::time::now() >= deadline
+            || ui::rt::sleep_thread(std::time::Duration::from_millis(40)).is_err()
+        {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(40));
     }
     if require_decoded_frame && !app.has_media_frame() {
         return Err(LaunchError::Operation(
@@ -164,4 +180,46 @@ fn render_shot_to_png(
     ui::launch::render_widget_png(widget.as_mut(), viewport, theme, out)?;
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by the production argument-aware LaunchSpec"
+    )]
+    fn inert_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Ok(Box::new(video_player::PlayerApp::history_test_root()))
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
+        (
+            ui::State::new(),
+            ui::persist::DocWriter::disabled("controlled Video Player launch"),
+        )
+    }
+
+    #[test]
+    fn production_argument_aware_launch_spec_installs_the_root_history_definition() {
+        let spec = standalone_launch_spec(inert_root).open_app_global_state(memory_state);
+        spec.validate_history_declaration().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
 }

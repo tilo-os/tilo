@@ -34,6 +34,18 @@ def pe(bits):
     return data
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class GuestTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -61,85 +73,89 @@ class GuestTests(unittest.TestCase):
         except OSError:
             self.skipTest("symlinks unavailable")
 
-    def test_complete_inventory_is_deterministic(self):
-        result = GUEST.validate(self.root)
-        self.assertEqual(result, GUEST.validate(self.root))
-        self.assertEqual(len(result["files"]), 24)
-        self.assertEqual({x["bits"] for x in result["files"] if x.get("format") == "PE"}, {32, 64})
-        self.assertTrue(all(len(x["sha256"]) == 64 for x in result["files"]))
-
-    def test_every_required_file_is_checked(self):
-        for name in (*GUEST.ELF_FILES, *GUEST.PE_FILES, *GUEST.LOCALE_FILES):
-            with self.subTest(name=name):
-                path = self.root / name
-                content = path.read_bytes()
-                path.unlink()
-                with self.assertRaises(GUEST.InvalidGuest):
-                    GUEST.validate(self.root)
-                self.write(name, content).chmod(0o755)
-
-    def test_absolute_and_relative_links_resolve_inside_guest(self):
-        self.write("usr/bin/python3.14", elf(64, 62)).chmod(0o755)
-        self.link("usr/bin/python3", "/usr/bin/python3.14")
-        self.write("usr/lib64/libvulkan.so.1.4", elf(64, 62))
-        self.link("usr/lib64/libvulkan.so.1", "libvulkan.so.1.4")
-        records = {x["path"]: x for x in GUEST.validate(self.root)["files"]}
-        self.assertEqual(records["usr/bin/python3"]["resolved_path"], "usr/bin/python3.14")
-        self.assertEqual(records["usr/lib64/libvulkan.so.1"]["resolved_path"], "usr/lib64/libvulkan.so.1.4")
-
-    def test_directory_absolute_link_resolves_inside_guest(self):
-        (self.root / "usr/bin").rename(self.root / "usr/actual-bin")
-        (self.root / "usr/bin").symlink_to("/usr/actual-bin", target_is_directory=True)
-        self.assertEqual(len(GUEST.validate(self.root)["files"]), 24)
-
-    def test_absolute_host_path_is_never_followed(self):
-        with tempfile.TemporaryDirectory() as other:
-            target = Path(other) / "python"
-            target.write_bytes(elf(64, 62))
-            target.chmod(0o755)
-            self.link("usr/bin/python3", target.as_posix())
-            with self.assertRaisesRegex(GUEST.InvalidGuest, "missing guest path"):
+    def test_inventory(self):
+        with self.subTest(phase="complete_inventory_is_deterministic"):
+            result = GUEST.validate(self.root)
+            self.assertEqual(result, GUEST.validate(self.root))
+            self.assertEqual(len(result["files"]), 24)
+            self.assertEqual({x["bits"] for x in result["files"] if x.get("format") == "PE"}, {32, 64})
+            self.assertTrue(all(len(x["sha256"]) == 64 for x in result["files"]))
+        restart_fixture(self)
+        with self.subTest(phase="every_required_file_is_checked"):
+            for name in (*GUEST.ELF_FILES, *GUEST.PE_FILES, *GUEST.LOCALE_FILES):
+                with self.subTest(name=name):
+                    path = self.root / name
+                    content = path.read_bytes()
+                    path.unlink()
+                    with self.assertRaises(GUEST.InvalidGuest):
+                        GUEST.validate(self.root)
+                    self.write(name, content).chmod(0o755)
+        restart_fixture(self)
+        with self.subTest(phase="corrupt_locale_data_and_multiple_errors"):
+            self.write(GUEST.LOCALE_FILES[0], b"not locale source")
+            self.write(GUEST.LOCALE_FILES[1], b"not gzip")
+            with self.assertRaises(GUEST.InvalidGuest) as caught:
                 GUEST.validate(self.root)
+            for name in GUEST.LOCALE_FILES:
+                self.assertIn(name, str(caught.exception))
 
-    def test_parent_escape_and_cycles_rejected(self):
-        for target in ("../../../outside", "python3"):
-            with self.subTest(target=target):
-                self.link("usr/bin/python3", target)
-                with self.assertRaises(GUEST.InvalidGuest):
+    def test_link_resolution(self):
+        with self.subTest(phase="absolute_and_relative_links_resolve_inside_guest"):
+            self.write("usr/bin/python3.14", elf(64, 62)).chmod(0o755)
+            self.link("usr/bin/python3", "/usr/bin/python3.14")
+            self.write("usr/lib64/libvulkan.so.1.4", elf(64, 62))
+            self.link("usr/lib64/libvulkan.so.1", "libvulkan.so.1.4")
+            records = {x["path"]: x for x in GUEST.validate(self.root)["files"]}
+            self.assertEqual(records["usr/bin/python3"]["resolved_path"], "usr/bin/python3.14")
+            self.assertEqual(records["usr/lib64/libvulkan.so.1"]["resolved_path"], "usr/lib64/libvulkan.so.1.4")
+        restart_fixture(self)
+        with self.subTest(phase="directory_absolute_link_resolves_inside_guest"):
+            (self.root / "usr/bin").rename(self.root / "usr/actual-bin")
+            (self.root / "usr/bin").symlink_to("/usr/actual-bin", target_is_directory=True)
+            self.assertEqual(len(GUEST.validate(self.root)["files"]), 24)
+        restart_fixture(self)
+        with self.subTest(phase="absolute_host_path_is_never_followed"):
+            with tempfile.TemporaryDirectory() as other:
+                target = Path(other) / "python"
+                target.write_bytes(elf(64, 62))
+                target.chmod(0o755)
+                self.link("usr/bin/python3", target.as_posix())
+                with self.assertRaisesRegex(GUEST.InvalidGuest, "missing guest path"):
                     GUEST.validate(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="parent_escape_and_cycles_rejected"):
+            for target in ("../../../outside", "python3"):
+                with self.subTest(target=target):
+                    self.link("usr/bin/python3", target)
+                    with self.assertRaises(GUEST.InvalidGuest):
+                        GUEST.validate(self.root)
 
-    def test_wrong_elf_architecture_rejected(self):
-        for bits, machine in ((64, 62), (32, 183)):
-            with self.subTest(bits=bits, machine=machine):
-                self.write("usr/bin/wine32", elf(bits, machine))
-                with self.assertRaisesRegex(GUEST.InvalidGuest, "ELF"):
-                    GUEST.validate(self.root)
-
-    @unittest.skipIf(os.name == "nt", "requires POSIX executable permissions")
-    def test_python_requires_execute_permission(self):
-        (self.root / "usr/bin/python3").chmod(0o644)
-        with self.assertRaisesRegex(GUEST.InvalidGuest, "executable permission"):
-            GUEST.validate(self.root)
-
-    def test_pe_bitness_and_malformed_header_rejected(self):
-        name = next(name for name, bits in GUEST.PE_FILES.items() if bits == 32)
-        corrupt_offset = pe(32)
-        struct.pack_into("<I", corrupt_offset, 60, 0xFFFFFFFF)
-        wrong_magic = pe(32)
-        struct.pack_into("<H", wrong_magic, 88, 0x20B)
-        for content in (pe(64), pe(32)[:100], corrupt_offset, wrong_magic):
-            with self.subTest(content=content[:8]):
-                self.write(name, content)
-                with self.assertRaisesRegex(GUEST.InvalidGuest, "PE"):
-                    GUEST.validate(self.root)
-
-    def test_corrupt_locale_data_and_multiple_errors(self):
-        self.write(GUEST.LOCALE_FILES[0], b"not locale source")
-        self.write(GUEST.LOCALE_FILES[1], b"not gzip")
-        with self.assertRaises(GUEST.InvalidGuest) as caught:
-            GUEST.validate(self.root)
-        for name in GUEST.LOCALE_FILES:
-            self.assertIn(name, str(caught.exception))
+    def test_binary_headers(self):
+        with self.subTest(phase="wrong_elf_architecture_rejected"):
+            for bits, machine in ((64, 62), (32, 183)):
+                with self.subTest(bits=bits, machine=machine):
+                    self.write("usr/bin/wine32", elf(bits, machine))
+                    with self.assertRaisesRegex(GUEST.InvalidGuest, "ELF"):
+                        GUEST.validate(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="python_requires_execute_permission"):
+            if os.name == "nt":
+                self.skipTest("requires POSIX executable permissions")
+            (self.root / "usr/bin/python3").chmod(0o644)
+            with self.assertRaisesRegex(GUEST.InvalidGuest, "executable permission"):
+                GUEST.validate(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="pe_bitness_and_malformed_header_rejected"):
+            name = next(name for name, bits in GUEST.PE_FILES.items() if bits == 32)
+            corrupt_offset = pe(32)
+            struct.pack_into("<I", corrupt_offset, 60, 0xFFFFFFFF)
+            wrong_magic = pe(32)
+            struct.pack_into("<H", wrong_magic, 88, 0x20B)
+            for content in (pe(64), pe(32)[:100], corrupt_offset, wrong_magic):
+                with self.subTest(content=content[:8]):
+                    self.write(name, content)
+                    with self.assertRaisesRegex(GUEST.InvalidGuest, "PE"):
+                        GUEST.validate(self.root)
 
 
 if __name__ == "__main__":

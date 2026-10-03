@@ -61,6 +61,8 @@ pub struct FinalPartition {
 pub struct ReviewedDisk {
     pub number: u32,
     pub unique_id: String,
+    /// GPT header GUID, independently read by the physical copier.
+    pub disk_guid: String,
     pub size_bytes: u64,
 }
 
@@ -98,7 +100,7 @@ fn checked_esp<'a>(
     disk: &'a Disk,
     receipt: &FinalReadback,
 ) -> IoResult<&'a super::platform::Partition> {
-    if receipt.schema != "tilo.windows-direct-final-readback.v1"
+    if receipt.schema != "tilo.windows-direct-final-readback.v2"
         || !receipt.physical_readback_verified
         || !valid_hash(&receipt.loader_sha256)
         || !valid_hash(&receipt.installed_uki_sha256)
@@ -118,7 +120,9 @@ fn checked_esp<'a>(
         return Err("loader path is not the reviewed ARM64 systemd-boot path".into());
     }
     if disk.id != receipt.disk.number.to_string()
-        || !same_guid(&disk.guid, receipt.disk.unique_id.trim_matches(['{', '}']))
+        || receipt.disk.unique_id.trim().is_empty()
+        || efi::guid_bytes(&receipt.disk.disk_guid).is_err()
+        || !same_guid(&disk.guid, &receipt.disk.disk_guid)
         || disk.size_bytes != receipt.disk.size_bytes
     {
         return Err("Windows disk no longer matches the final readback".into());
@@ -451,10 +455,11 @@ mod tests {
                 ],
             };
             let receipt = FinalReadback {
-                schema: "tilo.windows-direct-final-readback.v1".into(),
+                schema: "tilo.windows-direct-final-readback.v2".into(),
                 disk: ReviewedDisk {
                     number: 3,
-                    unique_id: format!("{{{DISK_GUID}}}"),
+                    unique_id: "eui.002538A441BE8A46".into(),
+                    disk_guid: DISK_GUID.into(),
                     size_bytes: disk.size_bytes,
                 },
                 physical_readback_verified: true,
@@ -564,76 +569,99 @@ mod tests {
         }
     }
 
+    /// Arming, refusals and fallback.
     #[test]
-    fn arms_only_new_option_and_bootnext_and_preserves_boot_order() {
-        let (mut platform, receipt) = FilePlatform::new(true);
-        let armed = arm(&mut platform, &receipt).unwrap();
-        assert_eq!(armed.boot_number, "0100");
-        assert_eq!(platform.writes, ["Boot0100", "BootNext"]);
-        assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
-        assert_eq!(platform.get_efi_var("BootNext").unwrap().unwrap(), [0, 1]);
-        let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
-        let decoded = efi::decode_load_option(&option).unwrap();
-        assert_eq!(decoded.partition_guid, ESP_GUID);
-        assert_eq!(decoded.file_path, PRIMARY);
-        assert_eq!(decoded.partition_number, 4);
-    }
+    fn final_bootnext_arms_only_verified_new_options() {
+        // Phase `arms_only_new_option_and_bootnext_and_preserves_boot_order`.
+        {
+            let (mut platform, receipt) = FilePlatform::new(true);
+            let armed = arm(&mut platform, &receipt).unwrap();
+            assert_eq!(armed.boot_number, "0100");
+            assert_eq!(platform.writes, ["Boot0100", "BootNext"]);
+            assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
+            assert_eq!(platform.get_efi_var("BootNext").unwrap().unwrap(), [0, 1]);
+            let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
+            let decoded = efi::decode_load_option(&option).unwrap();
+            assert_eq!(decoded.partition_guid, ESP_GUID);
+            assert_eq!(decoded.file_path, PRIMARY);
+            assert_eq!(decoded.partition_number, 4);
+        }
 
-    #[test]
-    fn refuses_occupied_bootnext_and_identity_or_loader_mismatch() {
-        let (mut platform, receipt) = FilePlatform::new(true);
-        std::fs::write(platform.var("BootNext"), [1, 0]).unwrap();
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("occupied")
-        );
-        assert!(platform.writes.is_empty());
-        std::fs::remove_file(platform.var("BootNext")).unwrap();
-        let loader_offset = platform
-            .image
-            .windows(b"verified ARM64 loader".len())
-            .position(|bytes| bytes == b"verified ARM64 loader")
-            .unwrap();
-        platform.image[loader_offset] ^= 1;
-        assert!(arm(&mut platform, &receipt).is_err());
-        assert!(platform.writes.is_empty());
-        platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
-        assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
-        assert!(platform.writes.is_empty());
-    }
+        // Hardware UniqueId is not the GPT GUID. Missing, invalid or mismatched
+        // GPT identity must refuse firmware writes, even with the hardware ID.
+        for guid in [
+            "",
+            "eui.002538A441BE8A46",
+            "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        ] {
+            let (mut platform, mut receipt) = FilePlatform::new(true);
+            receipt.disk.disk_guid = guid.into();
+            assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+            assert!(platform.writes.is_empty());
+        }
+        {
+            let (mut platform, mut receipt) = FilePlatform::new(true);
+            receipt.schema = "tilo.windows-direct-final-readback.v1".into();
+            assert!(arm(&mut platform, &receipt).is_err());
+            assert!(platform.writes.is_empty());
+        }
 
-    #[test]
-    fn refuses_changed_boot_or_root_geometry_after_physical_readback() {
-        let (mut platform, mut receipt) = FilePlatform::new(true);
-        platform.disk.partitions[1].last_lba += 1;
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("final-boot geometry")
-        );
-        assert!(platform.writes.is_empty());
-        platform.disk.partitions[1].last_lba -= 1;
-        platform.disk.partitions[2].type_guid = LINUX_TYPE.into();
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("final-root geometry")
-        );
-        assert!(platform.writes.is_empty());
-        platform.disk.partitions[2].type_guid = TILO_ROOT_TYPE.into();
-        receipt.r#final[2].offset_bytes += 512;
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("final-root geometry")
-        );
-        assert!(platform.writes.is_empty());
-    }
+        // Phase `refuses_occupied_bootnext_and_identity_or_loader_mismatch`.
+        {
+            let (mut platform, receipt) = FilePlatform::new(true);
+            std::fs::write(platform.var("BootNext"), [1, 0]).unwrap();
+            assert!(
+                arm(&mut platform, &receipt)
+                    .unwrap_err()
+                    .contains("occupied")
+            );
+            assert!(platform.writes.is_empty());
+            std::fs::remove_file(platform.var("BootNext")).unwrap();
+            let loader_offset = platform
+                .image
+                .windows(b"verified ARM64 loader".len())
+                .position(|bytes| bytes == b"verified ARM64 loader")
+                .unwrap();
+            platform.image[loader_offset] ^= 1;
+            assert!(arm(&mut platform, &receipt).is_err());
+            assert!(platform.writes.is_empty());
+            platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
+            assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+            assert!(platform.writes.is_empty());
+        }
 
-    #[test]
-    fn fallback_requires_primary_absence() {
-        let (mut platform, receipt) = FilePlatform::new(false);
-        assert_eq!(arm(&mut platform, &receipt).unwrap().loader_path, FALLBACK);
+        // Phase `refuses_changed_boot_or_root_geometry_after_physical_readback`.
+        {
+            let (mut platform, mut receipt) = FilePlatform::new(true);
+            platform.disk.partitions[1].last_lba += 1;
+            assert!(
+                arm(&mut platform, &receipt)
+                    .unwrap_err()
+                    .contains("final-boot geometry")
+            );
+            assert!(platform.writes.is_empty());
+            platform.disk.partitions[1].last_lba -= 1;
+            platform.disk.partitions[2].type_guid = LINUX_TYPE.into();
+            assert!(
+                arm(&mut platform, &receipt)
+                    .unwrap_err()
+                    .contains("final-root geometry")
+            );
+            assert!(platform.writes.is_empty());
+            platform.disk.partitions[2].type_guid = TILO_ROOT_TYPE.into();
+            receipt.r#final[2].offset_bytes += 512;
+            assert!(
+                arm(&mut platform, &receipt)
+                    .unwrap_err()
+                    .contains("final-root geometry")
+            );
+            assert!(platform.writes.is_empty());
+        }
+
+        // Phase `fallback_requires_primary_absence`.
+        {
+            let (mut platform, receipt) = FilePlatform::new(false);
+            assert_eq!(arm(&mut platform, &receipt).unwrap().loader_path, FALLBACK);
+        }
     }
 }

@@ -11,54 +11,45 @@ python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
+python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
+python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
 
-staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
+# The staged names and diffs, read once. Every check below matches against
+# these variables, never against a pipe from git: under pipefail, a `grep -q`
+# that stops reading at its first match leaves git writing into a closed pipe,
+# and on a large diff the pipeline then reports git's SIGPIPE instead of the
+# match.
+staged_names=$(git diff --cached --name-only)
+staged_added=$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' || true)
 
-# rustfmt on staged files only, so the hook cost scales with the change.
-if [ -n "$staged_rs" ] && command -v rustfmt >/dev/null 2>&1; then
-  unformatted=$(echo "$staged_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
+# A vendored crate under vendor/ is upstream's code, carried as it ships: the
+# added-code policy (ignore reasons, allow placement, dbg!) and rustfmt skip it.
+own_rs=('*.rs' ':!vendor/')
+own_diff=$(git diff --cached -U0 -- "${own_rs[@]}")
+
+# rustfmt on staged files only, so the hook cost scales with the change. Same
+# rule as CI (tools/ci/check-changed-rustfmt.sh): besides vendor/, a generated
+# source says so with an `@generated` marker in its first five lines
+# (capnpc-rust bindings, tilo-app registries); it is whatever its generator
+# emits, never hand-formatted, so rustfmt skips it.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- "${own_rs[@]}")
+fmt_rs=""
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  head5=$(git show ":$f" 2>/dev/null | head -n 5 || true)
+  case "$head5" in *@generated*) continue ;; esac
+  fmt_rs="$fmt_rs$f"$'\n'
+done <<< "$staged_rs"
+if [ -n "$fmt_rs" ] && command -v rustfmt >/dev/null 2>&1; then
+  unformatted=$(printf '%s' "$fmt_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
   if [ "${unformatted:-0}" -gt 0 ]; then
     note "rustfmt: $unformatted hunk(s) unformatted in staged files. Run: cargo fmt"
     fail=1
   fi
 fi
 
-# Crates with tests/it.rs need module declarations for their integration tests;
-# undeclared files are not compiled or run.
-while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  case "$f" in */tests/*.rs) ;; *) continue ;; esac
-  base=$(basename "$f" .rs)
-  [ "$base" = "it" ] && continue
-  crate_tests=$(dirname "$f")
-  # only crates that consolidated
-  [ -f "$crate_tests/it.rs" ] || continue
-  # helper modules live in a subdirectory or are named in it.rs already
-  case "$f" in */tests/*/*) continue ;; esac
-  # Some environment-owning integration tests intentionally remain separate
-  # Cargo test binaries. An explicit [[test]] path is just as reachable as a
-  # module in tests/it.rs and must not be reported as silently orphaned.
-  crate_manifest="$(dirname "$crate_tests")/Cargo.toml"
-  if [ -f "$crate_manifest" ] \
-    && grep -qE "^[[:space:]]*path[[:space:]]*=[[:space:]]*\"tests/${base}\\.rs\"[[:space:]]*$" "$crate_manifest"; then
-    continue
-  fi
-  # A test file the crate's own sources include with `#[path]` is compiled
-  # as part of that target, not orphaned.
-  crate_src="$(dirname "$crate_tests")/src"
-  if [ -d "$crate_src" ] \
-    && grep -rqE "^[[:space:]]*#\[path = \"(\.\./)+tests/${base}\.rs\"\]" "$crate_src"; then
-    continue
-  fi
-  if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then
-    note "$f is not declared in $crate_tests/it.rs — it will not be compiled or run"
-    fail=1
-  fi
-done <<< "$staged_rs"
-
 # Require a reason for added #[ignore] attributes.
-added_ignores=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+\s*#\[ignore\]\s*$' || true)
-if [ -n "$added_ignores" ]; then
+if grep -qE '^\+\s*#\[ignore\]\s*$' <<< "$own_diff"; then
   note "#[ignore] added with no reason string. Use #[ignore = \"why\"]."
   fail=1
 fi
@@ -70,13 +61,13 @@ python3 "$root/tools/ci/check_changed_rust_allows.py" --root "$root" --staged ||
 # Credentials in the staged diff.
 "$root/scripts/scan-secrets.sh" || fail=1
 
-if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+(<{7}|={7}|>{7})( |$)'; then
+if grep -qE '^\+(<{7}|={7}|>{7})( |$)' <<< "$staged_added"; then
   note "merge-conflict marker in the staged diff"
   fail=1
 fi
 
 # Catch ineffective `#[allow]` attributes before CI.
-added=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+' || true)
+added=$(grep -E '^\+' <<< "$own_diff" || true)
 # A Clippy lint without its prefix is unknown and leaves the violation in place.
 bare=$(printf '%s\n' "$added" | grep -oE '#!?\[allow\(\s*(clippy::)?[a-z_]+' \
   | grep -v 'clippy::' \
@@ -86,12 +77,13 @@ if [ -n "$bare" ]; then
   fail=1
 fi
 # An attribute on a macro invocation in statement position is ignored.
-if git diff --cached -U0 -- '*.rs' | grep -A1 -E '^\+\s*#\[allow\(' | grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|write|writeln|panic|vec|format)!'; then
+allow_context=$(grep -A1 -E '^\+\s*#\[allow\(' <<< "$own_diff" || true)
+if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|write|writeln|panic|vec|format)!' <<< "$allow_context"; then
   note "#[allow] directly above a macro invocation is ignored by rustc — put it on the enclosing function"
   fail=1
 fi
 
-if printf '%s\n' "$added" | grep -qE '(^|[^a-z_])dbg!\('; then
+if grep -qE '(^|[^a-z_])dbg!\(' <<< "$added"; then
   note "dbg! in the staged diff"
   fail=1
 fi
@@ -101,12 +93,12 @@ fi
 #   TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit
 # that cargo metadata --locked accepts and that moves nothing else
 # (tools/ci/check_lock_update.py).
-if git diff --cached --name-only | grep -qx 'Cargo.lock' \
-   && ! git diff --cached --name-only | grep -qE '(^|/)Cargo\.toml$'; then
+if grep -qx 'Cargo.lock' <<< "$staged_names" \
+   && ! grep -qE '(^|/)Cargo\.toml$' <<< "$staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
 # A vendored crate's own lock file is a build artifact, not ours.
-if git diff --cached --name-only | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then
+if grep -qE '^vendor/[^/]+/Cargo\.lock$' <<< "$staged_names"; then
   note "a vendored crate's Cargo.lock is staged; it is a build artifact"
   fail=1
 fi

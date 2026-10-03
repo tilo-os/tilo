@@ -429,11 +429,10 @@ mod native {
     };
     use std::fs::{self, OpenOptions};
     use std::io::Read;
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::process::Command;
+    use std::time::Duration;
 
     pub(super) struct QueryOutput {
         pub code: i32,
@@ -449,82 +448,35 @@ mod native {
         timeout: Duration,
         limit: usize,
     ) -> Result<QueryOutput, String> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .env_clear()
             .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
             .env("LC_ALL", "C")
-            .env("HOME", "/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| format!("Could not execute {program}."))?;
-        let result = (|| {
-            let mut stdout = child.stdout.take().ok_or("Missing query stdout.")?;
-            let mut stderr = child.stderr.take().ok_or("Missing query stderr.")?;
-            for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-                // SAFETY: each fd belongs to a live child pipe held above.
-                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                if flags < 0
-                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-                {
-                    return Err("Could not bound query output.".into());
-                }
-            }
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let started = Instant::now();
-            loop {
-                drain(&mut stdout, &mut out, limit)?;
-                drain(&mut stderr, &mut err, limit)?;
-                if let Some(status) = child
-                    .try_wait()
-                    .map_err(|_| "Could not read query status.")?
-                {
-                    drain(&mut stdout, &mut out, limit)?;
-                    drain(&mut stderr, &mut err, limit)?;
-                    return Ok(QueryOutput {
-                        code: status
-                            .code()
-                            .ok_or("Query terminated without an exit code.")?,
-                        stdout: String::from_utf8(out)
-                            .map_err(|_| "Invalid query output encoding.")?,
-                        stderr: String::from_utf8(err)
-                            .map_err(|_| "Invalid query error encoding.")?,
-                    });
-                }
-                if started.elapsed() >= timeout {
-                    return Err(format!("Read-only query timed out: {program}."));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        })();
-        if result.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        result
-    }
-
-    fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
-        let mut buffer = [0; 4096];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => return Ok(()),
-                Ok(count) => {
-                    if bytes.len() + count > limit {
-                        return Err("Read-only query output exceeded its limit.".into());
+            .env("HOME", "/");
+        let output =
+            bounded_command::run_prepared(command, None, limit, timeout).map_err(|error| {
+                match error {
+                    bounded_command::Error::Timeout(_) => {
+                        format!("Read-only query timed out: {program}.")
                     }
-                    bytes.extend_from_slice(
-                        buffer.get(..count).ok_or("Invalid query read length.")?,
-                    );
+                    bounded_command::Error::OutputTooLarge { .. } => {
+                        "Read-only query output exceeded its limit.".into()
+                    }
+                    _ => format!("Could not execute {program}."),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
-                Err(_) => return Err("Could not read query output.".into()),
-            }
-        }
+            })?;
+        Ok(QueryOutput {
+            code: output
+                .status
+                .code()
+                .ok_or("Query terminated without an exit code.")?,
+            stdout: String::from_utf8(output.stdout)
+                .map_err(|_| "Invalid query output encoding.")?,
+            stderr: String::from_utf8(output.stderr)
+                .map_err(|_| "Invalid query error encoding.")?,
+        })
     }
 
     fn run(program: &str, args: &[&str]) -> Result<QueryOutput, String> {
@@ -892,209 +844,359 @@ mod native {
 mod tests {
     use super::*;
 
+    /// Sandbox markers, mount evidence, special files, runner bounds and confinement.
     #[test]
-    fn sandbox_environment_markers_refuse_even_empty_present_values() {
-        for marker in [
-            "FLATPAK_ID",
-            "SNAP",
-            "SNAP_NAME",
-            "container",
-            "TILO_IMAGER_FLATPAK",
-        ] {
-            let observations = HashMap::from([(marker, "")]);
-            assert!(
-                sandbox_environment_marker_present(|candidate| observations.contains_key(candidate)),
-                "ignored present sandbox marker {marker}"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn host_evidence_refuses_sandboxes_chroots_and_special_files() {
+        // Phase `sandbox_environment_markers_refuse_even_empty_present_values`.
+        {
+            for marker in [
+                "FLATPAK_ID",
+                "SNAP",
+                "SNAP_NAME",
+                "container",
+                "TILO_IMAGER_FLATPAK",
+            ] {
+                let observations = HashMap::from([(marker, "")]);
+                assert!(
+                    sandbox_environment_marker_present(
+                        |candidate| observations.contains_key(candidate)
+                    ),
+                    "ignored present sandbox marker {marker}"
+                );
+            }
+            assert!(!sandbox_environment_marker_present(|_| false));
+        }
+
+        // Phase `mount_evidence_rejects_chroot_namespace_and_ambiguous_roots`.
+        #[cfg(unix)]
+        {
+            let host = "45 1 8:3 / / rw,relatime shared:1 - xfs /dev/sda3 rw,seclabel\n";
+            assert_eq!(
+                native::root_mount(host).unwrap(),
+                native::root_mount("45 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
+            );
+            assert_ne!(
+                native::root_mount(host).unwrap(),
+                native::root_mount("45 1 8:3 /chroot / rw - xfs /dev/sda3 rw\n").unwrap()
+            );
+            assert_ne!(
+                native::root_mount(host).unwrap(),
+                native::root_mount("99 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
+            );
+            assert_ne!(
+                native::root_mount(host).unwrap(),
+                native::root_mount("45 1 8:4 / / rw - xfs /dev/sda4 rw\n").unwrap()
+            );
+            for text in [
+                "",
+                "bad",
+                "45 1 8:3 / /other rw - xfs /dev/sda3 rw\n",
+                "45 1 8:3 /bad\\999 / rw - xfs /dev/sda3 rw\n",
+                "45 1 8:3 / / rw - xfs\n",
+                "xx 1 8:3 / / rw - xfs /dev/sda3 rw\n",
+            ] {
+                assert!(native::root_mount(text).is_err(), "accepted {text}");
+            }
+            assert!(native::root_mount(&format!("{host}{host}")).is_err());
+            assert_eq!(
+                native::mount_path(r"/hello\040world\134path").unwrap(),
+                "/hello world\\path"
             );
         }
-        assert!(!sandbox_environment_marker_present(|_| false));
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn mount_evidence_rejects_chroot_namespace_and_ambiguous_roots() {
-        let host = "45 1 8:3 / / rw,relatime shared:1 - xfs /dev/sda3 rw,seclabel\n";
-        assert_eq!(
-            native::root_mount(host).unwrap(),
-            native::root_mount("45 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
-        );
-        assert_ne!(
-            native::root_mount(host).unwrap(),
-            native::root_mount("45 1 8:3 /chroot / rw - xfs /dev/sda3 rw\n").unwrap()
-        );
-        assert_ne!(
-            native::root_mount(host).unwrap(),
-            native::root_mount("99 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
-        );
-        assert_ne!(
-            native::root_mount(host).unwrap(),
-            native::root_mount("45 1 8:4 / / rw - xfs /dev/sda4 rw\n").unwrap()
-        );
-        for text in [
-            "",
-            "bad",
-            "45 1 8:3 / /other rw - xfs /dev/sda3 rw\n",
-            "45 1 8:3 /bad\\999 / rw - xfs /dev/sda3 rw\n",
-            "45 1 8:3 / / rw - xfs\n",
-            "xx 1 8:3 / / rw - xfs /dev/sda3 rw\n",
-        ] {
-            assert!(native::root_mount(text).is_err(), "accepted {text}");
+        // Phase `host_evidence_reader_refuses_special_files_without_waiting`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("fifo");
+            let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: cpath is a live NUL-terminated filename in a private test directory.
+            assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(native::read_text(&path));
+            });
+            assert!(
+                rx.recv_timeout(tilo_test_env::hang_bound())
+                    .expect("special host files must not block the probe")
+                    .is_err()
+            );
         }
-        assert!(native::root_mount(&format!("{host}{host}")).is_err());
-        assert_eq!(
-            native::mount_path(r"/hello\040world\134path").unwrap(),
-            "/hello world\\path"
-        );
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn host_evidence_reader_refuses_special_files_without_waiting() {
-        use std::os::unix::ffi::OsStrExt;
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("fifo");
-        let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: cpath is a live NUL-terminated filename in a private test directory.
-        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(native::read_text(&path));
-        });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_millis(250))
-                .expect("special host files must not block the probe")
-                .is_err()
-        );
-    }
+        // Phase `read_only_command_runner_bounds_time_and_output`.
+        #[cfg(unix)]
+        {
+            use std::time::Duration;
+            let bound = tilo_test_env::hang_bound();
+            let result = native::query("/usr/bin/printf", &["hello"], bound, 32).unwrap();
+            assert_eq!(result.stdout, "hello");
+            assert!(native::query("/usr/bin/printf", &["123456789"], bound, 4).is_err());
+            let start = ui::time::now();
+            let sleep = (bound.as_secs() * 2).to_string();
+            assert!(native::query("/bin/sleep", &[&sleep], Duration::from_millis(25), 32).is_err());
+            assert!(start.elapsed() < bound);
+        }
 
-    #[test]
-    fn native_package_status_refuses_query_errors_and_ambiguous_versions() {
-        assert_eq!(
-            parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
-            InstalledPackage::Installed {
-                version: "1.0-2.fc44".into()
-            }
-        );
-        assert_eq!(
-            parse_package_status(PackageManager::Dnf, 0, "2\t1.0\t2.fc44\n", "").unwrap(),
-            InstalledPackage::Installed {
-                version: "2:1.0-2.fc44".into()
-            }
-        );
-        assert_eq!(
-            parse_package_status(
-                PackageManager::Dnf,
-                1,
-                "package tilo-session is not installed\n",
-                ""
-            )
-            .unwrap(),
-            InstalledPackage::Absent
-        );
-        assert_eq!(
-            parse_package_status(PackageManager::Apt, 0, "installed\t1:1.0-2\n", "").unwrap(),
-            InstalledPackage::Installed {
-                version: "1:1.0-2".into()
-            }
-        );
-        assert_eq!(
-            parse_package_status(
-                PackageManager::Apt,
-                1,
+        // Phase `session_and_confinement_evidence_fail_closed`.
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                native::display_manager("Id=gdm.service\nLoadState=loaded\nActiveState=active\n")
+                    .unwrap(),
+                "gdm.service"
+            );
+            for text in [
                 "",
-                "dpkg-query: no packages found matching tilo-session\n"
-            )
-            .unwrap(),
-            InstalledPackage::Absent
-        );
-        assert_eq!(
-            parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "").unwrap(),
-            InstalledPackage::Installed {
-                version: "1:1.0-2".into()
+                "Id=unknown.service\nLoadState=loaded\nActiveState=active",
+                "Id=gdm.service\nLoadState=loaded\nActiveState=inactive",
+                "Id=gdm.service\nId=sddm.service\nLoadState=loaded\nActiveState=active",
+            ] {
+                assert!(native::display_manager(text).is_err());
             }
-        );
-        assert_eq!(
-            parse_package_status(
-                PackageManager::Pacman,
-                1,
-                "",
-                "error: package 'tilo-session' was not found\n"
+            assert!(
+                !native::process_confined("Name:\timager\nNoNewPrivs:\t0\nSeccomp:\t0\n").unwrap()
+            );
+            assert!(native::process_confined("NoNewPrivs:\t1\nSeccomp:\t0\n").unwrap());
+            assert!(native::process_confined("NoNewPrivs:\t0\nSeccomp:\t2\n").unwrap());
+            assert!(native::process_confined("Name:\timager\n").is_err());
+            let temp = tempfile::tempdir().unwrap();
+            assert!(native::wayland_sessions(temp.path()).is_err());
+            std::fs::write(
+                temp.path().join("tilo.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Tilo\nExec=tilo-session\n",
             )
-            .unwrap(),
-            InstalledPackage::Absent
-        );
-        for (manager, status, stdout, stderr) in [
-            (PackageManager::Dnf, 1, "", "error: rpmdb failed"),
-            (PackageManager::Dnf, 0, "0\t1.0\t1\n0\t2.0\t1\n", ""),
-            (PackageManager::Apt, 0, "config-files\t1.0-1\n", ""),
-            (PackageManager::Apt, 0, "installed\t\n", ""),
-            (PackageManager::Pacman, 0, "other 1.0-1\n", ""),
-            (PackageManager::Pacman, 1, "", "error: database unavailable"),
-        ] {
-            assert!(parse_package_status(manager, status, stdout, stderr).is_err());
+            .unwrap();
+            assert!(native::wayland_sessions(temp.path()).is_err());
+            std::fs::write(
+                temp.path().join("gnome.desktop"),
+                "[Desktop Entry]\nType=Application\nName=GNOME\nExec=gnome-session\n",
+            )
+            .unwrap();
+            assert_eq!(
+                native::wayland_sessions(temp.path()).unwrap(),
+                vec!["gnome.desktop"]
+            );
         }
     }
 
-    #[cfg(unix)]
+    /// Package queries and installed version matching.
     #[test]
-    fn read_only_command_runner_bounds_time_and_output() {
-        use std::time::Duration;
-        let result =
-            native::query("/usr/bin/printf", &["hello"], Duration::from_secs(1), 32).unwrap();
-        assert_eq!(result.stdout, "hello");
-        assert!(
-            native::query("/usr/bin/printf", &["123456789"], Duration::from_secs(1), 4).is_err()
-        );
-        let start = std::time::Instant::now();
-        assert!(native::query("/bin/sleep", &["2"], Duration::from_millis(25), 32).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn session_and_confinement_evidence_fail_closed() {
-        assert_eq!(
-            native::display_manager("Id=gdm.service\nLoadState=loaded\nActiveState=active\n")
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_package_status_and_installed_version_are_exact() {
+        // Phase `native_package_status_refuses_query_errors_and_ambiguous_versions`.
+        {
+            assert_eq!(
+                parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
+                InstalledPackage::Installed {
+                    version: "1.0-2.fc44".into()
+                }
+            );
+            assert_eq!(
+                parse_package_status(PackageManager::Dnf, 0, "2\t1.0\t2.fc44\n", "").unwrap(),
+                InstalledPackage::Installed {
+                    version: "2:1.0-2.fc44".into()
+                }
+            );
+            assert_eq!(
+                parse_package_status(
+                    PackageManager::Dnf,
+                    1,
+                    "package tilo-session is not installed\n",
+                    ""
+                )
                 .unwrap(),
-            "gdm.service"
-        );
-        for text in [
-            "",
-            "Id=unknown.service\nLoadState=loaded\nActiveState=active",
-            "Id=gdm.service\nLoadState=loaded\nActiveState=inactive",
-            "Id=gdm.service\nId=sddm.service\nLoadState=loaded\nActiveState=active",
-        ] {
-            assert!(native::display_manager(text).is_err());
+                InstalledPackage::Absent
+            );
+            assert_eq!(
+                parse_package_status(PackageManager::Apt, 0, "installed\t1:1.0-2\n", "").unwrap(),
+                InstalledPackage::Installed {
+                    version: "1:1.0-2".into()
+                }
+            );
+            assert_eq!(
+                parse_package_status(
+                    PackageManager::Apt,
+                    1,
+                    "",
+                    "dpkg-query: no packages found matching tilo-session\n"
+                )
+                .unwrap(),
+                InstalledPackage::Absent
+            );
+            assert_eq!(
+                parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "")
+                    .unwrap(),
+                InstalledPackage::Installed {
+                    version: "1:1.0-2".into()
+                }
+            );
+            assert_eq!(
+                parse_package_status(
+                    PackageManager::Pacman,
+                    1,
+                    "",
+                    "error: package 'tilo-session' was not found\n"
+                )
+                .unwrap(),
+                InstalledPackage::Absent
+            );
+            for (manager, status, stdout, stderr) in [
+                (PackageManager::Dnf, 1, "", "error: rpmdb failed"),
+                (PackageManager::Dnf, 0, "0\t1.0\t1\n0\t2.0\t1\n", ""),
+                (PackageManager::Apt, 0, "config-files\t1.0-1\n", ""),
+                (PackageManager::Apt, 0, "installed\t\n", ""),
+                (PackageManager::Pacman, 0, "other 1.0-1\n", ""),
+                (PackageManager::Pacman, 1, "", "error: database unavailable"),
+            ] {
+                assert!(parse_package_status(manager, status, stdout, stderr).is_err());
+            }
         }
-        assert!(!native::process_confined("Name:\timager\nNoNewPrivs:\t0\nSeccomp:\t0\n").unwrap());
-        assert!(native::process_confined("NoNewPrivs:\t1\nSeccomp:\t0\n").unwrap());
-        assert!(native::process_confined("NoNewPrivs:\t0\nSeccomp:\t2\n").unwrap());
-        assert!(native::process_confined("Name:\timager\n").is_err());
-        let temp = tempfile::tempdir().unwrap();
-        assert!(native::wayland_sessions(temp.path()).is_err());
-        std::fs::write(
-            temp.path().join("tilo.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Tilo\nExec=tilo-session\n",
-        )
-        .unwrap();
-        assert!(native::wayland_sessions(temp.path()).is_err());
-        std::fs::write(
-            temp.path().join("gnome.desktop"),
-            "[Desktop Entry]\nType=Application\nName=GNOME\nExec=gnome-session\n",
-        )
-        .unwrap();
-        assert_eq!(
-            native::wayland_sessions(temp.path()).unwrap(),
-            vec!["gnome.desktop"]
-        );
+
+        // Phase `installed_version_is_exact_and_existing_different_versions_block`.
+        {
+            let mut host = fedora();
+            host.installed_package = Ok(InstalledPackage::Installed {
+                version: "1.0-1".into(),
+            });
+            assert!(matches!(
+                desktop_readiness(&host, &[release()]),
+                DesktopReadiness::AlreadyInstalled(_)
+            ));
+            host.installed_package = Ok(InstalledPackage::Installed {
+                version: "1.0-2".into(),
+            });
+            blocked(&host, &[release()]);
+        }
     }
 
+    /// Readiness decisions.
     #[test]
-    fn worker_reports_real_platform_without_gui() {
-        let host = probe_desktop_host().unwrap().join().unwrap();
-        assert_eq!(host.operating_system, std::env::consts::OS);
-        if !cfg!(target_os = "linux") {
-            blocked(&host, &[release()]);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn readiness_accepts_only_verified_ordinary_supported_hosts() {
+        // Phase `worker_reports_real_platform_without_gui`.
+        {
+            let host = probe_desktop_host().unwrap().join().unwrap();
+            assert_eq!(host.operating_system, std::env::consts::OS);
+            if !cfg!(target_os = "linux") {
+                blocked(&host, &[release()]);
+            }
+        }
+
+        // Phase `readiness_requires_exact_release_and_verified_runtime`.
+        {
+            let host = fedora();
+            let good = release();
+            assert!(matches!(
+                desktop_readiness(&host, &[good.clone()]),
+                DesktopReadiness::Ready(_)
+            ));
+            blocked(
+                &host,
+                &super::super::desktop_catalog::bundled_releases().unwrap(),
+            );
+            let mut no_runtime = good.clone();
+            no_runtime.verified_runtime = None;
+            blocked(&host, &[no_runtime]);
+            let mut wrong_runtime = good.clone();
+            wrong_runtime
+                .verified_runtime
+                .as_mut()
+                .unwrap()
+                .package_sha256 = "b".repeat(64);
+            blocked(&host, &[wrong_runtime]);
+            blocked(&host, &[good.clone(), good.clone()]);
+            for (id, version, arch) in [
+                ("example", "44", "aarch64"),
+                ("fedora", "44.0", "aarch64"),
+                ("fedora", "44", "x86_64"),
+                ("fedora", "44", "arm64"),
+            ] {
+                let mut wrong = host.clone();
+                wrong.os_release =
+                    parse_os_release(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
+                wrong.architecture = Ok(arch.into());
+                blocked(&wrong, &[good.clone()]);
+            }
+        }
+
+        // Phase `readiness_rejects_unknown_immutable_sandboxed_and_non_linux_hosts`.
+        {
+            let release = release();
+            for change in 0..11 {
+                let mut host = fedora();
+                match change {
+                    0 => host.immutable = Ok(true),
+                    1 => host.sandboxed = Ok(true),
+                    2 => host.immutable = Err("unknown".into()),
+                    3 => host.sandboxed = Err("unknown".into()),
+                    4 => host.session = Err("unknown".into()),
+                    5 => host.package_manager = Err("missing".into()),
+                    6 => host.installed_package = Err("query failed".into()),
+                    7 => host.operating_system = "windows".into(),
+                    8 => host.os_release = parse_os_release("ID=fedora"),
+                    9 => host.package_manager = Ok(PackageManager::Apt),
+                    _ => host.architecture = Err("unknown".into()),
+                }
+                blocked(&host, &[release.clone()]);
+            }
+        }
+
+        // Phase `readiness_accepts_only_explicit_ordinary_distribution_adapters`.
+        {
+            for (id, version, manager, format) in [
+                (
+                    "ubuntu",
+                    Some("24.04"),
+                    PackageManager::Apt,
+                    PackageFormat::Deb,
+                ),
+                (
+                    "debian",
+                    Some("13"),
+                    PackageManager::Apt,
+                    PackageFormat::Deb,
+                ),
+                ("arch", None, PackageManager::Pacman, PackageFormat::Arch),
+            ] {
+                let mut host = fedora();
+                host.os_release = parse_os_release(&format!(
+                    "ID={id}\n{}",
+                    version.map_or(String::new(), |v| format!("VERSION_ID={v}"))
+                ));
+                host.package_manager = Ok(manager);
+                let mut release = release();
+                release.distro_id = id.into();
+                release.distro_version = version.unwrap_or("rolling").into();
+                release.package_format = format;
+                assert!(matches!(
+                    desktop_readiness(&host, &[release]),
+                    DesktopReadiness::Ready(_)
+                ));
+            }
+            for id in ["nixos", "unknown", "fedora-derivative"] {
+                let mut host = fedora();
+                host.os_release = parse_os_release(&format!("ID={id}\nVERSION_ID=44"));
+                let mut release = release();
+                release.distro_id = id.into();
+                blocked(&host, &[release]);
+            }
+        }
+
+        // Phase `derivative_does_not_inherit_fedora_support`.
+        {
+            let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
+            assert_eq!(host.id, "example");
         }
     }
 
@@ -1147,160 +1249,42 @@ mod tests {
         );
     }
 
+    /// os-release parsing and arch mapping.
     #[test]
-    fn readiness_requires_exact_release_and_verified_runtime() {
-        let host = fedora();
-        let good = release();
-        assert!(matches!(
-            desktop_readiness(&host, &[good.clone()]),
-            DesktopReadiness::Ready(_)
-        ));
-        blocked(
-            &host,
-            &super::super::desktop_catalog::bundled_releases().unwrap(),
-        );
-        let mut no_runtime = good.clone();
-        no_runtime.verified_runtime = None;
-        blocked(&host, &[no_runtime]);
-        let mut wrong_runtime = good.clone();
-        wrong_runtime
-            .verified_runtime
-            .as_mut()
-            .unwrap()
-            .package_sha256 = "b".repeat(64);
-        blocked(&host, &[wrong_runtime]);
-        blocked(&host, &[good.clone(), good.clone()]);
-        for (id, version, arch) in [
-            ("example", "44", "aarch64"),
-            ("fedora", "44.0", "aarch64"),
-            ("fedora", "44", "x86_64"),
-            ("fedora", "44", "arm64"),
-        ] {
-            let mut wrong = host.clone();
-            wrong.os_release =
-                parse_os_release(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
-            wrong.architecture = Ok(arch.into());
-            blocked(&wrong, &[good.clone()]);
+    fn os_release_parses_literally_and_rejects_ambiguity() {
+        // Phase `os_release_parses_quoted_values_without_shell_evaluation`.
+        {
+            let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
+            assert_eq!(host.id, "fedora");
+            assert_eq!(host.version_id.as_deref(), Some("44"));
         }
-    }
 
-    #[test]
-    fn readiness_rejects_unknown_immutable_sandboxed_and_non_linux_hosts() {
-        let release = release();
-        for change in 0..11 {
-            let mut host = fedora();
-            match change {
-                0 => host.immutable = Ok(true),
-                1 => host.sandboxed = Ok(true),
-                2 => host.immutable = Err("unknown".into()),
-                3 => host.sandboxed = Err("unknown".into()),
-                4 => host.session = Err("unknown".into()),
-                5 => host.package_manager = Err("missing".into()),
-                6 => host.installed_package = Err("query failed".into()),
-                7 => host.operating_system = "windows".into(),
-                8 => host.os_release = parse_os_release("ID=fedora"),
-                9 => host.package_manager = Ok(PackageManager::Apt),
-                _ => host.architecture = Err("unknown".into()),
+        // Phase `os_release_rejects_ambiguous_or_malformed_data`.
+        {
+            for value in [
+                "",
+                "ID=fedora\nID=fedora\n",
+                "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
+                "ID=\"fedora",
+                "ID=fedora extra",
+                "export ID=fedora",
+                "ID=$(whoami)",
+                "ID=fedora;true",
+                "ID=fedora\nBROKEN",
+                "ID=Fedora",
+                "ID=fedora\nVERSION_ID=\"44\"junk",
+            ] {
+                assert!(parse_os_release(value).is_err(), "accepted {value:?}");
             }
-            blocked(&host, &[release.clone()]);
         }
-    }
 
-    #[test]
-    fn readiness_accepts_only_explicit_ordinary_distribution_adapters() {
-        for (id, version, manager, format) in [
-            (
-                "ubuntu",
-                Some("24.04"),
-                PackageManager::Apt,
-                PackageFormat::Deb,
-            ),
-            (
-                "debian",
-                Some("13"),
-                PackageManager::Apt,
-                PackageFormat::Deb,
-            ),
-            ("arch", None, PackageManager::Pacman, PackageFormat::Arch),
-        ] {
-            let mut host = fedora();
-            host.os_release = parse_os_release(&format!(
-                "ID={id}\n{}",
-                version.map_or(String::new(), |v| format!("VERSION_ID={v}"))
-            ));
-            host.package_manager = Ok(manager);
-            let mut release = release();
-            release.distro_id = id.into();
-            release.distro_version = version.unwrap_or("rolling").into();
-            release.package_format = format;
-            assert!(matches!(
-                desktop_readiness(&host, &[release]),
-                DesktopReadiness::Ready(_)
-            ));
+        // Phase `missing_version_is_preserved_and_arch_mapping_is_explicit`.
+        {
+            assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
+            assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
+            assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
+            assert_eq!(catalog_architecture("arm64"), None);
+            assert_eq!(catalog_architecture("x86"), None);
         }
-        for id in ["nixos", "unknown", "fedora-derivative"] {
-            let mut host = fedora();
-            host.os_release = parse_os_release(&format!("ID={id}\nVERSION_ID=44"));
-            let mut release = release();
-            release.distro_id = id.into();
-            blocked(&host, &[release]);
-        }
-    }
-
-    #[test]
-    fn installed_version_is_exact_and_existing_different_versions_block() {
-        let mut host = fedora();
-        host.installed_package = Ok(InstalledPackage::Installed {
-            version: "1.0-1".into(),
-        });
-        assert!(matches!(
-            desktop_readiness(&host, &[release()]),
-            DesktopReadiness::AlreadyInstalled(_)
-        ));
-        host.installed_package = Ok(InstalledPackage::Installed {
-            version: "1.0-2".into(),
-        });
-        blocked(&host, &[release()]);
-    }
-
-    #[test]
-    fn derivative_does_not_inherit_fedora_support() {
-        let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
-        assert_eq!(host.id, "example");
-    }
-
-    #[test]
-    fn os_release_parses_quoted_values_without_shell_evaluation() {
-        let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
-        assert_eq!(host.id, "fedora");
-        assert_eq!(host.version_id.as_deref(), Some("44"));
-    }
-
-    #[test]
-    fn os_release_rejects_ambiguous_or_malformed_data() {
-        for value in [
-            "",
-            "ID=fedora\nID=fedora\n",
-            "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
-            "ID=\"fedora",
-            "ID=fedora extra",
-            "export ID=fedora",
-            "ID=$(whoami)",
-            "ID=fedora;true",
-            "ID=fedora\nBROKEN",
-            "ID=Fedora",
-            "ID=fedora\nVERSION_ID=\"44\"junk",
-        ] {
-            assert!(parse_os_release(value).is_err(), "accepted {value:?}");
-        }
-    }
-
-    #[test]
-    fn missing_version_is_preserved_and_arch_mapping_is_explicit() {
-        assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
-        assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
-        assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
-        assert_eq!(catalog_architecture("arm64"), None);
-        assert_eq!(catalog_architecture("x86"), None);
     }
 }

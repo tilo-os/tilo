@@ -1,0 +1,60 @@
+[package]
+name = "tilo-joined-room"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A device's enrolled replicas of rooms governed by a remote durable host: enrollment, admission, outgoing custody and their durable record."
+
+[features]
+# Fixtures and internals the desktop session's own owner tests assert on.
+test-support = ["dep:iroh-base", "dep:uuid"]
+
+[dependencies]
+# Writes the file-backed store: owner-only, crash-safe replacement.
+tilo-files = { path = "../../platform/tilo-files" }
+automerge.workspace = true
+blake3.workspace = true
+collab-types = { path = "../collab-types" }
+ed25519-dalek.workspace = true
+# The endpoint a relay session dials its pinned host from.
+iroh.workspace = true
+# The random id of each enrollment challenge request.
+getrandom.workspace = true
+parking_lot.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The device custody an enrollment presents to the issuing host.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-peer-state = { path = "../tilo-peer-state" }
+# The join client an enrollment redeems its invitation over.
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+# The relay voice carrier a call participation authorizes.
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+iroh-base = { workspace = true, features = ["key"], optional = true }
+uuid = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Admits untrusted automerge bytes in isolated workers, as in production.
+tilo-automerge-isolate.workspace = true
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Seals the writes a keyless owner keeps, as an SDK app and its key holder do.
+channel-crypto = { path = "../channel-crypto" }
+iroh-base = { workspace = true, features = ["key"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

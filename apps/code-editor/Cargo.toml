@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "code-editor"
 version = "0.1.0"
 edition = "2024"
@@ -18,12 +19,12 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# `portal` turns on `ui::portal`'s XDG FileChooser round-trip, which is how
-# Open Folder / Open File / Save As reach paths outside the one directory this
-# app is confined to. An app never draws its own picker (HIG §5), and the
-# portal is where the sandbox's file-access grant is made — so it is the only
-# way in, not merely the tidy one.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# `ui::portal`'s file chooser is how Open Folder / Open File / Save As reach
+# paths outside the one directory this app is confined to. An app never draws
+# its own picker (HIG §5), and on Linux the XDG portal behind it is where the
+# sandbox's file-access grant is made — so it is the only way in, not merely
+# the tidy one. The SDK selects each platform's chooser.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -39,21 +40,24 @@ winit.workspace = true
 taffy.workspace = true
 # Saving a source file is a write that must not be able to truncate it: a
 # temp-file + fsync + rename leaves either the old bytes or the new ones.
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # `file://` URI construction for the language server's workspace root, using
 # the same crate `ui::portal` parses picked URIs with, so the round-trip is
 # exact for paths containing spaces and non-ASCII.
 url.workspace = true
 uuid.workspace = true
+bounded-command = { path = "../../crates/system/bounded-command" }
 hex.workspace = true
 sha2.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

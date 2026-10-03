@@ -98,42 +98,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn power_profile_round_trip() {
-        assert_eq!(PowerProfile::Saver.cli_arg(), "power-saver");
-        assert_eq!(PowerProfile::Balanced.cli_arg(), "balanced");
-        assert_eq!(PowerProfile::Performance.cli_arg(), "performance");
-        assert_eq!(
-            PowerProfile::from_cli("balanced"),
-            Some(PowerProfile::Balanced)
-        );
-        assert_eq!(
-            PowerProfile::from_cli("performance\n"),
-            Some(PowerProfile::Performance)
-        );
-        assert_eq!(PowerProfile::from_cli("garbled"), None);
-    }
-
-    #[test]
-    fn parses_only_advertised_power_profiles() {
-        let output = r"  performance:
-    Driver: platform_profile
-* balanced:
-    Driver: platform_profile
-  power-saver:
-    Driver: platform_profile
-";
-        assert_eq!(
-            parse_available_profiles(output).unwrap(),
-            vec![
-                PowerProfile::Performance,
-                PowerProfile::Balanced,
-                PowerProfile::Saver
-            ]
-        );
-    }
-
-    #[test]
-    fn rejects_empty_or_unknown_capability_output() {
-        assert!(parse_available_profiles("Driver: placeholder\n").is_err());
+    fn power_profiles_round_trip_and_only_advertised_ones_parse() {
+        // Phase `power_profile_round_trip`.
+        {
+            assert_eq!(PowerProfile::Saver.cli_arg(), "power-saver");
+            assert_eq!(PowerProfile::Balanced.cli_arg(), "balanced");
+            assert_eq!(PowerProfile::Performance.cli_arg(), "performance");
+            assert_eq!(
+                PowerProfile::from_cli("balanced"),
+                Some(PowerProfile::Balanced)
+            );
+            assert_eq!(
+                PowerProfile::from_cli("performance\n"),
+                Some(PowerProfile::Performance)
+            );
+            assert_eq!(PowerProfile::from_cli("garbled"), None);
+        }
+        // Phase `parses_only_advertised_power_profiles`.
+        {
+            let output = r"  performance:
+        Driver: platform_profile
+    * balanced:
+        Driver: platform_profile
+      power-saver:
+        Driver: platform_profile
+    ";
+            assert_eq!(
+                parse_available_profiles(output).unwrap(),
+                vec![
+                    PowerProfile::Performance,
+                    PowerProfile::Balanced,
+                    PowerProfile::Saver
+                ]
+            );
+        }
+        // Phase `rejects_empty_or_unknown_capability_output`.
+        {
+            assert!(parse_available_profiles("Driver: placeholder\n").is_err());
+        }
     }
 }

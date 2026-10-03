@@ -6,8 +6,9 @@
 //! [`ui::theme::Theme`] token at the call site — nothing here invents a
 //! colour.
 
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Color;
@@ -34,60 +35,11 @@ pub fn stroke_line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64,
     scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
 }
 
-/// Draw a single line of text at `(x, y)` (y is the top of the line).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "text painting forwards scene resources, string, origin, size, color and weight to the shared text renderer"
-)]
-pub fn text(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        None,
-        weight,
-    );
-}
-
-/// Draw monospace text (used by the body preview / highlighter).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "monospace painting forwards scene resources, string, origin, size, color and weight to the shared text renderer"
-)]
-pub fn mono(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    x: f64,
-    y: f64,
-    size: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    tr.draw_text_styled(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        None,
-        weight,
-        false,
-        true,
-    );
+/// The monospace style the body preview / highlighter paints in.
+pub fn mono_style(size: f32, weight: TextWeight) -> TextStyle {
+    TextStyle::new(size)
+        .with_weight(weight)
+        .with_family(FontChoice::Monospace)
 }
 
 /// Measure the advance width of a monospace string at `size`.
@@ -151,43 +103,44 @@ pub fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
     (line - line / scale).max(0.0)
 }
 
-/// Draw a small filled pill (rounded capsule) with a centred label.
-/// Returns the pill's outer rect so callers can lay the next pill out.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "pill painting combines scene resources, label, position and height with font size and foreground/background colors"
-)]
-pub fn pill(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    label: &str,
-    x: f64,
-    y: f64,
-    height: f64,
-    size: f32,
-    fg: Color,
-    bg: Color,
-) -> Rect {
-    let pad_x = 8.0;
-    let (text_w, text_h) = tr.measure(label, size, None);
-    let w = f64::from(text_w) + pad_x * 2.0;
-    let rect = Rect::new(x, y, x + w, y + height);
-    // A capsule with its derived rest edge: a tinted pill on the same
-    // ground as its neighbours otherwise reads as bare text on a wash.
-    ui::surface::pill(scene, t, rect, bg, Some(ui::surface::edge_on(bg)), None);
-    // Centre the measured line box in the capsule, not the bare font size.
-    let ty = y + (height - f64::from(text_h)) / 2.0;
-    text(
-        scene,
-        tr,
-        t,
-        label,
-        x + pad_x,
-        ty,
-        size,
-        fg,
-        TextWeight::Medium,
-    );
-    rect
+/// A left-to-right run of pills sharing one top edge, height and label size.
+pub struct PillRun {
+    /// Left edge of the next pill.
+    pub x: f64,
+    pub y: f64,
+    pub height: f64,
+    pub size: f32,
+}
+
+impl PillRun {
+    /// Draw a small filled pill (rounded capsule) with a centred label at
+    /// the run's cursor. Returns the pill's outer rect so callers can lay the
+    /// next pill out.
+    pub fn pill(&self, ctx: &mut PaintCtx<'_>, label: &str, fg: Color, bg: Color) -> Rect {
+        let (x, y, height, size) = (self.x, self.y, self.height, self.size);
+        let pad_x = 8.0;
+        let (text_w, text_h) = ctx.text.measure(label, size, None);
+        let w = f64::from(text_w) + pad_x * 2.0;
+        let rect = Rect::new(x, y, x + w, y + height);
+        // A capsule with its derived rest edge: a tinted pill on the same
+        // ground as its neighbours otherwise reads as bare text on a wash.
+        ui::surface::pill(
+            ctx.scene,
+            ctx.transform,
+            rect,
+            bg,
+            Some(ui::surface::edge_on(bg)),
+            None,
+        );
+        // Centre the measured line box in the capsule, not the bare font size.
+        let ty = y + (height - f64::from(text_h)) / 2.0;
+        ctx.text(
+            label,
+            &TextStyle::new(size).with_weight(TextWeight::Medium),
+            fg,
+            Point::new(x + pad_x, ty),
+            None,
+        );
+        rect
+    }
 }

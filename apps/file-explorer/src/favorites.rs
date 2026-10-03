@@ -117,7 +117,7 @@ fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind
 }
 
 /// The out-of-the-box favourites: Home plus the standard XDG user folders,
-/// using the user's real localized directories (`xdg-paths`). When a specific XDG
+/// using the user's real localized directories (`tilo-paths`). When a specific XDG
 /// dir isn't defined, fall back gracefully to the conventional English
 /// subfolder of `home` so the sidebar is never missing a standard place.
 pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
@@ -236,141 +236,149 @@ mod tests {
         }
     }
 
+    /// Favourite defaults fall back to English or localised XDG dirs, keep their kind through persistence, dedup, pin home and persist reorders.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn defaults_fall_back_to_english_when_no_xdg_dirs() {
-        // With no resolved XDG dirs, the standard set uses the conventional
-        // English subfolders of home, so the sidebar is never empty.
-        let favs = defaults(Path::new("/home/u"), &UserDirs::default());
-        assert!(favs[0].is_home);
-        assert_eq!(favs[0].label, "Home");
-        let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                "Home",
-                "Documents",
-                "Downloads",
-                "Pictures",
-                "Music",
-                "Videos"
-            ]
-        );
-    }
+    fn favourites_default_localise_edit_and_persist() {
+        // --- phase: defaults_fall_back_to_english_when_no_xdg_dirs ---
+        {
+            // With no resolved XDG dirs, the standard set uses the conventional
+            // English subfolders of home, so the sidebar is never empty.
+            let favs = defaults(Path::new("/home/u"), &UserDirs::default());
+            assert!(favs[0].is_home);
+            assert_eq!(favs[0].label, "Home");
+            let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
+            assert_eq!(
+                labels,
+                [
+                    "Home",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music",
+                    "Videos"
+                ]
+            );
+        }
 
-    #[test]
-    fn defaults_use_localized_xdg_names_and_paths() {
-        // The real bug: a German desktop must show its localized folder names,
-        // pointing at the actual localized directories — not hard-coded
-        // English ones.
-        let home = Path::new("/home/u");
-        let favs = defaults(home, &german_dirs());
-        let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                "Home",
-                "Dokumente",
-                "Downloads",
-                "Bilder",
-                "Musik",
-                "Videos"
-            ]
-        );
-        // The Documents favourite points at the localized directory.
-        let docs = favs.iter().find(|f| f.kind == FavKind::Documents).unwrap();
-        assert_eq!(docs.path, PathBuf::from("/home/u/Dokumente"));
-        // And its evocative glyph survives the localized label.
-        assert_eq!(docs.icon(), Icon::FileText);
-        let pics = favs.iter().find(|f| f.kind == FavKind::Pictures).unwrap();
-        assert_eq!(pics.path, PathBuf::from("/home/u/Bilder"));
-        assert_eq!(pics.icon(), Icon::Image);
-    }
+        // --- phase: defaults_use_localized_xdg_names_and_paths ---
+        {
+            // The real bug: a German desktop must show its localized folder names,
+            // pointing at the actual localized directories — not hard-coded
+            // English ones.
+            let home = Path::new("/home/u");
+            let favs = defaults(home, &german_dirs());
+            let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
+            assert_eq!(
+                labels,
+                [
+                    "Home",
+                    "Dokumente",
+                    "Downloads",
+                    "Bilder",
+                    "Musik",
+                    "Videos"
+                ]
+            );
+            // The Documents favourite points at the localized directory.
+            let docs = favs.iter().find(|f| f.kind == FavKind::Documents).unwrap();
+            assert_eq!(docs.path, PathBuf::from("/home/u/Dokumente"));
+            // And its evocative glyph survives the localized label.
+            assert_eq!(docs.icon(), Icon::FileText);
+            let pics = favs.iter().find(|f| f.kind == FavKind::Pictures).unwrap();
+            assert_eq!(pics.path, PathBuf::from("/home/u/Bilder"));
+            assert_eq!(pics.icon(), Icon::Image);
+        }
 
-    #[test]
-    fn localized_favourite_keeps_its_kind_after_a_persistence_round_trip() {
-        // Persistence stores paths only; the kind (and thus the glyph) must be
-        // re-derived from the path against the live XDG dirs on reload.
-        let home = Path::new("/home/u");
-        let dirs = german_dirs();
-        let d = tempfile::tempdir().unwrap();
-        save(d.path(), &defaults(home, &dirs));
-        let reloaded = load(d.path(), home, &dirs);
-        let docs = reloaded
-            .iter()
-            .find(|f| f.path == *"/home/u/Dokumente")
-            .unwrap();
-        assert_eq!(
-            docs.kind,
-            FavKind::Documents,
-            "localized documents keeps its kind on reload"
-        );
-        assert_eq!(docs.label, "Dokumente");
-        assert_eq!(docs.icon(), Icon::FileText);
-    }
+        // --- phase: localized_favourite_keeps_its_kind_after_a_persistence_round_trip ---
+        {
+            // Persistence stores paths only; the kind (and thus the glyph) must be
+            // re-derived from the path against the live XDG dirs on reload.
+            let home = Path::new("/home/u");
+            let dirs = german_dirs();
+            let d = tempfile::tempdir().unwrap();
+            save(d.path(), &defaults(home, &dirs));
+            let reloaded = load(d.path(), home, &dirs);
+            let docs = reloaded
+                .iter()
+                .find(|f| f.path == *"/home/u/Dokumente")
+                .unwrap();
+            assert_eq!(
+                docs.kind,
+                FavKind::Documents,
+                "localized documents keeps its kind on reload"
+            );
+            assert_eq!(docs.label, "Dokumente");
+            assert_eq!(docs.icon(), Icon::FileText);
+        }
 
-    #[test]
-    fn add_dedups_and_remove_pins_home() {
-        let home = Path::new("/home/u");
-        let dirs = UserDirs::default();
-        let mut favs = defaults(home, &dirs);
-        // Adding an existing path is a no-op.
-        assert!(!add(&mut favs, home.join("Documents"), home, &dirs));
-        // A fresh folder is appended with its file-name label.
-        assert!(add(&mut favs, PathBuf::from("/data/projects"), home, &dirs));
-        assert_eq!(favs.last().unwrap().label, "projects");
-        assert_eq!(favs.last().unwrap().kind, FavKind::Folder);
-        // Remove drops it again.
-        assert!(remove(&mut favs, Path::new("/data/projects")));
-        assert!(favs.iter().all(|f| f.path != Path::new("/data/projects")));
-        // Home is pinned: a remove request for it is ignored.
-        assert!(!remove(&mut favs, home));
-        assert!(favs[0].is_home);
-    }
+        // --- phase: add_dedups_and_remove_pins_home ---
+        {
+            let home = Path::new("/home/u");
+            let dirs = UserDirs::default();
+            let mut favs = defaults(home, &dirs);
+            // Adding an existing path is a no-op.
+            assert!(!add(&mut favs, home.join("Documents"), home, &dirs));
+            // A fresh folder is appended with its file-name label.
+            assert!(add(&mut favs, PathBuf::from("/data/projects"), home, &dirs));
+            assert_eq!(favs.last().unwrap().label, "projects");
+            assert_eq!(favs.last().unwrap().kind, FavKind::Folder);
+            // Remove drops it again.
+            assert!(remove(&mut favs, Path::new("/data/projects")));
+            assert!(favs.iter().all(|f| f.path != Path::new("/data/projects")));
+            // Home is pinned: a remove request for it is ignored.
+            assert!(!remove(&mut favs, home));
+            assert!(favs[0].is_home);
+        }
 
-    #[test]
-    fn reorder_moves_an_entry_and_persists_the_new_order() {
-        let home = Path::new("/home/u");
-        let dirs = UserDirs::default();
-        let d = tempfile::tempdir().unwrap();
-        let mut favs = defaults(home, &dirs);
-        // Move "Videos" (index 5) to the top-after-home position (index 1).
-        reorder(&mut favs, 5, 1);
-        let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                "Home",
-                "Videos",
-                "Documents",
-                "Downloads",
-                "Pictures",
-                "Music"
-            ]
-        );
-        save(d.path(), &favs);
+        // --- phase: reorder_moves_an_entry_and_persists_the_new_order ---
+        {
+            let home = Path::new("/home/u");
+            let dirs = UserDirs::default();
+            let d = tempfile::tempdir().unwrap();
+            let mut favs = defaults(home, &dirs);
+            // Move "Videos" (index 5) to the top-after-home position (index 1).
+            reorder(&mut favs, 5, 1);
+            let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
+            assert_eq!(
+                labels,
+                [
+                    "Home",
+                    "Videos",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music"
+                ]
+            );
+            save(d.path(), &favs);
 
-        // Reloading yields the reordered list, not the defaults.
-        let reloaded = load(d.path(), home, &dirs);
-        let reloaded_labels: Vec<&str> = reloaded.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(
-            reloaded_labels,
-            [
-                "Home",
-                "Videos",
-                "Documents",
-                "Downloads",
-                "Pictures",
-                "Music"
-            ]
-        );
-        assert!(reloaded[0].is_home, "home is recognised on reload");
-    }
+            // Reloading yields the reordered list, not the defaults.
+            let reloaded = load(d.path(), home, &dirs);
+            let reloaded_labels: Vec<&str> = reloaded.iter().map(|f| f.label.as_str()).collect();
+            assert_eq!(
+                reloaded_labels,
+                [
+                    "Home",
+                    "Videos",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music"
+                ]
+            );
+            assert!(reloaded[0].is_home, "home is recognised on reload");
+        }
 
-    #[test]
-    fn load_defaults_when_no_file() {
-        let d = tempfile::tempdir().unwrap();
-        let dirs = UserDirs::default();
-        let favs = load(d.path(), Path::new("/home/u"), &dirs);
-        assert_eq!(favs, defaults(Path::new("/home/u"), &dirs));
+        // --- phase: load_defaults_when_no_file ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            let dirs = UserDirs::default();
+            let favs = load(d.path(), Path::new("/home/u"), &dirs);
+            assert_eq!(favs, defaults(Path::new("/home/u"), &dirs));
+        }
     }
 }

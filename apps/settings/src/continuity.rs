@@ -52,34 +52,32 @@ impl Capability {
         }
     }
 
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Clipboard => "Clipboard",
-            Self::Notifications => "Notifications",
-            Self::WifiSettings => "Wi-Fi & settings",
-            Self::Media => "Media",
-            Self::DisplayInput => "Display & input",
-            Self::FileTransfer => "File transfer",
-            Self::RealtimeSessions => "Realtime sessions",
-            Self::TypedGamepad => "Typed gamepad forwarding",
-            Self::AppContinuations => "App continuations",
-        }
+    pub(crate) fn label(self) -> String {
+        crate::i18n::t(match self {
+            Self::Clipboard => "continuity-clipboard",
+            Self::Notifications => "continuity-notifications",
+            Self::WifiSettings => "continuity-wifi-settings",
+            Self::Media => "continuity-media",
+            Self::DisplayInput => "continuity-display-input",
+            Self::FileTransfer => "continuity-file-transfer",
+            Self::RealtimeSessions => "continuity-realtime-sessions",
+            Self::TypedGamepad => "continuity-typed-gamepad",
+            Self::AppContinuations => "continuity-app-continuations",
+        })
     }
 
-    pub(crate) const fn description(self) -> &'static str {
-        match self {
-            Self::Clipboard => "Share copied text and images with the current certified device.",
-            Self::Notifications => "Mirror notification content and actions to the current device.",
-            Self::WifiSettings => "Offer saved network and compatible personal settings.",
-            Self::Media => "Continue playback and expose media transport controls.",
-            Self::DisplayInput => "Allow this device to extend a display or accept remote input.",
-            Self::FileTransfer => "Accept explicit file sends between your certified devices.",
-            Self::RealtimeSessions => "Hand off active calls and other live app sessions.",
-            Self::TypedGamepad => "Forward typed gamepad events, never an untyped input stream.",
-            Self::AppContinuations => {
-                "Offer app placement and bounded resume state to your certified devices."
-            }
-        }
+    pub(crate) fn description(self) -> String {
+        crate::i18n::t(match self {
+            Self::Clipboard => "continuity-clipboard-description",
+            Self::Notifications => "continuity-notifications-description",
+            Self::WifiSettings => "continuity-wifi-settings-description",
+            Self::Media => "continuity-media-description",
+            Self::DisplayInput => "continuity-display-input-description",
+            Self::FileTransfer => "continuity-file-transfer-description",
+            Self::RealtimeSessions => "continuity-realtime-sessions-description",
+            Self::TypedGamepad => "continuity-typed-gamepad-description",
+            Self::AppContinuations => "continuity-app-continuations-description",
+        })
     }
 }
 
@@ -94,9 +92,23 @@ pub(crate) struct AuditEntry {
 
 impl AuditEntry {
     pub(crate) fn summary(&self) -> String {
-        let subject = self.capability.map_or("All Continuity", Capability::label);
-        let verb = if self.enabled { "allowed" } else { "stopped" };
-        format!("{subject} {verb} · local record {}", self.recorded_at_secs)
+        let subject = self
+            .capability
+            .map_or_else(|| crate::i18n::t("continuity-all"), Capability::label);
+        crate::i18n::t_args(
+            if self.enabled {
+                "continuity-audit-allowed"
+            } else {
+                "continuity-audit-stopped"
+            },
+            &[
+                ("subject", subject.into()),
+                (
+                    "at",
+                    i64::try_from(self.recorded_at_secs).unwrap_or(0).into(),
+                ),
+            ],
+        )
     }
 }
 
@@ -199,17 +211,36 @@ pub(crate) fn settings_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Privacy facets are opt-in behind a master switch, and audit entries hold only time, capability and state.
     #[test]
-    fn privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins() {
-        let mut policy = ContinuityPrivacy::default();
-        for capability in Capability::ALL {
-            assert!(!policy.allowed(capability));
-            assert!(!policy.effective(capability));
+    fn continuity_privacy_is_opt_in_and_its_audit_is_payload_free() {
+        // Case `privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins`.
+        {
+            let mut policy = ContinuityPrivacy::default();
+            for capability in Capability::ALL {
+                assert!(!policy.allowed(capability));
+                assert!(!policy.effective(capability));
+            }
+            policy.set_allowed(Capability::Clipboard, true);
+            assert!(!policy.effective(Capability::Clipboard));
+            policy.enabled = true;
+            assert!(policy.effective(Capability::Clipboard));
         }
-        policy.set_allowed(Capability::Clipboard, true);
-        assert!(!policy.effective(Capability::Clipboard));
-        policy.enabled = true;
-        assert!(policy.effective(Capability::Clipboard));
+
+        // Case `audit_schema_cannot_hold_payloads_tokens_or_device_addresses`.
+        {
+            let entry = AuditEntry {
+                recorded_at_secs: 42,
+                capability: Some(Capability::Clipboard),
+                enabled: true,
+            };
+            let encoded = serde_json::to_value(entry).unwrap();
+            let object = encoded.as_object().unwrap();
+            assert_eq!(object.len(), 3);
+            assert!(object.contains_key("recorded_at_secs"));
+            assert!(object.contains_key("capability"));
+            assert!(object.contains_key("enabled"));
+        }
     }
 
     #[test]
@@ -232,20 +263,5 @@ mod tests {
         assert_eq!(loaded.audit.len(), AUDIT_LIMIT);
         assert_eq!(loaded.audit[0].recorded_at_secs, 5);
         assert_eq!(settings_store::load_at(&path)["locale"]["currency"], "EUR");
-    }
-
-    #[test]
-    fn audit_schema_cannot_hold_payloads_tokens_or_device_addresses() {
-        let entry = AuditEntry {
-            recorded_at_secs: 42,
-            capability: Some(Capability::Clipboard),
-            enabled: true,
-        };
-        let encoded = serde_json::to_value(entry).unwrap();
-        let object = encoded.as_object().unwrap();
-        assert_eq!(object.len(), 3);
-        assert!(object.contains_key("recorded_at_secs"));
-        assert!(object.contains_key("capability"));
-        assert!(object.contains_key("enabled"));
     }
 }

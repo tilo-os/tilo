@@ -204,6 +204,14 @@ pub fn rsync_program() -> Option<String> {
     }
 }
 
+/// MSYS2 rsync needs the OpenSSH executable from the same POSIX runtime.
+/// Native Windows OpenSSH cannot carry its stdin/stdout protocol reliably.
+pub fn rsync_ssh_program() -> Option<PathBuf> {
+    let rsync = rsync_program()?;
+    let sibling = PathBuf::from(rsync).with_file_name("ssh.exe");
+    sibling.is_file().then_some(sibling)
+}
+
 impl HostFacts {
     /// Look at this host.
     pub fn probe(runner: &mut dyn Runner) -> Self {
@@ -756,285 +764,300 @@ pub mod tests {
   </guest>
 </capabilities>";
 
+    /// Capabilities list each guest and its domain types; the session must offer KVM or, for emulation,
+    /// TCG; virt-install is irrelevant to libvirt; KVM and the session connection are checked.
     #[test]
-    fn capabilities_list_each_guest_and_its_domain_types() {
-        let guests = parse_guests(CAPABILITIES);
-        let pairs: Vec<(&str, Vec<&str>)> = guests
-            .iter()
-            .map(|g| {
-                (
-                    g.arch.as_str(),
-                    g.domains.iter().map(String::as_str).collect(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            pairs,
-            [
-                ("i686", vec!["qemu", "kvm"]),
-                ("x86_64", vec!["qemu", "kvm"]),
-                ("aarch64", vec!["qemu"]),
-            ]
-        );
-        assert!(parse_guests("error: no capabilities").is_empty());
-    }
-
-    #[test]
-    fn the_session_must_offer_kvm_or_for_emulation_tcg() {
-        let mut facts = linux(HostKind::Dnf, LIBVIRT);
-        facts.session = Some(Ok(parse_guests(CAPABILITIES)));
-        let ok = session_domain(&facts, "x86_64", false).unwrap();
-        assert!(ok.contains("x86_64 guests with kvm"), "{ok}");
-        assert!(session_domain(&facts, "aarch64", true).is_ok());
-        let no_kvm = session_domain(&facts, "aarch64", false).unwrap_err();
-        assert!(
-            no_kvm.detail.contains("only as qemu, not kvm"),
-            "{}",
-            no_kvm.detail
-        );
-        assert!(no_kvm.fix.contains("usermod -aG kvm"), "{}", no_kvm.fix);
-        let absent = session_domain(&facts, "riscv64", true).unwrap_err();
-        assert!(
-            absent
-                .detail
-                .contains("no riscv64 guest (only: i686, x86_64, aarch64)"),
-            "{}",
-            absent.detail
-        );
-        assert!(absent.fix.contains("qemu-system-riscv64"), "{}", absent.fix);
-
-        let stderr = "error: failed to connect to the hypervisor\nerror: Failed to connect socket to '/run/user/1000/libvirt/virtqemud-sock': No such file or directory";
-        facts.session = Some(Err(stderr.into()));
-        let failed = session_domain(&facts, "x86_64", false).unwrap_err();
-        assert!(failed.fix.contains(stderr), "{}", failed.fix);
-        assert!(
-            failed
-                .detail
-                .contains("`virsh --connect qemu:///session capabilities` failed"),
-            "{}",
-            failed.detail
-        );
-    }
-
-    #[test]
-    fn virt_install_is_irrelevant_to_libvirt() {
-        let without = linux(HostKind::Dnf, LIBVIRT);
-        let mut with_it = LIBVIRT.to_vec();
-        with_it.push(("virt-install", "/usr/bin/virt-install"));
-        let with = linux(HostKind::Dnf, &with_it);
-        assert_eq!(auto(&without), auto(&with));
-        let choice = auto(&without).unwrap();
-        assert!(choice.tool("virt-install").is_none());
-        assert_eq!(choice.tool("passt"), Some("/usr/bin/passt"));
-        let only_install = linux(
-            HostKind::Dnf,
-            &[
-                ("virt-install", "/usr/bin/virt-install"),
-                ("qemu-img", "/usr/bin/qemu-img"),
-            ],
-        );
-        let why = auto(&only_install).unwrap_err();
-        assert_eq!(why.detail, "virsh and passt not on PATH");
-        assert!(!why.fix.contains("virt-install"), "{}", why.fix);
-        assert!(!TOOLS.contains(&"virt-install"));
-    }
-
-    #[test]
-    fn linux_defaults_to_libvirt_session_with_resolved_paths() {
-        let facts = linux(HostKind::Dnf, LIBVIRT);
-        let choice = auto(&facts).unwrap();
-        assert_eq!(choice.adapter, "libvirt");
-        assert_eq!(choice.tool("qemu-img"), Some("/usr/bin/qemu-img"));
-        let text = choice.describe();
-        assert!(text.contains("qemu:///session"), "{text}");
-        assert!(text.contains("virsh = /usr/bin/virsh"), "{text}");
-    }
-
-    #[test]
-    fn the_qemu_img_beside_virsh_wins_over_an_earlier_one() {
-        let facts = linux(
-            HostKind::Dnf,
-            &[
-                ("virsh", "/usr/bin/virsh"),
-                ("passt", "/usr/bin/passt"),
-                ("qemu-img", ANDROID),
-                ("qemu-img", "/usr/bin/qemu-img"),
-            ],
-        );
-        assert_eq!(
-            auto(&facts).unwrap().tool("qemu-img"),
-            Some("/usr/bin/qemu-img")
-        );
-    }
-
-    #[test]
-    fn a_stray_qemu_img_is_named_and_refused() {
-        let facts = linux(
-            HostKind::Dnf,
-            &[
-                ("virsh", "/usr/bin/virsh"),
-                ("passt", "/usr/bin/passt"),
-                ("qemu-img", ANDROID),
-            ],
-        );
-        let why = auto(&facts).unwrap_err();
-        assert!(why.detail.contains(ANDROID), "{}", why.detail);
-        assert!(why.detail.contains("refusing"), "{}", why.detail);
-        assert!(
-            why.fix.starts_with("sudo dnf install libvirt-daemon-kvm"),
-            "{}",
-            why.fix
-        );
-    }
-
-    #[test]
-    fn kvm_and_the_session_connection_are_checked() {
-        let mut facts = linux(HostKind::Dnf, LIBVIRT);
-        facts.kvm = Some(false);
-        let why = auto(&facts).unwrap_err();
-        assert!(why.detail.contains("/dev/kvm"), "{}", why.detail);
-        assert!(why.fix.contains("usermod -aG kvm"), "{}", why.fix);
-        let mut image = linux(HostKind::RpmOstree, LIBVIRT);
-        image.kvm = Some(false);
-        assert!(auto(&image).unwrap_err().fix.contains("/usr/lib/group"));
-        let mut facts = linux(HostKind::Dnf, LIBVIRT);
-        facts.session = Some(Err("failed to connect to the hypervisor".into()));
-        let why = auto(&facts).unwrap_err();
-        assert!(
-            why.detail.contains(
-                "`virsh --connect qemu:///session capabilities` failed: failed to connect to the hypervisor"
-            ),
-            "{}",
-            why.detail
-        );
-    }
-
-    #[test]
-    fn fixes_follow_the_host_kind() {
-        let image = linux(HostKind::RpmOstree, &[]);
-        let fix = auto(&image).unwrap_err().fix;
-        assert!(
-            fix.contains("rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager"),
-            "{fix}"
-        );
-        assert!(fix.contains("reboot"), "{fix}");
-        let bootc = linux(HostKind::Bootc, &[]);
-        assert!(
-            auto(&bootc)
-                .unwrap_err()
-                .fix
-                .contains("add libvirt-daemon-kvm")
-        );
-        let apt = linux(HostKind::Apt, &[]);
-        assert!(
-            auto(&apt)
-                .unwrap_err()
-                .fix
-                .starts_with("sudo apt install libvirt-daemon-system")
-        );
-        let dnf = linux(HostKind::Dnf, &[]);
-        assert_eq!(
-            auto(&dnf).unwrap_err().fix,
-            "sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt"
-        );
-        for kind in [
-            HostKind::Apt,
-            HostKind::Pacman,
-            HostKind::Zypper,
-            HostKind::Unknown,
-        ] {
-            let fix = auto(&linux(kind, &[])).unwrap_err().fix;
-            assert!(
-                !fix.contains("virt-install") && !fix.contains("virtinst"),
-                "{fix}"
+    fn host_capabilities_and_session_checks_decide_emulation() {
+        // Phase: capabilities_list_each_guest_and_its_domain_types.
+        {
+            let guests = parse_guests(CAPABILITIES);
+            let pairs: Vec<(&str, Vec<&str>)> = guests
+                .iter()
+                .map(|g| {
+                    (
+                        g.arch.as_str(),
+                        g.domains.iter().map(String::as_str).collect(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                pairs,
+                [
+                    ("i686", vec!["qemu", "kvm"]),
+                    ("x86_64", vec!["qemu", "kvm"]),
+                    ("aarch64", vec!["qemu"]),
+                ]
             );
+            assert!(parse_guests("error: no capabilities").is_empty());
+        }
+
+        // Phase: the_session_must_offer_kvm_or_for_emulation_tcg.
+        {
+            let mut facts = linux(HostKind::Dnf, LIBVIRT);
+            facts.session = Some(Ok(parse_guests(CAPABILITIES)));
+            let ok = session_domain(&facts, "x86_64", false).unwrap();
+            assert!(ok.contains("x86_64 guests with kvm"), "{ok}");
+            assert!(session_domain(&facts, "aarch64", true).is_ok());
+            let no_kvm = session_domain(&facts, "aarch64", false).unwrap_err();
             assert!(
-                fix.contains("virt-manager") && fix.contains("passt"),
-                "{fix}"
+                no_kvm.detail.contains("only as qemu, not kvm"),
+                "{}",
+                no_kvm.detail
+            );
+            assert!(no_kvm.fix.contains("usermod -aG kvm"), "{}", no_kvm.fix);
+            let absent = session_domain(&facts, "riscv64", true).unwrap_err();
+            assert!(
+                absent
+                    .detail
+                    .contains("no riscv64 guest (only: i686, x86_64, aarch64)"),
+                "{}",
+                absent.detail
+            );
+            assert!(absent.fix.contains("qemu-system-riscv64"), "{}", absent.fix);
+
+            let stderr = "error: failed to connect to the hypervisor\nerror: Failed to connect socket to '/run/user/1000/libvirt/virtqemud-sock': No such file or directory";
+            facts.session = Some(Err(stderr.into()));
+            let failed = session_domain(&facts, "x86_64", false).unwrap_err();
+            assert!(failed.fix.contains(stderr), "{}", failed.fix);
+            assert!(
+                failed
+                    .detail
+                    .contains("`virsh --connect qemu:///session capabilities` failed"),
+                "{}",
+                failed.detail
+            );
+        }
+
+        // Phase: virt_install_is_irrelevant_to_libvirt.
+        {
+            let without = linux(HostKind::Dnf, LIBVIRT);
+            let mut with_it = LIBVIRT.to_vec();
+            with_it.push(("virt-install", "/usr/bin/virt-install"));
+            let with = linux(HostKind::Dnf, &with_it);
+            assert_eq!(auto(&without), auto(&with));
+            let choice = auto(&without).unwrap();
+            assert!(choice.tool("virt-install").is_none());
+            assert_eq!(choice.tool("passt"), Some("/usr/bin/passt"));
+            let only_install = linux(
+                HostKind::Dnf,
+                &[
+                    ("virt-install", "/usr/bin/virt-install"),
+                    ("qemu-img", "/usr/bin/qemu-img"),
+                ],
+            );
+            let why = auto(&only_install).unwrap_err();
+            assert_eq!(why.detail, "virsh and passt not on PATH");
+            assert!(!why.fix.contains("virt-install"), "{}", why.fix);
+            assert!(!TOOLS.contains(&"virt-install"));
+        }
+
+        // Phase: kvm_and_the_session_connection_are_checked.
+        {
+            let mut facts = linux(HostKind::Dnf, LIBVIRT);
+            facts.kvm = Some(false);
+            let why = auto(&facts).unwrap_err();
+            assert!(why.detail.contains("/dev/kvm"), "{}", why.detail);
+            assert!(why.fix.contains("usermod -aG kvm"), "{}", why.fix);
+            let mut image = linux(HostKind::RpmOstree, LIBVIRT);
+            image.kvm = Some(false);
+            assert!(auto(&image).unwrap_err().fix.contains("/usr/lib/group"));
+            let mut facts = linux(HostKind::Dnf, LIBVIRT);
+            facts.session = Some(Err("failed to connect to the hypervisor".into()));
+            let why = auto(&facts).unwrap_err();
+            assert!(
+                why.detail.contains(
+                    "`virsh --connect qemu:///session capabilities` failed: failed to connect to the hypervisor"
+                ),
+                "{}",
+                why.detail
             );
         }
     }
 
+    /// Linux defaults to a libvirt session with resolved paths; the qemu-img beside virsh wins; a stray
+    /// qemu-img is named and refused; fixes follow the host kind; raw QEMU is never the default; macOS and
+    /// Windows check their hypervisors; Windows ARM home chooses matching QEMU and firmware.
     #[test]
-    fn raw_qemu_is_never_the_default_and_points_people_at_libvirt() {
-        let facts = linux(
-            HostKind::Dnf,
-            &[
-                ("qemu-system-x86_64", "/usr/bin/qemu-system-x86_64"),
-                ("qemu-img", "/usr/bin/qemu-img"),
-                ("bash", "/usr/bin/bash"),
-            ],
-        );
-        assert_eq!(auto(&facts).unwrap_err().adapter, "libvirt");
-        let qemu = evaluate(&facts, "qemu").unwrap();
-        assert_eq!(qemu.tool("qemu-img"), Some("/usr/bin/qemu-img"));
-        let bare = linux(HostKind::Dnf, &[]);
-        let why = evaluate(&bare, "qemu").unwrap_err();
-        assert!(why.fix.contains("use libvirt instead"), "{}", why.fix);
-    }
-
-    #[test]
-    fn macos_and_windows_check_their_hypervisors() {
-        let mut mac = linux(HostKind::Macos, &[]);
-        mac.os = "macos".into();
-        let why = auto(&mac).unwrap_err();
-        assert_eq!(why.adapter, "utm");
-        assert!(why.fix.contains("brew install --cask utm"));
-        mac.utm_app = Some("/Applications/UTM.app/Contents/MacOS/utmctl".into());
-        assert!(auto(&mac).unwrap_err().fix.contains("sudo ln -s"));
-        mac.path
-            .insert("utmctl".into(), vec!["/usr/local/bin/utmctl".into()]);
-        assert_eq!(auto(&mac).unwrap().adapter, "utm");
-
-        let mut win = linux(
-            HostKind::Windows,
-            &[("powershell.exe", r"C:\ps\powershell.exe")],
-        );
-        win.os = "windows".into();
-        win.hyperv = Some(false);
-        let why = auto(&win).unwrap_err();
-        assert!(why.fix.contains("Microsoft-Hyper-V"), "{}", why.fix);
-        win.hyperv = Some(true);
-        assert_eq!(auto(&win).unwrap().adapter, "hyperv");
-    }
-
-    #[test]
-    fn windows_arm_home_chooses_matching_qemu_and_firmware() {
-        let temp = tempfile::tempdir().unwrap();
-        let prefix = temp.path().join("clangarm64");
-        let bin = prefix.join("bin");
-        let share = prefix.join("share/qemu");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&share).unwrap();
-        let system = bin.join("qemu-system-aarch64.exe");
-        let img = bin.join("qemu-img.exe");
-        let code = share.join("edk2-aarch64-code.fd");
-        let vars = share.join("edk2-arm-vars.fd");
-        for file in [&system, &img, &code, &vars] {
-            std::fs::write(file, "test").unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn host_defaults_resolve_one_consistent_toolchain_per_platform() {
+        // Phase: linux_defaults_to_libvirt_session_with_resolved_paths.
+        {
+            let facts = linux(HostKind::Dnf, LIBVIRT);
+            let choice = auto(&facts).unwrap();
+            assert_eq!(choice.adapter, "libvirt");
+            assert_eq!(choice.tool("qemu-img"), Some("/usr/bin/qemu-img"));
+            let text = choice.describe();
+            assert!(text.contains("qemu:///session"), "{text}");
+            assert!(text.contains("virsh = /usr/bin/virsh"), "{text}");
         }
-        let mut facts = linux(HostKind::Windows, &[]);
-        facts.os = "windows".into();
-        facts.arch = "aarch64".into();
-        facts.hyperv = Some(false);
-        facts
-            .path
-            .insert("qemu-system-aarch64".into(), vec![system]);
-        facts.path.insert("qemu-img".into(), vec![img]);
-        facts.path.insert(
-            "powershell.exe".into(),
-            vec!["C:/Windows/powershell.exe".into()],
-        );
-        let choice = auto(&facts).unwrap();
-        assert_eq!(choice.adapter, "whpx");
-        assert_eq!(choice.tool("firmware-code"), Some(code.to_str().unwrap()));
-        assert_eq!(choice.tool("firmware-vars"), Some(vars.to_str().unwrap()));
-        std::fs::remove_file(vars).unwrap();
-        assert!(
-            auto(&facts)
-                .unwrap_err()
-                .detail
-                .contains("variables template")
-        );
+
+        // Phase: the_qemu_img_beside_virsh_wins_over_an_earlier_one.
+        {
+            let facts = linux(
+                HostKind::Dnf,
+                &[
+                    ("virsh", "/usr/bin/virsh"),
+                    ("passt", "/usr/bin/passt"),
+                    ("qemu-img", ANDROID),
+                    ("qemu-img", "/usr/bin/qemu-img"),
+                ],
+            );
+            assert_eq!(
+                auto(&facts).unwrap().tool("qemu-img"),
+                Some("/usr/bin/qemu-img")
+            );
+        }
+
+        // Phase: a_stray_qemu_img_is_named_and_refused.
+        {
+            let facts = linux(
+                HostKind::Dnf,
+                &[
+                    ("virsh", "/usr/bin/virsh"),
+                    ("passt", "/usr/bin/passt"),
+                    ("qemu-img", ANDROID),
+                ],
+            );
+            let why = auto(&facts).unwrap_err();
+            assert!(why.detail.contains(ANDROID), "{}", why.detail);
+            assert!(why.detail.contains("refusing"), "{}", why.detail);
+            assert!(
+                why.fix.starts_with("sudo dnf install libvirt-daemon-kvm"),
+                "{}",
+                why.fix
+            );
+        }
+
+        // Phase: fixes_follow_the_host_kind.
+        {
+            let image = linux(HostKind::RpmOstree, &[]);
+            let fix = auto(&image).unwrap_err().fix;
+            assert!(
+                fix.contains("rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager"),
+                "{fix}"
+            );
+            assert!(fix.contains("reboot"), "{fix}");
+            let bootc = linux(HostKind::Bootc, &[]);
+            assert!(
+                auto(&bootc)
+                    .unwrap_err()
+                    .fix
+                    .contains("add libvirt-daemon-kvm")
+            );
+            let apt = linux(HostKind::Apt, &[]);
+            assert!(
+                auto(&apt)
+                    .unwrap_err()
+                    .fix
+                    .starts_with("sudo apt install libvirt-daemon-system")
+            );
+            let dnf = linux(HostKind::Dnf, &[]);
+            assert_eq!(
+                auto(&dnf).unwrap_err().fix,
+                "sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt"
+            );
+            for kind in [
+                HostKind::Apt,
+                HostKind::Pacman,
+                HostKind::Zypper,
+                HostKind::Unknown,
+            ] {
+                let fix = auto(&linux(kind, &[])).unwrap_err().fix;
+                assert!(
+                    !fix.contains("virt-install") && !fix.contains("virtinst"),
+                    "{fix}"
+                );
+                assert!(
+                    fix.contains("virt-manager") && fix.contains("passt"),
+                    "{fix}"
+                );
+            }
+        }
+
+        // Phase: raw_qemu_is_never_the_default_and_points_people_at_libvirt.
+        {
+            let facts = linux(
+                HostKind::Dnf,
+                &[
+                    ("qemu-system-x86_64", "/usr/bin/qemu-system-x86_64"),
+                    ("qemu-img", "/usr/bin/qemu-img"),
+                    ("bash", "/usr/bin/bash"),
+                ],
+            );
+            assert_eq!(auto(&facts).unwrap_err().adapter, "libvirt");
+            let qemu = evaluate(&facts, "qemu").unwrap();
+            assert_eq!(qemu.tool("qemu-img"), Some("/usr/bin/qemu-img"));
+            let bare = linux(HostKind::Dnf, &[]);
+            let why = evaluate(&bare, "qemu").unwrap_err();
+            assert!(why.fix.contains("use libvirt instead"), "{}", why.fix);
+        }
+
+        // Phase: macos_and_windows_check_their_hypervisors.
+        {
+            let mut mac = linux(HostKind::Macos, &[]);
+            mac.os = "macos".into();
+            let why = auto(&mac).unwrap_err();
+            assert_eq!(why.adapter, "utm");
+            assert!(why.fix.contains("brew install --cask utm"));
+            mac.utm_app = Some("/Applications/UTM.app/Contents/MacOS/utmctl".into());
+            assert!(auto(&mac).unwrap_err().fix.contains("sudo ln -s"));
+            mac.path
+                .insert("utmctl".into(), vec!["/usr/local/bin/utmctl".into()]);
+            assert_eq!(auto(&mac).unwrap().adapter, "utm");
+
+            let mut win = linux(
+                HostKind::Windows,
+                &[("powershell.exe", r"C:\ps\powershell.exe")],
+            );
+            win.os = "windows".into();
+            win.hyperv = Some(false);
+            let why = auto(&win).unwrap_err();
+            assert!(why.fix.contains("Microsoft-Hyper-V"), "{}", why.fix);
+            win.hyperv = Some(true);
+            assert_eq!(auto(&win).unwrap().adapter, "hyperv");
+        }
+
+        // Phase: windows_arm_home_chooses_matching_qemu_and_firmware.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let prefix = temp.path().join("clangarm64");
+            let bin = prefix.join("bin");
+            let share = prefix.join("share/qemu");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::create_dir_all(&share).unwrap();
+            let system = bin.join("qemu-system-aarch64.exe");
+            let img = bin.join("qemu-img.exe");
+            let code = share.join("edk2-aarch64-code.fd");
+            let vars = share.join("edk2-arm-vars.fd");
+            for file in [&system, &img, &code, &vars] {
+                std::fs::write(file, "test").unwrap();
+            }
+            let mut facts = linux(HostKind::Windows, &[]);
+            facts.os = "windows".into();
+            facts.arch = "aarch64".into();
+            facts.hyperv = Some(false);
+            facts
+                .path
+                .insert("qemu-system-aarch64".into(), vec![system]);
+            facts.path.insert("qemu-img".into(), vec![img]);
+            facts.path.insert(
+                "powershell.exe".into(),
+                vec!["C:/Windows/powershell.exe".into()],
+            );
+            let choice = auto(&facts).unwrap();
+            assert_eq!(choice.adapter, "whpx");
+            assert_eq!(choice.tool("firmware-code"), Some(code.to_str().unwrap()));
+            assert_eq!(choice.tool("firmware-vars"), Some(vars.to_str().unwrap()));
+            std::fs::remove_file(vars).unwrap();
+            assert!(
+                auto(&facts)
+                    .unwrap_err()
+                    .detail
+                    .contains("variables template")
+            );
+        }
     }
 }

@@ -717,173 +717,175 @@ mod tests {
     }
 
     #[test]
-    fn only_fixed_gamepad_plan_and_sanitized_controls_reach_backend() {
-        let (mut broker, factory, identity, device, now) = active();
-        let lease = lease(&mut broker, &identity, device, now);
-        broker
-            .submit(
-                lease,
-                &identity,
-                1,
-                ForwardedGamepadEvent::Axis {
-                    axis: GamepadAxis::LeftX,
-                    value: 123,
-                },
-                now,
-            )
-            .unwrap();
-        broker
-            .submit(
-                lease,
-                &identity,
-                2,
-                ForwardedGamepadEvent::Button {
-                    button: GamepadButton::South,
-                    pressed: true,
-                },
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            factory.state.lock().unwrap().plans,
-            vec![VirtualGamepadPlan::default()]
-        );
-        assert_eq!(factory.state.lock().unwrap().events.len(), 2);
-        assert_eq!(
-            broker.submit(
-                lease,
-                &identity,
-                3,
-                ForwardedGamepadEvent::Hat { x: 2, y: 0 },
-                now
-            ),
-            Err(PeripheralBrokerError::InvalidEvent)
-        );
-    }
-
-    #[test]
-    fn authorization_is_one_shot_exact_bound_and_cross_broker_safe() {
-        let (mut broker, _, owner, device, now) = active();
-        let other = identity("other");
-        let auth = broker.authorize(&owner, device, now).unwrap();
-        assert_eq!(
-            broker.acquire(auth, &other, device, now),
-            Err(PeripheralBrokerError::BindingMismatch)
-        );
-        assert!(broker.acquire(auth, &owner, device, now).is_ok());
-        assert_eq!(
-            broker.acquire(auth, &owner, device, now),
-            Err(PeripheralBrokerError::InvalidAuthorization)
-        );
-        let stale_after_focus_loss = broker.authorize(&owner, device, now).unwrap();
-        broker.set_focus(Some(other.clone()));
-        broker.set_focus(Some(owner.clone()));
-        assert_eq!(
-            broker.acquire(stale_after_focus_loss, &owner, device, now),
-            Err(PeripheralBrokerError::InvalidAuthorization)
-        );
-        let factory = RecordingFactory::default();
-        let mut foreign = ForwardedPeripheralBroker::new(factory);
-        foreign.set_focus(Some(owner.clone()));
-        assert_eq!(
-            foreign.acquire(auth, &owner, device, now),
-            Err(PeripheralBrokerError::InvalidAuthorization)
-        );
-    }
-
-    #[test]
-    fn focus_sequence_and_rate_are_enforced() {
-        let (mut broker, factory, owner, device, now) = active();
-        let lease = lease(&mut broker, &owner, device, now);
-        let event = ForwardedGamepadEvent::Button {
-            button: GamepadButton::East,
-            pressed: true,
-        };
-        broker.submit(lease, &owner, 10, event, now).unwrap();
-        assert_eq!(
-            broker.submit(lease, &owner, 10, event, now),
-            Err(PeripheralBrokerError::Sequence)
-        );
-        assert_eq!(
-            broker.submit(lease, &owner, 10 + MAX_SEQUENCE_ADVANCE + 1, event, now),
-            Err(PeripheralBrokerError::Sequence)
-        );
-        for sequence in 11..=u64::from(MAX_EVENTS_PER_SECOND) + 9 {
-            broker.submit(lease, &owner, sequence, event, now).unwrap();
+    fn forwarding_authorization_is_one_shot_bound_and_expiring() {
+        // Phase `only_fixed_gamepad_plan_and_sanitized_controls_reach_backend`.
+        {
+            let (mut broker, factory, identity, device, now) = active();
+            let lease = lease(&mut broker, &identity, device, now);
+            broker
+                .submit(
+                    lease,
+                    &identity,
+                    1,
+                    ForwardedGamepadEvent::Axis {
+                        axis: GamepadAxis::LeftX,
+                        value: 123,
+                    },
+                    now,
+                )
+                .unwrap();
+            broker
+                .submit(
+                    lease,
+                    &identity,
+                    2,
+                    ForwardedGamepadEvent::Button {
+                        button: GamepadButton::South,
+                        pressed: true,
+                    },
+                    now,
+                )
+                .unwrap();
+            assert_eq!(
+                factory.state.lock().unwrap().plans,
+                vec![VirtualGamepadPlan::default()]
+            );
+            assert_eq!(factory.state.lock().unwrap().events.len(), 2);
+            assert_eq!(
+                broker.submit(
+                    lease,
+                    &identity,
+                    3,
+                    ForwardedGamepadEvent::Hat { x: 2, y: 0 },
+                    now
+                ),
+                Err(PeripheralBrokerError::InvalidEvent)
+            );
         }
-        assert_eq!(
-            broker.submit(lease, &owner, 250, event, now),
-            Err(PeripheralBrokerError::RateLimited)
-        );
-        broker.set_focus(Some(identity("new-focus")));
-        assert_eq!(factory.state.lock().unwrap().releases, 1);
-        assert_eq!(
-            broker.submit(lease, &owner, 251, event, now),
-            Err(PeripheralBrokerError::InvalidLease)
-        );
-    }
-
-    #[test]
-    fn every_teardown_releases_all_and_is_audited() {
-        for reason in [
-            PeripheralRevocation::Explicit,
-            PeripheralRevocation::FocusLost,
-            PeripheralRevocation::ScreenLocked,
-            PeripheralRevocation::DeviceLost,
-            PeripheralRevocation::Expired,
-            PeripheralRevocation::AppExited,
-        ] {
-            let (mut broker, factory, owner, device, now) = active();
-            let lease = lease(&mut broker, &owner, device, now);
-            match reason {
-                PeripheralRevocation::Explicit => {
-                    broker.revoke(lease);
-                }
-                PeripheralRevocation::FocusLost => broker.set_focus(None),
-                PeripheralRevocation::ScreenLocked => broker.screen_locked(),
-                PeripheralRevocation::DeviceLost => {
-                    broker.remove_device(device);
-                }
-                PeripheralRevocation::Expired => {
-                    broker.reap_expired(now + LEASE_TTL + Duration::from_millis(1));
-                }
-                PeripheralRevocation::AppExited => broker.app_exited(&owner),
-            }
-            assert_eq!(factory.state.lock().unwrap().releases, 1);
-            assert!(
-                matches!(broker.take_audit_events().as_slice(), [PeripheralAuditEvent::LeaseStarted { .. }, PeripheralAuditEvent::LeaseStopped { reason: observed, .. }] if *observed == reason)
+        // Phase `authorization_is_one_shot_exact_bound_and_cross_broker_safe`.
+        {
+            let (mut broker, _, owner, device, now) = active();
+            let other = identity("other");
+            let auth = broker.authorize(&owner, device, now).unwrap();
+            assert_eq!(
+                broker.acquire(auth, &other, device, now),
+                Err(PeripheralBrokerError::BindingMismatch)
+            );
+            assert!(broker.acquire(auth, &owner, device, now).is_ok());
+            assert_eq!(
+                broker.acquire(auth, &owner, device, now),
+                Err(PeripheralBrokerError::InvalidAuthorization)
+            );
+            let stale_after_focus_loss = broker.authorize(&owner, device, now).unwrap();
+            broker.set_focus(Some(other.clone()));
+            broker.set_focus(Some(owner.clone()));
+            assert_eq!(
+                broker.acquire(stale_after_focus_loss, &owner, device, now),
+                Err(PeripheralBrokerError::InvalidAuthorization)
+            );
+            let factory = RecordingFactory::default();
+            let mut foreign = ForwardedPeripheralBroker::new(factory);
+            foreign.set_focus(Some(owner.clone()));
+            assert_eq!(
+                foreign.acquire(auth, &owner, device, now),
+                Err(PeripheralBrokerError::InvalidAuthorization)
+            );
+        }
+        // Phase `authorization_expires_and_device_loss_clears_proofs`.
+        {
+            let (mut broker, _, owner, device, now) = active();
+            let expired = broker.authorize(&owner, device, now).unwrap();
+            assert_eq!(
+                broker.acquire(
+                    expired,
+                    &owner,
+                    device,
+                    now + AUTHORIZATION_TTL + Duration::from_millis(1)
+                ),
+                Err(PeripheralBrokerError::InvalidAuthorization)
+            );
+            let lost = broker.authorize(&owner, device, now).unwrap();
+            assert!(broker.remove_device(device));
+            assert_eq!(
+                broker.acquire(lost, &owner, device, now),
+                Err(PeripheralBrokerError::InvalidAuthorization)
             );
         }
     }
 
     #[test]
-    fn authorization_expires_and_device_loss_clears_proofs() {
-        let (mut broker, _, owner, device, now) = active();
-        let expired = broker.authorize(&owner, device, now).unwrap();
-        assert_eq!(
-            broker.acquire(
-                expired,
-                &owner,
-                device,
-                now + AUTHORIZATION_TTL + Duration::from_millis(1)
-            ),
-            Err(PeripheralBrokerError::InvalidAuthorization)
-        );
-        let lost = broker.authorize(&owner, device, now).unwrap();
-        assert!(broker.remove_device(device));
-        assert_eq!(
-            broker.acquire(lost, &owner, device, now),
-            Err(PeripheralBrokerError::InvalidAuthorization)
-        );
-    }
-
-    #[test]
-    fn audit_queue_is_bounded() {
-        let (mut broker, _, owner, device, now) = active();
-        for _ in 0..MAX_AUDIT_EVENTS.saturating_add(5) {
+    fn forwarding_enforces_focus_and_rate_and_audits_every_teardown() {
+        // Phase `focus_sequence_and_rate_are_enforced`.
+        {
+            let (mut broker, factory, owner, device, now) = active();
             let lease = lease(&mut broker, &owner, device, now);
-            broker.revoke(lease);
+            let event = ForwardedGamepadEvent::Button {
+                button: GamepadButton::East,
+                pressed: true,
+            };
+            broker.submit(lease, &owner, 10, event, now).unwrap();
+            assert_eq!(
+                broker.submit(lease, &owner, 10, event, now),
+                Err(PeripheralBrokerError::Sequence)
+            );
+            assert_eq!(
+                broker.submit(lease, &owner, 10 + MAX_SEQUENCE_ADVANCE + 1, event, now),
+                Err(PeripheralBrokerError::Sequence)
+            );
+            for sequence in 11..=u64::from(MAX_EVENTS_PER_SECOND) + 9 {
+                broker.submit(lease, &owner, sequence, event, now).unwrap();
+            }
+            assert_eq!(
+                broker.submit(lease, &owner, 250, event, now),
+                Err(PeripheralBrokerError::RateLimited)
+            );
+            broker.set_focus(Some(identity("new-focus")));
+            assert_eq!(factory.state.lock().unwrap().releases, 1);
+            assert_eq!(
+                broker.submit(lease, &owner, 251, event, now),
+                Err(PeripheralBrokerError::InvalidLease)
+            );
         }
-        assert_eq!(broker.audit.len(), MAX_AUDIT_EVENTS);
+        // Phase `every_teardown_releases_all_and_is_audited`.
+        {
+            for reason in [
+                PeripheralRevocation::Explicit,
+                PeripheralRevocation::FocusLost,
+                PeripheralRevocation::ScreenLocked,
+                PeripheralRevocation::DeviceLost,
+                PeripheralRevocation::Expired,
+                PeripheralRevocation::AppExited,
+            ] {
+                let (mut broker, factory, owner, device, now) = active();
+                let lease = lease(&mut broker, &owner, device, now);
+                match reason {
+                    PeripheralRevocation::Explicit => {
+                        broker.revoke(lease);
+                    }
+                    PeripheralRevocation::FocusLost => broker.set_focus(None),
+                    PeripheralRevocation::ScreenLocked => broker.screen_locked(),
+                    PeripheralRevocation::DeviceLost => {
+                        broker.remove_device(device);
+                    }
+                    PeripheralRevocation::Expired => {
+                        broker.reap_expired(now + LEASE_TTL + Duration::from_millis(1));
+                    }
+                    PeripheralRevocation::AppExited => broker.app_exited(&owner),
+                }
+                assert_eq!(factory.state.lock().unwrap().releases, 1);
+                assert!(
+                    matches!(broker.take_audit_events().as_slice(), [PeripheralAuditEvent::LeaseStarted { .. }, PeripheralAuditEvent::LeaseStopped { reason: observed, .. }] if *observed == reason)
+                );
+            }
+        }
+        // Phase `audit_queue_is_bounded`.
+        {
+            let (mut broker, _, owner, device, now) = active();
+            for _ in 0..MAX_AUDIT_EVENTS.saturating_add(5) {
+                let lease = lease(&mut broker, &owner, device, now);
+                broker.revoke(lease);
+            }
+            assert_eq!(broker.audit.len(), MAX_AUDIT_EVENTS);
+        }
     }
 }

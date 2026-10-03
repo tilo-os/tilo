@@ -27,7 +27,7 @@ pub(crate) struct LocalLibrary {
 
 impl LocalLibrary {
     pub(crate) fn load() -> Self {
-        Self::from_section(&settings_store::load_section(SECTION))
+        Self::from_section(&ui::storage::Settings::section(SECTION).load())
     }
 
     pub(crate) fn remember_book(&mut self, id: &str, path: &Path) {
@@ -80,7 +80,7 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        if let Err(error) = settings_store::update_section(SECTION, self.section()) {
+        if let Err(error) = ui::storage::Settings::section(SECTION).update(self.section()) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
@@ -163,18 +163,14 @@ impl LocalLibrary {
 
     #[cfg(test)]
     fn from_path(path: &Path) -> Self {
-        let document = settings_store::load_at(path);
-        let section = document
-            .get(SECTION)
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        Self::from_section(&section)
+        Self::from_section(&ui::storage::Settings::section(SECTION).in_file(path).load())
     }
 
     #[cfg(test)]
     fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        settings_store::update_section_at(path, SECTION, self.section())
+        ui::storage::Settings::section(SECTION)
+            .in_file(path)
+            .update(self.section())
     }
 }
 
@@ -217,60 +213,64 @@ fn valid_shortcut(key: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Paths round-trip only in private settings, hostile paths and ids fail closed, and shortcuts are local and validated.
     #[test]
-    fn paths_round_trip_only_in_private_settings() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let books = directory.path().join("books");
-        let book = books.join("a.epub");
-        let mut registry = LocalLibrary::default();
-        registry.remember_book("book:0123456789abcdef0123456789abcdef", &book);
-        registry.toggle_watch(&books);
-        assert_eq!(registry.books.len(), 1);
-        registry.save_at(&path).unwrap();
+    fn local_library_settings_stay_private_and_fail_closed() {
+        // --- phase: paths_round_trip_only_in_private_settings ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let books = directory.path().join("books");
+            let book = books.join("a.epub");
+            let mut registry = LocalLibrary::default();
+            registry.remember_book("book:0123456789abcdef0123456789abcdef", &book);
+            registry.toggle_watch(&books);
+            assert_eq!(registry.books.len(), 1);
+            registry.save_at(&path).unwrap();
 
-        assert!(settings_store::load_at(&path).contains_key(SECTION));
+            assert!(ui::storage::settings_at(&path).contains_key(SECTION));
 
-        let restored = LocalLibrary::from_path(&path);
-        assert_eq!(
-            restored.books.get("book:0123456789abcdef0123456789abcdef"),
-            Some(&book)
-        );
-        assert_eq!(restored.watched_folders, vec![books]);
-    }
+            let restored = LocalLibrary::from_path(&path);
+            assert_eq!(
+                restored.books.get("book:0123456789abcdef0123456789abcdef"),
+                Some(&book)
+            );
+            assert_eq!(restored.watched_folders, vec![books]);
+        }
 
-    #[test]
-    fn hostile_paths_and_ids_fail_closed() {
-        let directory = tempfile::tempdir().unwrap();
-        let safe = directory.path().join("safe");
-        let section = serde_json::json!({
-            BOOKS: {
-                "book:not-an-id": "/books/nope.epub",
-                "book:0123456789abcdef0123456789abcdef": "relative.epub"
-            },
-            WATCHED: [PathBuf::from("../private"), &safe, &safe]
-        });
-        let registry = LocalLibrary::from_section(section.as_object().unwrap());
-        assert!(registry.books.is_empty());
-        assert_eq!(registry.watched_folders, vec![safe]);
-    }
+        // --- phase: hostile_paths_and_ids_fail_closed ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let safe = directory.path().join("safe");
+            let section = serde_json::json!({
+                BOOKS: {
+                    "book:not-an-id": "/books/nope.epub",
+                    "book:0123456789abcdef0123456789abcdef": "relative.epub"
+                },
+                WATCHED: [PathBuf::from("../private"), &safe, &safe]
+            });
+            let registry = LocalLibrary::from_section(section.as_object().unwrap());
+            assert!(registry.books.is_empty());
+            assert_eq!(registry.watched_folders, vec![safe]);
+        }
 
-    #[test]
-    fn shortcuts_are_local_validated_and_do_not_require_book_entries() {
-        let directory = tempfile::tempdir().unwrap();
-        let safe = directory.path().join("safe");
-        let section = serde_json::json!({
-            SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
-            WATCHED: [&safe]
-        });
-        let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
-        assert_eq!(registry.watched_folders, vec![safe]);
-        assert_eq!(registry.shortcut("next-page", "."), "j");
-        assert_eq!(registry.shortcut("bookmark", "b"), "b");
-        assert!(!registry.set_shortcut("bookmark", "j"));
-        assert!(!registry.set_shortcut("bookmark", "t"));
-        assert!(!registry.set_shortcut("bookmark", "−"));
-        assert!(registry.set_shortcut("bookmark", "x"));
-        assert_eq!(registry.shortcut("bookmark", "b"), "x");
+        // --- phase: shortcuts_are_local_validated_and_do_not_require_book_entries ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let safe = directory.path().join("safe");
+            let section = serde_json::json!({
+                SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
+                WATCHED: [&safe]
+            });
+            let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
+            assert_eq!(registry.watched_folders, vec![safe]);
+            assert_eq!(registry.shortcut("next-page", "."), "j");
+            assert_eq!(registry.shortcut("bookmark", "b"), "b");
+            assert!(!registry.set_shortcut("bookmark", "j"));
+            assert!(!registry.set_shortcut("bookmark", "t"));
+            assert!(!registry.set_shortcut("bookmark", "−"));
+            assert!(registry.set_shortcut("bookmark", "x"));
+            assert_eq!(registry.shortcut("bookmark", "b"), "x");
+        }
     }
 }

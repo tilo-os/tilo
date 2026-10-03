@@ -81,7 +81,7 @@ impl Downloads {
         })?;
         let bytes = serde_json::to_vec_pretty(&self.entries)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_creating_parent(&path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
 
     pub fn entries(&self) -> &[DownloadEntry] {
@@ -218,7 +218,7 @@ impl Downloads {
 }
 
 fn store_path() -> Option<PathBuf> {
-    xdg_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
+    tilo_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -260,109 +260,118 @@ fn safe_name(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Download store lifecycle, bounds, restore and destinations.
     #[test]
-    fn lifecycle_is_stable_bounded_and_restart_safe() {
-        let mut downloads = Downloads::default();
-        downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
-        downloads.destination("stable-1", "/tmp/a.bin".into());
-        downloads.progress("stable-1", 50, Some(100), 0.5);
-        let json = serde_json::to_string(downloads.entries()).unwrap();
-        let restored = Downloads::from_json(&json);
-        let entry = restored.get("stable-1").unwrap();
-        assert_eq!(entry.resource_id(), "browser.download.stable-1");
-        assert_eq!(entry.status, DownloadStatus::Failed);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn download_rows_are_bounded_restart_safe_and_truthful() {
+        // Phase `lifecycle_is_stable_bounded_and_restart_safe`.
+        {
+            let mut downloads = Downloads::default();
+            downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
+            downloads.destination("stable-1", "/tmp/a.bin".into());
+            downloads.progress("stable-1", 50, Some(100), 0.5);
+            let json = serde_json::to_string(downloads.entries()).unwrap();
+            let restored = Downloads::from_json(&json);
+            let entry = restored.get("stable-1").unwrap();
+            assert_eq!(entry.resource_id(), "browser.download.stable-1");
+            assert_eq!(entry.status, DownloadStatus::Failed);
+        }
 
-    #[test]
-    fn hostile_ids_names_and_corpora_are_bounded() {
-        let mut downloads = Downloads::default();
-        downloads.requested("../escape".into(), "https://bad.test".into(), "bad");
-        assert!(downloads.entries().is_empty());
-        for index in 0..MAX_DOWNLOADS + 20 {
-            downloads.requested(
-                format!("id-{index}"),
-                format!("https://{index}.test"),
-                "../safe.bin",
+        // Phase `hostile_ids_names_and_corpora_are_bounded`.
+        {
+            let mut downloads = Downloads::default();
+            downloads.requested("../escape".into(), "https://bad.test".into(), "bad");
+            assert!(downloads.entries().is_empty());
+            for index in 0..MAX_DOWNLOADS + 20 {
+                downloads.requested(
+                    format!("id-{index}"),
+                    format!("https://{index}.test"),
+                    "../safe.bin",
+                );
+            }
+            assert_eq!(downloads.entries().len(), MAX_DOWNLOADS);
+            assert!(
+                downloads
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.suggested_name == "safe.bin")
             );
         }
-        assert_eq!(downloads.entries().len(), MAX_DOWNLOADS);
-        assert!(
-            downloads
-                .entries()
-                .iter()
-                .all(|entry| entry.suggested_name == "safe.bin")
-        );
-    }
 
-    #[test]
-    fn completed_failed_and_cancelled_rows_restore_truthfully() {
-        let mut downloads = Downloads::default();
-        assert!(downloads.requested(
-            "complete".into(),
-            "https://example.test/complete".into(),
-            "complete.bin",
-        ));
-        downloads.finished("complete", "/tmp/complete.bin".into());
-        assert!(downloads.requested(
-            "failed".into(),
-            "https://example.test/failed".into(),
-            "failed.bin",
-        ));
-        downloads.failed("failed", "network failed".repeat(2_000), false);
-        assert!(downloads.requested(
-            "cancelled".into(),
-            "https://example.test/cancelled".into(),
-            "cancelled.bin",
-        ));
-        downloads.failed("cancelled", "ignored".into(), true);
+        // Phase `completed_failed_and_cancelled_rows_restore_truthfully`.
+        {
+            let mut downloads = Downloads::default();
+            assert!(downloads.requested(
+                "complete".into(),
+                "https://example.test/complete".into(),
+                "complete.bin",
+            ));
+            downloads.finished("complete", "/tmp/complete.bin".into());
+            assert!(downloads.requested(
+                "failed".into(),
+                "https://example.test/failed".into(),
+                "failed.bin",
+            ));
+            downloads.failed("failed", "network failed".repeat(2_000), false);
+            assert!(downloads.requested(
+                "cancelled".into(),
+                "https://example.test/cancelled".into(),
+                "cancelled.bin",
+            ));
+            downloads.failed("cancelled", "ignored".into(), true);
 
-        let restored = Downloads::from_json(&serde_json::to_string(downloads.entries()).unwrap());
-        assert_eq!(
-            restored.get("complete").unwrap().status,
-            DownloadStatus::Completed
-        );
-        assert_eq!(
-            restored.get("failed").unwrap().status,
-            DownloadStatus::Failed
-        );
-        assert!(
-            restored
-                .get("failed")
-                .unwrap()
-                .error
-                .as_ref()
-                .unwrap()
-                .len()
-                <= MAX_TEXT_BYTES
-        );
-        assert_eq!(
-            restored.get("cancelled").unwrap().status,
-            DownloadStatus::Cancelled
-        );
-        assert!(restored.get("cancelled").unwrap().error.is_none());
+            let restored =
+                Downloads::from_json(&serde_json::to_string(downloads.entries()).unwrap());
+            assert_eq!(
+                restored.get("complete").unwrap().status,
+                DownloadStatus::Completed
+            );
+            assert_eq!(
+                restored.get("failed").unwrap().status,
+                DownloadStatus::Failed
+            );
+            assert!(
+                restored
+                    .get("failed")
+                    .unwrap()
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .len()
+                    <= MAX_TEXT_BYTES
+            );
+            assert_eq!(
+                restored.get("cancelled").unwrap().status,
+                DownloadStatus::Cancelled
+            );
+            assert!(restored.get("cancelled").unwrap().error.is_none());
 
-        let previous_error = restored.get("failed").unwrap().error.clone();
-        let mut restored = restored;
-        restored.failed("failed", "Cancelled by cleanup".into(), true);
-        assert_eq!(
-            restored.get("failed").unwrap().status,
-            DownloadStatus::Failed
-        );
-        assert_eq!(restored.get("failed").unwrap().error, previous_error);
-    }
+            let previous_error = restored.get("failed").unwrap().error.clone();
+            let mut restored = restored;
+            restored.failed("failed", "Cancelled by cleanup".into(), true);
+            assert_eq!(
+                restored.get("failed").unwrap().status,
+                DownloadStatus::Failed
+            );
+            assert_eq!(restored.get("failed").unwrap().error, previous_error);
+        }
 
-    #[test]
-    fn relative_destinations_never_become_openable_resources() {
-        let mut downloads = Downloads::default();
-        assert!(downloads.requested(
-            "path".into(),
-            "https://example.test/path".into(),
-            "../safe.bin",
-        ));
-        downloads.finished("path", "../../escape.bin".into());
-        let entry = downloads.get("path").unwrap();
-        assert_eq!(entry.suggested_name, "safe.bin");
-        assert_eq!(entry.status, DownloadStatus::Failed);
-        assert!(entry.destination.is_none());
+        // Phase `relative_destinations_never_become_openable_resources`.
+        {
+            let mut downloads = Downloads::default();
+            assert!(downloads.requested(
+                "path".into(),
+                "https://example.test/path".into(),
+                "../safe.bin",
+            ));
+            downloads.finished("path", "../../escape.bin".into());
+            let entry = downloads.get("path").unwrap();
+            assert_eq!(entry.suggested_name, "safe.bin");
+            assert_eq!(entry.status, DownloadStatus::Failed);
+            assert!(entry.destination.is_none());
+        }
     }
 }

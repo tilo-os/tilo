@@ -227,14 +227,25 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 
 ### Keyboard shortcuts (host-only)
 
-| Shortcut       | Action                                            |
-|----------------|---------------------------------------------------|
-| Ctrl+K         | Toggle command palette                            |
-| Super+1..9     | Switch active workspace                           |
-| Ctrl+Tab       | Switch active strip                               |
-| Ctrl+T         | New tab in active group                           |
-| Ctrl+W         | Close active tab                                  |
-| Super+Esc      | Kill switch — drop peers, revoke caps, lock      |
+| Shortcut                  | Action                                         |
+|---------------------------|------------------------------------------------|
+| Ctrl+K                    | Search the focused app                         |
+| Super+K / Super+Space     | Search all of Tilo                             |
+| Super+Page Up / Page Down | Previous / next workspace                      |
+| Super+Up / Down           | Previous / next strip                          |
+| Super+Shift+Up / Down     | Carry the focused group to the strip above / below |
+| Super+Left / Right        | Previous / next window in the strip            |
+| Super+1..9                | Focus the Nth window group of the strip        |
+| Alt+Tab                   | Most recently used window of the workspace     |
+| Ctrl+Tab                  | Next tab in the focused window group           |
+| Super+T                   | New tab in the focused window group            |
+| Super+W                   | Close the focused tab                          |
+| Super+Esc                 | Stop all remote input and end every share      |
+
+The complete map, including the rebindable defaults and the chords Settings
+cannot rebind, is `docs/shell-navigation-keyboard-map.md`. How chords, gestures,
+pointer controls and overlays fit one model, and how each transition moves, is
+[`window-management.md`](window-management.md).
 
 (Remote-injected keystrokes go through a scrubber that denies system shortcuts. See `docs/architecture/security.md`.)
 
@@ -258,8 +269,8 @@ participate in topology, input routing, hotplug, VT resume and presentation.
 The cursor is confined to the union of live output rectangles rather than the
 combined bounding box, which keeps L-shaped and vertically offset layouts from
 creating invisible dead regions. Tilo deliberately does not implement
-multi-workspace-per-output or workspace pinning: displays are private viewports
-onto one collaborative workspace plane (see
+multi-workspace-per-output or workspace pinning: every display shows the same
+workspace, and each holds its own window groups, partitioned per device (see
 [`displays-and-infinite-workspaces.md`](displays-and-infinite-workspaces.md)).
 
 ## Sessions and seat acquisition (DRM mode)
@@ -278,7 +289,7 @@ Resume from sleep runs the *same* sequence, driven off `PowerSignal::ResumedFrom
 
 **Input device configuration.** The persisted `input.*` preferences reach libinput on every `DEVICE_ADDED` and are re-applied to attached devices when the settings file changes (`backend::drm::input_config`). Tap-to-click defaults **on** — libinput's default off is right for a tablet on a desk and wrong for a laptop — with disable-while-typing and tap-and-drag turned on alongside it. Keyboard auto-repeat comes from the same `key_repeat` slider.
 
-**Gestures and touch.** Three- and four-finger swipes and pinches belong to the shell and drive workspace, tab and overview navigation, in the same directions as the equivalent chords and inverted by `natural_scroll`. One- and two-finger gestures belong to the focused client and go out over `zwp_pointer_gestures_v1`. The split is by finger count, made in one place (`backend::drm::gestures::claims`), so a gesture is never handled twice. Touch reaches clients over `wl_touch` and the shell chrome as synthesised pointer events, since the chrome has no touch path of its own.
+**Gestures and touch.** Three- and four-finger swipes and pinches belong to the shell: three fingers pan the strip and step between strips, four switch workspaces, and a pinch opens the overview, in the same directions as the equivalent chords and inverted by `natural_scroll`. One- and two-finger gestures belong to the focused client and go out over `zwp_pointer_gestures_v1`. The split is by finger count, made in one place (`backend::drm::gestures::claims`), so a gesture is never handled twice. Touch reaches clients over `wl_touch` and the shell chrome as synthesised pointer events, since the chrome has no touch path of its own.
 
 Fallback if bare DRM init fails: relaunch under `cage` as a single-window Wayland session. That's a deployment fallback, not a supported mode.
 

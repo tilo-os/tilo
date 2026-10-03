@@ -64,9 +64,17 @@ pub fn foreign_tile_at(
     point: (f64, f64),
 ) -> Option<TileHit> {
     let p = KurboPoint::new(point.0, point.1);
-    foreign_tiles(tree, host)
-        .into_iter()
-        .find(|hit| hit.rect.contains(p))
+    find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
+}
+
+/// The live laid-out rect for one foreign surface in the active workspace.
+/// Used by per-tick pointer-constraint sync without building the full tile list.
+pub fn foreign_tile_for_surface(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    surface_id: u64,
+) -> Option<TileHit> {
+    find_foreign_tile(tree, host, |hit| hit.surface_id == surface_id)
 }
 
 /// Every foreign tile currently on screen, in front-to-back order — the
@@ -74,10 +82,24 @@ pub fn foreign_tile_at(
 /// input must answer the same "what's on top here?" question from a
 /// different thread; a second traversal risks disagreeing with where the click really lands (see [`crate::network::input_firewall`]).
 pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
-    let Some(ws) = tree.desktop.active_workspace() else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
+    for_each_foreign_tile(tree, host, |hit| {
+        out.push(hit);
+        true
+    });
+    out
+}
+
+/// Walk foreign tiles in the same front-to-back order as [`foreign_tiles`].
+/// `visit` returns `false` to stop early.
+fn for_each_foreign_tile(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    mut visit: impl FnMut(TileHit) -> bool,
+) {
+    let Some(ws) = tree.desktop.active_workspace() else {
+        return;
+    };
     for strip in &ws.strips {
         for group in &strip.window_groups {
             let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) else {
@@ -92,15 +114,34 @@ pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileH
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
-            out.push(TileHit {
+            let hit = TileHit {
                 surface_id: *surface_id,
                 strip: strip.id,
                 group: group.id,
                 rect,
-            });
+            };
+            if !visit(hit) {
+                return;
+            }
         }
     }
-    out
+}
+
+fn find_foreign_tile(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    mut pred: impl FnMut(&TileHit) -> bool,
+) -> Option<TileHit> {
+    let mut found = None;
+    for_each_foreign_tile(tree, host, |hit| {
+        if pred(&hit) {
+            found = Some(hit);
+            false
+        } else {
+            true
+        }
+    });
+    found
 }
 
 /// Surface-local coordinates for a global `point` inside `rect`. Smithay does this itself when handed the focus origin, but it's exposed and asserted on separately since it's load-bearing.
@@ -109,7 +150,7 @@ pub fn surface_local(point: (f64, f64), rect: Rect) -> (f64, f64) {
 }
 
 /// Bare modifier keys — never treated as compositor chords, since a client's xkb state has to see them or its own `Shift`/`Ctrl` handling desynchronises from the seat's.
-fn is_modifier_key(key: &Key) -> bool {
+pub fn is_modifier_key(key: &Key) -> bool {
     matches!(
         key,
         Key::Named(
@@ -120,7 +161,6 @@ fn is_modifier_key(key: &Key) -> bool {
                 | NamedKey::Meta
                 | NamedKey::CapsLock
                 | NamedKey::AltGraph
-                | NamedKey::NumLock
         )
     )
 }
@@ -171,6 +211,10 @@ pub enum ChordKey {
     Enter,
     /// `F1`..`F12`, numbered from 1.
     Function(u8),
+    /// Num Lock. A lock key rather than a held modifier, so unlike Shift it
+    /// can carry a chord (Shift+Alt+Num Lock toggles mouse keys); on its own
+    /// it always reaches the focused client.
+    NumLock,
     /// A single printable character, already lowercased.
     Char(char),
     /// A bare modifier. Never a chord on its own — a client's xkb state has to see modifier transitions or it desynchronises from the seat.
@@ -256,7 +300,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -286,6 +330,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         | ChordKey::Delete
         | ChordKey::Enter
         | ChordKey::Function(_)
+        | ChordKey::NumLock
         | ChordKey::Other
         | ChordKey::Modifier => false,
     }
@@ -309,6 +354,7 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
         Key::Named(NamedKey::Delete) => ChordKey::Delete,
         Key::Named(NamedKey::Enter) => ChordKey::Enter,
+        Key::Named(NamedKey::NumLock) => ChordKey::NumLock,
         Key::Named(NamedKey::F1) => ChordKey::Function(1),
         Key::Named(NamedKey::F2) => ChordKey::Function(2),
         Key::Named(NamedKey::F3) => ChordKey::Function(3),
@@ -343,8 +389,9 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         104 => ChordKey::PageUp,
         109 => ChordKey::PageDown,
         99 => ChordKey::PrintScreen,
-        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
-        29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
+        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, left/right Super
+        29 | 97 | 42 | 54 | 56 | 100 | 58 | 125 | 126 => ChordKey::Modifier,
+        69 => ChordKey::NumLock,
         57 => ChordKey::Space,
         59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
@@ -560,6 +607,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::F8 => Some(66),
             NamedKey::F9 => Some(67),
             NamedKey::F10 => Some(68),
+            NamedKey::NumLock => Some(69),
             NamedKey::F11 => Some(87),
             NamedKey::F12 => Some(88),
             NamedKey::PrintScreen => Some(99),
@@ -782,9 +830,31 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
+    // Keep or revert a display tool's change: Enter and Escape answer it
+    // whichever window had focus.
+    if fb.host().display_confirmation_visible() {
+        return true;
+    }
+    // The emoji picker types into its own search field; the field it will
+    // insert into gets the keyboard back when it closes.
+    if fb.host().emoji_picker_open() {
+        return true;
+    }
     // The portal's file chooser, for the same reason as the peer-sync card
     // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
     if fb.host().file_picker().is_some() {
+        return true;
+    }
+    // Permission and other portal sheets are the same kind of modal. Without
+    // this, a key or click lands in the window behind the sheet.
+    if fb.host().portal_dialog_open() {
+        return true;
+    }
+    // Alt is held after Alt+Tab. The focused client gives up the keyboard
+    // for as long as the switcher is open, so Tab, the arrows and Escape
+    // reach it, and the client never sees Alt pressed and released alone
+    // (which toolkits read as "show the menu bar").
+    if fb.host().window_switcher_active() {
         return true;
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
@@ -968,7 +1038,141 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
     }
 }
 
+/// Super pressed and released with nothing in between: the tap that opens
+/// global search on every mainstream desktop.
+///
+/// Fed every input event ahead of chord routing, so a Super chord the
+/// shell handles (Super+L, Super+Left) disarms it exactly like one a
+/// client receives, and a Super-click or Super-scroll does too.
+#[derive(Debug, Default)]
+pub struct SuperTap {
+    armed: bool,
+}
+
+impl SuperTap {
+    /// `true` on the release that completes a lone tap.
+    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let is_super = matches!(
+                    key.logical_key,
+                    Key::Named(NamedKey::Super | NamedKey::Meta)
+                );
+                match (is_super, key.state) {
+                    (true, ElementState::Pressed) => {
+                        // Autorepeat of the held key keeps the tap alive;
+                        // a fresh press starts one.
+                        if !key.repeat {
+                            self.armed = true;
+                        }
+                        false
+                    }
+                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (false, ElementState::Pressed) => {
+                        self.armed = false;
+                        false
+                    }
+                    (false, ElementState::Released) => false,
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_) => {
+                self.armed = false;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
+mod super_tap_tests {
+    use super::*;
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    fn key(logical: Key, state: ElementState) -> WindowEvent {
+        // winit's `KeyEvent` has a private platform field, so the struct is
+        // zero-initialised and every public field overwritten.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Left;
+        ev.state = state;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn super_key(state: ElementState) -> WindowEvent {
+        key(Key::Named(NamedKey::Super), state)
+    }
+
+    #[test]
+    fn a_lone_super_tap_fires_on_release() {
+        let mut tap = SuperTap::default();
+        assert!(!tap.observe(&super_key(ElementState::Pressed)));
+        assert!(tap.observe(&super_key(ElementState::Released)));
+        assert!(
+            !tap.observe(&super_key(ElementState::Released)),
+            "one tap, one search"
+        );
+    }
+
+    #[test]
+    fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_super_click_or_scroll_is_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_modifier_released_alone_is_not_super() {
+        let mut tap = SuperTap::default();
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
+        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
@@ -1049,872 +1253,427 @@ mod tests {
         (tree, strip_id, foreign_group)
     }
     #[test]
-    fn every_printable_ascii_character_names_a_key() {
-        let missing: Vec<char> = (0x20u8..0x7f)
-            .map(char::from)
-            .filter(|c| evdev_from_char(*c).is_none())
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "these characters reach a client as nothing at all: {missing:?}",
-        );
-    }
-    #[test]
-    fn a_shifted_character_shares_its_key_with_the_unshifted_one() {
-        for (shifted, plain) in [
-            (':', ';'),
-            ('"', '\''),
-            ('?', '/'),
-            ('_', '-'),
-            ('+', '='),
-            ('{', '['),
-            ('}', ']'),
-            ('<', ','),
-            ('>', '.'),
-            ('~', '`'),
-            ('|', '\\'),
-            ('!', '1'),
-            (')', '0'),
-        ] {
-            assert_eq!(
-                evdev_from_char(shifted),
-                evdev_from_char(plain),
-                "{shifted:?} and {plain:?} are one key",
-            );
-            assert_eq!(
-                unshifted(shifted),
-                (plain, true),
-                "{shifted:?} is {plain:?} with Shift held",
-            );
-        }
-        assert_eq!(unshifted('a'), ('a', false), "a lowercase letter is bare");
-        assert_eq!(unshifted('A'), ('a', true), "a capital is Shift held");
-    }
-    #[test]
-    fn active_foreign_surface_follows_the_active_group() {
-        let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
-        // Active group defaults to the first (shell-owned) group — no client should hold the keyboard.
-        assert_eq!(
-            active_foreign_surface(&tree),
-            None,
-            "a shell-owned active tab must not hand the keyboard to a client"
-        );
-        // Switching the active group onto the foreign one moves focus.
-        tree.desktop.set_active_group(strip, foreign_group);
-        assert_eq!(active_foreign_surface(&tree), Some(4242));
-    }
-    #[test]
-    fn conventional_window_cycle_wraps_while_spatial_step_clamps() {
-        let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
-        let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        assert_eq!(
-            cycle_active_window(&tree, -1).map(|(_, group, _)| group),
-            Some(foreign_group),
-            "Alt+Shift+Tab from the first window wraps to the last"
-        );
-        assert_eq!(step_active_window(&tree, -1), None);
-
-        tree.desktop.set_active_group(strip, foreign_group);
-        assert_eq!(
-            cycle_active_window(&tree, 1).map(|(_, group, _)| group),
-            Some(first_group),
-            "Alt+Tab from the last window wraps to the first"
-        );
-        assert_eq!(step_active_window(&tree, 1), None);
-    }
-    #[test]
-    fn step_active_window_walks_tabs_within_a_group() {
-        // ONE group holding several windows as tabs — one step right of the first is the second.
-        let tabs: Vec<Tab> = ["Notes", "Files", "Terminal"]
-            .iter()
-            .map(|name| Tab {
-                id: next_id(),
-                title: (*name).into(),
-                tile: TileContent::Stub {
-                    kind: AppKind::Other((*name).into()),
-                    label: (*name).into(),
-                },
-            })
-            .collect();
-        let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();
-        let group = WindowGroup {
-            id: next_id(),
-            active_tab: ids[0],
-            tabs,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let group_id = group.id;
-        let strip_id = StripId::from(next_id());
-        let mut strip = Strip::new(strip_id, "main");
-        strip.window_groups = vec![group];
-        let ws_id = WorkspaceId::from(next_id());
-        let mut ws = Workspace::new(ws_id, "Home");
-        ws.strips = vec![strip];
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![ws],
-                active: ws_id,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active_strip.insert(ws_id, strip_id);
-
-        // Notes is active → one step right is Files.
-        assert_eq!(
-            step_active_window(&tree, 1),
-            Some((strip_id, group_id, ids[1])),
-            "one step right of the first tab must be the second"
-        );
-        // Apply it, step again → Terminal; then the right edge clamps.
-        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
-        assert_eq!(
-            step_active_window(&tree, 1),
-            Some((strip_id, group_id, ids[2]))
-        );
-        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
-        assert_eq!(step_active_window(&tree, 1), None, "right edge clamps");
-        assert_eq!(step_active_window(&tree, 5), None, "overshoot clamps too");
-        // And back left, two at once, lands on Notes; the left edge clamps.
-        assert_eq!(
-            step_active_window(&tree, -2),
-            Some((strip_id, group_id, ids[0]))
-        );
-        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
-        assert_eq!(step_active_window(&tree, -1), None, "left edge clamps");
-    }
-    #[test]
-    fn step_active_window_continues_into_the_next_group() {
-        let (mut tree, strip, foreign_group) = tree_with_foreign(1);
-        // No explicit active pointer yet: the walk starts at the first group's tab; one step right crosses into the foreign group.
-        let (s, g, _t) = step_active_window(&tree, 1).expect("step into the next group");
-        assert_eq!((s, g), (strip, foreign_group));
-        tree.desktop.set_active_group(strip, foreign_group);
-        // At the strip's last window the jump clamps.
-        assert_eq!(step_active_window(&tree, 1), None);
-        // Stepping back crosses into the first group again.
-        let (s2, first, _t) = step_active_window(&tree, -1).expect("step back left");
-        assert_eq!(s2, strip);
-        assert_ne!(first, foreign_group);
-    }
-    #[test]
-    fn wheel_jump_detents_map_wheel_down_to_a_rightward_jump() {
-        use winit::dpi::PhysicalPosition;
-        // Winit: positive y = wheel up. Niri: WheelScrollDown → focus-column-right — so wheel-down must be a positive detent.
-        assert_eq!(
-            wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, -1.0)),
-            1.0
-        );
-        assert_eq!(
-            wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, 1.0)),
-            -1.0
-        );
-        // Touchpad pixels are fractional: one detent per JUMP_PX_PER_DETENT.
-        assert_eq!(
-            wheel_jump_detents(&MouseScrollDelta::PixelDelta(PhysicalPosition::new(
-                0.0, -25.0
-            ))),
-            0.5
-        );
-    }
-    #[test]
-    fn wheel_jump_accum_fires_whole_detents_and_survives_slow_scrolling() {
-        let t0 = Instant::now();
-        let mut acc = WheelJumpAccum::default();
-        // A clicky wheel fires one step per notch, immediately.
-        assert_eq!(acc.push(1.0, t0), 1);
-        assert_eq!(acc.push(1.0, t0), 1);
-        // Touchpad travel accumulates until a whole detent is reached...
-        let mut acc = WheelJumpAccum::default();
-        assert_eq!(acc.push(0.4, t0), 0);
-        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(50)), 0);
-        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(100)), 1);
-        // ...and the remainder carries forward, not doubled.
-        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(150)), 0);
-        // Reversing direction drops the partial balance outright.
-        let mut acc = WheelJumpAccum::default();
-        assert_eq!(acc.push(0.9, t0), 0);
-        assert_eq!(acc.push(-0.9, t0 + Duration::from_millis(50)), 0);
-        // SLOW deliberate scrolling still gets there: fractional detents separated by long pauses must keep accumulating.
-        let mut acc = WheelJumpAccum::default();
-        assert_eq!(acc.push(0.4, t0), 0);
-        assert_eq!(acc.push(0.4, t0 + Duration::from_secs(1)), 0);
-        assert_eq!(
-            acc.push(0.4, t0 + Duration::from_secs(2)),
-            1,
-            "slow same-direction scrolling must still reach a whole detent"
-        );
-    }
-    #[test]
-    fn active_foreign_surface_ignores_inactive_workspaces() {
-        let (mut tree, strip, foreign_group) = tree_with_foreign(7);
-        tree.desktop.set_active_group(strip, foreign_group);
-        assert_eq!(active_foreign_surface(&tree), Some(7));
-        // Point the tree at a workspace that doesn't exist: nothing to focus.
-        tree.desktop.active = crate::shell::state::WorkspaceId::from(u64::MAX);
-        assert_eq!(
-            active_foreign_surface(&tree),
-            None,
-            "focus must not leak across workspaces"
-        );
-    }
-    #[test]
-    fn mapped_overlay_focus_survives_reconciliation_for_every_overlay_kind() {
-        for (name, id, floating, transient, fullscreen) in [
-            ("floating", 11, Some(11), None, None),
-            ("transient", 22, None, Some(22), None),
-            ("fullscreen", 33, None, None, Some(33)),
-        ] {
-            assert_eq!(
-                retain_live_overlay_focus(Some(id), floating, transient, fullscreen),
-                Some(id),
-                "a mapped {name} surface must retain keyboard focus across a tick"
-            );
-        }
-    }
-    #[test]
-    fn dismissed_overlay_focus_is_released_to_the_tree_fallback() {
-        assert_eq!(
-            retain_live_overlay_focus(Some(41), None, None, None),
-            None,
-            "a surface that disappeared from every overlay layer must not retain stale focus"
-        );
-        assert_eq!(
-            retain_live_overlay_focus(Some(41), Some(99), Some(99), Some(99)),
-            None,
-            "only the currently focused overlay id may be preserved"
-        );
-    }
-    #[test]
-    fn surface_local_subtracts_the_tile_origin() {
-        let rect = Rect::new(320.0, 96.0, 1220.0, 800.0);
-        assert_eq!(surface_local((320.0, 96.0), rect), (0.0, 0.0));
-        assert_eq!(surface_local((420.0, 196.0), rect), (100.0, 100.0));
-        // A point outside the rect still translates linearly — the caller is responsible for hit-testing first.
-        assert_eq!(surface_local((300.0, 96.0), rect), (-20.0, 0.0));
-    }
-    #[test]
-    fn only_immutable_super_chords_are_static_client_firewall_rules() {
-        let m = mods(ModifiersState::SUPER);
-        for key in [
-            Key::Character(SmolStr::new("l")),
-            Key::Named(NamedKey::Space),
-        ] {
-            let ev = key_event(key.clone(), true);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn keys_buttons_and_scroll_map_to_stable_wire_codes() {
+        fn every_printable_ascii_character_names_a_key() {
+            let missing: Vec<char> = (0x20u8..0x7f)
+                .map(char::from)
+                .filter(|c| evdev_from_char(*c).is_none())
+                .collect();
             assert!(
-                is_shell_chord(&ev, &m, false),
-                "Super+{key:?} must be handled by the shell"
-            );
-        }
-        for key in [
-            Key::Character(SmolStr::new("k")),
-            Key::Named(NamedKey::Tab),
-            Key::Named(NamedKey::ArrowUp),
-            Key::Named(NamedKey::ArrowDown),
-        ] {
-            assert!(
-                !is_shell_chord(&key_event(key.clone(), true), &m, false),
-                "Super+{key:?} is configurable and must be resolved by the effective table"
-            );
-        }
-    }
-    #[test]
-    fn configurable_ctrl_defaults_are_not_static_but_alt_tab_is_the_ring_alias() {
-        let ctrl = mods(ModifiersState::CONTROL);
-        let alt = mods(ModifiersState::ALT);
-        assert!(!is_shell_chord(
-            &key_event(Key::Character(SmolStr::new("k")), true),
-            &ctrl,
-            false
-        ));
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::Tab), true),
-            &ctrl,
-            false
-        ));
-        assert!(
-            is_shell_chord(&key_event(Key::Named(NamedKey::Tab), true), &alt, false),
-            "Alt+Tab is the immutable conventional window-ring alias"
-        );
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::ArrowDown), true),
-            &ctrl,
-            false
-        ));
-        assert!(
-            !is_shell_chord(&key_event(Key::Named(NamedKey::Space), true), &alt, false),
-            "Alt+Space has no desktop action and must remain application input"
-        );
-        assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::PrintScreen), true),
-            &mods(ModifiersState::empty()),
-            false
-        ));
-    }
-    #[test]
-    fn conventional_close_and_workspace_aliases_are_owned_before_clients() {
-        let alt = mods(ModifiersState::ALT);
-        let super_only = mods(ModifiersState::SUPER);
-        assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::F4), true),
-            &alt,
-            false
-        ));
-        for key in [NamedKey::PageUp, NamedKey::PageDown] {
-            assert!(is_shell_chord(
-                &key_event(Key::Named(key), true),
-                &super_only,
-                false
-            ));
-        }
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::F4), true),
-            &mods(ModifiersState::empty()),
-            false
-        ));
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::PageDown), true),
-            &mods(ModifiersState::CONTROL),
-            false
-        ));
-    }
-    #[test]
-    fn plain_keys_and_bare_modifiers_are_forwarded() {
-        let none = mods(ModifiersState::empty());
-        let ctrl = mods(ModifiersState::CONTROL);
-        // Unmodified typing goes to the client.
-        assert!(!is_shell_chord(
-            &key_event(Key::Character(SmolStr::new("a")), true),
-            &none,
-            false
-        ));
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::Tab), true),
-            &none,
-            false
-        ));
-        // Ctrl chords the shell does NOT own stay with the client (Ctrl+C in a terminal must not be eaten).
-        assert!(!is_shell_chord(
-            &key_event(Key::Character(SmolStr::new("c")), true),
-            &ctrl,
-            false
-        ));
-        // A bare modifier is always forwarded so the client's xkb state tracks the seat's, even while Super is held.
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::Super), true),
-            &mods(ModifiersState::SUPER),
-            false
-        ));
-        assert!(!is_shell_chord(
-            &key_event(Key::Named(NamedKey::Shift), true),
-            &mods(ModifiersState::SHIFT),
-            false
-        ));
-    }
-    #[test]
-    fn escape_only_belongs_to_the_shell_while_an_overlay_is_open() {
-        let none = mods(ModifiersState::empty());
-        let ev = key_event(Key::Named(NamedKey::Escape), true);
-        assert!(
-            !is_shell_chord(&ev, &none, false),
-            "Escape must reach a focused client when no overlay is open"
-        );
-        assert!(
-            is_shell_chord(&ev, &none, true),
-            "Escape closes the open overlay instead of reaching the client"
-        );
-    }
-    #[test]
-    fn evdev_keycodes_match_the_kernel_table() {
-        // Values from linux/input-event-codes.h — the codes `wl_keyboard.key` carries on the wire.
-        assert_eq!(
-            evdev_from_logical(&Key::Character(SmolStr::new("a"))),
-            Some(30)
-        );
-        assert_eq!(
-            evdev_from_logical(&Key::Character(SmolStr::new("A"))),
-            Some(30)
-        );
-        assert_eq!(
-            evdev_from_logical(&Key::Character(SmolStr::new("q"))),
-            Some(16)
-        );
-        assert_eq!(
-            evdev_from_logical(&Key::Character(SmolStr::new("1"))),
-            Some(2)
-        );
-        assert_eq!(
-            evdev_from_logical(&Key::Character(SmolStr::new("0"))),
-            Some(11)
-        );
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Enter)), Some(28));
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Escape)), Some(1));
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Space)), Some(57));
-        assert_eq!(
-            evdev_from_logical(&Key::Named(NamedKey::Backspace)),
-            Some(14)
-        );
-        assert_eq!(
-            evdev_from_logical(&Key::Named(NamedKey::ArrowLeft)),
-            Some(105)
-        );
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Shift)), Some(42));
-    }
-    #[test]
-    fn evdev_keycode_prefers_the_physical_scancode() {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        // `KeyA` is evdev 30; the logical key deliberately disagrees so a fallback to the table would produce a different value.
-        ev.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
-        ev.logical_key = Key::Character(SmolStr::new("z"));
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        assert_eq!(
-            evdev_keycode(&ev),
-            Some(30),
-            "the physical scancode is authoritative when winit reports one"
-        );
-    }
-    #[test]
-    fn non_us_physical_keys_keep_the_peer_wire_code() {
-        let WindowEvent::KeyboardInput { mut event, .. } =
-            key_event(Key::Character(SmolStr::new("a")), true)
-        else {
-            unreachable!()
-        };
-        event.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
-        assert_eq!(evdev_keycode(&event), Some(16));
-        event.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::IntlBackslash);
-        event.logical_key = Key::Character(SmolStr::new("<"));
-        assert_eq!(evdev_keycode(&event), Some(86));
-    }
-
-    #[test]
-    fn mouse_buttons_map_to_evdev_codes() {
-        assert_eq!(evdev_button(MouseButton::Left), Some(0x110));
-        assert_eq!(evdev_button(MouseButton::Right), Some(0x111));
-        assert_eq!(evdev_button(MouseButton::Middle), Some(0x112));
-        assert_eq!(evdev_button(MouseButton::Forward), Some(0x114));
-        assert_eq!(evdev_button(MouseButton::Back), Some(0x113));
-        assert_eq!(evdev_button(MouseButton::Other(9)), None);
-    }
-    #[test]
-    fn scroll_deltas_invert_for_the_wayland_axis_convention() {
-        // Winit: positive y = scroll up. Wayland: positive = scroll down.
-        let ((h, v), v120) = axis_values(MouseScrollDelta::LineDelta(0.0, 1.0));
-        assert_eq!(h, 0.0);
-        assert_eq!(v, -WHEEL_STEP);
-        assert_eq!(v120, Some((0, -120)));
-        let ((h, v), v120) = axis_values(MouseScrollDelta::PixelDelta(
-            winit::dpi::PhysicalPosition::new(3.0, -7.0),
-        ));
-        assert_eq!((h, v), (-3.0, 7.0));
-        assert_eq!(v120, None, "trackpad deltas carry no discrete steps");
-    }
-    #[test]
-    fn insert_foreign_group_lands_in_the_active_strip_and_takes_focus() {
-        let (mut tree, strip, _) = tree_with_foreign(1);
-        let before = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .find(|s| s.id == strip)
-            .unwrap()
-            .window_groups
-            .len();
-        let placed = insert_foreign_group(&mut tree, 99, Some("org.example.late"))
-            .expect("adoption must land in the active strip");
-        assert_eq!(placed.0, strip);
-        let live = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .find(|s| s.id == strip)
-            .unwrap();
-        assert_eq!(live.window_groups.len(), before + 1);
-        assert_eq!(
-            tree.desktop.active_group_for(strip),
-            Some(placed.1),
-            "a newly-mapped window takes the active-group slot"
-        );
-        assert_eq!(
-            active_foreign_surface(&tree),
-            Some(99),
-            "and therefore the keyboard focus"
-        );
-    }
-    #[test]
-    fn remove_foreign_tab_drops_the_group_and_moves_focus_off_it() {
-        let (mut tree, strip, foreign_group) = tree_with_foreign(1);
-        let placed = insert_foreign_group(&mut tree, 99, None).unwrap();
-        assert_eq!(active_foreign_surface(&tree), Some(99));
-        assert!(remove_foreign_tab(&mut tree, 99));
-        let live = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .find(|s| s.id == strip)
-            .unwrap();
-        assert!(
-            !live.window_groups.iter().any(|g| g.id == placed.1),
-            "an emptied group must not linger in the strip"
-        );
-        assert_eq!(
-            tree.desktop.active_group_for(strip),
-            Some(foreign_group),
-            "focus must move off the destroyed group onto a surviving sibling"
-        );
-        assert_eq!(
-            active_foreign_surface(&tree),
-            Some(1),
-            "the keyboard lands on the surviving window, never on the dead one"
-        );
-        // A second removal is a no-op.
-        assert!(!remove_foreign_tab(&mut tree, 99));
-
-        // Draining the last foreign group leaves the shell-owned group active, so no client holds the keyboard.
-        assert!(remove_foreign_tab(&mut tree, 1));
-        assert_eq!(
-            active_foreign_surface(&tree),
-            None,
-            "no client holds the keyboard once every client window is gone"
-        );
-    }
-    #[test]
-    fn rename_rewrites_the_app_id_and_title() {
-        let (mut tree, _, _) = tree_with_foreign(1);
-        insert_foreign_group(&mut tree, 99, None).unwrap();
-        assert!(rename_foreign_tab(&mut tree, 99, "org.example.Renamed"));
-        let tab = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|s| s.window_groups.iter())
-            .flat_map(|g| g.tabs.iter())
-            .find(|t| matches!(&t.tile, TileContent::Foreign { surface_id: 99, .. }))
-            .expect("mirrored tab still present");
-        assert_eq!(tab.title, "Renamed");
-        match &tab.tile {
-            TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Renamed"),
-            other => panic!("expected Foreign tile, got {other:?}"),
-        }
-        assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
-    }
-    #[test]
-    fn the_peer_sync_card_takes_input_from_a_focused_client() {
-        for field in ["invite_token", "connect_input"] {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            assert!(
-                !chrome_captures_input(&fb),
-                "nothing is up yet, so a client should still own the keyboard"
-            );
-
-            let snapshot = match field {
-                "invite_token" => crate::shell::overlay_host::PeerSyncSnapshot {
-                    invite_token: Some("a-signed-blob".into()),
-                    ..Default::default()
-                },
-                _ => crate::shell::overlay_host::PeerSyncSnapshot {
-                    connect_input: Some(String::new()),
-                    ..Default::default()
-                },
-            };
-            fb.host_mut().set_peer_sync_snapshot_for_tests(snapshot);
-            let _ = fb.paint_settled();
-
-            assert!(
-                chrome_captures_input(&fb),
-                "with peer_sync_{field} set the card is painted, so the chrome \
-                 must hold the keyboard — otherwise Escape goes to the client \
-                 and the card can never be dismissed"
-            );
-        }
-    }
-    #[test]
-    fn desktop_modals_take_input_before_a_focused_client_can_consume_it() {
-        for overlay in ["shortcut_help", "projection"] {
-            let mut fb = FrameBuilder::new((1600, 900));
-            fb.with_chrome(|chrome| match overlay {
-                "shortcut_help" => chrome.overlays.shortcut_help = true,
-                "projection" => chrome.overlays.projection = true,
-                _ => unreachable!(),
-            });
-            assert!(
-                chrome_captures_input(&fb),
-                "{overlay} is painted as modal and must revoke client focus"
+                missing.is_empty(),
+                "these characters reach a client as nothing at all: {missing:?}",
             );
         }
 
-        let mut capture = FrameBuilder::new((1600, 900));
-        assert!(
-            capture
-                .host_mut()
-                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
-        );
-        assert!(
-            chrome_captures_input(&capture),
-            "Print Screen's chooser must receive its follow-up keys and clicks"
-        );
-
-        let mut markup = FrameBuilder::new((1600, 900));
-        markup
-            .host_mut()
-            .open_screenshot_markup(std::sync::Arc::from([0_u8; 4]), 1, 1, None);
-        assert!(
-            chrome_captures_input(&markup),
-            "screenshot editing must not leak input into the captured app"
-        );
-    }
-
-    #[test]
-    fn maximized_restore_band_takes_pointer_before_the_client() {
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
-        let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-        first.maximized = true;
-        let group = first.id;
-        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
-        fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
-        let _ = fb.paint_settled();
-
-        fb.host_mut()
-            .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
-        assert!(
-            chrome_captures_input(&fb),
-            "the visible Restore/Close pills must receive their own click"
-        );
-
-        fb.host_mut()
-            .note_pointer(vello::kurbo::Point::new(640.0, 200.0));
-        assert!(
-            !chrome_captures_input(&fb),
-            "below the reveal band the maximized client must remain interactive"
-        );
-    }
-    #[test]
-    fn the_file_chooser_takes_input_from_a_focused_client() {
-        use crate::portal::FilePickerSpawner as _;
-
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        assert!(
-            !chrome_captures_input(&fb),
-            "nothing is up yet, so a client should still own the pointer"
-        );
-
-        let queue = crate::portal::FilePickerQueue::new();
-        let prompts =
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow);
-        fb.host_mut().set_portal_queues(prompts, queue.clone());
-
-        let workspace = fb
-            .chrome()
-            .tree()
-            .desktop
-            .active_workspace()
-            .map(|ws| ws.id)
-            .expect("a fresh FrameBuilder has an active workspace");
-        let (reply, _parked) = tokio::sync::oneshot::channel();
-        queue.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
-            title: "Insert image".into(),
-            save: false,
-            directory: false,
-            multiple: false,
-            accept_label: None,
-            current_name: None,
-            filters: Vec::new(),
-            reply,
-        });
-        assert!(
-            fb.host_mut().pump_file_picker(),
-            "the queued request should have mounted a dialog"
-        );
-        assert!(
-            fb.host().file_picker().is_some(),
-            "the dialog is what the predicate below is about"
-        );
-        let _ = fb.paint_settled();
-
-        assert!(
-            chrome_captures_input(&fb),
-            "with the portal's file chooser up the chrome must hold input — \
-             otherwise the clicks meant for it go to the client behind it and \
-             the dialog cannot be used at all"
-        );
-    }
-    #[test]
-    fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-
-        let mut placed = None;
-        fb.with_chrome(|chrome| {
-            {
-                let mut tree = chrome.tree_mut();
-                placed = insert_foreign_group(&mut tree, 4242, Some("org.example.client"));
+        fn a_shifted_character_shares_its_key_with_the_unshifted_one() {
+            for (shifted, plain) in [
+                (':', ';'),
+                ('"', '\''),
+                ('?', '/'),
+                ('_', '-'),
+                ('+', '='),
+                ('{', '['),
+                ('}', ']'),
+                ('<', ','),
+                ('>', '.'),
+                ('~', '`'),
+                ('|', '\\'),
+                ('!', '1'),
+                (')', '0'),
+            ] {
+                assert_eq!(
+                    evdev_from_char(shifted),
+                    evdev_from_char(plain),
+                    "{shifted:?} and {plain:?} are one key",
+                );
+                assert_eq!(
+                    unshifted(shifted),
+                    (plain, true),
+                    "{shifted:?} is {plain:?} with Shift held",
+                );
             }
-            chrome.bump();
-        });
-        let (_strip, group) = placed.expect("adoption lands in the bootstrap strip");
-
-        // One settle pass runs the tree→row resync and the layout that gives the freshly-spliced group its rect.
-        let _ = fb.paint_settled();
-
-        let rect = fb
-            .host()
-            .active_tile_rect(group)
-            .expect("the mirrored group must exist in the live strip row");
-        assert!(
-            rect.width() > 1.0 && rect.height() > 1.0,
-            "the client's tile must have a real extent; got {rect:?}"
-        );
-
-        let centre = (rect.center().x, rect.center().y);
-        let hit = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            foreign_tile_at(&tree, fb.host(), centre)
-                .expect("a cursor inside the tile resolves to the client")
-        };
-        assert_eq!(hit.surface_id, 4242);
-        assert_eq!(hit.group, group);
-        assert_eq!(hit.rect, rect);
-
-        // Surface-local translation is the tile origin subtracted.
-        assert_eq!(
-            surface_local(centre, hit.rect),
-            (centre.0 - rect.x0, centre.1 - rect.y0)
-        );
-
-        // Chrome keeps priority: a point on the top bar, and a point on the tile's own tab bar, are not the client's.
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        assert!(
-            foreign_tile_at(&tree, fb.host(), (800.0, 4.0)).is_none(),
-            "the top bar must never resolve to a client surface"
-        );
-        assert!(
-            foreign_tile_at(&tree, fb.host(), (centre.0, rect.y0 - 4.0)).is_none(),
-            "the tab strip above the tile must never resolve to a client surface"
-        );
-    }
-    #[test]
-    fn chord_key_agrees_across_both_directions() {
-        // Every character the forward table maps, including the space some layouts deliver as text rather than `NamedKey::Space`.
-        const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
-        let named = [
-            NamedKey::Escape,
-            NamedKey::Backspace,
-            NamedKey::Tab,
-            NamedKey::Enter,
-            NamedKey::Control,
-            NamedKey::Shift,
-            NamedKey::Alt,
-            NamedKey::Space,
-            NamedKey::CapsLock,
-            NamedKey::F1,
-            NamedKey::F2,
-            NamedKey::F3,
-            NamedKey::F4,
-            NamedKey::F5,
-            NamedKey::F6,
-            NamedKey::F7,
-            NamedKey::F8,
-            NamedKey::F9,
-            NamedKey::F10,
-            NamedKey::F11,
-            NamedKey::F12,
-            NamedKey::PrintScreen,
-            NamedKey::Home,
-            NamedKey::ArrowUp,
-            NamedKey::PageUp,
-            NamedKey::ArrowLeft,
-            NamedKey::ArrowRight,
-            NamedKey::End,
-            NamedKey::ArrowDown,
-            NamedKey::PageDown,
-            NamedKey::Insert,
-            NamedKey::Delete,
-            NamedKey::Super,
-        ];
-        let mut checked = 0;
-        for n in named {
-            let key = Key::Named(n);
-            let code = evdev_from_logical(&key)
-                .unwrap_or_else(|| panic!("{n:?} is in the forward keycode table"));
-            assert_eq!(
-                chord_key_for_evdev(code),
-                chord_key_for_logical(&key),
-                "{n:?} (evdev {code}) narrows differently from each side",
-            );
-            checked += 1;
+            assert_eq!(unshifted('a'), ('a', false), "a lowercase letter is bare");
+            assert_eq!(unshifted('A'), ('a', true), "a capital is Shift held");
         }
-        for c in CHARS.chars() {
-            let key = Key::Character(SmolStr::new(c.to_string()));
-            let code = evdev_from_logical(&key)
-                .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
+
+        fn evdev_keycodes_match_the_kernel_table() {
+            // Values from linux/input-event-codes.h — the codes `wl_keyboard.key` carries on the wire.
             assert_eq!(
-                chord_key_for_evdev(code),
-                chord_key_for_logical(&key),
-                "{c:?} (evdev {code}) narrows differently from each side",
+                evdev_from_logical(&Key::Character(SmolStr::new("a"))),
+                Some(30)
             );
-            checked += 1;
+            assert_eq!(
+                evdev_from_logical(&Key::Character(SmolStr::new("A"))),
+                Some(30)
+            );
+            assert_eq!(
+                evdev_from_logical(&Key::Character(SmolStr::new("q"))),
+                Some(16)
+            );
+            assert_eq!(
+                evdev_from_logical(&Key::Character(SmolStr::new("1"))),
+                Some(2)
+            );
+            assert_eq!(
+                evdev_from_logical(&Key::Character(SmolStr::new("0"))),
+                Some(11)
+            );
+            assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Enter)), Some(28));
+            assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Escape)), Some(1));
+            assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Space)), Some(57));
+            assert_eq!(
+                evdev_from_logical(&Key::Named(NamedKey::Backspace)),
+                Some(14)
+            );
+            assert_eq!(
+                evdev_from_logical(&Key::Named(NamedKey::ArrowLeft)),
+                Some(105)
+            );
+            assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Shift)), Some(42));
         }
-        assert_eq!(
-            checked,
-            named.len() + CHARS.chars().count(),
-            "the round-trip sweep skipped keys",
-        );
+
+        fn evdev_keycode_prefers_the_physical_scancode() {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            // `KeyA` is evdev 30; the logical key deliberately disagrees so a fallback to the table would produce a different value.
+            ev.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
+            ev.logical_key = Key::Character(SmolStr::new("z"));
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            assert_eq!(
+                evdev_keycode(&ev),
+                Some(30),
+                "the physical scancode is authoritative when winit reports one"
+            );
+        }
+
+        fn non_us_physical_keys_keep_the_peer_wire_code() {
+            let WindowEvent::KeyboardInput { mut event, .. } =
+                key_event(Key::Character(SmolStr::new("a")), true)
+            else {
+                unreachable!()
+            };
+            event.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+            assert_eq!(evdev_keycode(&event), Some(16));
+            event.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::IntlBackslash);
+            event.logical_key = Key::Character(SmolStr::new("<"));
+            assert_eq!(evdev_keycode(&event), Some(86));
+        }
+
+        fn mouse_buttons_map_to_evdev_codes() {
+            assert_eq!(evdev_button(MouseButton::Left), Some(0x110));
+            assert_eq!(evdev_button(MouseButton::Right), Some(0x111));
+            assert_eq!(evdev_button(MouseButton::Middle), Some(0x112));
+            assert_eq!(evdev_button(MouseButton::Forward), Some(0x114));
+            assert_eq!(evdev_button(MouseButton::Back), Some(0x113));
+            assert_eq!(evdev_button(MouseButton::Other(9)), None);
+        }
+
+        fn scroll_deltas_invert_for_the_wayland_axis_convention() {
+            // Winit: positive y = scroll up. Wayland: positive = scroll down.
+            let ((h, v), v120) = axis_values(MouseScrollDelta::LineDelta(0.0, 1.0));
+            assert_eq!(h, 0.0);
+            assert_eq!(v, -WHEEL_STEP);
+            assert_eq!(v120, Some((0, -120)));
+            let ((h, v), v120) = axis_values(MouseScrollDelta::PixelDelta(
+                winit::dpi::PhysicalPosition::new(3.0, -7.0),
+            ));
+            assert_eq!((h, v), (-3.0, 7.0));
+            assert_eq!(v120, None, "trackpad deltas carry no discrete steps");
+        }
+
+        fn chord_key_agrees_across_both_directions() {
+            // Every character the forward table maps, including the space some layouts deliver as text rather than `NamedKey::Space`.
+            const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
+            let named = [
+                NamedKey::Escape,
+                NamedKey::Backspace,
+                NamedKey::Tab,
+                NamedKey::Enter,
+                NamedKey::Control,
+                NamedKey::Shift,
+                NamedKey::Alt,
+                NamedKey::Space,
+                NamedKey::CapsLock,
+                NamedKey::F1,
+                NamedKey::F2,
+                NamedKey::F3,
+                NamedKey::F4,
+                NamedKey::F5,
+                NamedKey::F6,
+                NamedKey::F7,
+                NamedKey::F8,
+                NamedKey::F9,
+                NamedKey::F10,
+                NamedKey::NumLock,
+                NamedKey::F11,
+                NamedKey::F12,
+                NamedKey::PrintScreen,
+                NamedKey::Home,
+                NamedKey::ArrowUp,
+                NamedKey::PageUp,
+                NamedKey::ArrowLeft,
+                NamedKey::ArrowRight,
+                NamedKey::End,
+                NamedKey::ArrowDown,
+                NamedKey::PageDown,
+                NamedKey::Insert,
+                NamedKey::Delete,
+                NamedKey::Super,
+            ];
+            let mut checked = 0;
+            for n in named {
+                let key = Key::Named(n);
+                let code = evdev_from_logical(&key)
+                    .unwrap_or_else(|| panic!("{n:?} is in the forward keycode table"));
+                assert_eq!(
+                    chord_key_for_evdev(code),
+                    chord_key_for_logical(&key),
+                    "{n:?} (evdev {code}) narrows differently from each side",
+                );
+                checked += 1;
+            }
+            for c in CHARS.chars() {
+                let key = Key::Character(SmolStr::new(c.to_string()));
+                let code = evdev_from_logical(&key)
+                    .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
+                assert_eq!(
+                    chord_key_for_evdev(code),
+                    chord_key_for_logical(&key),
+                    "{c:?} (evdev {code}) narrows differently from each side",
+                );
+                checked += 1;
+            }
+            assert_eq!(
+                checked,
+                named.len() + CHARS.chars().count(),
+                "the round-trip sweep skipped keys",
+            );
+        }
+
+        every_printable_ascii_character_names_a_key();
+        a_shifted_character_shares_its_key_with_the_unshifted_one();
+        evdev_keycodes_match_the_kernel_table();
+        evdev_keycode_prefers_the_physical_scancode();
+        non_us_physical_keys_keep_the_peer_wire_code();
+        mouse_buttons_map_to_evdev_codes();
+        scroll_deltas_invert_for_the_wayland_axis_convention();
+        chord_key_agrees_across_both_directions();
     }
     #[test]
-    fn only_f1_is_a_shell_chord_on_its_own() {
-        assert!(shell_owns_chord(
-            ChordKey::Function(1),
-            ChordMods::default(),
-            false
-        ));
-        assert!(!shell_owns_chord(
-            ChordKey::Function(2),
-            ChordMods::default(),
-            false
-        ));
-        assert!(shell_owns_chord(
-            ChordKey::Function(2),
-            ChordMods {
-                logo: true,
-                ..Default::default()
-            },
-            false
-        ));
+    fn active_foreign_surface_and_overlay_focus_follow_the_live_tree() {
+        fn active_foreign_surface_follows_the_active_group() {
+            let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
+            // Active group defaults to the first (shell-owned) group — no client should hold the keyboard.
+            assert_eq!(
+                active_foreign_surface(&tree),
+                None,
+                "a shell-owned active tab must not hand the keyboard to a client"
+            );
+            // Switching the active group onto the foreign one moves focus.
+            tree.desktop.set_active_group(strip, foreign_group);
+            assert_eq!(active_foreign_surface(&tree), Some(4242));
+        }
+
+        fn active_foreign_surface_ignores_inactive_workspaces() {
+            let (mut tree, strip, foreign_group) = tree_with_foreign(7);
+            tree.desktop.set_active_group(strip, foreign_group);
+            assert_eq!(active_foreign_surface(&tree), Some(7));
+            // Point the tree at a workspace that doesn't exist: nothing to focus.
+            tree.desktop.active = crate::shell::state::WorkspaceId::from(u64::MAX);
+            assert_eq!(
+                active_foreign_surface(&tree),
+                None,
+                "focus must not leak across workspaces"
+            );
+        }
+
+        fn mapped_overlay_focus_survives_reconciliation_for_every_overlay_kind() {
+            for (name, id, floating, transient, fullscreen) in [
+                ("floating", 11, Some(11), None, None),
+                ("transient", 22, None, Some(22), None),
+                ("fullscreen", 33, None, None, Some(33)),
+            ] {
+                assert_eq!(
+                    retain_live_overlay_focus(Some(id), floating, transient, fullscreen),
+                    Some(id),
+                    "a mapped {name} surface must retain keyboard focus across a tick"
+                );
+            }
+        }
+
+        fn dismissed_overlay_focus_is_released_to_the_tree_fallback() {
+            assert_eq!(
+                retain_live_overlay_focus(Some(41), None, None, None),
+                None,
+                "a surface that disappeared from every overlay layer must not retain stale focus"
+            );
+            assert_eq!(
+                retain_live_overlay_focus(Some(41), Some(99), Some(99), Some(99)),
+                None,
+                "only the currently focused overlay id may be preserved"
+            );
+        }
+
+        fn surface_local_subtracts_the_tile_origin() {
+            let rect = Rect::new(320.0, 96.0, 1220.0, 800.0);
+            assert_eq!(surface_local((320.0, 96.0), rect), (0.0, 0.0));
+            assert_eq!(surface_local((420.0, 196.0), rect), (100.0, 100.0));
+            // A point outside the rect still translates linearly — the caller is responsible for hit-testing first.
+            assert_eq!(surface_local((300.0, 96.0), rect), (-20.0, 0.0));
+        }
+
+        active_foreign_surface_follows_the_active_group();
+        active_foreign_surface_ignores_inactive_workspaces();
+        mapped_overlay_focus_survives_reconciliation_for_every_overlay_kind();
+        dismissed_overlay_focus_is_released_to_the_tree_fallback();
+        surface_local_subtracts_the_tile_origin();
     }
     #[test]
-    fn conventional_alt_tab_ring_is_owned_before_a_focused_client() {
-        assert!(shell_owns_chord(
-            ChordKey::Tab,
-            ChordMods {
-                alt: true,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn window_stepping_and_wheel_jumps_walk_the_strip() {
+        fn spatial_window_step_clamps_at_the_strip_ends() {
+            let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
+            assert_eq!(step_active_window(&tree, -1), None);
+            tree.desktop.set_active_group(strip, foreign_group);
+            assert_eq!(step_active_window(&tree, 1), None);
+        }
+
+        fn step_active_window_walks_tabs_within_a_group() {
+            // ONE group holding several windows as tabs — one step right of the first is the second.
+            let tabs: Vec<Tab> = ["Notes", "Files", "Terminal"]
+                .iter()
+                .map(|name| Tab {
+                    id: next_id(),
+                    title: (*name).into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other((*name).into()),
+                        label: (*name).into(),
+                    },
+                })
+                .collect();
+            let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();
+            let group = WindowGroup {
+                id: next_id(),
+                active_tab: ids[0],
+                tabs,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let group_id = group.id;
+            let strip_id = StripId::from(next_id());
+            let mut strip = Strip::new(strip_id, "main");
+            strip.window_groups = vec![group];
+            let ws_id = WorkspaceId::from(next_id());
+            let mut ws = Workspace::new(ws_id, "Home");
+            ws.strips = vec![strip];
+            let mut tree = WorkspaceTree {
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![ws],
+                    active: ws_id,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            false
-        ));
-        assert!(shell_owns_chord(
-            ChordKey::Tab,
-            ChordMods {
-                shift: true,
-                alt: true,
-                ..Default::default()
-            },
-            false
-        ));
+            };
+            tree.desktop.active_strip.insert(ws_id, strip_id);
+
+            // Notes is active → one step right is Files.
+            assert_eq!(
+                step_active_window(&tree, 1),
+                Some((strip_id, group_id, ids[1])),
+                "one step right of the first tab must be the second"
+            );
+            // Apply it, step again → Terminal; then the right edge clamps.
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
+            assert_eq!(
+                step_active_window(&tree, 1),
+                Some((strip_id, group_id, ids[2]))
+            );
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
+            assert_eq!(step_active_window(&tree, 1), None, "right edge clamps");
+            assert_eq!(step_active_window(&tree, 5), None, "overshoot clamps too");
+            // And back left, two at once, lands on Notes; the left edge clamps.
+            assert_eq!(
+                step_active_window(&tree, -2),
+                Some((strip_id, group_id, ids[0]))
+            );
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
+            assert_eq!(step_active_window(&tree, -1), None, "left edge clamps");
+        }
+
+        fn step_active_window_continues_into_the_next_group() {
+            let (mut tree, strip, foreign_group) = tree_with_foreign(1);
+            // No explicit active pointer yet: the walk starts at the first group's tab; one step right crosses into the foreign group.
+            let (s, g, _t) = step_active_window(&tree, 1).expect("step into the next group");
+            assert_eq!((s, g), (strip, foreign_group));
+            tree.desktop.set_active_group(strip, foreign_group);
+            // At the strip's last window the jump clamps.
+            assert_eq!(step_active_window(&tree, 1), None);
+            // Stepping back crosses into the first group again.
+            let (s2, first, _t) = step_active_window(&tree, -1).expect("step back left");
+            assert_eq!(s2, strip);
+            assert_ne!(first, foreign_group);
+        }
+
+        fn wheel_jump_detents_map_wheel_down_to_a_rightward_jump() {
+            use winit::dpi::PhysicalPosition;
+            // Winit: positive y = wheel up. Niri: WheelScrollDown → focus-column-right — so wheel-down must be a positive detent.
+            assert_eq!(
+                wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, -1.0)),
+                1.0
+            );
+            assert_eq!(
+                wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, 1.0)),
+                -1.0
+            );
+            // Touchpad pixels are fractional: one detent per JUMP_PX_PER_DETENT.
+            assert_eq!(
+                wheel_jump_detents(&MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                    0.0, -25.0
+                ))),
+                0.5
+            );
+        }
+
+        fn wheel_jump_accum_fires_whole_detents_and_survives_slow_scrolling() {
+            let t0 = Instant::now();
+            let mut acc = WheelJumpAccum::default();
+            // A clicky wheel fires one step per notch, immediately.
+            assert_eq!(acc.push(1.0, t0), 1);
+            assert_eq!(acc.push(1.0, t0), 1);
+            // Touchpad travel accumulates until a whole detent is reached...
+            let mut acc = WheelJumpAccum::default();
+            assert_eq!(acc.push(0.4, t0), 0);
+            assert_eq!(acc.push(0.4, t0 + Duration::from_millis(50)), 0);
+            assert_eq!(acc.push(0.4, t0 + Duration::from_millis(100)), 1);
+            // ...and the remainder carries forward, not doubled.
+            assert_eq!(acc.push(0.4, t0 + Duration::from_millis(150)), 0);
+            // Reversing direction drops the partial balance outright.
+            let mut acc = WheelJumpAccum::default();
+            assert_eq!(acc.push(0.9, t0), 0);
+            assert_eq!(acc.push(-0.9, t0 + Duration::from_millis(50)), 0);
+            // SLOW deliberate scrolling still gets there: fractional detents separated by long pauses must keep accumulating.
+            let mut acc = WheelJumpAccum::default();
+            assert_eq!(acc.push(0.4, t0), 0);
+            assert_eq!(acc.push(0.4, t0 + Duration::from_secs(1)), 0);
+            assert_eq!(
+                acc.push(0.4, t0 + Duration::from_secs(2)),
+                1,
+                "slow same-direction scrolling must still reach a whole detent"
+            );
+        }
+
+        spatial_window_step_clamps_at_the_strip_ends();
+        step_active_window_walks_tabs_within_a_group();
+        step_active_window_continues_into_the_next_group();
+        wheel_jump_detents_map_wheel_down_to_a_rightward_jump();
+        wheel_jump_accum_fires_whole_detents_and_survives_slow_scrolling();
     }
     #[test]
     fn vim_navigation_chords_are_shell_owned_without_reading_settings() {
@@ -1938,15 +1697,521 @@ mod tests {
             "Ctrl+H stays an application text chord"
         );
     }
-    #[test]
-    fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
-        let mut forwarded = std::collections::HashSet::new();
-        assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
-        assert!(!track_forwarded_key(&mut forwarded, 34, false, true));
 
-        assert!(track_forwarded_key(&mut forwarded, 35, true, true));
-        assert!(track_forwarded_key(&mut forwarded, 35, false, false));
-        assert!(forwarded.is_empty());
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn shell_chords_are_owned_before_clients_and_plain_keys_are_forwarded() {
+        fn only_immutable_super_chords_are_static_client_firewall_rules() {
+            let m = mods(ModifiersState::SUPER);
+            for key in [
+                Key::Character(SmolStr::new("l")),
+                Key::Named(NamedKey::Space),
+            ] {
+                let ev = key_event(key.clone(), true);
+                assert!(
+                    is_shell_chord(&ev, &m, false),
+                    "Super+{key:?} must be handled by the shell"
+                );
+            }
+            for key in [
+                Key::Character(SmolStr::new("k")),
+                Key::Named(NamedKey::Tab),
+                Key::Named(NamedKey::ArrowUp),
+                Key::Named(NamedKey::ArrowDown),
+            ] {
+                assert!(
+                    !is_shell_chord(&key_event(key.clone(), true), &m, false),
+                    "Super+{key:?} is configurable and must be resolved by the effective table"
+                );
+            }
+        }
+
+        fn configurable_ctrl_defaults_are_not_static_but_alt_tab_is_the_ring_alias() {
+            let ctrl = mods(ModifiersState::CONTROL);
+            let alt = mods(ModifiersState::ALT);
+            assert!(!is_shell_chord(
+                &key_event(Key::Character(SmolStr::new("k")), true),
+                &ctrl,
+                false
+            ));
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::Tab), true),
+                &ctrl,
+                false
+            ));
+            assert!(
+                is_shell_chord(&key_event(Key::Named(NamedKey::Tab), true), &alt, false),
+                "Alt+Tab is the immutable conventional window-ring alias"
+            );
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::ArrowDown), true),
+                &ctrl,
+                false
+            ));
+            assert!(
+                !is_shell_chord(&key_event(Key::Named(NamedKey::Space), true), &alt, false),
+                "Alt+Space has no desktop action and must remain application input"
+            );
+            assert!(is_shell_chord(
+                &key_event(Key::Named(NamedKey::PrintScreen), true),
+                &mods(ModifiersState::empty()),
+                false
+            ));
+        }
+
+        fn conventional_close_and_workspace_aliases_are_owned_before_clients() {
+            let alt = mods(ModifiersState::ALT);
+            let super_only = mods(ModifiersState::SUPER);
+            assert!(is_shell_chord(
+                &key_event(Key::Named(NamedKey::F4), true),
+                &alt,
+                false
+            ));
+            for key in [NamedKey::PageUp, NamedKey::PageDown] {
+                assert!(is_shell_chord(
+                    &key_event(Key::Named(key), true),
+                    &super_only,
+                    false
+                ));
+            }
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::F4), true),
+                &mods(ModifiersState::empty()),
+                false
+            ));
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::PageDown), true),
+                &mods(ModifiersState::CONTROL),
+                false
+            ));
+        }
+
+        fn plain_keys_and_bare_modifiers_are_forwarded() {
+            let none = mods(ModifiersState::empty());
+            let ctrl = mods(ModifiersState::CONTROL);
+            // Unmodified typing goes to the client.
+            assert!(!is_shell_chord(
+                &key_event(Key::Character(SmolStr::new("a")), true),
+                &none,
+                false
+            ));
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::Tab), true),
+                &none,
+                false
+            ));
+            // Ctrl chords the shell does NOT own stay with the client (Ctrl+C in a terminal must not be eaten).
+            assert!(!is_shell_chord(
+                &key_event(Key::Character(SmolStr::new("c")), true),
+                &ctrl,
+                false
+            ));
+            // A bare modifier is always forwarded so the client's xkb state tracks the seat's, even while Super is held.
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::Super), true),
+                &mods(ModifiersState::SUPER),
+                false
+            ));
+            assert!(!is_shell_chord(
+                &key_event(Key::Named(NamedKey::Shift), true),
+                &mods(ModifiersState::SHIFT),
+                false
+            ));
+        }
+
+        fn escape_only_belongs_to_the_shell_while_an_overlay_is_open() {
+            let none = mods(ModifiersState::empty());
+            let ev = key_event(Key::Named(NamedKey::Escape), true);
+            assert!(
+                !is_shell_chord(&ev, &none, false),
+                "Escape must reach a focused client when no overlay is open"
+            );
+            assert!(
+                is_shell_chord(&ev, &none, true),
+                "Escape closes the open overlay instead of reaching the client"
+            );
+        }
+
+        fn only_f1_is_a_shell_chord_on_its_own() {
+            assert!(shell_owns_chord(
+                ChordKey::Function(1),
+                ChordMods::default(),
+                false
+            ));
+            assert!(!shell_owns_chord(
+                ChordKey::Function(2),
+                ChordMods::default(),
+                false
+            ));
+            assert!(shell_owns_chord(
+                ChordKey::Function(2),
+                ChordMods {
+                    logo: true,
+                    ..Default::default()
+                },
+                false
+            ));
+        }
+
+        fn conventional_alt_tab_ring_is_owned_before_a_focused_client() {
+            assert!(shell_owns_chord(
+                ChordKey::Tab,
+                ChordMods {
+                    alt: true,
+                    ..Default::default()
+                },
+                false
+            ));
+            assert!(shell_owns_chord(
+                ChordKey::Tab,
+                ChordMods {
+                    shift: true,
+                    alt: true,
+                    ..Default::default()
+                },
+                false
+            ));
+        }
+
+        fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
+            let mut forwarded = std::collections::HashSet::new();
+            assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
+            assert!(!track_forwarded_key(&mut forwarded, 34, false, true));
+
+            assert!(track_forwarded_key(&mut forwarded, 35, true, true));
+            assert!(track_forwarded_key(&mut forwarded, 35, false, false));
+            assert!(forwarded.is_empty());
+        }
+
+        only_immutable_super_chords_are_static_client_firewall_rules();
+        configurable_ctrl_defaults_are_not_static_but_alt_tab_is_the_ring_alias();
+        conventional_close_and_workspace_aliases_are_owned_before_clients();
+        plain_keys_and_bare_modifiers_are_forwarded();
+        escape_only_belongs_to_the_shell_while_an_overlay_is_open();
+        only_f1_is_a_shell_chord_on_its_own();
+        conventional_alt_tab_ring_is_owned_before_a_focused_client();
+        a_shell_owned_press_never_produces_an_unmatched_client_release();
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn foreign_groups_insert_remove_rename_and_hit_test_in_the_tree() {
+        fn insert_foreign_group_lands_in_the_active_strip_and_takes_focus() {
+            let (mut tree, strip, _) = tree_with_foreign(1);
+            let before = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .find(|s| s.id == strip)
+                .unwrap()
+                .window_groups
+                .len();
+            let placed = insert_foreign_group(&mut tree, 99, Some("org.example.late"))
+                .expect("adoption must land in the active strip");
+            assert_eq!(placed.0, strip);
+            let live = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .find(|s| s.id == strip)
+                .unwrap();
+            assert_eq!(live.window_groups.len(), before + 1);
+            assert_eq!(
+                tree.desktop.active_group_for(strip),
+                Some(placed.1),
+                "a newly-mapped window takes the active-group slot"
+            );
+            assert_eq!(
+                active_foreign_surface(&tree),
+                Some(99),
+                "and therefore the keyboard focus"
+            );
+        }
+
+        fn remove_foreign_tab_drops_the_group_and_moves_focus_off_it() {
+            let (mut tree, strip, foreign_group) = tree_with_foreign(1);
+            let placed = insert_foreign_group(&mut tree, 99, None).unwrap();
+            assert_eq!(active_foreign_surface(&tree), Some(99));
+            assert!(remove_foreign_tab(&mut tree, 99));
+            let live = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .find(|s| s.id == strip)
+                .unwrap();
+            assert!(
+                !live.window_groups.iter().any(|g| g.id == placed.1),
+                "an emptied group must not linger in the strip"
+            );
+            assert_eq!(
+                tree.desktop.active_group_for(strip),
+                Some(foreign_group),
+                "focus must move off the destroyed group onto a surviving sibling"
+            );
+            assert_eq!(
+                active_foreign_surface(&tree),
+                Some(1),
+                "the keyboard lands on the surviving window, never on the dead one"
+            );
+            // A second removal is a no-op.
+            assert!(!remove_foreign_tab(&mut tree, 99));
+
+            // Draining the last foreign group leaves the shell-owned group active, so no client holds the keyboard.
+            assert!(remove_foreign_tab(&mut tree, 1));
+            assert_eq!(
+                active_foreign_surface(&tree),
+                None,
+                "no client holds the keyboard once every client window is gone"
+            );
+        }
+
+        fn rename_rewrites_the_app_id_and_title() {
+            let (mut tree, _, _) = tree_with_foreign(1);
+            insert_foreign_group(&mut tree, 99, None).unwrap();
+            assert!(rename_foreign_tab(&mut tree, 99, "org.example.Renamed"));
+            let tab = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .flat_map(|s| s.window_groups.iter())
+                .flat_map(|g| g.tabs.iter())
+                .find(|t| matches!(&t.tile, TileContent::Foreign { surface_id: 99, .. }))
+                .expect("mirrored tab still present");
+            assert_eq!(tab.title, "Renamed");
+            match &tab.tile {
+                TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Renamed"),
+                other => panic!("expected Foreign tile, got {other:?}"),
+            }
+            assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
+        }
+
+        fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+
+            let mut placed = None;
+            fb.with_chrome(|chrome| {
+                {
+                    let mut tree = chrome.tree_mut();
+                    placed = insert_foreign_group(&mut tree, 4242, Some("org.example.client"));
+                }
+                chrome.bump();
+            });
+            let (_strip, group) = placed.expect("adoption lands in the bootstrap strip");
+
+            // One settle pass runs the tree→row resync and the layout that gives the freshly-spliced group its rect.
+            let _ = fb.paint_settled();
+
+            let rect = fb
+                .host()
+                .active_tile_rect(group)
+                .expect("the mirrored group must exist in the live strip row");
+            assert!(
+                rect.width() > 1.0 && rect.height() > 1.0,
+                "the client's tile must have a real extent; got {rect:?}"
+            );
+
+            let centre = (rect.center().x, rect.center().y);
+            let hit = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                foreign_tile_at(&tree, fb.host(), centre)
+                    .expect("a cursor inside the tile resolves to the client")
+            };
+            assert_eq!(hit.surface_id, 4242);
+            assert_eq!(hit.group, group);
+            assert_eq!(hit.rect, rect);
+
+            // Surface-local translation is the tile origin subtracted.
+            assert_eq!(
+                surface_local(centre, hit.rect),
+                (centre.0 - rect.x0, centre.1 - rect.y0)
+            );
+
+            // Chrome keeps priority: a point on the top bar, and a point on the tile's own tab bar, are not the client's.
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            assert!(
+                foreign_tile_at(&tree, fb.host(), (800.0, 4.0)).is_none(),
+                "the top bar must never resolve to a client surface"
+            );
+            assert!(
+                foreign_tile_at(&tree, fb.host(), (centre.0, rect.y0 - 4.0)).is_none(),
+                "the tab strip above the tile must never resolve to a client surface"
+            );
+        }
+
+        insert_foreign_group_lands_in_the_active_strip_and_takes_focus();
+        remove_foreign_tab_drops_the_group_and_moves_focus_off_it();
+        rename_rewrites_the_app_id_and_title();
+        a_mirrored_foreign_group_is_laid_out_and_hit_testable();
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn desktop_modals_take_input_before_a_focused_client() {
+        fn the_peer_sync_card_takes_input_from_a_focused_client() {
+            for field in ["invite_token", "connect_input"] {
+                let mut fb = FrameBuilder::new((1600, 900));
+                let _ = fb.paint_settled();
+                assert!(
+                    !chrome_captures_input(&fb),
+                    "nothing is up yet, so a client should still own the keyboard"
+                );
+
+                let snapshot = match field {
+                    "invite_token" => crate::shell::overlay_host::PeerSyncSnapshot {
+                        invite_token: Some("a-signed-blob".into()),
+                        ..Default::default()
+                    },
+                    _ => crate::shell::overlay_host::PeerSyncSnapshot {
+                        connect_input: Some(String::new()),
+                        ..Default::default()
+                    },
+                };
+                fb.host_mut().set_peer_sync_snapshot_for_tests(snapshot);
+                let _ = fb.paint_settled();
+
+                assert!(
+                    chrome_captures_input(&fb),
+                    "with peer_sync_{field} set the card is painted, so the chrome \
+                     must hold the keyboard — otherwise Escape goes to the client \
+                     and the card can never be dismissed"
+                );
+            }
+        }
+
+        fn desktop_modals_take_input_before_a_focused_client_can_consume_it() {
+            for overlay in ["shortcut_help", "projection"] {
+                let mut fb = FrameBuilder::new((1600, 900));
+                fb.with_chrome(|chrome| match overlay {
+                    "shortcut_help" => chrome.overlays.shortcut_help = true,
+                    "projection" => chrome.overlays.projection = true,
+                    _ => unreachable!(),
+                });
+                assert!(
+                    chrome_captures_input(&fb),
+                    "{overlay} is painted as modal and must revoke client focus"
+                );
+            }
+
+            let mut capture = FrameBuilder::new((1600, 900));
+            assert!(
+                capture
+                    .host_mut()
+                    .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+            );
+            assert!(
+                chrome_captures_input(&capture),
+                "Print Screen's chooser must receive its follow-up keys and clicks"
+            );
+
+            let mut markup = FrameBuilder::new((1600, 900));
+            markup
+                .host_mut()
+                .open_screenshot_markup(std::sync::Arc::from([0_u8; 4]), 1, 1, None);
+            assert!(
+                chrome_captures_input(&markup),
+                "screenshot editing must not leak input into the captured app"
+            );
+        }
+
+        fn maximized_restore_band_takes_pointer_before_the_client() {
+            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+            let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            first.maximized = true;
+            let group = first.id;
+            let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+            fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
+            let _ = fb.paint_settled();
+
+            fb.host_mut()
+                .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
+            assert!(
+                chrome_captures_input(&fb),
+                "the visible Restore/Close pills must receive their own click"
+            );
+
+            fb.host_mut()
+                .note_pointer(vello::kurbo::Point::new(640.0, 200.0));
+            assert!(
+                !chrome_captures_input(&fb),
+                "below the reveal band the maximized client must remain interactive"
+            );
+        }
+
+        fn the_file_chooser_takes_input_from_a_focused_client() {
+            use crate::portal::FilePickerSpawner as _;
+
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(
+                !chrome_captures_input(&fb),
+                "nothing is up yet, so a client should still own the pointer"
+            );
+
+            let queue = crate::portal::FilePickerQueue::new();
+            let prompts =
+                crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow);
+            fb.host_mut().set_portal_queues(prompts, queue.clone());
+
+            let workspace = fb
+                .chrome()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|ws| ws.id)
+                .expect("a fresh FrameBuilder has an active workspace");
+            let (reply, _parked) = tokio::sync::oneshot::channel();
+            queue.spawn(crate::portal::FilePickerRequest {
+                caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
+                title: "Insert image".into(),
+                save: false,
+                directory: false,
+                multiple: false,
+                accept_label: None,
+                current_name: None,
+                filters: Vec::new(),
+                scope: None,
+                reply,
+            });
+            assert!(
+                fb.host_mut().pump_file_picker(),
+                "the queued request should have mounted a dialog"
+            );
+            assert!(
+                fb.host().file_picker().is_some(),
+                "the dialog is what the predicate below is about"
+            );
+            let _ = fb.paint_settled();
+
+            assert!(
+                chrome_captures_input(&fb),
+                "with the portal's file chooser up the chrome must hold input — \
+                 otherwise the clicks meant for it go to the client behind it and \
+                 the dialog cannot be used at all"
+            );
+        }
+
+        the_peer_sync_card_takes_input_from_a_focused_client();
+        desktop_modals_take_input_before_a_focused_client_can_consume_it();
+        maximized_restore_band_takes_pointer_before_the_client();
+        the_file_chooser_takes_input_from_a_focused_client();
     }
 }
 pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, GroupId, u64)> {
@@ -1989,17 +2254,6 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
-pub fn cycle_active_window(
-    tree: &WorkspaceTree,
-    direction: i32,
-) -> Option<(StripId, GroupId, u64)> {
-    if direction == 0 {
-        return None;
-    }
-    step_active_window(tree, direction)
-        .or_else(|| step_active_window(tree, if direction > 0 { i32::MIN } else { i32::MAX }))
-}
-
 use crate::compositor::lock_controller::LockKey;
 /// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
 /// The panic key for a shared session — stops whatever a guest is doing.
@@ -2012,6 +2266,20 @@ pub fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) ->
     event.state == ElementState::Pressed
         && modifiers.state().super_key()
         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+}
+
+/// Is `event` a press of the fixed mouse-keys chord, Shift+Alt+Num Lock?
+/// Held-key repeats are ignored so holding the chord flips it once.
+pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    key.state == ElementState::Pressed
+        && !key.repeat
+        && crate::shell::fixed_chords::fixed_action(
+            chord_key_for_logical(&key.logical_key),
+            ChordMods::from(&modifiers),
+        ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
 }
 
 /// Is `event` a press of the configured session-lock binding?
@@ -2139,144 +2407,156 @@ mod lock_chord_tests {
         assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
     }
 
-    /// Super+L on key press is the lock chord.
     #[test]
-    fn super_l_press_is_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(locks(&ev, mods_with_super(true)));
-        // A layout/caps state may report an upper-case logical key without an
-        // extra Shift modifier; key comparison remains case-insensitive.
-        let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
-        assert!(locks(&ev_upper, mods_with_super(true)));
+    fn lock_chord_is_only_a_super_l_or_configured_press() {
+        /// Super+L on key press is the lock chord.
+        fn super_l_press_is_lock_chord() {
+            let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+            assert!(locks(&ev, mods_with_super(true)));
+            // A layout/caps state may report an upper-case logical key without an
+            // extra Shift modifier; key comparison remains case-insensitive.
+            let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
+            assert!(locks(&ev_upper, mods_with_super(true)));
+        }
+
+        fn other_super_chords_and_extra_modifiers_do_not_lock() {
+            let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
+            assert!(
+                !locks(&search, mods_with_super(true)),
+                "Super+K must reach Search instead of locking the session"
+            );
+
+            let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+            let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+            assert!(
+                !locks(&lock, shifted),
+                "an extra modifier must not broaden Super+L into a lock chord"
+            );
+        }
+
+        /// Without Super held, plain `l` is not the lock chord (it types).
+        fn l_without_super_is_not_lock_chord() {
+            let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+            assert!(!locks(&ev, mods_with_super(false)));
+        }
+
+        /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
+        fn super_l_release_is_not_lock_chord() {
+            let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
+            assert!(!locks(&ev, mods_with_super(true)));
+        }
+
+        fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
+                .expect("the shortcut editor accepts named function keys");
+            let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
+            assert!(lock_chord_matches(&f12_press, ctrl, &f12));
+
+            let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
+            assert!(
+                !lock_chord_matches(&f11_press, ctrl, &f12),
+                "a nearby client-owned function key must not be claimed"
+            );
+            let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
+            assert!(
+                !lock_chord_matches(&f12_release, ctrl, &f12),
+                "only the captured press may lock; its release stays non-actioning"
+            );
+
+            let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
+                .expect("the shortcut editor accepts named navigation keys");
+            let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
+            assert!(
+                lock_chord_matches(&left_press, ctrl, &navigation),
+                "a named navigation binding must use the same matcher as the editor"
+            );
+        }
+
+        /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
+        fn cursor_move_is_not_lock_chord() {
+            let ev = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: PhysicalPosition::new(10.0, 10.0),
+            };
+            assert!(!locks(&ev, mods_with_super(true)));
+        }
+
+        super_l_press_is_lock_chord();
+        other_super_chords_and_extra_modifiers_do_not_lock();
+        l_without_super_is_not_lock_chord();
+        super_l_release_is_not_lock_chord();
+        configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours();
+        cursor_move_is_not_lock_chord();
     }
 
     #[test]
-    fn other_super_chords_and_extra_modifiers_do_not_lock() {
-        let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
-        assert!(
-            !locks(&search, mods_with_super(true)),
-            "Super+K must reach Search instead of locking the session"
-        );
+    fn remote_input_kill_switch_is_only_a_super_escape_press_owned_by_the_shell() {
+        /// `Super+Esc` on press is the remote-input kill switch.
+        fn super_escape_press_is_the_remote_input_kill_switch() {
+            let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+            assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
+        }
 
-        let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
-        assert!(
-            !locks(&lock, shifted),
-            "an extra modifier must not broaden Super+L into a lock chord"
-        );
+        /// Escape on its own closes an overlay and reaches modal clients; must not stop a shared session by accident.
+        fn escape_without_super_is_not_the_kill_switch() {
+            let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+            assert!(!is_remote_input_kill_switch(&ev, mods_with_super(false)));
+        }
+
+        /// Press only — a re-firing release would engage the latch twice and post a second toast for one keystroke.
+        fn super_escape_release_is_not_the_kill_switch() {
+            let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), false);
+            assert!(!is_remote_input_kill_switch(&ev, mods_with_super(true)));
+        }
+
+        /// The panic key is not a key a client can be handed — `Super` is the
+        /// compositor modifier the shell's chord table already claims, so no client can steal it.
+        fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
+            let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+            assert!(client_input::is_shell_chord(
+                &ev,
+                &mods_with_super(true),
+                false
+            ));
+            assert!(
+                client_input::is_shell_chord(&ev, &mods_with_super(true), true),
+                "an open overlay must not swallow the panic key either"
+            );
+        }
+
+        super_escape_press_is_the_remote_input_kill_switch();
+        escape_without_super_is_not_the_kill_switch();
+        super_escape_release_is_not_the_kill_switch();
+        super_escape_is_a_shell_chord_and_never_reaches_a_client();
     }
 
-    /// Without Super held, plain `l` is not the lock chord (it types).
     #[test]
-    fn l_without_super_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(!locks(&ev, mods_with_super(false)));
-    }
+    fn lock_keys_map_presses_to_submit_cancel_text_and_backspace() {
+        /// Enter and Escape on press are the explicit unlock action.
+        fn enter_and_escape_press_map_to_submit_and_cancel() {
+            let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
+            let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+            assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
+            assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
+        }
 
-    /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
-    #[test]
-    fn super_l_release_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
-        assert!(!locks(&ev, mods_with_super(true)));
-    }
+        /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
+        fn char_key_maps_to_text() {
+            let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
+            assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
+        }
 
-    #[test]
-    fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
-            .expect("the shortcut editor accepts named function keys");
-        let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
-        assert!(lock_chord_matches(&f12_press, ctrl, &f12));
+        /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
+        fn backspace_maps_and_release_is_ignored() {
+            let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
+            assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
+            let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
+            assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
+        }
 
-        let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
-        assert!(
-            !lock_chord_matches(&f11_press, ctrl, &f12),
-            "a nearby client-owned function key must not be claimed"
-        );
-        let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
-        assert!(
-            !lock_chord_matches(&f12_release, ctrl, &f12),
-            "only the captured press may lock; its release stays non-actioning"
-        );
-
-        let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
-            .expect("the shortcut editor accepts named navigation keys");
-        let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
-        assert!(
-            lock_chord_matches(&left_press, ctrl, &navigation),
-            "a named navigation binding must use the same matcher as the editor"
-        );
-    }
-
-    /// `Super+Esc` on press is the remote-input kill switch.
-    #[test]
-    fn super_escape_press_is_the_remote_input_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// Escape on its own closes an overlay and reaches modal clients; must not stop a shared session by accident.
-    #[test]
-    fn escape_without_super_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(false)));
-    }
-
-    /// Press only — a re-firing release would engage the latch twice and post a second toast for one keystroke.
-    #[test]
-    fn super_escape_release_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), false);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// The panic key is not a key a client can be handed — `Super` is the
-    /// compositor modifier the shell's chord table already claims, so no client can steal it.
-    #[test]
-    fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(client_input::is_shell_chord(
-            &ev,
-            &mods_with_super(true),
-            false
-        ));
-        assert!(
-            client_input::is_shell_chord(&ev, &mods_with_super(true), true),
-            "an open overlay must not swallow the panic key either"
-        );
-    }
-
-    /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
-    #[test]
-    fn cursor_move_is_not_lock_chord() {
-        let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(10.0, 10.0),
-        };
-        assert!(!locks(&ev, mods_with_super(true)));
-    }
-
-    /// Enter and Escape on press are the explicit unlock action.
-    #[test]
-    fn enter_and_escape_press_map_to_submit_and_cancel() {
-        let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-        let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-        assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-    }
-
-    /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-    #[test]
-    fn char_key_maps_to_text() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-        assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-    }
-
-    /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-    #[test]
-    fn backspace_maps_and_release_is_ignored() {
-        let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-        assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-        let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-        assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
+        enter_and_escape_press_map_to_submit_and_cancel();
+        char_key_maps_to_text();
+        backspace_maps_and_release_is_ignored();
     }
 }

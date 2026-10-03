@@ -269,10 +269,6 @@ impl PresenceCtx {
     /// Draw a compact generic fallback for interactions an application has
     /// not yet projected onto domain geometry. This is an activity rail, not
     /// a cursor: it never moves focus or implies keyboard/mouse navigation.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "interaction rails combine scene resources and theme with viewport bounds and the time used to filter visible activity"
-    )]
     pub fn draw_interactions(
         &self,
         scene: &mut Scene,
@@ -294,7 +290,6 @@ impl PresenceCtx {
     /// client gets collaboration by default, while activity from a different
     /// app can never be painted over its pixels.
     #[allow(
-        clippy::too_many_arguments,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
@@ -352,10 +347,6 @@ impl PresenceCtx {
         entries
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "interaction cards combine scene resources and theme with the activity entry and its computed placement"
-    )]
     #[allow(
         clippy::cast_possible_truncation,
         reason = "card widths are bounded UI pixels; f32 text shaping precision is sufficient"
@@ -589,201 +580,200 @@ mod tests {
     }
 
     #[test]
-    fn invocation_updates_are_monotonic_and_terminal_is_final() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        assert!(
+    fn interaction_updates_are_monotonic_bound_to_their_actor_and_expire() {
+        // phase: invocation_updates_are_monotonic_and_terminal_is_final
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            assert!(
+                presence
+                    .apply_interaction_at(interaction(1, 2, InteractionPhase::Applying), at)
+                    .unwrap()
+            );
+            assert!(
+                !presence
+                    .apply_interaction_at(interaction(1, 1, InteractionPhase::Locating), at)
+                    .unwrap()
+            );
+            assert!(
+                presence
+                    .apply_interaction_at(interaction(1, 3, InteractionPhase::Committed), at)
+                    .unwrap()
+            );
+            assert!(
+                !presence
+                    .apply_interaction_at(interaction(1, 4, InteractionPhase::Applying), at)
+                    .unwrap()
+            );
+            assert_eq!(
+                presence.interactions_for_resource("file:draft", at)[0].sequence,
+                3
+            );
+        }
+        // phase: an_invocation_cannot_substitute_its_actor_or_target
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
             presence
-                .apply_interaction_at(interaction(1, 2, InteractionPhase::Applying), at)
-                .unwrap()
-        );
-        assert!(
-            !presence
-                .apply_interaction_at(interaction(1, 1, InteractionPhase::Locating), at)
-                .unwrap()
-        );
-        assert!(
-            presence
-                .apply_interaction_at(interaction(1, 3, InteractionPhase::Committed), at)
-                .unwrap()
-        );
-        assert!(
-            !presence
-                .apply_interaction_at(interaction(1, 4, InteractionPhase::Applying), at)
-                .unwrap()
-        );
-        assert_eq!(
-            presence.interactions_for_resource("file:draft", at)[0].sequence,
-            3
-        );
-    }
-
-    #[test]
-    fn an_invocation_cannot_substitute_its_actor_or_target() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        presence
-            .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
-            .unwrap();
-        let mut forged = interaction(2, 2, InteractionPhase::Committed);
-        forged.actor.id = "someone-else".into();
-        assert!(!presence.apply_interaction_at(forged, at).unwrap());
-        let mut moved = interaction(2, 2, InteractionPhase::Committed);
-        moved.resource.id = "file:secret".into();
-        assert!(!presence.apply_interaction_at(moved, at).unwrap());
-    }
-
-    #[test]
-    fn foreign_app_fallback_is_strictly_scoped_to_catalogue_owner() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        let mut writer = interaction(20, 1, InteractionPhase::Applying);
-        writer.action.app = Some(tilo_actions::ActionApp {
-            id: "org.tilo.Writer".into(),
-            label: "Writer".into(),
-        });
-        let mut files = interaction(21, 1, InteractionPhase::Applying);
-        files.action.app = Some(tilo_actions::ActionApp {
-            id: "org.tilo.Files".into(),
-            label: "Files".into(),
-        });
-        let unowned = interaction(22, 1, InteractionPhase::Applying);
-        assert!(presence.apply_interaction_at(writer, at).unwrap());
-        assert!(presence.apply_interaction_at(files, at).unwrap());
-        assert!(presence.apply_interaction_at(unowned, at).unwrap());
-
-        let writer = presence.visible_interactions_for_app("org.tilo.Writer", at);
-        assert_eq!(writer.len(), 1);
-        assert_eq!(writer[0].action.label, "Rename");
-        assert!(
-            presence
-                .visible_interactions_for_app("org.tilo.Calendar", at)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn active_and_terminal_states_expire_on_their_own_dwell() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        presence
-            .apply_interaction_at(interaction(3, 1, InteractionPhase::Applying), at)
-            .unwrap();
-        assert!(presence.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
-        assert!(
-            !presence.has_visible_interactions(
-                at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
-            )
-        );
-
-        let mut terminal_presence = PresenceCtx::empty();
-        terminal_presence
-            .apply_interaction_at(interaction(4, 1, InteractionPhase::Committed), at)
-            .unwrap();
-        assert!(terminal_presence.has_visible_interactions(at + TERMINAL_INTERACTION_DWELL));
-        assert!(
-            terminal_presence
-                .prune_interactions(at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1))
-        );
-        assert!(
-            !terminal_presence.has_visible_interactions(
-                at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-            )
-        );
-    }
-
-    #[test]
-    fn fallback_cards_do_not_overlap_and_fold_excess_activity() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        for id in 1..=5 {
-            presence
-                .apply_interaction_at(interaction(id, 1, InteractionPhase::Applying), at)
+                .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
                 .unwrap();
+            let mut forged = interaction(2, 2, InteractionPhase::Committed);
+            forged.actor.id = "someone-else".into();
+            assert!(!presence.apply_interaction_at(forged, at).unwrap());
+            let mut moved = interaction(2, 2, InteractionPhase::Committed);
+            moved.resource.id = "file:secret".into();
+            assert!(!presence.apply_interaction_at(moved, at).unwrap());
         }
-        let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
-        assert_eq!(cards.len(), 3);
-        assert_eq!(cards[2].additional, 2);
-        for pair in cards.windows(2) {
-            assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
-        }
-    }
-
-    #[test]
-    fn applying_an_agent_interaction_does_not_synthesize_input_presence() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        presence
-            .apply_interaction_at(interaction(9, 1, InteractionPhase::Applying), at)
-            .unwrap();
-        assert!(presence.pointers.is_empty());
-        assert!(presence.carets.is_empty());
-        assert!(presence.selections.is_empty());
-        assert!(presence.remote_cursors.is_empty());
-    }
-
-    #[test]
-    fn room_fanout_only_paints_the_addressed_app_surface() {
-        let at = crate::time::now();
-        let update = interaction(10, 1, InteractionPhase::Applying);
-        let key = crate::presence::PresenceKey::resource(
-            "org.tilo.Writer",
-            &update.resource.id,
-            &update.resource.kind,
-        );
-        let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
-
-        let mut files = PresenceCtx::empty();
-        files.set_surface_id("org.tilo.Files");
-        files.apply_remote_presence("broker-agent".into(), key.clone(), payload.clone());
-        assert!(!files.has_visible_interactions(at));
-
-        let mut writer = PresenceCtx::empty();
-        writer.set_surface_id("org.tilo.Writer");
-        writer.apply_remote_presence("broker-agent".into(), key, payload);
-        assert!(writer.has_visible_interactions(crate::time::now()));
-    }
-
-    #[test]
-    fn agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id() {
-        let user = UserId("agent:opaque-runtime-id".into());
-        let mut presence = PresenceCtx::empty();
-        assert_eq!(actor_label(&presence, &user, true), "Agent");
-        presence.names.insert(user.clone(), "Quill".into());
-        assert_eq!(actor_label(&presence, &user, true), "Quill · AGENT");
-        assert_eq!(actor_label(&presence, &user, false), "Quill");
-    }
-
-    #[test]
-    fn accessibility_narrates_real_action_state_without_pointer_language() {
-        let mut presence = PresenceCtx::empty();
-        presence
-            .names
-            .insert(UserId("quill".into()), "Quill".into());
-        let applying = interaction(11, 1, InteractionPhase::Applying);
-        assert_eq!(
-            presence.interaction_announcement(&applying).as_deref(),
-            Some("Quill · AGENT, Applying: Rename on Draft.md")
-        );
-        assert!(
+        // phase: active_and_terminal_states_expire_on_their_own_dwell
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
             presence
-                .interaction_announcement(&interaction(11, 0, InteractionPhase::Locating))
-                .is_none(),
-            "the short locating edge is intentionally not narrated"
-        );
-        let failed = interaction(
-            11,
-            2,
-            InteractionPhase::Failed {
-                code: Some("conflict".into()),
-                message: "Draft changed".into(),
-            },
-        );
-        let announcement = presence
-            .interaction_announcement(&failed)
-            .expect("terminal action announcement");
-        assert!(announcement.contains("Failed: Draft changed"));
-        assert!(!announcement.to_lowercase().contains("cursor"));
-        assert!(!announcement.to_lowercase().contains("click"));
+                .apply_interaction_at(interaction(3, 1, InteractionPhase::Applying), at)
+                .unwrap();
+            assert!(presence.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
+            assert!(!presence.has_visible_interactions(
+                at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
+            ));
+
+            let mut terminal_presence = PresenceCtx::empty();
+            terminal_presence
+                .apply_interaction_at(interaction(4, 1, InteractionPhase::Committed), at)
+                .unwrap();
+            assert!(terminal_presence.has_visible_interactions(at + TERMINAL_INTERACTION_DWELL));
+            assert!(
+                terminal_presence
+                    .prune_interactions(at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1))
+            );
+            assert!(!terminal_presence.has_visible_interactions(
+                at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
+            ));
+        }
+    }
+
+    #[test]
+    fn interactions_paint_only_their_addressed_surface() {
+        // phase: foreign_app_fallback_is_strictly_scoped_to_catalogue_owner
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            let mut writer = interaction(20, 1, InteractionPhase::Applying);
+            writer.action.app = Some(tilo_actions::ActionApp {
+                id: "org.tilo.Writer".into(),
+                label: "Writer".into(),
+            });
+            let mut files = interaction(21, 1, InteractionPhase::Applying);
+            files.action.app = Some(tilo_actions::ActionApp {
+                id: "org.tilo.Files".into(),
+                label: "Files".into(),
+            });
+            let unowned = interaction(22, 1, InteractionPhase::Applying);
+            assert!(presence.apply_interaction_at(writer, at).unwrap());
+            assert!(presence.apply_interaction_at(files, at).unwrap());
+            assert!(presence.apply_interaction_at(unowned, at).unwrap());
+
+            let writer = presence.visible_interactions_for_app("org.tilo.Writer", at);
+            assert_eq!(writer.len(), 1);
+            assert_eq!(writer[0].action.label, "Rename");
+            assert!(
+                presence
+                    .visible_interactions_for_app("org.tilo.Calendar", at)
+                    .is_empty()
+            );
+        }
+        // phase: room_fanout_only_paints_the_addressed_app_surface
+        {
+            let at = crate::time::now();
+            let update = interaction(10, 1, InteractionPhase::Applying);
+            let key = crate::presence::PresenceKey::resource(
+                "org.tilo.Writer",
+                &update.resource.id,
+                &update.resource.kind,
+            );
+            let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
+
+            let mut files = PresenceCtx::empty();
+            files.set_surface_id("org.tilo.Files");
+            files.apply_remote_presence("broker-agent".into(), key.clone(), payload.clone());
+            assert!(!files.has_visible_interactions(at));
+
+            let mut writer = PresenceCtx::empty();
+            writer.set_surface_id("org.tilo.Writer");
+            writer.apply_remote_presence("broker-agent".into(), key, payload);
+            assert!(writer.has_visible_interactions(crate::time::now()));
+        }
+        // phase: applying_an_agent_interaction_does_not_synthesize_input_presence
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            presence
+                .apply_interaction_at(interaction(9, 1, InteractionPhase::Applying), at)
+                .unwrap();
+            assert!(presence.pointers.is_empty());
+            assert!(presence.carets.is_empty());
+            assert!(presence.selections.is_empty());
+            assert!(presence.remote_cursors.is_empty());
+        }
+        // phase: fallback_cards_do_not_overlap_and_fold_excess_activity
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            for id in 1..=5 {
+                presence
+                    .apply_interaction_at(interaction(id, 1, InteractionPhase::Applying), at)
+                    .unwrap();
+            }
+            let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
+            assert_eq!(cards.len(), 3);
+            assert_eq!(cards[2].additional, 2);
+            for pair in cards.windows(2) {
+                assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
+            }
+        }
+    }
+
+    #[test]
+    fn interactions_are_labelled_and_narrated_as_actions() {
+        // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
+        {
+            let user = UserId("agent:opaque-runtime-id".into());
+            let mut presence = PresenceCtx::empty();
+            assert_eq!(actor_label(&presence, &user, true), "Agent");
+            presence.names.insert(user.clone(), "Quill".into());
+            assert_eq!(actor_label(&presence, &user, true), "Quill · AGENT");
+            assert_eq!(actor_label(&presence, &user, false), "Quill");
+        }
+        // phase: accessibility_narrates_real_action_state_without_pointer_language
+        {
+            let mut presence = PresenceCtx::empty();
+            presence
+                .names
+                .insert(UserId("quill".into()), "Quill".into());
+            let applying = interaction(11, 1, InteractionPhase::Applying);
+            assert_eq!(
+                presence.interaction_announcement(&applying).as_deref(),
+                Some("Quill · AGENT, Applying: Rename on Draft.md")
+            );
+            assert!(
+                presence
+                    .interaction_announcement(&interaction(11, 0, InteractionPhase::Locating))
+                    .is_none(),
+                "the short locating edge is intentionally not narrated"
+            );
+            let failed = interaction(
+                11,
+                2,
+                InteractionPhase::Failed {
+                    code: Some("conflict".into()),
+                    message: "Draft changed".into(),
+                },
+            );
+            let announcement = presence
+                .interaction_announcement(&failed)
+                .expect("terminal action announcement");
+            assert!(announcement.contains("Failed: Draft changed"));
+            assert!(!announcement.to_lowercase().contains("cursor"));
+            assert!(!announcement.to_lowercase().contains("click"));
+        }
     }
 }

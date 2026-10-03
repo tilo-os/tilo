@@ -15,21 +15,30 @@ name = "tilo-model-gateway"
 path = "src/main.rs"
 
 [dependencies]
-agent-provider-config = { path = "../provider-config" }
-accounts = { path = "../../system/accounts" }
-reqwest = { workspace = true, features = ["json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["http"] }
-tilo-rt.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+wire-frame = { path = "../../system/wire-frame" }
+libc.workspace = true
+# The provider protocol names travel in the client's requests too.
+agent-provider-config = { path = "../provider-config" }
+
+# The gateway itself. Off the desktop the library is only the client, which
+# reports the gateway unavailable (there is no launcher descriptor to use).
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+accounts = { path = "../../system/accounts" }
+reqwest = { workspace = true, features = ["json"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-rt.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 clap.workspace = true
-libc.workspace = true
 base64.workspace = true
 url.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

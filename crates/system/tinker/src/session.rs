@@ -232,145 +232,142 @@ mod tests {
     }
 
     #[test]
-    fn the_host_filesystem_is_not_mounted() {
-        let v = strs(&spec());
-        // The failure mode being guarded is a `--bind / /` or `--dev-bind / /`
-        // creeping in for convenience, which would make the whole layer
-        // pointless.
-        for i in 0..v.len().saturating_sub(2) {
-            let is_bind = matches!(v[i].as_str(), "--bind" | "--dev-bind" | "--ro-bind");
+    fn sessions_isolate_the_host_home_network_and_namespaces() {
+        // Phase `the_host_filesystem_is_not_mounted`.
+        {
+            let v = strs(&spec());
+            // The failure mode being guarded is a `--bind / /` or `--dev-bind / /`
+            // creeping in for convenience, which would make the whole layer
+            // pointless.
+            for i in 0..v.len().saturating_sub(2) {
+                let is_bind = matches!(v[i].as_str(), "--bind" | "--dev-bind" | "--ro-bind");
+                assert!(
+                    !(is_bind && v[i + 1] == "/"),
+                    "session binds the host root: {:?}",
+                    &v[i..i + 3]
+                );
+            }
+        }
+        // Phase `home_is_the_layers_own_not_the_users`.
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "/s/layers/a/home");
+            assert_eq!(v[i - 1], "--bind");
+            assert_eq!(v[i + 1], "/root");
+            let h = pos(&v, "HOME");
+            assert_eq!(v[h + 1], "/root");
+            // Nothing under the real user's home may be exposed by default.
+            assert!(!v.iter().any(|s| s.starts_with("/home/")), "{v:?}");
+        }
+        // Phase `tmp_is_world_writable_with_the_sticky_bit`.
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "--chmod");
+            assert_eq!(v[i + 1], "1777");
+            assert_eq!(v[i + 2], "/tmp");
+        }
+        // Phase `no_second_user_namespace_is_created`.
+        {
+            // The id mapping is established before bwrap; asking bwrap for another
+            // user namespace would collapse the map back to a single uid.
+            let v = strs(&spec());
             assert!(
-                !(is_bind && v[i + 1] == "/"),
-                "session binds the host root: {:?}",
-                &v[i..i + 3]
+                !v.iter()
+                    .any(|s| s == "--unshare-user" || s == "--unshare-all"),
+                "{v:?}"
             );
+            assert!(v.iter().any(|s| s == "--unshare-pid"));
+            assert!(v.iter().any(|s| s == "--die-with-parent"));
+        }
+        // Phase `offline_sessions_unshare_the_network_and_drop_resolv_conf`.
+        {
+            let mut s = spec();
+            s.network = false;
+            let v = strs(&s);
+            assert!(v.iter().any(|x| x == "--unshare-net"));
+            assert!(!v.iter().any(|x| x == "/etc/resolv.conf"));
+        }
+        // Phase `shares_are_read_only_unless_asked_otherwise`.
+        {
+            let mut s = spec();
+            s.shares = vec![
+                Share {
+                    host: "/data/in".into(),
+                    guest: "/mnt/in".into(),
+                    writable: false,
+                },
+                Share {
+                    host: "/data/out".into(),
+                    guest: "/mnt/out".into(),
+                    writable: true,
+                },
+            ];
+            let v = strs(&s);
+            let i = pos(&v, "/data/in");
+            assert_eq!(v[i - 1], "--ro-bind");
+            assert_eq!(v[i + 1], "/mnt/in");
+            let j = pos(&v, "/data/out");
+            assert_eq!(v[j - 1], "--bind");
+            assert_eq!(v[j + 1], "/mnt/out");
         }
     }
 
     #[test]
-    fn home_is_the_layers_own_not_the_users() {
-        let v = strs(&spec());
-        let i = pos(&v, "/s/layers/a/home");
-        assert_eq!(v[i - 1], "--bind");
-        assert_eq!(v[i + 1], "/root");
-        let h = pos(&v, "HOME");
-        assert_eq!(v[h + 1], "/root");
-        // Nothing under the real user's home may be exposed by default.
-        assert!(!v.iter().any(|s| s.starts_with("/home/")), "{v:?}");
-    }
-
-    #[test]
-    fn overlay_sources_run_base_first_topmost_last() {
-        let mut s = spec();
-        s.lower_layers = vec![
-            PathBuf::from("/s/layers/bottom/upper"),
-            PathBuf::from("/s/layers/mid/upper"),
-        ];
-        let v = strs(&s);
-        let base = pos(&v, "/s/bases/debian");
-        let bottom = pos(&v, "/s/layers/bottom/upper");
-        let mid = pos(&v, "/s/layers/mid/upper");
-        let upper = pos(&v, "/s/layers/a/upper");
-        // bwrap gives later --overlay-src higher precedence, so this ordering is
-        // what makes a stacked layer actually shadow the one below it.
-        assert!(base < bottom && bottom < mid && mid < upper, "{v:?}");
-        assert_eq!(v[upper - 1], "--overlay");
-        assert_eq!(v[upper + 1], "/s/layers/a/work");
-        assert_eq!(v[upper + 2], "/");
-    }
-
-    #[test]
-    fn tmp_is_world_writable_with_the_sticky_bit() {
-        let v = strs(&spec());
-        let i = pos(&v, "--chmod");
-        assert_eq!(v[i + 1], "1777");
-        assert_eq!(v[i + 2], "/tmp");
-    }
-
-    #[test]
-    fn no_second_user_namespace_is_created() {
-        // The id mapping is established before bwrap; asking bwrap for another
-        // user namespace would collapse the map back to a single uid.
-        let v = strs(&spec());
-        assert!(
-            !v.iter()
-                .any(|s| s == "--unshare-user" || s == "--unshare-all"),
-            "{v:?}"
-        );
-        assert!(v.iter().any(|s| s == "--unshare-pid"));
-        assert!(v.iter().any(|s| s == "--die-with-parent"));
-    }
-
-    #[test]
-    fn offline_sessions_unshare_the_network_and_drop_resolv_conf() {
-        let mut s = spec();
-        s.network = false;
-        let v = strs(&s);
-        assert!(v.iter().any(|x| x == "--unshare-net"));
-        assert!(!v.iter().any(|x| x == "/etc/resolv.conf"));
-    }
-
-    #[test]
-    fn shares_are_read_only_unless_asked_otherwise() {
-        let mut s = spec();
-        s.shares = vec![
-            Share {
-                host: "/data/in".into(),
-                guest: "/mnt/in".into(),
-                writable: false,
-            },
-            Share {
-                host: "/data/out".into(),
-                guest: "/mnt/out".into(),
-                writable: true,
-            },
-        ];
-        let v = strs(&s);
-        let i = pos(&v, "/data/in");
-        assert_eq!(v[i - 1], "--ro-bind");
-        assert_eq!(v[i + 1], "/mnt/in");
-        let j = pos(&v, "/data/out");
-        assert_eq!(v[j - 1], "--bind");
-        assert_eq!(v[j + 1], "/mnt/out");
-    }
-
-    #[test]
-    fn an_empty_command_becomes_a_login_shell() {
-        let v = strs(&spec());
-        let sep = pos(&v, "--");
-        assert_eq!(&v[sep + 1..], &["/bin/sh".to_string(), "-l".to_string()]);
-    }
-
-    #[test]
-    fn an_explicit_command_lands_after_the_separator() {
-        let mut s = spec();
-        s.command = vec![
-            "apt-get".into(),
-            "install".into(),
-            "-y".into(),
-            "cowsay".into(),
-        ];
-        let v = strs(&s);
-        let sep = pos(&v, "--");
-        assert_eq!(&v[sep + 1..], &["apt-get", "install", "-y", "cowsay"]);
-    }
-
-    #[test]
-    fn explain_starts_with_bwrap_and_mentions_the_overlay() {
-        let text = spec().explain();
-        assert!(text.starts_with("bwrap "), "{text}");
-        assert!(
-            text.contains("--overlay /s/layers/a/upper /s/layers/a/work /"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn the_layer_name_is_visible_inside() {
-        let v = strs(&spec());
-        let i = pos(&v, "TILO_LAYER");
-        assert_eq!(v[i + 1], "a");
-        let h = pos(&v, "--hostname");
-        assert_eq!(v[h + 1], "a");
+    fn session_argv_stacks_overlays_and_places_the_command() {
+        // Phase `overlay_sources_run_base_first_topmost_last`.
+        {
+            let mut s = spec();
+            s.lower_layers = vec![
+                PathBuf::from("/s/layers/bottom/upper"),
+                PathBuf::from("/s/layers/mid/upper"),
+            ];
+            let v = strs(&s);
+            let base = pos(&v, "/s/bases/debian");
+            let bottom = pos(&v, "/s/layers/bottom/upper");
+            let mid = pos(&v, "/s/layers/mid/upper");
+            let upper = pos(&v, "/s/layers/a/upper");
+            // bwrap gives later --overlay-src higher precedence, so this ordering is
+            // what makes a stacked layer actually shadow the one below it.
+            assert!(base < bottom && bottom < mid && mid < upper, "{v:?}");
+            assert_eq!(v[upper - 1], "--overlay");
+            assert_eq!(v[upper + 1], "/s/layers/a/work");
+            assert_eq!(v[upper + 2], "/");
+        }
+        // Phase `an_empty_command_becomes_a_login_shell`.
+        {
+            let v = strs(&spec());
+            let sep = pos(&v, "--");
+            assert_eq!(&v[sep + 1..], &["/bin/sh".to_string(), "-l".to_string()]);
+        }
+        // Phase `an_explicit_command_lands_after_the_separator`.
+        {
+            let mut s = spec();
+            s.command = vec![
+                "apt-get".into(),
+                "install".into(),
+                "-y".into(),
+                "cowsay".into(),
+            ];
+            let v = strs(&s);
+            let sep = pos(&v, "--");
+            assert_eq!(&v[sep + 1..], &["apt-get", "install", "-y", "cowsay"]);
+        }
+        // Phase `explain_starts_with_bwrap_and_mentions_the_overlay`.
+        {
+            let text = spec().explain();
+            assert!(text.starts_with("bwrap "), "{text}");
+            assert!(
+                text.contains("--overlay /s/layers/a/upper /s/layers/a/work /"),
+                "{text}"
+            );
+        }
+        // Phase `the_layer_name_is_visible_inside`.
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "TILO_LAYER");
+            assert_eq!(v[i + 1], "a");
+            let h = pos(&v, "--hostname");
+            assert_eq!(v[h + 1], "a");
+        }
     }
 }

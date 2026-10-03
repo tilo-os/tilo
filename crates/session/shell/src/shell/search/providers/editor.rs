@@ -41,6 +41,10 @@ impl SearchProvider for EditorProvider {
     fn name(&self) -> &'static str {
         "Editor"
     }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-editor")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[KIND]
     }
@@ -54,7 +58,7 @@ impl SearchProvider for EditorProvider {
     ) -> crate::shell::search::SearchProximity {
         super::text_app::proximity_of(chrome, result)
     }
-    /// An exact title scores the ranker maximum - see [`super::text_app::match_score`].
+    /// A title the query starts scores the maximum.
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE
     }
@@ -149,80 +153,83 @@ mod tests {
         store.with(&record.id, seed);
     }
 
-    /// Reads from the Editor's own key, not the note's.
     #[test]
-    fn finds_a_word_that_only_appears_in_the_editor_document() {
-        let handle = tree_with_editor_tab(3, "Editor");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_tab_body(&chrome_st, 3, |d| {
-            let mut app = EditorApp::with_seed("export function renderScene() {}");
-            app.sync(d, &automerge::ROOT);
-        });
+    fn editor_search_reads_only_editor_documents() {
+        // Phase `finds_a_word_that_only_appears_in_the_editor_document`.
+        // Reads from the Editor's own key, not the note's.
+        {
+            let handle = tree_with_editor_tab(3, "Editor");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_tab_body(&chrome_st, 3, |d| {
+                let mut app = EditorApp::with_seed("export function renderScene() {}");
+                app.sync(d, &automerge::ROOT);
+            });
 
-        let provider = EditorProvider::new();
-        let out = provider.query(SearchContext {
-            needle: "renderscene",
-            wanted: &[KIND],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert_eq!(
-            out.len(),
-            1,
-            "searching the editor's own document must find it; got {out:?}"
-        );
-        assert!(
-            out[0].score > 0 && out[0].score < 25,
-            "a body hit ranks far below a title hit, got {}",
-            out[0].score
-        );
-        assert!(
-            out[0]
-                .subtitle
-                .as_deref()
-                .unwrap_or_default()
-                .contains("renderScene"),
-            "the row must show the matching source line: {:?}",
-            out[0].subtitle
-        );
-    }
+            let provider = EditorProvider::new();
+            let out = provider.query(SearchContext {
+                needle: "renderscene",
+                wanted: &[KIND],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert_eq!(
+                out.len(),
+                1,
+                "searching the editor's own document must find it; got {out:?}"
+            );
+            assert!(
+                out[0].score > 0 && out[0].score < 25,
+                "a body hit ranks far below a title hit, got {}",
+                out[0].score
+            );
+            assert!(
+                out[0]
+                    .subtitle
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("renderScene"),
+                "the row must show the matching source line: {:?}",
+                out[0].subtitle
+            );
+        }
 
-    #[test]
-    fn does_not_read_the_notes_body() {
-        let handle = tree_with_editor_tab(3, "Editor");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_tab_body(&chrome_st, 3, |d| {
-            let mut notes = crate::shell::notes_app::NotesApp::with_seed("xylophone");
-            notes.sync(d, &automerge::ROOT);
-        });
+        // Phase `does_not_read_the_notes_body`.
+        {
+            let handle = tree_with_editor_tab(3, "Editor");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_tab_body(&chrome_st, 3, |d| {
+                let mut notes = crate::shell::notes_app::NotesApp::with_seed("xylophone");
+                notes.sync(d, &automerge::ROOT);
+            });
 
-        let out = EditorProvider::new().query(SearchContext {
-            needle: "xylophone",
-            wanted: &[KIND],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert!(
-            out.is_empty(),
-            "the editor provider answered with the note's body: {out:?}"
-        );
-    }
+            let out = EditorProvider::new().query(SearchContext {
+                needle: "xylophone",
+                wanted: &[KIND],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert!(
+                out.is_empty(),
+                "the editor provider answered with the note's body: {out:?}"
+            );
+        }
 
-    #[test]
-    fn owns_only_editor_tabs() {
-        let handle = tree_with_editor_tab(42, "Editor");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let provider = EditorProvider::new();
-        assert!(provider.owns_tab(42, &chrome_st));
-        assert!(!provider.owns_tab(43, &chrome_st));
-        // …and the Notes provider must not claim an Editor tab.
-        assert!(!super::super::notes::NotesProvider::new().owns_tab(42, &chrome_st));
+        // Phase `owns_only_editor_tabs`.
+        {
+            let handle = tree_with_editor_tab(42, "Editor");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let provider = EditorProvider::new();
+            assert!(provider.owns_tab(42, &chrome_st));
+            assert!(!provider.owns_tab(43, &chrome_st));
+            // …and the Notes provider must not claim an Editor tab.
+            assert!(!super::super::notes::NotesProvider::new().owns_tab(42, &chrome_st));
+        }
     }
 }

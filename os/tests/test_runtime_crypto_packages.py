@@ -48,44 +48,41 @@ class PackagePolicy(unittest.TestCase):
             if fail != 'requirements':
                 self.assertEqual(calls.read_text().splitlines(), ['requirements', 'installed'])
 
-    def test_reviewed_desktop_vm_abi_consumers(self):
-        names = ['spice-glib', 'libtpms', 'swtpm-tools', 'gnutls-utils', 'openssh', 'openssh-clients', 'virt-viewer']
-        rows = [[name, 'libcrypto.so.3()(64bit)'] for name in ['spice-glib', 'libtpms', 'swtpm-tools', 'openssh', 'openssh-clients']]
-        rows += [['spice-glib', 'libssl.so.3()(64bit)']]
-        self.check_policy(names, rows, success=True)
+    def test_package_policy_acceptance(self):
+        with self.subTest(phase="reviewed_desktop_vm_abi_consumers"):
+            names = ['spice-glib', 'libtpms', 'swtpm-tools', 'gnutls-utils', 'openssh', 'openssh-clients', 'virt-viewer']
+            rows = [[name, 'libcrypto.so.3()(64bit)'] for name in ['spice-glib', 'libtpms', 'swtpm-tools', 'openssh', 'openssh-clients']]
+            rows += [['spice-glib', 'libssl.so.3()(64bit)']]
+            self.check_policy(names, rows, success=True)
+        with self.subTest(phase="conditional_cli_with_zero_requirement_rows"):
+            for package, parent in [('gnutls-utils', 'swtpm-tools'), ('openssh', 'virt-viewer'), ('openssh-clients', 'virt-viewer')]:
+                with self.subTest(package=package, parent=True):
+                    self.check_policy([package, parent], success=True)
+                with self.subTest(package=package, parent=False):
+                    self.check_policy([package], success=False, diagnostic=f'{package} is permitted only with {parent}')
+                with self.subTest(package=package, parent='similar-name'):
+                    self.check_policy([package, parent + '-devel'], success=False, diagnostic='permitted only with')
+        with self.subTest(phase="empty_inventory"):
+            self.check_policy([], success=True)
 
-    def test_conditional_cli_with_zero_requirement_rows(self):
-        for package, parent in [('gnutls-utils', 'swtpm-tools'), ('openssh', 'virt-viewer'), ('openssh-clients', 'virt-viewer')]:
-            with self.subTest(package=package, parent=True):
-                self.check_policy([package, parent], success=True)
-            with self.subTest(package=package, parent=False):
-                self.check_policy([package], success=False, diagnostic=f'{package} is permitted only with {parent}')
-            with self.subTest(package=package, parent='similar-name'):
-                self.check_policy([package, parent + '-devel'], success=False, diagnostic='permitted only with')
-
-    def test_forbidden_packages_with_no_requirements(self):
-        for package in ['openssh-server', 'openssl', 'openssl-devel', 'sbsigntools', 'pesign', 'qatlib', 'qatlib-service']:
-            with self.subTest(package=package):
-                self.check_policy([package, 'virt-viewer', 'swtpm-tools'], success=False,
-                                  diagnostic='forbidden crypto/signing packages')
-
-    def test_unknown_abi_consumers_rejected(self):
-        for abi in ['libcrypto', 'libssl']:
-            with self.subTest(abi=abi):
-                self.check_policy(['unexpected-package'], [['unexpected-package', abi + '.so.3()(64bit)']],
-                                  success=False, diagnostic='unreviewed runtime packages directly requiring ' + abi)
-
-    def test_allowlist_does_not_accept_name_prefixes(self):
-        self.check_policy(['libtpms-unreviewed'], [['libtpms-unreviewed', 'libcrypto.so.3()(64bit)']],
-                          success=False, diagnostic='unreviewed runtime packages')
-
-    def test_queries_fail_closed(self):
-        for query in ['installed', 'requirements']:
-            with self.subTest(query=query):
-                self.check_policy([], success=False, diagnostic='fixture query failed', fail=query)
-
-    def test_empty_inventory(self):
-        self.check_policy([], success=True)
+    def test_package_policy_rejections(self):
+        with self.subTest(phase="forbidden_packages_with_no_requirements"):
+            for package in ['openssh-server', 'openssl', 'openssl-devel', 'sbsigntools', 'pesign', 'qatlib', 'qatlib-service']:
+                with self.subTest(package=package):
+                    self.check_policy([package, 'virt-viewer', 'swtpm-tools'], success=False,
+                                      diagnostic='forbidden crypto/signing packages')
+        with self.subTest(phase="unknown_abi_consumers_rejected"):
+            for abi in ['libcrypto', 'libssl']:
+                with self.subTest(abi=abi):
+                    self.check_policy(['unexpected-package'], [['unexpected-package', abi + '.so.3()(64bit)']],
+                                      success=False, diagnostic='unreviewed runtime packages directly requiring ' + abi)
+        with self.subTest(phase="allowlist_does_not_accept_name_prefixes"):
+            self.check_policy(['libtpms-unreviewed'], [['libtpms-unreviewed', 'libcrypto.so.3()(64bit)']],
+                              success=False, diagnostic='unreviewed runtime packages')
+        with self.subTest(phase="queries_fail_closed"):
+            for query in ['installed', 'requirements']:
+                with self.subTest(query=query):
+                    self.check_policy([], success=False, diagnostic='fixture query failed', fail=query)
 
 
 if __name__ == '__main__':

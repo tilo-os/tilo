@@ -262,7 +262,7 @@ next=$(( current + 1 ))
 
 # A gen tag for the number we are about to hand out means the series was read
 # wrong, and reusing it would give two images one sealed policy.
-if printf '%s' "$tags" | grep -q "\"gen$next\""; then
+if grep -q "\"gen$next\"" <<<"$tags"; then
   die "gen$next is already a tag in $TILO_PUBLISH_REPO, but gen$current was read as the
   newest. Refusing to reuse a published generation number."
 fi

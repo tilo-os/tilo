@@ -46,12 +46,6 @@ const WIDE_FUTURE: Duration = Duration::from_secs(315_360_000);
 /// itself is broken, which should fail loudly rather than hand a test a
 /// silently-invalid attestation.
 #[allow(
-    clippy::too_many_arguments,
-    reason = "one arg per RoleAttestation field this fixture builder needs to control; \
-              grouping them into a struct would just move the field list to a call site \
-              that constructs one fresh each time"
-)]
-#[allow(
     clippy::similar_names,
     reason = "issuer_sk/issuer_pk (secret vs public key) is the established key-pair naming \
               convention across this codebase; renaming would make the pairing less obvious, \
@@ -136,7 +130,6 @@ pub fn role_attestation(
 ///
 /// Panics if signing fails — meaning the fixture itself is broken, which
 /// should fail loudly rather than hand a test a silently-unsigned op.
-#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::similar_names,
     reason = "author_sk/author_pk (secret vs public key) is the established key-pair naming \
@@ -177,7 +170,6 @@ pub fn signed_op(
 ///
 /// Panics if signing fails — meaning the fixture itself is broken, which
 /// should fail loudly rather than hand a test a silently-unsigned op.
-#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::similar_names,
     reason = "author_sk/author_pk (secret vs public key) is the established key-pair naming \

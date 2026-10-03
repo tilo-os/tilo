@@ -37,11 +37,10 @@ pub mod date;
 pub mod doc;
 mod export_dialog;
 pub mod model;
-#[cfg(unix)]
 mod priority_contacts;
+pub mod resource;
 pub mod responsive;
 pub mod search_provider;
-pub mod storage;
 pub mod vcard;
 
 pub use app::ContactsApp;
@@ -53,7 +52,17 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ContactsApp::new())
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.contacts", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Contacts")
+}
+
+pub use resource::{Contacts, ContactsShell};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

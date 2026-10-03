@@ -16,6 +16,7 @@
 //! caller: this fn is pure composition.
 
 use ui::text_render::TextWeight;
+use ui::tilo_actions::ActionBinding;
 use ui::widget::{Actions, Button, Card, Column, Container, Row, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
@@ -27,32 +28,55 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 /// keyboard traversal and screen-reader order stay exact.
 pub const CARD_HEIGHT: f32 = 96.0;
 
+/// A card's primary action button.
+///
+/// `key` is only for local widget identity and accessibility; it is never
+/// written to the collaboration document.
+pub struct CardAction<'a> {
+    pub kind: ActionKind,
+    pub key: &'a str,
+    pub binding: Option<ActionBinding<()>>,
+    /// The action is running for this item, so the button shows progress and
+    /// is disabled.
+    pub in_progress: bool,
+}
+
+/// A card's Details control: its button is keyed `{key}.button`.
+pub struct CardDetails<'a> {
+    pub key: &'a str,
+    pub binding: Option<ActionBinding<()>>,
+}
+
+/// How a card arranges itself for the catalogue's responsive mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardLayout {
+    Wide,
+    /// Narrow windows and large text; `large_text` shrinks the artwork.
+    Stacked {
+        large_text: bool,
+    },
+}
+
 /// Build a single card widget.
-///
-/// * `select_key`         — stable widget identifier for the Details control.
-/// * `action_click_key`   — stable widget identifier for the primary action.
-///
-/// Both controls receive typed resource-action bindings from the caller.
-/// These identifiers are only for local widget identity and accessibility;
-/// they are never written to the collaboration document.
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "card construction receives the item, paired typed actions, shared artwork service, theme, and responsive mode as one cohesive view boundary; its compact and desktop compositions intentionally live together"
+    reason = "its compact and desktop compositions intentionally live together"
 )]
 pub fn store_card(
     item: &StoreItem,
-    action: ActionKind,
-    select_key: &str,
-    action_click_key: &str,
+    primary: CardAction<'_>,
+    details: CardDetails<'_>,
     theme: &ui::Theme,
     images: Option<ui::ImageStore>,
-    action_binding: Option<ui::tilo_actions::ActionBinding<()>>,
-    detail_binding: Option<ui::tilo_actions::ActionBinding<()>>,
-    compact: bool,
-    large_text: bool,
-    operation_active: bool,
+    layout: CardLayout,
 ) -> Box<dyn Widget> {
+    let CardAction {
+        kind: action,
+        key: action_click_key,
+        binding: action_binding,
+        in_progress: operation_active,
+    } = primary;
+    let compact = matches!(layout, CardLayout::Stacked { .. });
     // Identity is intentionally short. A title, origin/version and category
     // make a catalogue tile understandable at a glance; the description gets
     // its own line below rather than competing with the artwork and actions.
@@ -100,23 +124,22 @@ pub fn store_card(
         format!("{} {}", action.label(), item.name)
     });
 
-    let mut details = Button::new(&format!("{select_key}.button"), "Details", None);
-    if let Some(binding) = detail_binding {
-        details = details.on_action(binding);
+    let mut details_btn = Button::new(&format!("{}.button", details.key), "Details", None);
+    if let Some(binding) = details.binding {
+        details_btn = details_btn.on_action(binding);
     }
-    let details = details.fit_content(40.0).tooltip(card_summary(item));
+    let details = details_btn.fit_content(40.0).tooltip(card_summary(item));
     let action_btn = action_btn.fit_content(40.0);
 
-    let artwork = if compact {
-        icon_artwork(item, images, large_text)
-    } else {
-        Box::new(super::Artwork::new(
+    let artwork = match layout {
+        CardLayout::Stacked { large_text } => icon_artwork(item, images, large_text),
+        CardLayout::Wide => Box::new(super::Artwork::new(
             images,
             item.icon_url.as_deref(),
             &item.name,
             52.0,
             52.0,
-        ))
+        )),
     };
     let header = Row::new().no_wrap().push(artwork).push(Box::new(
         Container::new()
@@ -225,42 +248,46 @@ mod tests {
 
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
+    /// Registry categories read as words and the tooltip keeps full metadata.
     #[test]
-    fn registry_categories_are_presented_as_words() {
-        assert_eq!(category_label("AudioVideo"), "Audio & video");
-        assert_eq!(category_label("Development"), "Developer tools");
-        assert_eq!(category_label("Games"), "Games");
-    }
+    fn card_categories_and_tooltip_preserve_metadata() {
+        // Case `registry_categories_are_presented_as_words`.
+        {
+            assert_eq!(category_label("AudioVideo"), "Audio & video");
+            assert_eq!(category_label("Development"), "Developer tools");
+            assert_eq!(category_label("Games"), "Games");
+        }
 
-    #[test]
-    fn card_tooltip_preserves_full_quiet_metadata_and_description() {
-        let item = StoreItem {
-            id: "org.example.Editor".into(),
-            name: "Editor".into(),
-            description: "Write without distractions.".into(),
-            tagline: String::new(),
-            supported_languages: Vec::new(),
-            categories: vec!["Development".into(), "Productivity".into()],
-            icon_url: None,
-            screenshot_urls: Vec::new(),
-            homepage_url: None,
-            source_url: None,
-            install_ref_path: None,
-            source: StoreSource::Flathub,
-            trust: StoreTrust::Flathub,
-            versions: vec![StoreItemVersion {
-                version: "2.4".into(),
-                released_at_unix: 0,
-                download_url: None,
-                root_hash_hex: None,
-                size_bytes: 0,
-            }],
-            publisher_pubkey_hex: None,
-            installed: InstalledState::Not,
-        };
-        let summary = card_summary(&item);
-        assert!(summary.contains("Flathub · v2.4"));
-        assert!(summary.contains("Developer tools, Productivity"));
-        assert!(summary.contains("Write without distractions."));
+        // Case `card_tooltip_preserves_full_quiet_metadata_and_description`.
+        {
+            let item = StoreItem {
+                id: "org.example.Editor".into(),
+                name: "Editor".into(),
+                description: "Write without distractions.".into(),
+                tagline: String::new(),
+                supported_languages: Vec::new(),
+                categories: vec!["Development".into(), "Productivity".into()],
+                icon_url: None,
+                screenshot_urls: Vec::new(),
+                homepage_url: None,
+                source_url: None,
+                install_ref_path: None,
+                source: StoreSource::Flathub,
+                trust: StoreTrust::Flathub,
+                versions: vec![StoreItemVersion {
+                    version: "2.4".into(),
+                    released_at_unix: 0,
+                    download_url: None,
+                    root_hash_hex: None,
+                    size_bytes: 0,
+                }],
+                publisher_pubkey_hex: None,
+                installed: InstalledState::Not,
+            };
+            let summary = card_summary(&item);
+            assert!(summary.contains("Flathub · v2.4"));
+            assert!(summary.contains("Developer tools, Productivity"));
+            assert!(summary.contains("Write without distractions."));
+        }
     }
 }

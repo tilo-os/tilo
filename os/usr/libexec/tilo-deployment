@@ -100,6 +100,40 @@ entry_id_of() {
   printf '%s.conf\n' "${base%%+*}"
 }
 
+# --- writing the ESP -----------------------------------------------------------
+# /boot stays mounted read-only. This script decides what to change, stages it
+# as a plan in its own state directory, and has tilo-esp-write@boot-entries
+# apply it (the one privileged, private-namespace step, which allows only the
+# boot counter renames and the repair entry). Paths are relative to the ESP.
+ESP_PLAN_DIR="${TILO_ESP_PLAN_DIR:-/var/lib/tilo/esp-plan/boot-entries}"
+ESP_PLAN_OPS=""
+esp_plan_reset() {
+  install -d -m 0700 "$ESP_PLAN_DIR" || die "cannot prepare $ESP_PLAN_DIR"
+  find "$ESP_PLAN_DIR" -mindepth 1 -delete
+  ESP_PLAN_OPS=""
+}
+esp_json_word() {  # Plain names only, so they need no JSON escaping.
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+/-]*$ ]] || die "not a plain ESP path: $1"
+  printf '"%s"' "$1"
+}
+esp_plan_op() {  # op key value [key value]...
+  local op="$1" entry; shift
+  entry="{\"op\": \"$op\""
+  while [ "$#" -ge 2 ]; do entry="$entry, \"$1\": $(esp_json_word "$2")"; shift 2; done
+  ESP_PLAN_OPS="${ESP_PLAN_OPS:+$ESP_PLAN_OPS, }$entry}"
+}
+esp_plan_install() {  # staged-name destination
+  local sum
+  sum="$(sha256sum "$ESP_PLAN_DIR/$1" | cut -d' ' -f1)" || return 1
+  esp_plan_op install file "$1" sha256 "$sum" dst "$2"
+}
+esp_plan_commit() {
+  [ -n "$ESP_PLAN_OPS" ] || return 0
+  printf '{"ops": [%s]}\n' "$ESP_PLAN_OPS" > "$ESP_PLAN_DIR/plan.json" || return 1
+  ESP_PLAN_OPS=""
+  ${TILO_ESP_WRITE_CMD:-systemctl start --wait tilo-esp-write@boot-entries.service}
+}
+
 # --- listing ------------------------------------------------------------------
 bootc_status_json() { bootc status --format json 2>/dev/null; }
 
@@ -439,6 +473,7 @@ cmd_entries() {
   local cur; cur="$(current_entry)"
 
   local f name id changed=0
+  esp_plan_reset
   for f in "$esp"/loader/entries/*.conf; do
     [ -e "$f" ] || continue
     name="${f##*/}"
@@ -450,10 +485,14 @@ cmd_entries() {
     # The entry this boot came from is already proven as far as anything here can
     # tell. Counting it down would spend tries on a working system.
     [ "$id" = "$cur" ] && continue
-    mv -f "$f" "${f%.conf}+${BOOT_TRIES}.conf" \
-      && { log "boot counter: $id gets $BOOT_TRIES tries"; changed=1; }
+    esp_plan_op rename src "loader/entries/$name" dst "loader/entries/${name%.conf}+${BOOT_TRIES}.conf"
+    log "boot counter: $id gets $BOOT_TRIES tries"; changed=1
   done
-  [ "$changed" = 0 ] && log "boot counters: nothing to add"
+  if [ "$changed" = 0 ]; then
+    log "boot counters: nothing to add"
+  else
+    esp_plan_commit || warn "could not apply the boot counters"
+  fi
 
   # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key
   # signer. Release this phase's descriptor before entering that operation.
@@ -481,7 +520,12 @@ cmd_repair_entry() {
   # Locking the stable ESP directory separately coordinates the actual mutation
   # with tilo-secureboot without trusting a replaceable lock-file pathname.
   local repair_lock_dir="$esp/EFI/tilo"
-  mkdir -p "$repair_lock_dir" || die "cannot create the repair metadata directory"
+  if [ ! -d "$repair_lock_dir" ] || [ ! -d "$esp/EFI/Linux" ]; then
+    esp_plan_reset
+    esp_plan_op mkdir path EFI/tilo
+    esp_plan_op mkdir path EFI/Linux
+    esp_plan_commit || die "cannot create the repair metadata directory"
+  fi
   [ -d "$repair_lock_dir" ] && [ ! -L "$repair_lock_dir" ] \
     || die "repair metadata path is not a real directory"
   exec 7<"$repair_lock_dir"
@@ -540,12 +584,11 @@ cmd_repair_entry() {
     return 0
   fi
 
-  mkdir -p "$dest_dir" "$(dirname "$stamp")" || { warn "could not create $dest_dir"; return 0; }
-  # The scratch copy is built OUTSIDE EFI/Linux. A half-written *.efi in there is
-  # a boot menu entry that does not boot, and it would be offered the moment the
-  # machine restarted mid-write.
-  local tmp; tmp="$(dirname "$stamp")/.repair.efi.new"
-  rm -f "$tmp"
+  # The scratch copy is built in the plan directory, off the ESP; the helper
+  # installs it with a temporary name and a rename, so a half-written *.efi is
+  # never a boot menu entry.
+  esp_plan_reset
+  local tmp="$ESP_PLAN_DIR/repair.efi"
   cp -f "$uki_abs" "$tmp" || { warn "could not copy $uki_abs"; rm -f "$tmp"; return 0; }
 
   # The one edit: tilo.mode=normal -> tilo.mode=repair, in place, same length. It
@@ -622,7 +665,8 @@ cmd_repair_entry() {
 
   # The rename into EFI/Linux is the moment the entry exists. Everything before
   # it happened somewhere the boot loader does not look.
-  mv -f "$tmp" "$dest" || { warn "could not install $dest"; rm -f "$tmp"; return 0; }
+  esp_plan_install repair.efi "EFI/Linux/$REPAIR_EFI_NAME" \
+    && esp_plan_commit || { warn "could not install $dest"; esp_plan_reset; return 0; }
   if [ "$sealed_sign" -eq 1 ]; then
     # The credential-bearing service takes the ESP lock itself.  Retain the
     # repair-operation lock, hand it the ESP lock, then reacquire before
@@ -638,14 +682,18 @@ cmd_repair_entry() {
       # Ensure cleanup also happens under the ESP mutation lock when service
       # activation itself failed before the reacquire expression ran.
       flock -x 8
-      rm -f "$dest"
+      esp_plan_reset
+      esp_plan_op remove path "EFI/Linux/$REPAIR_EFI_NAME"
+      esp_plan_commit
       warn "TPM-sealed Secure Boot signing failed; removed the unsigned repair entry"
       return 0
     fi
     log "repair image signed by the TPM-credential service"
   fi
-  printf '%s\n' "$uki_rel" > "$stamp"
-  sync
+  esp_plan_reset
+  printf '%s\n' "$uki_rel" > "$ESP_PLAN_DIR/repair.source"
+  esp_plan_install repair.source EFI/tilo/repair.source && esp_plan_commit \
+    || warn "could not record which UKI the repair entry came from"
   log "repair image: $dest (from $uki_rel)"
   remove_stale_repair_entry "$entries" "$esp"
 }
@@ -659,12 +707,12 @@ remove_stale_repair_entry() {
   local entries="$1" esp="$2"
   local old_conf="$entries/tilo-repair.conf"
   local old_efi="$esp/EFI/tilo/repair.efi"
-  if [ -e "$old_conf" ]; then
-    rm -f "$old_conf"
-    log "removed the old repair loader entry (bootc cannot parse a foreign one)"
-  fi
-  [ -e "$old_efi" ] && rm -f "$old_efi"
-  sync
+  [ -e "$old_conf" ] || [ -e "$old_efi" ] || return 0
+  esp_plan_reset
+  esp_plan_op remove path loader/entries/tilo-repair.conf
+  esp_plan_op remove path EFI/tilo/repair.efi
+  esp_plan_commit || { warn "could not remove the old repair entry"; return 0; }
+  [ -e "$old_conf" ] || log "removed the old repair loader entry (bootc cannot parse a foreign one)"
   return 0
 }
 

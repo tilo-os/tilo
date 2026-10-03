@@ -54,57 +54,55 @@ class InstallerBootcHelperTests(unittest.TestCase):
         (root / "receipt.json").write_text(json.dumps(receipt))
         return binary, receipt
 
-    def test_artifact_binds_source_patch_toolchain_architecture_and_binary(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            binary, expected = self.artifact(Path(tmp))
-            with patch.object(helper, "_protected_regular"):
-                actual_binary, actual = helper.verify_artifact(
-                    tmp, expected["binary_sha256"], "aarch64")
-            self.assertEqual(actual_binary, binary)
-            self.assertEqual(actual, expected)
-            hostile = dict(expected, source_commit="0" * 40)
-            (Path(tmp) / "receipt.json").write_text(json.dumps(hostile))
-            with patch.object(helper, "_protected_regular"), self.assertRaisesRegex(
-                    ValueError, "pinned contract"):
-                helper.verify_artifact(tmp, expected["binary_sha256"], "aarch64")
-
-    def test_bound_helper_requires_exact_version_and_digest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            binary, receipt = self.artifact(Path(tmp))
-            result = SimpleNamespace(returncode=0, stdout=b"bootc 1.16.10\n")
-            with patch.object(helper, "_protected_regular"), \
-                    patch.object(helper.subprocess, "run", return_value=result) as run:
-                identity = helper.verify_bound_binary(
-                    binary, receipt["binary_sha256"], "aarch64")
-            self.assertEqual(identity["build_id"], receipt["binary_build_id"])
-            self.assertEqual(run.call_args.args[0], [str(binary), "--version"])
-            with patch.object(helper, "_protected_regular"), \
-                    self.assertRaisesRegex(ValueError, "identity differs"):
-                helper.verify_bound_binary(binary, "0" * 64, "aarch64")
-
-    def test_mount_receipt_requires_one_read_only_explicit_mount(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            mountinfo = Path(tmp) / "mountinfo"
-            mountinfo.write_text(
-                "42 21 0:99 / /run/tilo-installer-bootc ro,nosuid - ext4 /source ro\n")
-            receipt = helper.mountinfo_receipt(
-                "/run/tilo-installer-bootc", mountinfo)
-            self.assertTrue(receipt["read_only"])
-            self.assertEqual(receipt["mount_id"], "42")
-            mountinfo.write_text(
-                "42 21 0:99 / /run/tilo-installer-bootc rw - ext4 /source rw\n")
-            with self.assertRaisesRegex(ValueError, "writable"):
-                helper.mountinfo_receipt("/run/tilo-installer-bootc", mountinfo)
-
-    def test_source_pin_matches_tracked_provenance(self):
-        pin = json.loads((DEV.parent / "external-assets/bootc/source.json").read_text())
-        self.assertEqual(pin["source_tag"], helper.SOURCE_TAG)
-        self.assertEqual(pin["source_commit"], helper.SOURCE_COMMIT)
-        self.assertEqual(pin["source_cargo_lock_sha256"], helper.SOURCE_CARGO_LOCK_SHA256)
-        self.assertEqual(pin["patch_sha256"], helper.PATCH_SHA256)
-        self.assertEqual(pin["rust_toolchain"], helper.RUST_TOOLCHAIN)
-        self.assertEqual(pin["build_image"], helper.BUILD_IMAGE)
-        self.assertEqual(pin["build_command"], helper.BUILD_COMMAND)
+    def test_helper_artifact_identity(self):
+        with self.subTest(phase="artifact_binds_source_patch_toolchain_architecture_and_binary"):
+            with tempfile.TemporaryDirectory() as tmp:
+                binary, expected = self.artifact(Path(tmp))
+                with patch.object(helper, "_protected_regular"):
+                    actual_binary, actual = helper.verify_artifact(
+                        tmp, expected["binary_sha256"], "aarch64")
+                self.assertEqual(actual_binary, binary)
+                self.assertEqual(actual, expected)
+                hostile = dict(expected, source_commit="0" * 40)
+                (Path(tmp) / "receipt.json").write_text(json.dumps(hostile))
+                with patch.object(helper, "_protected_regular"), self.assertRaisesRegex(
+                        ValueError, "pinned contract"):
+                    helper.verify_artifact(tmp, expected["binary_sha256"], "aarch64")
+        with self.subTest(phase="bound_helper_requires_exact_version_and_digest"):
+            with tempfile.TemporaryDirectory() as tmp:
+                binary, receipt = self.artifact(Path(tmp))
+                result = SimpleNamespace(returncode=0, stdout=b"bootc 1.16.10\n")
+                with patch.object(helper, "_protected_regular"), \
+                        patch.object(helper.subprocess, "run", return_value=result) as run:
+                    identity = helper.verify_bound_binary(
+                        binary, receipt["binary_sha256"], "aarch64")
+                self.assertEqual(identity["build_id"], receipt["binary_build_id"])
+                self.assertEqual(run.call_args.args[0], [str(binary), "--version"])
+                with patch.object(helper, "_protected_regular"), \
+                        self.assertRaisesRegex(ValueError, "identity differs"):
+                    helper.verify_bound_binary(binary, "0" * 64, "aarch64")
+        with self.subTest(phase="mount_receipt_requires_one_read_only_explicit_mount"):
+            with tempfile.TemporaryDirectory() as tmp:
+                mountinfo = Path(tmp) / "mountinfo"
+                mountinfo.write_text(
+                    "42 21 0:99 / /run/tilo-installer-bootc ro,nosuid - ext4 /source ro\n")
+                receipt = helper.mountinfo_receipt(
+                    "/run/tilo-installer-bootc", mountinfo)
+                self.assertTrue(receipt["read_only"])
+                self.assertEqual(receipt["mount_id"], "42")
+                mountinfo.write_text(
+                    "42 21 0:99 / /run/tilo-installer-bootc rw - ext4 /source rw\n")
+                with self.assertRaisesRegex(ValueError, "writable"):
+                    helper.mountinfo_receipt("/run/tilo-installer-bootc", mountinfo)
+        with self.subTest(phase="source_pin_matches_tracked_provenance"):
+            pin = json.loads((DEV.parent / "external-assets/bootc/source.json").read_text())
+            self.assertEqual(pin["source_tag"], helper.SOURCE_TAG)
+            self.assertEqual(pin["source_commit"], helper.SOURCE_COMMIT)
+            self.assertEqual(pin["source_cargo_lock_sha256"], helper.SOURCE_CARGO_LOCK_SHA256)
+            self.assertEqual(pin["patch_sha256"], helper.PATCH_SHA256)
+            self.assertEqual(pin["rust_toolchain"], helper.RUST_TOOLCHAIN)
+            self.assertEqual(pin["build_image"], helper.BUILD_IMAGE)
+            self.assertEqual(pin["build_command"], helper.BUILD_COMMAND)
 
 
 if __name__ == "__main__":

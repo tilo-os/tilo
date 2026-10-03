@@ -20,6 +20,8 @@ files-shortcuts-context = Context menu: Menu key or right-click
 files-shortcuts-close = Show this reference: ? or F1 · close sheets and menus: Escape
 
 ## Availability actions and status
+files-opening-document = Opening document…
+files-document-opening-cancelled = Document opening was cancelled
 files-keep-offline = Keep Offline
 files-use-automatic-storage = Use Automatic Storage
 files-pinned-by-parent = Pinned by Parent Folder
@@ -512,6 +514,10 @@ files-destination-inspect-failed = Cannot check “{ $path }”: { $error }
 files-destination-names-exhausted = Too many files named “{ $name }” in “{ $path }”. Choose another name or folder.
 files-source-no-name = Source has no file name
 files-menu-send-nearby = Send to Nearby Device…
+files-menu-run-shortcut = Run Shortcut
+files-shortcut-running = Running “{ $shortcut }”…
+files-shortcut-started = “{ $shortcut }” is running
+files-shortcut-failed = “{ $shortcut }” didn't run: { $reason }
 files-action-send-nearby-device = Send to { $device }
 files-nearby-send-to-device = Send to { $device }
 files-nearby-select-one = Select one file or folder to send.
@@ -541,3 +547,25 @@ files-nearby-save-and-remember = Save to { $destination } and use it for this se
 files-share-not-available = Share service is not available on this host
 
 files-name-invalid = Enter a valid file or folder name
+
+## Open With and Recent
+files-menu-open-with = Open With
+files-open-with-other = Other Application…
+files-open-with-none = No application opens this file
+files-open-with-default = { $app } (default)
+files-open-with-default-badge = Default
+files-open-with-once-group = Open once
+files-open-with-always-group = Always use for { $type }
+files-open-with-search = Choose an application for { $name }
+files-open-with-app = Open with { $app }
+files-open-with-always-app = Always open { $type } with { $app }
+files-open-with-app-param = Application
+files-open-with-always-param = Also make it the default for { $type }
+files-open-with-now-default = { $app } now opens { $type }
+files-open-with-unavailable = Choosing an application is unavailable here ({ $name })
+files-open-with-not-a-candidate = { $app } does not open this file
+files-place-recent = Recent
+files-empty-recent = Files you open or create appear here
+files-recent-reveal = Open Containing Folder
+files-recent-forget = Remove from Recent
+files-recent-not-a-folder = Recent is not a folder; open one to add files

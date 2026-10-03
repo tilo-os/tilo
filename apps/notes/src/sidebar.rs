@@ -383,6 +383,7 @@ impl PageSidebar {
         reason = "one builder chain wires every tree signal to its page command"
     )]
     pub fn new() -> Self {
+        crate::metadata::register_messages();
         let keys = SharedKeys::default();
         let outbox = SharedOutbox::default();
         let model = PageTree::build(&Workspace::default(), &keys);
@@ -748,14 +749,16 @@ mod tests {
         let mut focus = None;
         sidebar.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut AutoCommit::new(),
-            &ObjId::Root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -790,391 +793,436 @@ mod tests {
         }
     }
 
-    /// The selected page's fill is a contrast step off the raised sidebar on
-    /// every preset, with an edge that registers on that fill (HIG §9.3/§9.5).
     #[test]
-    fn selection_fill_moves_off_the_raised_sidebar_on_every_preset() {
-        use ui::surface::{edge_delta, edge_on};
-        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let raised = theme.tokens.colors.surfaces.raised;
-            let lifted = selection_fill_on_raised(&theme);
-            assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
-            if theme.name != "High Contrast" {
+    fn heading_resolves_before_any_other_notes_widget_registers_the_catalog() {
+        // The catalog is per thread; a fresh one has seen no Notes widget yet.
+        let (name, catalog) = std::thread::spawn(|| {
+            let tree = PageSidebar::new();
+            let name = Widget::accessibility(tree.tree())
+                .and_then(|node| node.name)
+                .expect("the page tree is named by its heading");
+            (name, ui::i18n!("notes-title"))
+        })
+        .join()
+        .expect("sidebar thread");
+        assert_ne!(name, "notes-title");
+        assert_eq!(name, catalog);
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn sidebar_rows_track_pages_and_scale_at_high_text_on_every_preset() {
+        eprintln!("phase selection_fill_moves_off_the_raised_sidebar_on_every_preset");
+        {
+            use ui::surface::{edge_delta, edge_on};
+            use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let raised = theme.tokens.colors.surfaces.raised;
+                let lifted = selection_fill_on_raised(&theme);
+                assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
+                if theme.name != "High Contrast" {
+                    assert!(
+                        edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
+                        "{}",
+                        theme.name
+                    );
+                }
                 assert!(
-                    edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
+                    edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
                     "{}",
                     theme.name
                 );
             }
+        }
+
+        eprintln!("phase sync_from_workspace_flattens_to_visible_rows");
+        {
+            let mut ws = Workspace::new();
+            let root = ws.create_page(None);
+            let child = ws.create_page(Some(root));
+            let _grand = ws.create_page(Some(child));
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            // Branches with children auto-expand on first render, so the full
+            // nesting is on screen (root -> child -> grandchild).
+            assert_eq!(tree.visible_row_count(), 3);
+            // Collapsing the root hides all its descendants (only the root remains).
+            let key = tree.key(root).unwrap();
+            tree.set_expanded(key, false);
+            tree.sync_from_workspace(&ws);
+            assert_eq!(tree.visible_row_count(), 1);
+            assert_eq!(tree.expanded_pages(), {
+                let mut open = vec![child];
+                open.sort_unstable();
+                open
+            });
+        }
+
+        eprintln!("phase keys_stay_attached_to_pages_across_rebuilds");
+        {
+            let mut ws = Workspace::new();
+            let a = ws.create_page(None);
+            let b = ws.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            let key_b = tree.key(b).unwrap();
+            ws.move_to(b, None, Some(a));
+            tree.sync_from_workspace(&ws);
+            assert_eq!(tree.key(b), Some(key_b));
+            assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
+        }
+
+        eprintln!("phase high_text_rows_and_labels_keep_distinct_scaled_geometry");
+        {
+            let mut ws = Workspace::new();
+            ws.create_page(None);
+            ws.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 528.0, 600.0), 2.0);
+            let first = tree
+                .row(0)
+                .and_then(|(key, _, _)| tree.row_rect(key))
+                .unwrap();
+            let second = tree
+                .row(1)
+                .and_then(|(key, _, _)| tree.row_rect(key))
+                .unwrap();
+            let disclosure = tree
+                .row(0)
+                .and_then(|(key, _, _)| tree.disclosure_rect(key))
+                .unwrap();
+
+            let heading = tree.heading_action_rect().unwrap();
+            assert!(heading.y1 <= first.y0, "rows start below the heading");
+            assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
+            assert!(first.height() > 30.0, "rows grow with the text");
+            assert!(disclosure.x1 < first.x1 - 4.0, "the label keeps room");
+        }
+
+        eprintln!("phase page_tree_semantics_follow_visible_rows_and_their_hit_rects");
+        {
+            let mut ws = Workspace::new();
+            let root = ws.create_page(None);
+            ws.rename(root, "Project plan");
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
+
+            let node = Widget::accessibility(tree.tree()).expect("page tree is semantic");
+            assert_eq!(node.role, ui::a11y::Role::Tree);
+            assert_eq!(
+                node.name.as_deref(),
+                Some(ui::i18n!("notes-title").as_str())
+            );
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(node.children[0].role, ui::a11y::Role::Button);
+            assert_eq!(node.children[0].name.as_deref(), Some("New note"));
+            assert_eq!(node.children[1].name.as_deref(), Some("Project plan"));
+            let key = tree.key(root).unwrap();
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(tree.tree(), &[1]),
+                tree.row_rect(key)
+            );
+            tree.selection_mut().clear();
+            assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[1]));
+            assert_eq!(
+                tree.selected(),
+                Some(key),
+                "AT focus selects the visible page"
+            );
+            assert!(matches!(tree.take_events().as_slice(), [OutEvent::Select(id)] if *id == root));
+        }
+    }
+
+    #[test]
+    fn sidebar_drag_and_scroll_reveal_hidden_targets() {
+        eprintln!("phase dragging_over_collapsed_branch_springs_it_open_after_dwell");
+        {
+            let mut ws = Workspace::new();
+            let target = ws.create_page(None);
+            let _child = ws.create_page(Some(target));
+            let _dragged = ws.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            let target_key = tree.key(target).unwrap();
+            tree.set_expanded(target_key, false);
+            tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 220.0, 300.0), 1.0);
+
+            let from = tree.row_center_for_test(1).unwrap();
+            let over = tree.row_center_for_test(0).unwrap();
+            event(&mut tree, &moved(from));
+            event(&mut tree, &button(ElementState::Pressed));
+            event(&mut tree, &moved(over));
+            assert!(tree.is_dragging());
+            assert_eq!(
+                tree.reorder_target()
+                    .map(|target| (target.key, target.placement)),
+                Some((target_key, DropPlacement::Inside))
+            );
+            let mut doc = AutoCommit::new();
+            tree.update(&mut doc, &ObjId::Root);
+            assert!(!tree.is_expanded(target_key), "no spring before the dwell");
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            tree.update(&mut doc, &ObjId::Root);
+            assert!(tree.is_expanded(target_key), "the dwell opens the branch");
+        }
+
+        eprintln!("phase dragging_in_bottom_edge_band_autoscrolls_toward_hidden_targets");
+        {
+            let mut workspace = Workspace::new();
+            for _ in 0..30 {
+                workspace.create_page(None);
+            }
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&workspace);
+            place(&mut tree, Rect::new(0.0, 0.0, 240.0, 300.0), 1.0);
+            let start = tree.row_center_for_test(0).unwrap();
+            event(&mut tree, &moved(start));
+            event(&mut tree, &button(ElementState::Pressed));
+            event(&mut tree, &moved(Point::new(start.x, 299.0)));
+            assert!(tree.is_dragging());
+            let mut doc = AutoCommit::new();
+            tree.update(&mut doc, &ObjId::Root);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tree.update(&mut doc, &ObjId::Root);
             assert!(
-                edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
-                "{}",
-                theme.name
+                tree.scroll_offset() > 0.0,
+                "edge dragging reveals lower drop targets without ending the gesture"
             );
         }
-    }
 
-    #[test]
-    fn sync_from_workspace_flattens_to_visible_rows() {
-        let mut ws = Workspace::new();
-        let root = ws.create_page(None);
-        let child = ws.create_page(Some(root));
-        let _grand = ws.create_page(Some(child));
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        // Branches with children auto-expand on first render, so the full
-        // nesting is on screen (root -> child -> grandchild).
-        assert_eq!(tree.visible_row_count(), 3);
-        // Collapsing the root hides all its descendants (only the root remains).
-        let key = tree.key(root).unwrap();
-        tree.set_expanded(key, false);
-        tree.sync_from_workspace(&ws);
-        assert_eq!(tree.visible_row_count(), 1);
-        assert_eq!(tree.expanded_pages(), {
-            let mut open = vec![child];
-            open.sort_unstable();
-            open
-        });
-    }
+        eprintln!("phase large_tree_scroll_is_clamped_and_keyboard_reveals_the_selection");
+        {
+            let mut ws = Workspace::new();
+            let pages: Vec<_> = (0..30).map(|_| ws.create_page(None)).collect();
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 240.0, 300.0), 1.0);
+            let max = tree.max_scroll_offset();
+            assert!(max > 0.0);
+            tree.set_scroll_offset(90.0);
+            assert!((tree.scroll_offset() - 90.0).abs() < f64::EPSILON);
+            tree.set_scroll_offset(10_000.0);
+            assert!((tree.scroll_offset() - max).abs() < f64::EPSILON);
+            tree.set_scroll_offset(-10.0);
+            assert!(tree.scroll_offset().abs() < f64::EPSILON);
 
-    #[test]
-    fn keys_stay_attached_to_pages_across_rebuilds() {
-        let mut ws = Workspace::new();
-        let a = ws.create_page(None);
-        let b = ws.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        let key_b = tree.key(b).unwrap();
-        ws.move_to(b, None, Some(a));
-        tree.sync_from_workspace(&ws);
-        assert_eq!(tree.key(b), Some(key_b));
-        assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
-    }
-
-    #[test]
-    fn dragging_over_collapsed_branch_springs_it_open_after_dwell() {
-        let mut ws = Workspace::new();
-        let target = ws.create_page(None);
-        let _child = ws.create_page(Some(target));
-        let _dragged = ws.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        let target_key = tree.key(target).unwrap();
-        tree.set_expanded(target_key, false);
-        tree.sync_from_workspace(&ws);
-        place(&mut tree, Rect::new(0.0, 0.0, 220.0, 300.0), 1.0);
-
-        let from = tree.row_center_for_test(1).unwrap();
-        let over = tree.row_center_for_test(0).unwrap();
-        event(&mut tree, &moved(from));
-        event(&mut tree, &button(ElementState::Pressed));
-        event(&mut tree, &moved(over));
-        assert!(tree.is_dragging());
-        assert_eq!(
-            tree.reorder_target()
-                .map(|target| (target.key, target.placement)),
-            Some((target_key, DropPlacement::Inside))
-        );
-        let mut doc = AutoCommit::new();
-        tree.update(&mut doc, &ObjId::Root);
-        assert!(!tree.is_expanded(target_key), "no spring before the dwell");
-        std::thread::sleep(std::time::Duration::from_millis(700));
-        tree.update(&mut doc, &ObjId::Root);
-        assert!(tree.is_expanded(target_key), "the dwell opens the branch");
-    }
-
-    #[test]
-    fn begin_and_commit_rename_emits_event() {
-        let mut ws = Workspace::new();
-        let id = ws.create_page(None);
-        ws.rename(id, "Untitled");
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        assert!(tree.begin_rename(id));
-        tree.commit_rename();
-        let events = tree.take_events();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            OutEvent::Rename { id: rid, new_title } => {
-                assert_eq!(*rid, id);
-                assert_eq!(new_title, "Untitled");
-            }
-            _ => panic!("expected Rename event"),
+            ws.set_selected(pages.last().copied());
+            tree.sync_from_workspace(&ws);
+            assert!(
+                tree.scroll_offset() > 0.0,
+                "a selection below the viewport is scrolled into view"
+            );
+            ws.set_selected(pages.first().copied());
+            tree.sync_from_workspace(&ws);
+            assert!(tree.scroll_offset().abs() < f64::EPSILON);
         }
     }
 
     #[test]
-    fn cancel_rename_does_not_emit() {
-        let mut ws = Workspace::new();
-        let id = ws.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        assert!(tree.begin_rename(id));
-        event(&mut tree, &key(NamedKey::Escape));
-        assert!(!tree.is_renaming());
-        assert!(tree.take_events().is_empty());
+    fn sidebar_rename_emits_only_on_commit() {
+        eprintln!("phase begin_and_commit_rename_emits_event");
+        {
+            let mut ws = Workspace::new();
+            let id = ws.create_page(None);
+            ws.rename(id, "Untitled");
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            assert!(tree.begin_rename(id));
+            tree.commit_rename();
+            let events = tree.take_events();
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                OutEvent::Rename { id: rid, new_title } => {
+                    assert_eq!(*rid, id);
+                    assert_eq!(new_title, "Untitled");
+                }
+                _ => panic!("expected Rename event"),
+            }
+        }
+
+        eprintln!("phase cancel_rename_does_not_emit");
+        {
+            let mut ws = Workspace::new();
+            let id = ws.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&ws);
+            assert!(tree.begin_rename(id));
+            event(&mut tree, &key(NamedKey::Escape));
+            assert!(!tree.is_renaming());
+            assert!(tree.take_events().is_empty());
+        }
+
+        eprintln!("phase menu_rename_opens_the_field_once_the_menu_has_closed");
+        {
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&workspace);
+            let key = tree.key(page).unwrap();
+            tree.open_context_menu(Some(key), Point::ZERO);
+            let target = format!("menu:context-menu:item:{}", menu_row::RENAME);
+            assert!(Widget::perform_semantic_action(
+                tree.tree_mut(),
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &ObjId::Root
+            ));
+            assert!(tree.take_events().is_empty());
+            assert!(tree.is_renaming());
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn page_menu_copy_link_uses_the_selected_page_identity() {
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&workspace);
-        let key = tree.key(page).unwrap();
-        assert!(tree.open_context_menu(Some(key), Point::ZERO));
-        let menu = Widget::accessibility(tree.tree()).unwrap();
-        let copy = menu
-            .children
-            .iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .and_then(|menu| {
+    fn sidebar_page_menu_and_row_actions_queue_page_scoped_actions() {
+        eprintln!("phase page_menu_copy_link_uses_the_selected_page_identity");
+        {
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&workspace);
+            let key = tree.key(page).unwrap();
+            assert!(tree.open_context_menu(Some(key), Point::ZERO));
+            let menu = Widget::accessibility(tree.tree()).unwrap();
+            let copy = menu
+                .children
+                .iter()
+                .find(|node| node.role == ui::a11y::Role::Menu)
+                .and_then(|menu| {
+                    menu.children.iter().find(|item| {
+                        item.name.as_deref() == Some(&ui::i18n!("notes-menu-copy-link"))
+                    })
+                })
+                .and_then(|item| item.action_target.clone())
+                .unwrap();
+            assert!(Widget::perform_semantic_action(
+                tree.tree_mut(),
+                &copy,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &ObjId::Root
+            ));
+            assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
+        }
+
+        eprintln!("phase hover_row_actions_create_a_child_or_open_the_existing_note_menu");
+        {
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&workspace);
+            place(&mut tree, Rect::new(0.0, 0.0, 240.0, 200.0), 1.0);
+            let key = tree.key(page).unwrap();
+            let child = tree.row_action_rect(key, 0).unwrap();
+            let more = tree.row_action_rect(key, 1).unwrap();
+
+            event(&mut tree, &moved(child.center()));
+            assert!(event(&mut tree, &button(ElementState::Pressed)));
+            event(&mut tree, &button(ElementState::Released));
+            assert!(matches!(
+                tree.take_events().as_slice(),
+                [OutEvent::CreateChild { parent: Some(id) }] if *id == page
+            ));
+
+            event(&mut tree, &moved(more.center()));
+            assert!(event(&mut tree, &button(ElementState::Pressed)));
+            assert!(tree.context_menu_open_for_test());
+            assert!(matches!(
+                tree.take_events().as_slice(),
+                [OutEvent::Select(id)] if *id == page
+            ));
+        }
+
+        eprintln!("phase page_menu_semantics_activate_the_same_queued_page_action");
+        {
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let mut tree = PageSidebar::new();
+            tree.sync_from_workspace(&workspace);
+            let key = tree.key(page).unwrap();
+            tree.open_context_menu(Some(key), Point::ZERO);
+            let node = Widget::accessibility(tree.tree()).unwrap();
+            let menu = node
+                .children
+                .iter()
+                .find(|node| node.role == ui::a11y::Role::Menu)
+                .unwrap();
+            assert_eq!(menu.state.expanded, Some(true));
+            assert_eq!(
                 menu.children
                     .iter()
-                    .find(|item| item.name.as_deref() == Some(&ui::i18n!("notes-menu-copy-link")))
-            })
-            .and_then(|item| item.action_target.clone())
-            .unwrap();
-        assert!(Widget::perform_semantic_action(
-            tree.tree_mut(),
-            &copy,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &ObjId::Root
-        ));
-        assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
-    }
-
-    #[test]
-    fn menu_rename_opens_the_field_once_the_menu_has_closed() {
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&workspace);
-        let key = tree.key(page).unwrap();
-        tree.open_context_menu(Some(key), Point::ZERO);
-        let target = format!("menu:context-menu:item:{}", menu_row::RENAME);
-        assert!(Widget::perform_semantic_action(
-            tree.tree_mut(),
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &ObjId::Root
-        ));
-        assert!(tree.take_events().is_empty());
-        assert!(tree.is_renaming());
-    }
-
-    #[test]
-    fn hover_row_actions_create_a_child_or_open_the_existing_note_menu() {
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&workspace);
-        place(&mut tree, Rect::new(0.0, 0.0, 240.0, 200.0), 1.0);
-        let key = tree.key(page).unwrap();
-        let child = tree.row_action_rect(key, 0).unwrap();
-        let more = tree.row_action_rect(key, 1).unwrap();
-
-        event(&mut tree, &moved(child.center()));
-        assert!(event(&mut tree, &button(ElementState::Pressed)));
-        event(&mut tree, &button(ElementState::Released));
-        assert!(matches!(
-            tree.take_events().as_slice(),
-            [OutEvent::CreateChild { parent: Some(id) }] if *id == page
-        ));
-
-        event(&mut tree, &moved(more.center()));
-        assert!(event(&mut tree, &button(ElementState::Pressed)));
-        assert!(tree.context_menu_open_for_test());
-        assert!(matches!(
-            tree.take_events().as_slice(),
-            [OutEvent::Select(id)] if *id == page
-        ));
-    }
-
-    #[test]
-    fn page_menu_semantics_activate_the_same_queued_page_action() {
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&workspace);
-        let key = tree.key(page).unwrap();
-        tree.open_context_menu(Some(key), Point::ZERO);
-        let node = Widget::accessibility(tree.tree()).unwrap();
-        let menu = node
-            .children
-            .iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .unwrap();
-        assert_eq!(menu.state.expanded, Some(true));
-        assert_eq!(
-            menu.children
-                .iter()
-                .map(|item| item.name.clone().unwrap())
-                .collect::<Vec<_>>(),
-            vec![
-                ui::i18n!("notes-menu-new-child"),
-                ui::i18n!("notes-menu-rename"),
-                ui::i18n!("notes-menu-duplicate"),
-                ui::i18n!("notes-menu-copy-link"),
-                ui::i18n!("notes-menu-export"),
-                ui::i18n!("notes-menu-insert-image"),
-                ui::i18n!("notes-menu-delete")
-            ]
-        );
-        assert!(
-            menu.children
-                .iter()
-                .all(|item| item.role == ui::a11y::Role::MenuItem)
-        );
-        let target = menu.children.last().unwrap().action_target.clone().unwrap();
-        let mut doc = AutoCommit::new();
-        let before = doc.get_heads();
-        assert!(!Widget::perform_semantic_action(
-            tree.tree_mut(),
-            &target,
-            &ui::a11y::Action::Increment,
-            &mut doc,
-            &ObjId::Root
-        ));
-        assert!(tree.take_events().is_empty());
-        assert!(Widget::perform_semantic_action(
-            tree.tree_mut(),
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ObjId::Root
-        ));
-        assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
-        assert_eq!(
-            doc.get_heads(),
-            before,
-            "sidebar activation only queues; app owns document admission"
-        );
-        assert!(
-            !Widget::perform_semantic_action(
+                    .map(|item| item.name.clone().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![
+                    ui::i18n!("notes-menu-new-child"),
+                    ui::i18n!("notes-menu-rename"),
+                    ui::i18n!("notes-menu-duplicate"),
+                    ui::i18n!("notes-menu-copy-link"),
+                    ui::i18n!("notes-menu-export"),
+                    ui::i18n!("notes-menu-insert-image"),
+                    ui::i18n!("notes-menu-delete")
+                ]
+            );
+            assert!(
+                menu.children
+                    .iter()
+                    .all(|item| item.role == ui::a11y::Role::MenuItem)
+            );
+            let target = menu.children.last().unwrap().action_target.clone().unwrap();
+            let mut doc = AutoCommit::new();
+            let before = doc.get_heads();
+            assert!(!Widget::perform_semantic_action(
+                tree.tree_mut(),
+                &target,
+                &ui::a11y::Action::Increment,
+                &mut doc,
+                &ObjId::Root
+            ));
+            assert!(tree.take_events().is_empty());
+            assert!(Widget::perform_semantic_action(
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Activate,
                 &mut doc,
                 &ObjId::Root
-            ),
-            "closed menu target is stale"
-        );
+            ));
+            assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
+            assert_eq!(
+                doc.get_heads(),
+                before,
+                "sidebar activation only queues; app owns document admission"
+            );
+            assert!(
+                !Widget::perform_semantic_action(
+                    tree.tree_mut(),
+                    &target,
+                    &ui::a11y::Action::Activate,
+                    &mut doc,
+                    &ObjId::Root
+                ),
+                "closed menu target is stale"
+            );
+        }
     }
 
+    /// A populated tree laid out shorter than its heading plus a minimum
+    /// scrollbar thumb (a startup frame, a squeezed drawer) still draws.
     #[test]
-    fn page_tree_semantics_follow_visible_rows_and_their_hit_rects() {
-        let mut ws = Workspace::new();
-        let root = ws.create_page(None);
-        ws.rename(root, "Project plan");
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
-
-        let node = Widget::accessibility(tree.tree()).expect("page tree is semantic");
-        assert_eq!(node.role, ui::a11y::Role::Tree);
-        assert_eq!(
-            node.name.as_deref(),
-            Some(ui::i18n!("notes-title").as_str())
-        );
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(node.children[0].role, ui::a11y::Role::Button);
-        assert_eq!(node.children[0].name.as_deref(), Some("New note"));
-        assert_eq!(node.children[1].name.as_deref(), Some("Project plan"));
-        let key = tree.key(root).unwrap();
-        assert_eq!(
-            Widget::synthetic_accessibility_rect(tree.tree(), &[1]),
-            tree.row_rect(key)
-        );
-        tree.selection_mut().clear();
-        assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[1]));
-        assert_eq!(
-            tree.selected(),
-            Some(key),
-            "AT focus selects the visible page"
-        );
-        assert!(matches!(tree.take_events().as_slice(), [OutEvent::Select(id)] if *id == root));
-    }
-
-    #[test]
-    fn high_text_rows_and_labels_keep_distinct_scaled_geometry() {
-        let mut ws = Workspace::new();
-        ws.create_page(None);
-        ws.create_page(None);
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        place(&mut tree, Rect::new(0.0, 0.0, 528.0, 600.0), 2.0);
-        let first = tree
-            .row(0)
-            .and_then(|(key, _, _)| tree.row_rect(key))
-            .unwrap();
-        let second = tree
-            .row(1)
-            .and_then(|(key, _, _)| tree.row_rect(key))
-            .unwrap();
-        let disclosure = tree
-            .row(0)
-            .and_then(|(key, _, _)| tree.disclosure_rect(key))
-            .unwrap();
-
-        let heading = tree.heading_action_rect().unwrap();
-        assert!(heading.y1 <= first.y0, "rows start below the heading");
-        assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
-        assert!(first.height() > 30.0, "rows grow with the text");
-        assert!(disclosure.x1 < first.x1 - 4.0, "the label keeps room");
-    }
-
-    #[test]
-    fn large_tree_scroll_is_clamped_and_keyboard_reveals_the_selection() {
-        let mut ws = Workspace::new();
-        let pages: Vec<_> = (0..30).map(|_| ws.create_page(None)).collect();
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&ws);
-        place(&mut tree, Rect::new(0.0, 0.0, 240.0, 300.0), 1.0);
-        let max = tree.max_scroll_offset();
-        assert!(max > 0.0);
-        tree.set_scroll_offset(90.0);
-        assert!((tree.scroll_offset() - 90.0).abs() < f64::EPSILON);
-        tree.set_scroll_offset(10_000.0);
-        assert!((tree.scroll_offset() - max).abs() < f64::EPSILON);
-        tree.set_scroll_offset(-10.0);
-        assert!(tree.scroll_offset().abs() < f64::EPSILON);
-
-        ws.set_selected(pages.last().copied());
-        tree.sync_from_workspace(&ws);
-        assert!(
-            tree.scroll_offset() > 0.0,
-            "a selection below the viewport is scrolled into view"
-        );
-        ws.set_selected(pages.first().copied());
-        tree.sync_from_workspace(&ws);
-        assert!(tree.scroll_offset().abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn dragging_in_bottom_edge_band_autoscrolls_toward_hidden_targets() {
+    fn populated_sidebar_draws_in_short_startup_viewports() {
         let mut workspace = Workspace::new();
-        for _ in 0..30 {
+        for _ in 0..12 {
             workspace.create_page(None);
         }
-        let mut tree = PageSidebar::new();
-        tree.sync_from_workspace(&workspace);
-        place(&mut tree, Rect::new(0.0, 0.0, 240.0, 300.0), 1.0);
-        let start = tree.row_center_for_test(0).unwrap();
-        event(&mut tree, &moved(start));
-        event(&mut tree, &button(ElementState::Pressed));
-        event(&mut tree, &moved(Point::new(start.x, 299.0)));
-        assert!(tree.is_dragging());
-        let mut doc = AutoCommit::new();
-        tree.update(&mut doc, &ObjId::Root);
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        tree.update(&mut doc, &ObjId::Root);
-        assert!(
-            tree.scroll_offset() > 0.0,
-            "edge dragging reveals lower drop targets without ending the gesture"
-        );
+        for scale in [1.0, 2.0] {
+            for height in [1.0, 9.0, 16.0, 40.0] {
+                let mut tree = PageSidebar::new();
+                tree.sync_from_workspace(&workspace);
+                place(&mut tree, Rect::new(0.0, 0.0, 240.0, height), scale);
+            }
+        }
     }
 }

@@ -76,8 +76,9 @@ pub fn required_capability(
             )
         }),
 
-        // Unclassified: treat as an act, fail closed.
-        ResourceKind::Custom(_) => Some((
+        // Window actions and unclassified results: treat as an act, fail
+        // closed.
+        ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
@@ -130,6 +131,12 @@ impl ActionVisibility for CapabilityVisibility<'_> {
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,199 +147,211 @@ mod tests {
         ResourceRef::new(provider, id)
     }
 
-    /// A document-shaped resource is never gated.
     #[test]
-    fn showing_a_document_requires_no_capability() {
-        for kind in [
-            ResourceKind::Note,
-            ResourceKind::Record,
-            ResourceKind::File,
-            ResourceKind::Folder,
-        ] {
-            assert_eq!(
-                required_capability(&resource("notes", "abc"), &kind),
-                None,
-                "{kind:?} must not require a capability to be shown"
-            );
-        }
-    }
-
-    /// Reveals a view and changes nothing; not an act.
-    #[test]
-    fn opening_an_overlay_is_showing_not_acting() {
-        for id in [
-            "shortcut-help.toggle",
-            "overview.toggle",
-            "settings.open",
-            "quick-settings.open",
-            "quick-settings.clipboard",
-            "quick-settings.devices",
-            "projection.open",
-            "collaborators.open",
-            "room.activity.open",
-            "peer.invite",
-            "peer.connect",
-        ] {
-            assert_eq!(
-                required_capability(&resource("actions", id), &ResourceKind::Action),
-                None,
-                "{id} opens a view and must not be gated"
-            );
-        }
-    }
-
-    /// Acts on the room's contents need `Write`; membership needs `Invite`.
-    #[test]
-    fn acting_on_the_room_requires_the_matching_verb() {
-        let write = [
-            "tab.new.terminal.here",
-            "window.new.terminal",
-            "tab.duplicate",
-            "notifications.dnd.toggle",
-        ];
-        for id in write {
-            let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
-                .unwrap_or_else(|| panic!("{id} must be gated"));
-            assert_eq!(verb, Verb::Write, "{id}");
-        }
-
-        for id in ["peer.invite.named", "agent.invite"] {
-            let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
-                .unwrap_or_else(|| panic!("{id} must be gated"));
-            assert_eq!(verb, Verb::Invite, "{id}");
-        }
-    }
-
-    /// Editing a document is an act, gated on `Write` like spawning a tab.
-    #[test]
-    fn writing_into_a_document_requires_write() {
-        let (cap, verb) =
-            required_capability(&resource("actions", "text.insert"), &ResourceKind::Action)
-                .expect("writing into a document must be gated");
-        assert_eq!(verb, Verb::Write);
-        assert_eq!(
-            cap,
-            CapResource::Action {
-                app: SHELL_APP_ID.to_string(),
-                action: "text.insert".to_string(),
+    fn showing_needs_no_capability_but_launching_is_gated_on_the_app() {
+        // Phase `showing_a_document_requires_no_capability`.
+        // A document-shaped resource is never gated.
+        {
+            for kind in [
+                ResourceKind::Note,
+                ResourceKind::Record,
+                ResourceKind::File,
+                ResourceKind::Folder,
+            ] {
+                assert_eq!(
+                    required_capability(&resource("notes", "abc"), &kind),
+                    None,
+                    "{kind:?} must not require a capability to be shown"
+                );
             }
-        );
-    }
-
-    /// Hides the edit from someone holding nothing while still showing
-    /// them the document itself, against a real `Workspace`.
-    #[test]
-    fn an_unauthorised_caller_cannot_see_the_document_edit() {
-        let owner: UserId = "owner".to_string();
-        let stranger: UserId = "stranger".to_string();
-        let mut ws = Workspace::new(WorkspaceId::new(), "edit-gate");
-        ws.owner = Some(owner.clone());
-
-        let edit = resource("actions", "text.insert");
-        let note = resource("notes", "15");
-
-        let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
-        assert!(
-            !stranger_view.can_see(&edit, &ResourceKind::Action),
-            "someone holding no capability must not be offered the edit"
-        );
-        assert!(
-            stranger_view.can_see(&note, &ResourceKind::Note),
-            "…but the document itself stays visible: showing is free"
-        );
-
-        let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
-        assert!(
-            owner_view.can_see(&edit, &ResourceKind::Action),
-            "the room's owner may edit its documents"
-        );
-
-        // A grant makes exactly that act appear.
-        let _ = ws.grant_capability(CapOverride::grant(
-            Subject::Principal(Principal::Person(stranger.clone())),
-            Scope::Workspace,
-            Verb::Write,
-        ));
-        let granted = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
-        assert!(
-            granted.can_see(&edit, &ResourceKind::Action),
-            "granting Write must make the edit reachable"
-        );
-    }
-
-    /// A new provider landing without a mapping should go dark, not open.
-    #[test]
-    fn an_unclassified_action_fails_closed() {
-        let (_, verb) = required_capability(
-            &resource("actions", "some.provider.landed.without.a.mapping"),
-            &ResourceKind::Action,
-        )
-        .expect("an unmapped action must be gated, not waved through");
-        assert_eq!(verb, Verb::Write);
-    }
-
-    /// Launching an app is gated on the app being launched, so a grant
-    /// can name one app without opening the whole catalogue.
-    #[test]
-    fn launching_an_app_is_gated_on_that_app() {
-        let (cap, verb) = required_capability(
-            &resource("applications", "so.tilo.terminal"),
-            &ResourceKind::Application,
-        )
-        .expect("launching must be gated");
-        assert_eq!(verb, Verb::Write);
-        assert_eq!(cap, CapResource::App("so.tilo.terminal".to_string()));
-    }
-
-    /// End-to-end: an owner sees gated actions, a member holding nothing
-    /// does not, both still see the ungated ones.
-    #[test]
-    fn the_gate_hides_acts_from_a_member_without_capabilities() {
-        let owner: UserId = "owner".to_string();
-        let stranger: UserId = "stranger".to_string();
-        let mut ws = Workspace::new(WorkspaceId::new(), "gate-test");
-        ws.owner = Some(owner.clone());
-
-        let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
-        let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
-
-        let gated = resource("actions", "window.new.terminal");
-        let ungated = resource("actions", "settings.open");
-        let document = resource("notes", "note-1");
-
-        assert!(
-            owner_view.can_see(&gated, &ResourceKind::Action),
-            "the room's owner must see an act they may perform"
-        );
-        assert!(
-            !stranger_view.can_see(&gated, &ResourceKind::Action),
-            "someone holding no capability must not see the act"
-        );
-
-        // …but showing is never gated, for either of them.
-        for view in [&owner_view, &stranger_view] {
-            assert!(view.can_see(&ungated, &ResourceKind::Action));
-            assert!(view.can_see(&document, &ResourceKind::Note));
         }
 
-        // A grant makes exactly that act appear, without opening
-        // anything else.
-        let _ = ws.grant_capability(CapOverride::grant(
-            Subject::Principal(Principal::Person(stranger.clone())),
-            Scope::Workspace,
-            Verb::Write,
-        ));
-        let granted_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
-        assert!(
-            granted_view.can_see(&gated, &ResourceKind::Action),
-            "granting Write must make the act visible"
-        );
-        assert!(
-            !granted_view.can_see(
-                &resource("actions", "peer.invite.named"),
-                &ResourceKind::Action
-            ),
-            "Write must not confer Invite"
-        );
+        // Phase `opening_an_overlay_is_showing_not_acting`.
+        // Reveals a view and changes nothing; not an act.
+        {
+            for id in [
+                "shortcut-help.toggle",
+                "overview.toggle",
+                "settings.open",
+                "quick-settings.open",
+                "quick-settings.clipboard",
+                "quick-settings.devices",
+                "projection.open",
+                "collaborators.open",
+                "room.activity.open",
+            ] {
+                assert_eq!(
+                    required_capability(&resource("actions", id), &ResourceKind::Action),
+                    None,
+                    "{id} opens a view and must not be gated"
+                );
+            }
+        }
+
+        // Phase `launching_an_app_is_gated_on_that_app`.
+        // Launching an app is gated on the app being launched, so a grant
+        // can name one app without opening the whole catalogue.
+        {
+            let (cap, verb) = required_capability(
+                &resource("applications", "so.tilo.terminal"),
+                &ResourceKind::Application,
+            )
+            .expect("launching must be gated");
+            assert_eq!(verb, Verb::Write);
+            assert_eq!(cap, CapResource::App("so.tilo.terminal".to_string()));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn acting_needs_the_matching_capability_and_unclassified_acts_fail_closed() {
+        // Phase `acting_on_the_room_requires_the_matching_verb`.
+        // Acts on the room's contents need `Write`; membership needs `Invite`.
+        {
+            let write = [
+                "tab.new.terminal.here",
+                "window.new.terminal",
+                "tab.duplicate",
+                "notifications.dnd.toggle",
+            ];
+            for id in write {
+                let (_, verb) =
+                    required_capability(&resource("actions", id), &ResourceKind::Action)
+                        .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(verb, Verb::Write, "{id}");
+            }
+
+            for id in [
+                "peer.invite",
+                "peer.invite.named",
+                "peer.connect",
+                "agent.invite",
+            ] {
+                let (_, verb) =
+                    required_capability(&resource("actions", id), &ResourceKind::Action)
+                        .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(verb, Verb::Invite, "{id}");
+            }
+        }
+
+        // Phase `writing_into_a_document_requires_write`.
+        // Editing a document is an act, gated on `Write` like spawning a tab.
+        {
+            let (cap, verb) =
+                required_capability(&resource("actions", "text.insert"), &ResourceKind::Action)
+                    .expect("writing into a document must be gated");
+            assert_eq!(verb, Verb::Write);
+            assert_eq!(
+                cap,
+                CapResource::Action {
+                    app: SHELL_APP_ID.to_string(),
+                    action: "text.insert".to_string(),
+                }
+            );
+        }
+
+        // Phase `an_unauthorised_caller_cannot_see_the_document_edit`.
+        // Hides the edit from someone holding nothing while still showing
+        // them the document itself, against a real `Workspace`.
+        {
+            let owner: UserId = "owner".to_string();
+            let stranger: UserId = "stranger".to_string();
+            let mut ws = Workspace::new(WorkspaceId::new(), "edit-gate");
+            ws.owner = Some(owner.clone());
+
+            let edit = resource("actions", "text.insert");
+            let note = resource("notes", "15");
+
+            let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            assert!(
+                !stranger_view.can_see(&edit, &ResourceKind::Action),
+                "someone holding no capability must not be offered the edit"
+            );
+            assert!(
+                stranger_view.can_see(&note, &ResourceKind::Note),
+                "…but the document itself stays visible: showing is free"
+            );
+
+            let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
+            assert!(
+                owner_view.can_see(&edit, &ResourceKind::Action),
+                "the room's owner may edit its documents"
+            );
+
+            // A grant makes exactly that act appear.
+            let _ = ws.grant_capability(CapOverride::grant(
+                Subject::Principal(Principal::Person(stranger.clone())),
+                Scope::Workspace,
+                Verb::Write,
+            ));
+            let granted = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            assert!(
+                granted.can_see(&edit, &ResourceKind::Action),
+                "granting Write must make the edit reachable"
+            );
+        }
+
+        // Phase `an_unclassified_action_fails_closed`.
+        // A new provider landing without a mapping should go dark, not open.
+        {
+            let (_, verb) = required_capability(
+                &resource("actions", "some.provider.landed.without.a.mapping"),
+                &ResourceKind::Action,
+            )
+            .expect("an unmapped action must be gated, not waved through");
+            assert_eq!(verb, Verb::Write);
+        }
+
+        // Phase `the_gate_hides_acts_from_a_member_without_capabilities`.
+        // End-to-end: an owner sees gated actions, a member holding nothing
+        // does not, both still see the ungated ones.
+        {
+            let owner: UserId = "owner".to_string();
+            let stranger: UserId = "stranger".to_string();
+            let mut ws = Workspace::new(WorkspaceId::new(), "gate-test");
+            ws.owner = Some(owner.clone());
+
+            let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
+            let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+
+            let gated = resource("actions", "window.new.terminal");
+            let ungated = resource("actions", "settings.open");
+            let document = resource("notes", "note-1");
+
+            assert!(
+                owner_view.can_see(&gated, &ResourceKind::Action),
+                "the room's owner must see an act they may perform"
+            );
+            assert!(
+                !stranger_view.can_see(&gated, &ResourceKind::Action),
+                "someone holding no capability must not see the act"
+            );
+
+            // …but showing is never gated, for either of them.
+            for view in [&owner_view, &stranger_view] {
+                assert!(view.can_see(&ungated, &ResourceKind::Action));
+                assert!(view.can_see(&document, &ResourceKind::Note));
+            }
+
+            // A grant makes exactly that act appear, without opening
+            // anything else.
+            let _ = ws.grant_capability(CapOverride::grant(
+                Subject::Principal(Principal::Person(stranger.clone())),
+                Scope::Workspace,
+                Verb::Write,
+            ));
+            let granted_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            assert!(
+                granted_view.can_see(&gated, &ResourceKind::Action),
+                "granting Write must make the act visible"
+            );
+            assert!(
+                !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
+                "Write must not confer Invite"
+            );
+        }
     }
 }

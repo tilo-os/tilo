@@ -1,0 +1,121 @@
+//! The daemon's side of the handoff through the real process boundary: a
+//! `HandoffCredentialSource` whose refresher runs the
+//! `tilo-account-credential` binary against an explicit config root.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::path::Path;
+use std::sync::Arc;
+
+use accounts::{
+    Account, AccountId, AccountStore, CommandRefresher, HandoffCredentialSource, HandoffStore,
+    Secret, SecretVault,
+};
+use cloud_source::CredentialSource as _;
+
+const HELPER: &str = env!("CARGO_BIN_EXE_tilo-account-credential");
+
+fn save(root: &Path, id: &AccountId, type_id: &str, secret: Option<&Secret>) {
+    if let Some(secret) = secret {
+        let mut vault = SecretVault::open_in(root);
+        vault.put(id, secret);
+        vault.try_save().unwrap();
+    }
+    let mut store = AccountStore::load_in(root);
+    let mut account = Account::new(id.clone(), type_id);
+    account.config = serde_json::json!({"username": "ada", "base_url": "https://dav.example"});
+    store.upsert(account);
+    store.save_in(root).unwrap();
+}
+
+fn source(root: &Path, id: &AccountId) -> HandoffCredentialSource {
+    HandoffCredentialSource::new(
+        id.clone(),
+        HandoffStore::open_in(root),
+        Arc::new(CommandRefresher::new(Some(root.to_path_buf())).with_program(HELPER)),
+    )
+}
+
+#[test]
+fn helper_publishes_a_valid_access_token_but_never_the_refresh_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let id = AccountId::from("drive-1");
+    let tokens = tilo_oauth::TokenSet {
+        access_token: "still-valid-access".into(),
+        refresh_token: "long-lived-refresh".into(),
+        expires_in: 3600,
+        obtained_at: tilo_clock::unix_now(),
+    };
+    save(
+        &root,
+        &id,
+        account_custody::providers::GOOGLE_DRIVE_TYPE,
+        Some(&account_custody::oauth_secret(&tokens)),
+    );
+    let credential = source(&root, &id).credential().unwrap();
+    match credential {
+        cloud_source::Credential::Bearer { token, expires } => {
+            assert_eq!(token.as_str(), "still-valid-access");
+            assert!(expires.is_some());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    // The helper's own output carries no secret either.
+    let output = std::process::Command::new(HELPER)
+        .args(["refresh", id.as_str(), "--config-root"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let streams = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!streams.contains("long-lived-refresh") && !streams.contains("still-valid-access"));
+}
+
+#[test]
+fn helper_exit_codes_reach_the_daemon_as_typed_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    // An OAuth account without a grant needs sign-in.
+    let unsigned = AccountId::from("drive-unsigned");
+    save(
+        &root,
+        &unsigned,
+        account_custody::providers::DROPBOX_TYPE,
+        None,
+    );
+    assert!(matches!(
+        source(&root, &unsigned).credential(),
+        Err(cloud_source::Error::Unauthorized)
+    ));
+    // A WebDAV account hands off the server's own Basic credential.
+    let dav = AccountId::from("dav-1");
+    save(
+        &root,
+        &dav,
+        account_custody::providers::WEBDAV_TYPE,
+        Some(&Secret::password("dav-password")),
+    );
+    match source(&root, &dav).credential().unwrap() {
+        cloud_source::Credential::Basic { username, password } => {
+            assert_eq!(username, "ada");
+            assert_eq!(password.as_str(), "dav-password");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let status = std::process::Command::new(HELPER)
+        .args(["refresh", "missing", "--config-root"])
+        .arg(&root)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(accounts::handoff::exit::FAILED));
+}

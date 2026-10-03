@@ -211,23 +211,23 @@ fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
 fn one_claimant_wins_custody(subject: &Subject<'_>) {
     let store = subject.store;
     let package = format!("so.tilo.claim-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
-    let key = StorageKey::package(package.clone());
-    // A retained source exists before anyone claims it.
+    let key = StorageKey::record(package.clone(), "room", "former");
+    // A former record exists before any successor claims it.
     let lease = store.lease_shared(&key).unwrap();
     store
         .write(&key, WriteOp::Replace(b"source".to_vec()), None)
         .unwrap();
     subject.committed(&key);
     drop(lease);
-    assert!(store.claim(&key, "room-a").unwrap());
-    assert!(!store.claim(&key, "room-b").unwrap());
+    assert!(store.claim(&key, "successor-a").unwrap());
+    assert!(!store.claim(&key, "successor-b").unwrap());
     assert!(
-        store.claim(&key, "room-a").unwrap(),
+        store.claim(&key, "successor-a").unwrap(),
         "the claimant may resume"
     );
-    let record = StorageKey::package_record(package, "rec");
+    let other = StorageKey::record(package, "room", "other");
     assert!(
-        store.claim(&record, "room-b").unwrap(),
+        store.claim(&other, "successor-b").unwrap(),
         "claims are per key"
     );
 }
@@ -239,7 +239,6 @@ fn keys_never_alias(subject: &Subject<'_>) {
         StorageKey::record("so.tilo.conformance", "room", record.clone()),
         StorageKey::record("so.tilo.conformance", "other-room", record.clone()),
         StorageKey::record("so.tilo.other", "room", record.clone()),
-        StorageKey::package_record("so.tilo.conformance", record.clone()),
         StorageKey::room_index("so.tilo.conformance", record.clone()),
         StorageKey::package(format!("so.tilo.alias-{record}")),
     ];

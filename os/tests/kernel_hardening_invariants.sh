@@ -12,6 +12,7 @@ arm64_kernel_config="$repo/os/kernel/config-fragments/aarch64.config"
 x86_kernel_config="$repo/os/kernel/config-fragments/x86_64.config"
 performance_sysctl="$repo/os/usr/lib/sysctl.d/70-tilo-performance.conf"
 image_recipe="$repo/os/Containerfile"
+initramfs_recipe="$repo/os/scripts/build-initramfs.sh"
 kargs="$repo/os/usr/lib/bootc/kargs.d/01-hardening.toml"
 fail=0
 
@@ -267,6 +268,10 @@ for required in \
     || bad "required kernel setting missing: $required"
 done
 
+# Without kernel NFS the base image's NFS userspace can only fail at boot.
+grep -Fq 'RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils' "$image_recipe" \
+  && grep -Fq '        nfs-common-utils rpcbind \' "$image_recipe" \
+  || bad 'the image keeps NFS userspace the kernel cannot serve (rpc_pipefs fails at boot)'
 grep -Fq '"preempt=full"' "$repo/os/usr/lib/bootc/kargs.d/03-boot.toml" \
   || bad 'signed UKI command line does not pin full dynamic preemption'
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
@@ -502,7 +507,6 @@ done
 for unit in \
   tilo-boot-entries.service \
   tilo-growfs-sysroot.service \
-  tilo-security-audit.service \
   tilo-secureboot-sign.service \
   tilo-system-extension-boot-pack-stage.service \
   tilo-system-extension-boot-pack-status.service; do
@@ -512,6 +516,11 @@ for unit in \
     grep -Fqx "$required" "$unit_path" \
       || bad "$unit does not yield background resources with $required"
   done
+done
+for required in 'Nice=19' 'CPUSchedulingPolicy=idle' 'CPUWeight=20' 'IOWeight=20' \
+    'IOSchedulingClass=idle'; do
+  grep -Fqx "$required" "$repo/os/usr/lib/systemd/system/tilo-security-audit.service" \
+    || bad "tilo-security-audit.service does not run idle with $required"
 done
 update_resources="$repo/os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf"
 for required in 'Nice=10' 'CPUWeight=20' 'IOWeight=20' \
@@ -539,14 +548,34 @@ for required in \
   'ProcSubset=pid' \
   'CapabilityBoundingSet=' \
   'AmbientCapabilities=' \
-  'ReadWritePaths=/boot' \
+  'StateDirectory=tilo/esp-plan/boot-entries' \
+  'StateDirectoryMode=0700' \
   'ReadOnlyPaths=/var/lib/tilo/secureboot' \
   'SystemCallFilter=@system-service' \
   'SystemCallFilter=~@privileged @resources'; do
   grep -Fqx "$required" "$boot_entries_unit" \
     || bad "boot-entry maintenance sandbox is missing: $required"
 done
-[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to the ESP'
+# /boot stays read-only: the unit stages plans, and only the ESP writer, with
+# CAP_SYS_ADMIN for its private remount alone, applies them.
+grep -q '^ReadWritePaths=.*/boot' "$boot_entries_unit" \
+  && bad 'boot-entry maintenance writes the ESP itself'
+esp_writer_unit="$repo/os/usr/lib/systemd/system/tilo-esp-write@.service"
+for required in \
+  'ExecStart=/usr/libexec/tilo-esp-write %i' \
+  'PrivateMounts=yes' \
+  'NoNewPrivileges=yes' \
+  'ProtectSystem=strict' \
+  'ReadWritePaths=/boot /var/lib/tilo/esp-plan/%i' \
+  'PrivateNetwork=yes' \
+  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+  'AmbientCapabilities=' \
+  'RestrictAddressFamilies=AF_UNIX' \
+  'SystemCallFilter=@system-service @mount'; do
+  grep -Fqx "$required" "$esp_writer_unit" \
+    || bad "ESP writer sandbox is missing: $required"
+done
+[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to staged, validated ESP plans'
 
 game_planner="$repo/crates/windows/compat-service/src/plan.rs"
 game_executor="$repo/crates/windows/compat-service/src/execute.rs"
@@ -587,22 +616,26 @@ grep -Fq 'install -D -m 0755 "$scudo" /usr/lib/tilo/libclang_rt.scudo_standalone
   && grep -Fq 'rpm -e --nodeps compiler-rt clang-resource-filesystem' "$image_recipe" \
   || bad 'runtime retains the full compiler-rt toolchain instead of only Scudo'
 
-grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
+grep -Fq 'dracut --force --reproducible --compress zstd' "$initramfs_recipe" \
   && ok 'signed initramfs uses low-latency Zstandard decompression'
-grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
+grep -Fq 'dracut --force --reproducible --compress zstd' "$initramfs_recipe" \
   || bad 'initramfs compression can regress to a slow distribution default'
 grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"' \
-  "$image_recipe" \
+  "$initramfs_recipe" \
   || bad 'local-root initramfs still carries unused network/NBDE attack surface'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \
-  && ok 'initramfs excludes non-root Ext4/XFS filesystem parsers'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \
-  || bad 'initramfs carries non-root Ext4/XFS filesystem attack surface'
-grep -Fq "printf '%s\\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
-  "$image_recipe" \
+grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
+  && ok 'initramfs supports Ext4 roots'
+grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
+  || bad 'initramfs cannot mount a supported Ext4 root'
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
+  && ok 'initramfs excludes non-root XFS filesystem parser'
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
+  || bad 'initramfs carries non-root XFS filesystem attack surface'
+grep -Fq "printf '%s\\n' amdgpu nouveau xe xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
+  "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
-grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$image_recipe" \
-  && grep -Fq -- "-path '*/fs/xfs/xfs.ko*'" "$image_recipe" \
+grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
+  && grep -Fq -- "-path '*/fs/xfs/xfs.ko*'" "$initramfs_recipe" \
   || bad 'image build does not preserve signed Ext4/XFS modules for post-root rescue use'
 
 for required in \
@@ -630,7 +663,7 @@ grep -Fq 'exit 1' "$audit" \
 for required in \
   "CONFIG_BPF_LSM=y" \
   "CONFIG_DEBUG_INFO_BTF=y" \
-  "*:bpf:*)"; do
+  "*,bpf,*)"; do
   grep -Fq "$required" "$audit" \
     || bad "runtime audit does not verify the systemd BPF-LSM prerequisite: $required"
 done
@@ -665,7 +698,7 @@ for required in \
   'NoNewPrivileges=yes' \
   'ProtectSystem=strict' \
   'ProtectHome=yes' \
-  'PrivateNetwork=yes' \
+  'RestrictAddressFamilies=AF_UNIX' \
   'PrivateTmp=yes' \
   'TimeoutStartSec=2min' \
   'DevicePolicy=closed' \
@@ -678,6 +711,11 @@ for required in \
   grep -Fqx "$required" "$audit_unit" \
     || bad "security audit sandbox is missing: $required"
 done
+# The audit inspects the host: a private network namespace has its own sysctl
+# defaults, and ProtectKernelModules= hides the running kernel's config.
+if grep -Eqx 'PrivateNetwork=yes|ProtectKernelModules=yes' "$audit_unit"; then
+  bad 'security audit sandbox hides the host state it verifies'
+fi
 if grep -Eq 'CAP_SYS_PTRACE|CAP_SYSLOG|/proc/\$fspid/maps' "$audit_unit" "$audit"; then
   bad 'read-only security audit retains process-inspection or kernel-log capabilities'
 fi
@@ -685,30 +723,43 @@ grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
   || bad 'security audit does not read kernel diagnostics through the journal'
 [ "$fail" -ne 0 ] || ok 'read-only security audit has a bounded runtime sandbox'
 
-hidepid_unit="$repo/os/usr/lib/systemd/system/tilo-hidepid.service"
-for ordering in \
-  'Before=systemd-user-sessions.service greetd.service' \
-  'TimeoutStartSec=5'; do
-  grep -Fqx "$ordering" "$hidepid_unit" \
-    || bad "global hidepid remount is not bounded before login: $ordering"
-done
-for required in \
-  'TimeoutStartSec=5' \
-  'NoNewPrivileges=yes' \
-  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
-  'AmbientCapabilities=' \
-  'MemoryDenyWriteExecute=yes' \
-  'RestrictAddressFamilies=AF_UNIX' \
-  'SystemCallArchitectures=native' \
-  'SystemCallFilter=@system-service @mount' \
-  'SystemCallFilter=~@debug @keyring @network-io @obsolete @resources'; do
-  grep -Fqx "$required" "$hidepid_unit" \
-    || bad "global /proc remount sandbox is missing: $required"
-done
-if grep -Eq '^(PrivateMounts|ProtectSystem|ProtectProc)=' "$hidepid_unit"; then
-  bad 'hidepid helper uses a private mount namespace, so its /proc remount cannot be global'
+# /proc stays a plain mount: hidepid hides PID 1 from every unprivileged
+# process, so libsystemd unit lookups fail (sd_pid_get_unit -> ESRCH) and
+# at-spi-bus-launcher cannot start the AT-SPI bus. Services under their own
+# users get a private hidepid view instead, and processes holding identity
+# keys turn non-dumpable, which keeps their environ and memory root-only.
+if grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" 2>/dev/null | grep -q .; then
+  bad "a global hidepid /proc remount is back: $(grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" | tr '\n' ' ')"
 fi
-[ "$fail" -ne 0 ] || ok 'global hidepid remount retains only its required mount privilege'
+for unit in tilo-relay tilo-fs-replica tilo-local-model; do
+  grep -Fqx 'ProtectProc=invisible' "$repo/os/usr/lib/systemd/system/$unit.service" \
+    || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
+done
+grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
+  "$repo/crates/collab/tilo-user-identity/src/persist.rs" \
+  || bad 'identity key holders no longer turn non-dumpable'
+[ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
+
+# systemd 259's user manager cannot start a second sandboxed process in a
+# unit with PrivateIPC=yes: the IPC namespace setup fails with EPERM and the
+# next exec exits 226/NAMESPACE, so the unit crash-loops. Such user units run
+# only their ExecStart; directories they need come from user-tmpfiles.d.
+for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
+  grep -Fqx 'PrivateIPC=yes' "$unit" || continue
+  if grep -Eq '^Exec(StartPre|StartPost|Condition|Reload|Stop|StopPost)=' "$unit"; then
+    bad "$(basename "$unit") runs a second process beside PrivateIPC=yes (226/NAMESPACE)"
+  fi
+done
+for dir in '%h/Remote' '%h/Shared' '%h/.cache/tilo/received-files'; do
+  grep -Eq "^d ${dir//./\\.}[[:space:]]" "$repo/os/usr/share/user-tmpfiles.d/tilo-fs.conf" \
+    || bad "user-tmpfiles.d/tilo-fs.conf does not create $dir for the filesystem services"
+done
+# systemd-tmpfiles --user reads user-tmpfiles.d from /etc and /usr/share,
+# never /usr/lib: a snippet there is silently dead.
+if grep -Eq '/usr/lib/user-tmpfiles\.d' "$repo/os/Containerfile" || [ -e "$repo/os/usr/lib/user-tmpfiles.d" ]; then
+  bad 'a user-tmpfiles.d snippet is installed under /usr/lib, which systemd-tmpfiles --user never reads'
+fi
+[ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
 rollback_exec="$repo/crates/system/tilo-rollback/src/exec.rs"

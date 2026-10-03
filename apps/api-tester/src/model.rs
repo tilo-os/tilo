@@ -380,25 +380,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_round_trips_through_string() {
+    fn http_method_round_trips_and_only_write_verbs_carry_a_body() {
         for m in HttpMethod::ALL {
-            assert_eq!(HttpMethod::from_str(m.as_str()), m);
+            assert_eq!(HttpMethod::from_str(m.as_str()), m, "round trip {m:?}");
         }
         // Unknown verbs fall back to GET.
         assert_eq!(HttpMethod::from_str("frobnicate"), HttpMethod::Get);
+
+        for (method, has_body) in [
+            (HttpMethod::Post, true),
+            (HttpMethod::Put, true),
+            (HttpMethod::Patch, true),
+            (HttpMethod::Get, false),
+            (HttpMethod::Delete, false),
+        ] {
+            assert_eq!(method.has_body(), has_body, "has_body {method:?}");
+        }
     }
 
+    /// The summaries the builder and response chrome display: enabled row
+    /// counts, status families, durations, and the bundled sample response.
     #[test]
-    fn only_write_verbs_carry_a_body() {
-        assert!(HttpMethod::Post.has_body());
-        assert!(HttpMethod::Put.has_body());
-        assert!(HttpMethod::Patch.has_body());
-        assert!(!HttpMethod::Get.has_body());
-        assert!(!HttpMethod::Delete.has_body());
-    }
-
-    #[test]
-    fn enabled_count_skips_disabled_and_blank() {
+    fn request_and_response_summaries_count_rows_bucket_statuses_and_format_durations() {
+        // Case "enabled count": skips disabled and blank rows.
         let rows = vec![
             KeyValue::new("a", "1"),
             {
@@ -408,11 +412,9 @@ mod tests {
             },
             KeyValue::blank(),
         ];
-        assert_eq!(Request::enabled_count(&rows), 1);
-    }
+        assert_eq!(Request::enabled_count(&rows), 1, "case enabled count");
 
-    #[test]
-    fn status_class_buckets_by_family() {
+        // Case "status class": buckets by family.
         let mut r = ResponseData {
             status: 200,
             status_text: "OK".into(),
@@ -422,18 +424,27 @@ mod tests {
             body: String::new(),
             content_type: String::new(),
         };
-        assert_eq!(r.status_class(), StatusClass::Success);
-        r.status = 301;
-        assert_eq!(r.status_class(), StatusClass::Redirect);
-        r.status = 404;
-        assert_eq!(r.status_class(), StatusClass::ClientError);
-        r.status = 503;
-        assert_eq!(r.status_class(), StatusClass::ServerError);
-    }
+        for (status, class) in [
+            (200, StatusClass::Success),
+            (301, StatusClass::Redirect),
+            (404, StatusClass::ClientError),
+            (503, StatusClass::ServerError),
+        ] {
+            r.status = status;
+            assert_eq!(r.status_class(), class, "case status {status}");
+        }
 
-    #[test]
-    fn human_duration_switches_to_seconds() {
-        assert_eq!(human_duration(84), "84 ms");
-        assert_eq!(human_duration(1200), "1.20 s");
+        // Case "human duration": switches to seconds.
+        assert_eq!(human_duration(84), "84 ms", "case duration 84");
+        assert_eq!(human_duration(1200), "1.20 s", "case duration 1200");
+
+        // Case "sample response": valid JSON with a 200 status.
+        let sample = crate::http::sample_response();
+        assert!(sample.is_json(), "case sample response");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&sample.body).is_ok(),
+            "case sample response"
+        );
+        assert_eq!(sample.status, 200, "case sample response");
     }
 }

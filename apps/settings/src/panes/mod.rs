@@ -35,6 +35,7 @@ pub mod personal_apps;
 pub mod power;
 pub mod printers;
 pub mod region;
+pub mod speakers;
 pub mod storage;
 pub mod time_date;
 pub mod updates;
@@ -63,7 +64,7 @@ pub(crate) fn preference_commit_context(
             "settings.preference-pane",
             label,
         )
-        .with_app("org.tilo.Settings", "Settings")
+        .with_app("so.tilo.settings", "Settings")
     })
 }
 
@@ -95,7 +96,7 @@ mod tests {
         );
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.tilo.Settings")
+            Some("so.tilo.settings")
         );
     }
 }

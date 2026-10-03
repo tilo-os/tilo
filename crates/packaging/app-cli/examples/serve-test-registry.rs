@@ -144,10 +144,7 @@ fn run() -> Result<(), String> {
     };
     sign_entry(&mut entry, &key);
     let owner = SigningKey::from_bytes(&[24; 32]);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
         sequence: 1,

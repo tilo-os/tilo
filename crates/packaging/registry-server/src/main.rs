@@ -34,9 +34,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
-    PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    fetch_version_bytes, inspect_bytes, inspect_entry, run_server,
+    AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
+    PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
+    default_data_dir, inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -81,6 +81,18 @@ enum Cmd {
         /// private signing remains in the reviewer's identity service.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Let pages on this exact origin (`https://host[:port]`) read GET
+        /// responses cross-origin, e.g. a browser runtime resolving apps.
+        /// Repeatable. POST and credentials are never allowed cross-origin.
+        #[arg(long = "cors-origin")]
+        cors_origins: Vec<String>,
+    },
+    /// Store a full .tapp under its BLAKE3 so `serve` hosts it at
+    /// `/artifacts/<blake3>.tapp`, and print that URL. Importing publishes
+    /// nothing: a version must still be submitted, reviewed and signed.
+    ImportArtifact {
+        /// The full .tapp to host.
+        file: PathBuf,
     },
     /// Bootstrap a fresh data-dir with a `handshake.toml`.
     /// Idempotent — writing over an existing file is not the
@@ -117,6 +129,11 @@ enum Cmd {
         /// Free-form note visible to the operator only.
         #[arg(long, default_value = "")]
         note: String,
+        /// Reverse-DNS namespace the publisher's package ids must lie in
+        /// (`com.example`, `io.github.<account>`); repeatable. Defaults to
+        /// `so.tilo`, Tilo's own.
+        #[arg(long = "namespace")]
+        namespaces: Vec<String>,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -169,6 +186,11 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Delete staged packages, thin packages and payload blobs that no
+    /// published, quarantined or pending entry references any more, and keep
+    /// remaining staged packages as their thin form and shared blobs.
+    /// Promotion does this after every publish.
+    PruneStorage,
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -207,6 +229,34 @@ enum Cmd {
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
+    },
+    /// Decide on keys asking to publish under namespaces they proved.
+    Applications {
+        #[command(subcommand)]
+        command: ApplicationsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApplicationsCommand {
+    /// List applications waiting for a decision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check the proofs again and allowlist the key for their namespaces.
+    Approve {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+    },
+    /// Turn an application down; the key's allowlist row is untouched.
+    Reject {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -265,6 +315,7 @@ fn main() -> anyhow::Result<()> {
     tilo_rt::daemon("tilo-registry").run(serve_cli())?
 }
 
+#[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -281,7 +332,9 @@ async fn serve_cli() -> anyhow::Result<()> {
             port,
             bind,
             identity: _,
-        } => cmd_serve(storage, bind, port).await,
+            cors_origins,
+        } => cmd_serve(storage, bind, port, cors_origins).await,
+        Cmd::ImportArtifact { file } => cmd_import_artifact(&storage, &file),
         Cmd::Init {
             owner_pubkey,
             name,
@@ -300,7 +353,8 @@ async fn serve_cli() -> anyhow::Result<()> {
             pubkey,
             can_add_new,
             note,
-        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note),
+            namespaces,
+        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note, namespaces),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
         Cmd::AuthorizeChannel {
@@ -345,6 +399,7 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
+        Cmd::PruneStorage => cmd_prune_storage(&storage),
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -358,12 +413,16 @@ async fn serve_cli() -> anyhow::Result<()> {
             owner_key_file,
             valid_for_seconds,
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
-        Cmd::Review { command } => cmd_review(&storage, command),
+        // Review fetches packages with a blocking HTTP client, which must not
+        // run (or be dropped) on an async worker.
+        Cmd::Applications { command } => cmd_applications(&storage, command),
+        Cmd::Review { command } => tilo_rt::io::run(move || Ok(cmd_review(&storage, command)))
+            .await
+            .map_err(|error| anyhow::anyhow!("review: {error}"))?,
     }
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "each argument is a separately audited CronJob control at the CLI boundary"
 )]
@@ -504,7 +563,7 @@ fn cmd_collect_first_party(
         ..InspectionPolicy::default()
     };
     let persisted_digests = Mutex::new(BTreeSet::new());
-    let staged = stage_collected_promotion(
+    let (staged, failures) = stage_collected_promotion(
         storage,
         publisher_hex,
         submissions,
@@ -513,10 +572,26 @@ fn cmd_collect_first_party(
             collect_submission_artifacts(storage, pending, publisher, policy, &persisted_digests)
         },
     )?;
+    let failed = failures
+        .iter()
+        .map(|(submission_id, error)| {
+            serde_json::json!({"submission": submission_id, "error": format!("{error:#}")})
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
-        serde_json::json!({"status": "staged", "collected": staged.submissions.len()})
+        serde_json::json!({
+            "status": if failures.is_empty() { "staged" } else { "incomplete" },
+            "collected": staged.as_ref().map_or(0, |staged| staged.submissions.len()),
+            "failed": failed,
+        })
     );
+    if let Some((submission_id, error)) = failures.first() {
+        anyhow::bail!(
+            "{} submission(s) stay pending; first: {submission_id}: {error:#}",
+            failures.len()
+        );
+    }
     Ok(())
 }
 
@@ -534,14 +609,29 @@ fn collect_submission_artifacts(
     }
     let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
     for version in &pending.change.entry.versions {
-        let (inspection, bytes) = fetch_version_bytes(&pending.change.entry, version, policy)?;
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+        // Staged bytes are content-addressed by the digest the publisher
+        // signed, so an update that repeats already collected versions needs
+        // no refetch, and those versions stay collectable after their
+        // advertised URL stops serving them. They pass the same inspection.
+        let inspection =
+            if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
+                inspect_bytes(&pending.change.entry, version, &bytes)?
+            } else {
+                let (inspection, bytes) = registry_server::review_version_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    policy,
+                )?;
+                let digest = blake3::hash(&bytes).to_hex().to_string();
+                persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+                inspection
+            };
         artifacts.push(StagedArtifact {
             submission_id: pending.submission_id.clone(),
             version: inspection.version,
             target: Some(version.target.clone()),
-            blake3_hex: digest,
+            blake3_hex: version.tapp_blake3_hex.to_ascii_lowercase(),
         });
     }
     Ok(artifacts)
@@ -568,13 +658,16 @@ fn persist_distinct_artifact(
     Ok(())
 }
 
+/// Submissions whose artifacts could not be collected, with the reason.
+type CollectionFailures = Vec<(String, anyhow::Error)>;
+
 fn stage_collected_promotion<F>(
     storage: &Storage,
     publisher_pubkey_hex: String,
     submissions: Vec<registry_server::PendingSubmission>,
     parallelism: NonZeroUsize,
     collect: F,
-) -> anyhow::Result<StagedPromotion>
+) -> anyhow::Result<(Option<StagedPromotion>, CollectionFailures)>
 where
     F: Fn(&registry_server::PendingSubmission) -> anyhow::Result<Vec<StagedArtifact>> + Sync,
 {
@@ -582,19 +675,38 @@ where
     // failed recollection may leave harmless content-addressed bytes behind,
     // but never a manifest the networkless signer could publish.
     let _deleted = storage.delete_staged_promotion()?;
-    let collected = bounded_parallel_map(&submissions, parallelism, collect)?;
-    let mut artifacts = collected.into_iter().flatten().collect::<Vec<_>>();
+    let collected = bounded_parallel_map(&submissions, parallelism, |pending| {
+        Ok::<_, std::convert::Infallible>(collect(pending))
+    })
+    .unwrap_or_else(|never| match never {});
+    // Every submission is verified on its own, so one whose artifacts cannot
+    // be collected stays pending while the complete ones are staged.
+    let mut staged_submissions = Vec::with_capacity(submissions.len());
+    let mut artifacts = Vec::new();
+    let mut failures = Vec::new();
+    for (pending, result) in submissions.into_iter().zip(collected) {
+        match result {
+            Ok(collected) => {
+                artifacts.extend(collected);
+                staged_submissions.push(pending);
+            }
+            Err(error) => failures.push((pending.submission_id, error)),
+        }
+    }
+    if staged_submissions.is_empty() {
+        return Ok((None, failures));
+    }
     artifacts.sort_by(|left, right| {
         staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
     });
     let staged = StagedPromotion {
         publisher_pubkey_hex,
         collected_at_unix: unix_now(),
-        submissions,
+        submissions: staged_submissions,
         artifacts,
     };
     storage.save_staged_promotion(&staged)?;
-    Ok(staged)
+    Ok((Some(staged), failures))
 }
 
 fn bounded_parallel_map<T, R, E, F>(
@@ -675,6 +787,13 @@ fn cmd_sign_delegated_snapshot(
         candidate.issued_at_unix,
     )?;
     writer.publish(&candidate)?;
+    publish_compact(
+        &writer,
+        &candidate,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&candidate)?);
     Ok(())
@@ -705,7 +824,10 @@ fn cmd_publish_staged_first_party(
         )?;
         let moderation = ModerationService::new(storage.clone());
         moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+        let pruned = writer.prune_unreferenced()?;
+        let history = writer.compact_history()?;
         drop(writer);
+        let pruned = compact_after_prune(storage, pruned)?;
         println!(
             "{}",
             serde_json::json!({
@@ -713,6 +835,8 @@ fn cmd_publish_staged_first_party(
                 "promoted": journal.submissions.len(),
                 "sequence": journal.candidate_snapshot.sequence,
                 "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+                "pruned": pruned,
+                "history": history,
             })
         );
         return Ok(());
@@ -858,8 +982,17 @@ fn cmd_publish_staged_first_party(
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
+    publish_compact(
+        &writer,
+        &journal.candidate_snapshot,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
     drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
     println!(
         "{}",
         serde_json::json!({
@@ -867,7 +1000,37 @@ fn cmd_publish_staged_first_party(
             "promoted": reviews.len(),
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+            "pruned": pruned,
+            "history": history,
         })
+    );
+    Ok(())
+}
+
+/// After pruning what no entry references any more, such as the versions a
+/// full entry just let go, compact staged packages one lock at a time.
+fn compact_after_prune(
+    storage: &Storage,
+    pruned: PruneReport,
+) -> anyhow::Result<serde_json::Value> {
+    let compacted = storage.compact_staged_artifacts()?;
+    Ok(serde_json::json!({
+        "staged_artifacts": pruned.staged_artifacts,
+        "thin_packages": pruned.thin_packages,
+        "payload_blobs": pruned.payload_blobs,
+        "compacted_staged_artifacts": compacted,
+    }))
+}
+
+fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
+    let writer = storage.lock_snapshot()?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
+    drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
+    println!(
+        "{}",
+        serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
     );
     Ok(())
 }
@@ -1036,6 +1199,8 @@ fn cmd_sign_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
@@ -1055,9 +1220,19 @@ fn cmd_rollback_snapshot(
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
     refuse_active_promotion(storage)?;
-    let target = writer
-        .sequence(to_sequence)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let target =
+        writer
+            .sequence(to_sequence)?
+            .ok_or_else(|| match storage.history_compaction() {
+                Ok(Some(compaction)) if to_sequence <= compaction.through_sequence => {
+                    anyhow::anyhow!(
+                        "snapshot sequence {to_sequence} was compacted (history is pruned through \
+                 {}); restore it from a backup",
+                        compaction.through_sequence
+                    )
+                }
+                _ => anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"),
+            })?;
     let current = writer
         .current()?
         .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
@@ -1106,8 +1281,25 @@ fn cmd_rollback_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+/// Sign and publish the compact form of the snapshot just published, with
+/// the key that signed it.
+fn publish_compact(
+    writer: &registry_server::storage::SnapshotLock<'_>,
+    snapshot: &SignedRegistrySnapshot,
+    key: &ed25519_dalek::SigningKey,
+    owner_pubkey_hex: &str,
+) -> anyhow::Result<()> {
+    let (mut compact, indexes) = registry_types::compact_snapshot(snapshot)?;
+    registry_types::sign_compact_snapshot(&mut compact, key)?;
+    registry_types::verify_compact_snapshot(&compact, owner_pubkey_hex, compact.issued_at_unix)?;
+    writer.publish_compact(&compact, &indexes)?;
     Ok(())
 }
 
@@ -1220,7 +1412,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let inspection: Vec<_> = fetch_for_decision(storage, &pending, allow_insecure_local)?
+                .into_iter()
+                .map(|(inspection, _bytes)| inspection)
+                .collect();
             if json {
                 println!(
                     "{}",
@@ -1255,9 +1450,19 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let _inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
+            // Serve the reviewed bytes as blobs and thin packages, so clients
+            // fetch only what they lack.
+            // An approved upload becomes the artifact its version's URL names.
+            for (_inspection, bytes) in &reviewed {
+                storage.save_payload_blobs(bytes)?;
+                let digest = blake3::hash(bytes).to_hex().to_string();
+                if storage.load_upload(&digest)?.is_some() {
+                    storage.import_artifact(bytes)?;
+                }
+            }
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
@@ -1304,10 +1509,11 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
-fn inspect_for_decision(
+fn fetch_for_decision(
+    storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
-) -> anyhow::Result<Vec<registry_server::InspectedVersion>> {
+) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
     if pending.change.action == EntryAction::Delete {
         return Ok(Vec::new());
     }
@@ -1315,11 +1521,32 @@ fn inspect_for_decision(
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    inspect_entry(&pending.change.entry, policy).map_err(Into::into)
+    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
+}
+
+fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
+    let bytes = std::fs::read(file).map_err(|e| anyhow::anyhow!("read {}: {e}", file.display()))?;
+    let digest = storage.import_artifact(&bytes)?;
+    let base = storage.load_identity()?.base_url;
+    println!("{}/artifacts/{digest}.tapp", base.trim_end_matches('/'));
+    Ok(())
 }
 
 /// `Cmd::Serve` — load the identity + allowlist and serve until ctrl-c.
-async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<()> {
+async fn cmd_serve(
+    storage: Storage,
+    bind: IpAddr,
+    port: u16,
+    cors_origins: Vec<String>,
+) -> anyhow::Result<()> {
+    if let Some(invalid) = cors_origins
+        .iter()
+        .find(|origin| !registry_server::serve::valid_cors_origin(origin))
+    {
+        anyhow::bail!(
+            "--cors-origin {invalid:?} is not an exact origin like https://tilo.so or http://localhost:4321"
+        );
+    }
     let ident: ServerIdentity = storage
         .load_identity()
         .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;
@@ -1337,7 +1564,14 @@ async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<
         allow.publishers.len(),
         storage.publishers_path().display()
     );
-    let state = AppState::new(storage, ident);
+    if !cors_origins.is_empty() {
+        info!("cross-origin GET reads allowed for {cors_origins:?}");
+    }
+    let state = AppState::with_options(
+        storage,
+        ident,
+        registry_server::serve::ServeOptions { cors_origins },
+    );
     let addr = SocketAddr::new(bind, port);
     run_server(addr, state).await?;
     Ok(())
@@ -1405,7 +1639,17 @@ fn cmd_add_publisher(
     pubkey: &str,
     can_add_new: bool,
     note: String,
+    mut namespaces: Vec<String>,
 ) -> anyhow::Result<()> {
+    if namespaces.is_empty() {
+        namespaces.push(registry_types::namespace::TILO_NAMESPACE.to_owned());
+    }
+    if let Some(bad) = namespaces
+        .iter()
+        .find(|namespace| !registry_types::namespace::valid_namespace(namespace))
+    {
+        anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
+    }
     let transaction = storage.lock_snapshot()?;
     refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
@@ -1415,6 +1659,7 @@ fn cmd_add_publisher(
         pubkey_hex: pubkey.to_string(),
         can_add_new,
         note,
+        namespaces,
     };
     let bytes = row.pubkey_bytes()?;
     if bytes == [0; 32] || ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_err() {
@@ -1487,6 +1732,61 @@ fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
 }
 
 /// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
+fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::Result<()> {
+    use registry_server::applications::{self, ApplicationStatus, NetworkProofs};
+    match command {
+        ApplicationsCommand::List { json } => {
+            let mut waiting: Vec<_> = storage
+                .load_publisher_applications()?
+                .into_iter()
+                .filter(|stored| stored.status == ApplicationStatus::Pending)
+                .collect();
+            waiting.sort_by_key(|stored| stored.received_at_unix);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&waiting)?);
+                return Ok(());
+            }
+            for stored in &waiting {
+                println!(
+                    "{}  {}  {}",
+                    stored.application.pubkey_hex,
+                    stored.namespaces().join(","),
+                    stored.application.contact
+                );
+                for claim in &stored.verified {
+                    println!("    {} via {}", claim.namespace, claim.location);
+                }
+                if !stored.application.note.is_empty() {
+                    println!("    note: {}", stored.application.note);
+                }
+            }
+        }
+        ApplicationsCommand::Approve { pubkey, reviewer } => {
+            let (_, row) = applications::approve(
+                storage,
+                &pubkey,
+                &reviewer,
+                unix_now(),
+                &NetworkProofs::default(),
+            )?;
+            info!(
+                "allowlisted {} for {}",
+                row.pubkey_hex,
+                row.namespaces.join(", ")
+            );
+        }
+        ApplicationsCommand::Reject {
+            pubkey,
+            reviewer,
+            reason,
+        } => {
+            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            info!("rejected the application from {pubkey}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
     let allow: PublisherAllowlist = storage
         .load_allowlist()
@@ -1506,291 +1806,312 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     #[test]
-    fn bounded_parallel_map_preserves_order_and_respects_the_bound() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let peak = Arc::new(AtomicUsize::new(0));
-        let parallelism = NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
-        let barrier = Arc::new(Barrier::new(parallelism.get()));
-        let inputs = (0..8).collect::<Vec<_>>();
-        let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
-            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-            peak.fetch_max(current, Ordering::SeqCst);
-            barrier.wait();
-            active.fetch_sub(1, Ordering::SeqCst);
-            Ok(value * 2)
-        })
-        .unwrap();
-
-        assert_eq!(
-            output,
-            inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
-        );
-        assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
-    }
-
-    #[test]
-    fn bounded_parallel_map_stops_before_the_next_batch_after_an_error() {
-        let calls = AtomicUsize::new(0);
-        let error = bounded_parallel_map(
-            &[0, 1, 2, 3, 4, 5],
-            NonZeroUsize::new(4).unwrap(),
-            |value| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                if *value == 1 {
-                    Err("rejected")
-                } else {
-                    Ok(*value)
-                }
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error, "rejected");
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn collected_artifacts_are_sorted_and_duplicate_bytes_are_safe() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        let target = |architecture: &str| RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: architecture.into(),
-            isa: architecture.into(),
-            runtime: None,
-        };
-        let shared_bytes = b"same verified tapp".to_vec();
-        let digest = blake3::hash(&shared_bytes).to_hex().to_string();
-        let submissions = ["so.tilo.zeta", "so.tilo.alpha"]
-            .into_iter()
-            .map(|package_id| {
-                let mut entry = publisher_entry(&publisher);
-                entry.package_id = package_id.into();
-                sign_entry(&mut entry, &publisher);
-                registry_server::PendingSubmission {
-                    submission_id: package_id.into(),
-                    submitted_at_unix: 1,
-                    change: registry_types::sign_change_request(
-                        EntryAction::Add,
-                        entry,
-                        &publisher,
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
-        let persisted = Mutex::new(BTreeSet::new());
-        let staged = stage_collected_promotion(
-            &storage,
-            publisher_hex,
-            submissions,
-            NonZeroUsize::new(2).unwrap(),
-            |pending| {
-                persist_distinct_artifact(&storage, &persisted, &digest, &shared_bytes)?;
-                let architecture = if pending.submission_id.ends_with("alpha") {
-                    "aarch64"
-                } else {
-                    "x86_64"
-                };
-                Ok(vec![StagedArtifact {
-                    submission_id: pending.submission_id.clone(),
-                    version: "1.0.0".into(),
-                    target: Some(target(architecture)),
-                    blake3_hex: digest.clone(),
-                }])
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            staged
-                .artifacts
-                .iter()
-                .map(|artifact| artifact.submission_id.as_str())
-                .collect::<Vec<_>>(),
-            ["so.tilo.alpha", "so.tilo.zeta"]
-        );
-        assert!(
-            staged
-                .artifacts
-                .iter()
-                .all(|artifact| artifact.blake3_hex == digest)
-        );
-        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
-    }
-
-    #[test]
-    fn failed_collection_leaves_written_bytes_but_no_publishable_manifest() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        let submissions = ["so.tilo.alpha", "so.tilo.beta"]
-            .into_iter()
-            .map(|package_id| {
-                let mut entry = publisher_entry(&publisher);
-                entry.package_id = package_id.into();
-                sign_entry(&mut entry, &publisher);
-                registry_server::PendingSubmission {
-                    submission_id: package_id.into(),
-                    submitted_at_unix: 1,
-                    change: registry_types::sign_change_request(
-                        EntryAction::Add,
-                        entry,
-                        &publisher,
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
-        storage
-            .save_staged_promotion(&StagedPromotion {
-                publisher_pubkey_hex: publisher_hex.clone(),
-                collected_at_unix: 1,
-                submissions: Vec::new(),
-                artifacts: Vec::new(),
-            })
-            .unwrap();
-        let bytes = b"verified first artifact".to_vec();
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        let persisted = Mutex::new(BTreeSet::new());
-
-        let error = stage_collected_promotion(
-            &storage,
-            publisher_hex,
-            submissions,
-            NonZeroUsize::new(1).unwrap(),
-            |pending| {
-                if pending.submission_id.ends_with("beta") {
-                    anyhow::bail!("second fetch failed");
-                }
-                persist_distinct_artifact(&storage, &persisted, &digest, &bytes)?;
-                Ok(vec![StagedArtifact {
-                    submission_id: pending.submission_id.clone(),
-                    version: "1.0.0".into(),
-                    target: Some(pending.change.entry.versions[0].target.clone()),
-                    blake3_hex: digest.clone(),
-                }])
-            },
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("second fetch failed"));
-        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-
-        // A crash retry starts with a fresh in-memory digest set. Re-saving the
-        // same content-addressed bytes verifies and reuses the durable artifact.
-        persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes).unwrap();
-    }
-
-    #[test]
-    fn failed_collection_invalidates_an_older_staged_batch() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        storage
-            .save_allowlist(&PublisherAllowlist {
-                publishers: vec![PublisherRow {
-                    pubkey_hex: publisher_hex.clone(),
-                    can_add_new: true,
-                    note: "first party".into(),
-                }],
-            })
-            .unwrap();
-        storage
-            .save_staged_promotion(&StagedPromotion {
-                publisher_pubkey_hex: publisher_hex.clone(),
-                collected_at_unix: 1,
-                submissions: Vec::new(),
-                artifacts: Vec::new(),
+    fn bounded_parallel_map_orders_bounds_and_stops_on_error() {
+        // phase: bounded_parallel_map_preserves_order_and_respects_the_bound
+        {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let parallelism =
+                NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
+            let barrier = Arc::new(Barrier::new(parallelism.get()));
+            let inputs = (0..8).collect::<Vec<_>>();
+            let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                barrier.wait();
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(value * 2)
             })
             .unwrap();
 
-        let mut entry = publisher_entry(&publisher);
-        entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
-        sign_entry(&mut entry, &publisher);
-        storage
-            .save_pending(&registry_server::PendingSubmission {
-                submission_id: entry.package_id.clone(),
-                submitted_at_unix: 2,
-                change: registry_types::sign_change_request(EntryAction::Add, entry, &publisher),
-            })
-            .unwrap();
-
-        assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-    }
-
-    #[test]
-    fn staged_artifacts_are_selected_by_version_and_target() {
-        let target = |architecture: &str, isa: &str| RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: architecture.into(),
-            isa: isa.into(),
-            runtime: None,
-        };
-        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let mut entry = publisher_entry(&key);
-        let mut arm = entry.versions[0].clone();
-        arm.target = target("aarch64", "aarch64-v8.2");
-        entry.versions.push(arm);
-        sign_entry(&mut entry, &key);
-        let pending = registry_server::PendingSubmission {
-            submission_id: entry.package_id.clone(),
-            submitted_at_unix: 1,
-            change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
-        };
-        let artifacts = [
-            StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: "1.0.0".into(),
-                target: Some(target("x86_64", "x86_64-v3")),
-                blake3_hex: "aa".repeat(32),
-            },
-            StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: "1.0.0".into(),
-                target: Some(target("aarch64", "aarch64-v8.2")),
-                blake3_hex: "bb".repeat(32),
-            },
-        ];
-        for version in &pending.change.entry.versions {
-            let matches = artifacts
-                .iter()
-                .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
-                .count();
             assert_eq!(
-                matches, 1,
-                "{} must select exactly one staged artifact",
-                version.target.architecture
+                output,
+                inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
             );
+            assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
         }
+        // phase: bounded_parallel_map_stops_before_the_next_batch_after_an_error
+        {
+            let calls = AtomicUsize::new(0);
+            let error = bounded_parallel_map(
+                &[0, 1, 2, 3, 4, 5],
+                NonZeroUsize::new(4).unwrap(),
+                |value| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if *value == 1 {
+                        Err("rejected")
+                    } else {
+                        Ok(*value)
+                    }
+                },
+            )
+            .unwrap_err();
 
-        let legacy = StagedArtifact {
-            submission_id: pending.submission_id.clone(),
-            version: "1.0.0".into(),
-            target: None,
-            blake3_hex: "cc".repeat(32),
-        };
-        assert!(
-            pending
-                .change
-                .entry
-                .versions
-                .iter()
-                .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
-            "a target-less artifact must fail closed when a version is multi-architecture"
-        );
+            assert_eq!(error, "rejected");
+            assert_eq!(calls.load(Ordering::SeqCst), 4);
+        }
+    }
 
-        let mut single = pending;
-        single.change.entry.versions.truncate(1);
-        assert!(staged_artifact_matches(
-            &legacy,
-            &single,
-            &single.change.entry.versions[0]
-        ));
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn artifact_collection_stages_complete_submissions_in_sorted_batches() {
+        // phase: collected_artifacts_are_sorted_and_duplicate_bytes_are_safe
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            let target = |architecture: &str| RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: architecture.into(),
+                runtime: None,
+            };
+            let shared_bytes = b"same verified tapp".to_vec();
+            let digest = blake3::hash(&shared_bytes).to_hex().to_string();
+            let submissions = ["so.tilo.zeta", "so.tilo.alpha"]
+                .into_iter()
+                .map(|package_id| {
+                    let mut entry = publisher_entry(&publisher);
+                    entry.package_id = package_id.into();
+                    sign_entry(&mut entry, &publisher);
+                    registry_server::PendingSubmission {
+                        submission_id: package_id.into(),
+                        submitted_at_unix: 1,
+                        change: registry_types::sign_change_request(
+                            EntryAction::Add,
+                            entry,
+                            &publisher,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let persisted = Mutex::new(BTreeSet::new());
+            let (staged, failures) = stage_collected_promotion(
+                &storage,
+                publisher_hex,
+                submissions,
+                NonZeroUsize::new(2).unwrap(),
+                |pending| {
+                    persist_distinct_artifact(&storage, &persisted, &digest, &shared_bytes)?;
+                    let architecture = if pending.submission_id.ends_with("alpha") {
+                        "aarch64"
+                    } else {
+                        "x86_64"
+                    };
+                    Ok(vec![StagedArtifact {
+                        submission_id: pending.submission_id.clone(),
+                        version: "1.0.0".into(),
+                        target: Some(target(architecture)),
+                        blake3_hex: digest.clone(),
+                    }])
+                },
+            )
+            .unwrap();
+            assert!(failures.is_empty());
+            let staged = staged.unwrap();
+
+            assert_eq!(
+                staged
+                    .artifacts
+                    .iter()
+                    .map(|artifact| artifact.submission_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["so.tilo.alpha", "so.tilo.zeta"]
+            );
+            assert!(
+                staged
+                    .artifacts
+                    .iter()
+                    .all(|artifact| artifact.blake3_hex == digest)
+            );
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
+        }
+        // phase: a_failed_submission_stays_out_of_the_staged_batch
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            let submissions = ["so.tilo.alpha", "so.tilo.beta"]
+                .into_iter()
+                .map(|package_id| {
+                    let mut entry = publisher_entry(&publisher);
+                    entry.package_id = package_id.into();
+                    sign_entry(&mut entry, &publisher);
+                    registry_server::PendingSubmission {
+                        submission_id: package_id.into(),
+                        submitted_at_unix: 1,
+                        change: registry_types::sign_change_request(
+                            EntryAction::Add,
+                            entry,
+                            &publisher,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            storage
+                .save_staged_promotion(&StagedPromotion {
+                    publisher_pubkey_hex: publisher_hex.clone(),
+                    collected_at_unix: 1,
+                    submissions: Vec::new(),
+                    artifacts: Vec::new(),
+                })
+                .unwrap();
+            let bytes = b"verified first artifact".to_vec();
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            let persisted = Mutex::new(BTreeSet::new());
+
+            let (staged, failures) = stage_collected_promotion(
+                &storage,
+                publisher_hex,
+                submissions.clone(),
+                NonZeroUsize::new(1).unwrap(),
+                |pending| {
+                    if pending.submission_id.ends_with("beta") {
+                        anyhow::bail!("second fetch failed");
+                    }
+                    persist_distinct_artifact(&storage, &persisted, &digest, &bytes)?;
+                    Ok(vec![StagedArtifact {
+                        submission_id: pending.submission_id.clone(),
+                        version: "1.0.0".into(),
+                        target: Some(pending.change.entry.versions[0].target.clone()),
+                        blake3_hex: digest.clone(),
+                    }])
+                },
+            )
+            .unwrap();
+
+            let [(failed_id, error)] = failures.as_slice() else {
+                panic!("expected one failed submission");
+            };
+            assert_eq!(failed_id, "so.tilo.beta");
+            assert!(error.to_string().contains("second fetch failed"));
+            let staged = staged.unwrap();
+            assert_eq!(staged.submissions, submissions[..1]);
+            assert_eq!(storage.load_staged_promotion().unwrap(), Some(staged));
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+
+            // A crash retry starts with a fresh in-memory digest set. Re-saving the
+            // same content-addressed bytes verifies and reuses the durable artifact.
+            persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes)
+                .unwrap();
+        }
+        // phase: failed_collection_invalidates_an_older_staged_batch
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            storage
+                .save_allowlist(&PublisherAllowlist {
+                    publishers: vec![PublisherRow {
+                        pubkey_hex: publisher_hex.clone(),
+                        can_add_new: true,
+                        note: "first party".into(),
+                        namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+                    }],
+                })
+                .unwrap();
+            storage
+                .save_staged_promotion(&StagedPromotion {
+                    publisher_pubkey_hex: publisher_hex.clone(),
+                    collected_at_unix: 1,
+                    submissions: Vec::new(),
+                    artifacts: Vec::new(),
+                })
+                .unwrap();
+
+            let mut entry = publisher_entry(&publisher);
+            entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
+            sign_entry(&mut entry, &publisher);
+            storage
+                .save_pending(&registry_server::PendingSubmission {
+                    submission_id: entry.package_id.clone(),
+                    submitted_at_unix: 2,
+                    change: registry_types::sign_change_request(
+                        EntryAction::Add,
+                        entry,
+                        &publisher,
+                    ),
+                })
+                .unwrap();
+
+            assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
+            assert!(storage.load_staged_promotion().unwrap().is_none());
+        }
+        // phase: staged_artifacts_are_selected_by_version_and_target
+        {
+            let target = |architecture: &str, isa: &str| RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: isa.into(),
+                runtime: None,
+            };
+            let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let mut entry = publisher_entry(&key);
+            let mut arm = entry.versions[0].clone();
+            arm.target = target("aarch64", "aarch64-v8.2");
+            entry.versions.push(arm);
+            sign_entry(&mut entry, &key);
+            let pending = registry_server::PendingSubmission {
+                submission_id: entry.package_id.clone(),
+                submitted_at_unix: 1,
+                change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
+            };
+            let artifacts = [
+                StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(target("x86_64", "x86_64-v3")),
+                    blake3_hex: "aa".repeat(32),
+                },
+                StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(target("aarch64", "aarch64-v8.2")),
+                    blake3_hex: "bb".repeat(32),
+                },
+            ];
+            for version in &pending.change.entry.versions {
+                let matches = artifacts
+                    .iter()
+                    .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
+                    .count();
+                assert_eq!(
+                    matches, 1,
+                    "{} must select exactly one staged artifact",
+                    version.target.architecture
+                );
+            }
+
+            let legacy = StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: None,
+                blake3_hex: "cc".repeat(32),
+            };
+            assert!(
+                pending
+                    .change
+                    .entry
+                    .versions
+                    .iter()
+                    .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
+                "a target-less artifact must fail closed when a version is multi-architecture"
+            );
+
+            let mut single = pending;
+            single.change.entry.versions.truncate(1);
+            assert!(staged_artifact_matches(
+                &legacy,
+                &single,
+                &single.change.entry.versions[0]
+            ));
+        }
     }
 
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
@@ -1873,7 +2194,7 @@ mod tests {
             base_url: "http://127.0.0.1".into(),
         };
         storage.save_identity(&identity).unwrap();
-        cmd_add_publisher(&storage, &publisher_hex, true, String::new()).unwrap();
+        cmd_add_publisher(&storage, &publisher_hex, true, String::new(), Vec::new()).unwrap();
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 

@@ -31,7 +31,7 @@
 use crate::argv;
 use crate::exec::{Runner, require};
 use crate::policy::{self, Prediction, Workspace};
-use crate::token::RollbackToken;
+use crate::token::{RollbackToken, SealedObject};
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::path::Path;
@@ -45,12 +45,10 @@ pub type Passphrase = Zeroizing<Vec<u8>>;
 ///
 /// # Errors
 ///
-/// Returns an error if `/dev/urandom` cannot be opened or read.
+/// Returns an error if the operating system's random source fails.
 pub fn new_passphrase() -> Result<Passphrase> {
-    use std::io::Read;
-    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
     let mut bytes = [0u8; 32];
-    f.read_exact(&mut bytes).context("reading /dev/urandom")?;
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
     Ok(Zeroizing::new(hex::encode(bytes).into_bytes()))
 }
 
@@ -250,7 +248,6 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
 ///
 /// Returns an error if creating the sealing parent, sealing with `tpm2_create`, or reading
 /// back the sealed public/private blobs fails.
-#[allow(clippy::too_many_arguments)]
 pub fn seal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -325,27 +322,14 @@ pub fn unseal(
     token.validate()?;
     let key_name = token.decoded_key_name()?;
     let predictions = token.decoded_predictions()?;
-    let selection = policy::pcr_selection(&token.pcr_bank, &token.pcrs);
-    let platform_selection = policy::pcr_selection(&token.pcr_bank, &token.platform_pcrs);
+    let sealed_policy = token.policy(&key_name);
     let parent = primary(runner, ws)?;
     let pub_file = ws.put("unseal.pub", &token.decoded_public()?)?;
     let priv_file = ws.put("unseal.priv", &token.decoded_private()?)?;
 
     let mut floor_refusal: Option<anyhow::Error> = None;
     for pred in &predictions {
-        let session = match policy::satisfy(
-            runner,
-            ws,
-            public_key_pem,
-            &key_name,
-            pred,
-            token.generation,
-            &selection,
-            &platform_selection,
-            token.nv_index,
-            token.nv_operand,
-            token.pin,
-        ) {
+        let session = match policy::satisfy(runner, ws, public_key_pem, &sealed_policy, pred) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(e) => {
@@ -420,7 +404,6 @@ fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn invoke_unseal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -704,59 +687,69 @@ pub fn kill_generation_slot(
     Ok(())
 }
 
-/// Build the whole seal + slot + token sequence for one generation.
+/// One generation to enroll.
+#[derive(Debug, Clone, Copy)]
+pub struct Enrollment<'a> {
+    pub generation: u64,
+    /// The floor the generation's `PolicyNV` operand is derived from.
+    pub floor: crate::counter::FloorState,
+    /// Signed predictions the token carries; at least one is required.
+    pub predictions: &'a [Prediction],
+    /// PIN to seal with, if any.
+    pub pin: Option<&'a [u8]>,
+}
+
+/// Build the whole seal + slot + token sequence for one generation. `authorising` is a
+/// secret that already opens `device`, used to add the new keyslot.
 ///
 /// # Errors
 ///
-/// Returns an error if `predictions` is empty, or if sealing, adding the keyslot, or
-/// importing the token fails.
-#[allow(clippy::too_many_arguments)]
+/// Returns an error if `enrollment.predictions` is empty, or if sealing, adding the keyslot,
+/// or importing the token fails.
 pub fn enroll_generation(
     runner: &dyn Runner,
     ws: &Workspace,
     device: &Path,
     cfg: &crate::Config,
-    generation: u64,
-    floor: crate::counter::FloorState,
-    predictions: &[Prediction],
+    enrollment: &Enrollment<'_>,
     authorising: &[u8],
-    pin: Option<&[u8]>,
 ) -> Result<(u32, u32)> {
+    let Enrollment {
+        generation,
+        floor,
+        predictions,
+        pin,
+    } = *enrollment;
     if predictions.is_empty() {
         bail!("refusing to enroll generation {generation} with no signed PCR prediction");
     }
     let key_name = policy::key_name(runner, ws, Path::new(&cfg.pcr_public_key))?;
-    let operand = floor.operand_for(generation)?;
-    let digest = policy::seal_policy(
-        runner,
-        ws,
-        &key_name,
-        &policy::pcr_selection(&cfg.pcr_bank, &cfg.platform_pcrs),
+    let sealed_policy = policy::GenerationPolicy {
         generation,
-        policy::NvConstraint {
+        key_name: &key_name,
+        pcr_bank: &cfg.pcr_bank,
+        pcrs: &cfg.pcrs,
+        platform_pcrs: &cfg.platform_pcrs,
+        nv: policy::NvConstraint {
             index: cfg.nv_index,
-            operand,
+            operand: floor.operand_for(generation)?,
         },
-        pin.is_some(),
-    )?;
+        pin: pin.is_some(),
+    };
+    let digest = policy::seal_policy(runner, ws, &sealed_policy)?;
     let pass = new_passphrase()?;
     let (pu, pr) = seal(runner, ws, &pass, &digest, pin)?;
 
     let slot = add_generation_slot(runner, ws, device, authorising, &pass, cfg.pbkdf.as_ref())?;
     let token = RollbackToken::new(
         slot,
-        generation,
-        cfg.nv_index,
-        operand,
+        &sealed_policy,
         floor.base,
-        &cfg.pcr_bank,
-        &cfg.pcrs,
-        &cfg.platform_pcrs,
-        pin.is_some(),
-        &pu,
-        &pr,
-        &key_name,
-        &digest,
+        &SealedObject {
+            public: &pu,
+            private: &pr,
+            policy_digest: &digest,
+        },
         predictions,
     );
     let token_id = free_token_id(runner, device)?;
@@ -791,41 +784,40 @@ Digests:
 ";
 
     #[test]
-    fn keyslots_are_parsed_from_a_real_dump() {
-        assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
-    }
-
-    #[test]
-    fn token_and_digest_sections_are_not_mistaken_for_keyslots() {
-        // The Tokens section also uses "  N: name"; the parser must stop at it.
-        let ks = parse_keyslots(DUMP);
-        assert!(
-            !ks.contains(&1),
-            "token id 1 leaked into the keyslot list: {ks:?}"
-        );
-    }
-
-    #[test]
-    fn an_empty_header_yields_no_keyslots() {
-        assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
-    }
-
-    #[test]
-    fn passphrases_are_hex_and_long_enough() {
-        let p = new_passphrase().unwrap();
-        assert_eq!(p.len(), 64);
-        assert!(p.iter().all(u8::is_ascii_hexdigit));
-        // Two calls must not agree.
-        assert_ne!(*p, *new_passphrase().unwrap());
-    }
-
-    #[test]
-    fn unseal_pin_auth_references_a_file_instead_of_exposing_the_pin() {
-        let auth = unseal_auth(
-            Path::new("/run/work/policy.ctx"),
-            Some(Path::new("/run/work/pin")),
-        );
-        assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
-        assert!(!auth.contains("246810"));
+    fn keyslot_dumps_parse_only_keyslots_and_secrets_stay_off_argv() {
+        // Phase `keyslots_are_parsed_from_a_real_dump`.
+        {
+            assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
+        }
+        // Phase `token_and_digest_sections_are_not_mistaken_for_keyslots`.
+        {
+            // The Tokens section also uses "  N: name"; the parser must stop at it.
+            let ks = parse_keyslots(DUMP);
+            assert!(
+                !ks.contains(&1),
+                "token id 1 leaked into the keyslot list: {ks:?}"
+            );
+        }
+        // Phase `an_empty_header_yields_no_keyslots`.
+        {
+            assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
+        }
+        // Phase `passphrases_are_hex_and_long_enough`.
+        {
+            let p = new_passphrase().unwrap();
+            assert_eq!(p.len(), 64);
+            assert!(p.iter().all(u8::is_ascii_hexdigit));
+            // Two calls must not agree.
+            assert_ne!(*p, *new_passphrase().unwrap());
+        }
+        // Phase `unseal_pin_auth_references_a_file_instead_of_exposing_the_pin`.
+        {
+            let auth = unseal_auth(
+                Path::new("/run/work/policy.ctx"),
+                Some(Path::new("/run/work/pin")),
+            );
+            assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
+            assert!(!auth.contains("246810"));
+        }
     }
 }

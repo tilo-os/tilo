@@ -30,7 +30,6 @@
 //! Source typing remains on the CRDT-native text path. Compile/filesystem work
 //! is exported as an effect and local navigation/zoom as view operations.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
@@ -39,18 +38,41 @@ use tilo_actions::{
 
 pub const OPERATION_TYPE: &str = "typst.operation";
 
+/// Bound how many live diagnostic / preview-page rows the palette materialises.
+pub const LIVE_EXTRA_RESOURCE_LIMIT: usize = 32;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypstOperation {
     Compile,
-    Save { path: Option<String> },
-    Open { path: Option<String> },
-    ExportPdf { path: Option<String> },
+    Save {
+        path: Option<String>,
+    },
+    Open {
+        path: Option<String>,
+    },
+    ExportPdf {
+        path: Option<String>,
+    },
     ZoomOut,
     ZoomIn,
     FitWidth,
     ToggleProblems,
     ShowEditor,
     ShowPreview,
+    /// Jump the editor caret to a live Problems-panel row (presentation cache).
+    GoToDiagnostic {
+        index: usize,
+    },
+    /// Scroll the preview to a compiled page index (0-based, presentation cache).
+    GoToPage {
+        page: usize,
+    },
+}
+
+/// Live presentation inputs for the resource tree — not CRDT.
+pub struct TypstResourceCtx<'a> {
+    pub diagnostics: &'a [crate::compile::Diagnostic],
+    pub page_count: usize,
 }
 
 #[allow(
@@ -68,10 +90,11 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
         | TypstOperation::ExportPdf { .. } => spec
             .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
-        TypstOperation::ZoomOut | TypstOperation::ZoomIn => {
-            spec.with_contract(ActionContract::view())
-        }
-        TypstOperation::ToggleProblems => spec.with_contract(ActionContract::view()),
+        TypstOperation::ZoomOut
+        | TypstOperation::ZoomIn
+        | TypstOperation::ToggleProblems
+        | TypstOperation::GoToDiagnostic { .. }
+        | TypstOperation::GoToPage { .. } => spec.with_contract(ActionContract::view()),
         TypstOperation::FitWidth | TypstOperation::ShowEditor | TypstOperation::ShowPreview => spec
             .with_contract(ActionContract::view())
             .retry_policy(RetryPolicy::Idempotent),
@@ -115,7 +138,10 @@ fn path_operation(
     .returns(ResultSpec::Job)
 }
 
-pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
+/// Static workspace door shared by [`tilo_resource::publish`] and the
+/// standalone tree — compile / save / zoom / open ride here, never as a second
+/// hosted root. Live diagnostics and preview pages are attached separately.
+pub fn workspace_resource() -> Resource {
     // Publish the same hierarchy a person sees: a workspace contains the
     // active document, which contains its rendered preview and export target.
     // This keeps global search and agents from seeing a flat pile of unrelated
@@ -184,13 +210,115 @@ pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
     ] {
         document = document.with_action(operation(id, label, kind, op));
     }
-    vec![
-        Resource::new("typst.workspace", "typst.workspace", "Typst workspace")
-            .with_action(path_operation("open", "Open Typst file", |path| {
-                TypstOperation::Open { path }
-            }))
-            .with_child(document),
-    ]
+    Resource::new("typst.workspace", "typst.workspace", "Typst workspace")
+        .with_action(path_operation("open", "Open Typst file", |path| {
+            TypstOperation::Open { path }
+        }))
+        .with_child(document)
+}
+
+fn truncate_label(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
+    }
+    let cut: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> Resource {
+    use crate::compile::DiagKind;
+    let severity = match diag.kind {
+        DiagKind::Error => "Error",
+        DiagKind::Warning => "Warning",
+    };
+    let loc = match (diag.line, diag.col) {
+        (Some(line), Some(col)) => format!("{line}:{col}"),
+        (Some(line), None) => format!("{line}"),
+        _ => "—".to_owned(),
+    };
+    let label = format!("{severity} · {loc} · {}", truncate_label(&diag.message, 48));
+    Resource::new(
+        format!("typst.diagnostic:{index}"),
+        "typst.diagnostic",
+        label,
+    )
+    .with_action(operation(
+        "open",
+        "Go to diagnostic",
+        OperationKind::View,
+        TypstOperation::GoToDiagnostic { index },
+    ))
+}
+
+fn preview_page_resource(page: usize) -> Resource {
+    Resource::new(
+        format!("typst.preview-page:{page}"),
+        "typst.preview-page",
+        format!("Page {}", page + 1),
+    )
+    .with_action(operation(
+        "open",
+        "Go to page",
+        OperationKind::View,
+        TypstOperation::GoToPage { page },
+    ))
+}
+
+/// Live Problems rows and preview-page hits — presentation cache, not CRDT.
+///
+/// Standalone [`resources`] nests these under `typst.document`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep jump targets without a second workspace root
+/// beside [`crate::resource::TypstEditor`].
+pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    if !ctx.diagnostics.is_empty() {
+        let mut problems = Resource::new(
+            "typst.problems",
+            "typst.problems",
+            format!("Problems · {}", ctx.diagnostics.len()),
+        );
+        for (index, diag) in ctx
+            .diagnostics
+            .iter()
+            .take(LIVE_EXTRA_RESOURCE_LIMIT)
+            .enumerate()
+        {
+            problems = problems.with_child(diagnostic_resource(index, diag));
+        }
+        extras.push(problems);
+    }
+    if ctx.page_count > 0 {
+        let mut pages = Resource::new(
+            "typst.preview-pages",
+            "typst.preview-pages",
+            format!("Preview pages · {}", ctx.page_count),
+        );
+        for page in 0..ctx.page_count.min(LIVE_EXTRA_RESOURCE_LIMIT) {
+            pages = pages.with_child(preview_page_resource(page));
+        }
+        extras.push(pages);
+    }
+    extras
+}
+
+/// Full standalone / `--shots` tree: the resource's published door, plus live
+/// diagnostics and preview pages on the open document.
+pub fn resources(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
+    let mut workspace = ui::tilo_resource::publish::<crate::resource::TypstEditor>(
+        "typst.workspace",
+        "Typst workspace",
+        &(),
+    );
+    if let Some(document) = workspace
+        .children
+        .iter_mut()
+        .find(|child| child.kind == "typst.document")
+    {
+        document.children.extend(live_extras(ctx));
+    }
+    vec![workspace]
 }
 
 /// Decode one operation payload advertised by this app.
@@ -249,14 +377,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -277,138 +407,192 @@ mod tests {
         }
     }
 
-    /// The document holds exactly one thing: the source text. There is no
-    /// structural CRDT (no map of documents, no settings object, no assets), so
-    /// there is nothing for an action to mutate beyond the native `Text`.
     #[test]
-    fn source_text_is_the_only_crdt_state() {
-        let (_app, doc) = synced();
-        let keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(
-            keys,
-            vec!["source".to_string()],
-            "the document holds only the source text, nothing structural: {keys:?}"
-        );
-        match doc.get(&ROOT, "source").unwrap() {
-            Some((Value::Object(ObjType::Text), _)) => {}
-            other => panic!("root[\"source\"] must be an Automerge Text, got {other:?}"),
+    fn source_text_is_the_only_crdt_state_and_replicates_as_native_diffs() {
+        // Case `source_text_is_the_only_crdt_state`:
+        // The document holds exactly one thing: the source text. There is no
+        // structural CRDT (no map of documents, no settings object, no assets), so
+        // there is nothing for an action to mutate beyond the native `Text`.
+        {
+            let (_app, doc) = synced();
+            let keys: Vec<String> = doc.keys(&ROOT).collect();
+            assert_eq!(
+                keys,
+                vec!["source".to_string()],
+                "the document holds only the source text, nothing structural: {keys:?}"
+            );
+            match doc.get(&ROOT, "source").unwrap() {
+                Some((Value::Object(ObjType::Text), _)) => {}
+                other => panic!("root[\"source\"] must be an Automerge Text, got {other:?}"),
+            }
+        }
+        // Case `typing_replicates_byte_identically_on_a_peer`:
+        // The collaboration guarantee the native text path already provides: a
+        // keystroke driven through the production `Widget::handle_event` splices
+        // into `root["source"]`, and an independent replica that merges the change
+        // converges byte-identically (same head hashes, not merely the same text) —
+        // exactly what an action executor would give, so no action is needed.
+        {
+            let (mut app, mut doc) = synced();
+            let src = source_id(&doc);
+            doc.commit();
+            let base = doc.save();
+            let before = doc.text(&src).unwrap();
+
+            let mut peer = AutoCommit::load(&base).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "precondition: replicas share a base"
+            );
+
+            // No modifiers → the keystroke falls through to the focused editor, which
+            // splices it into the bound source object on the CRDT-native text path.
+            assert!(
+                send(&mut app, &mut doc, &char_event("Z"), Modifiers::default()),
+                "keystroke consumed by the editor"
+            );
+            doc.commit();
+            let after = doc.text(&src).unwrap();
+            assert_eq!(
+                after.chars().count(),
+                before.chars().count() + 1,
+                "the keystroke inserted exactly one character into the shared text"
+            );
+
+            peer.merge_incoming(&mut doc).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "byte-identical convergence after merge"
+            );
+            assert_eq!(
+                peer.text(&src).unwrap(),
+                after,
+                "the peer sees the same source text"
+            );
+        }
+        // Case `switching_documents_is_a_native_text_diff`:
+        // Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
+        // Text — a native text diff — not a structural mutation. The source content
+        // changes, but the document still holds only the one `source` key and still
+        // the same `Text` object, so there is no structural operation to encode.
+        {
+            let (mut app, mut doc) = synced();
+            let src_before = source_id(&doc);
+            let text_before = doc.text(&src_before).unwrap();
+
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            assert!(
+                send(&mut app, &mut doc, &char_event("]"), ctrl),
+                "Ctrl+] consumed"
+            );
+
+            let keys: Vec<String> = doc.keys(&ROOT).collect();
+            assert_eq!(
+                keys,
+                vec!["source".to_string()],
+                "still only the source key: {keys:?}"
+            );
+            let src_after = source_id(&doc);
+            assert_eq!(
+                src_before, src_after,
+                "same Text object, spliced in place — not replaced"
+            );
+            assert_ne!(
+                doc.text(&src_after).unwrap(),
+                text_before,
+                "the switch swapped the source content"
+            );
         }
     }
 
     #[test]
-    fn file_effects_bind_direct_paths_and_keep_job_confirmation_contracts() {
-        let resources = resources(&AutoCommit::new());
-        for id in ["open", "save", "export-pdf"] {
-            let spec = tilo_actions::flatten(&resources)
-                .into_iter()
-                .find(|flat| flat.action.id == id)
-                .map(|flat| flat.action)
-                .unwrap();
-            assert_eq!(spec.params()[0].name, "path");
-            assert!(matches!(
-                spec.contract.execution,
-                ExecutionMode::Background { cancellable: true }
-            ));
-            assert_eq!(spec.contract.result, ResultSpec::Job);
-            assert!(!matches!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            ));
-            let args = serde_json::json!({"path": format!("/tmp/{id}")})
-                .as_object()
-                .unwrap()
-                .clone();
-            let encoded = spec.build_json(&args).unwrap();
-            let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
-            let (TypstOperation::Open { path }
-            | TypstOperation::Save { path }
-            | TypstOperation::ExportPdf { path }) = decoded
-            else {
-                unreachable!();
+    fn typst_exports_effect_and_view_operations_with_honest_contracts() {
+        // Case `file_effects_bind_direct_paths_and_keep_job_confirmation_contracts`.
+        {
+            let empty = TypstResourceCtx {
+                diagnostics: &[],
+                page_count: 0,
             };
-            assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
+            let resources = resources(&empty);
+            for id in ["open", "save", "export-pdf"] {
+                let spec = tilo_actions::flatten(&resources)
+                    .into_iter()
+                    .find(|flat| flat.action.id == id)
+                    .map(|flat| flat.action)
+                    .unwrap();
+                assert_eq!(spec.params()[0].name, "path");
+                assert!(matches!(
+                    spec.contract.execution,
+                    ExecutionMode::Background { cancellable: true }
+                ));
+                assert_eq!(spec.contract.result, ResultSpec::Job);
+                assert!(!matches!(
+                    spec.contract.confirmation,
+                    tilo_actions::ConfirmationPolicy::None
+                ));
+                let args = serde_json::json!({"path": format!("/tmp/{id}")})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+                let encoded = spec.build_json(&args).unwrap();
+                let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
+                let (TypstOperation::Open { path }
+                | TypstOperation::Save { path }
+                | TypstOperation::ExportPdf { path }) = decoded
+                else {
+                    unreachable!();
+                };
+                assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
+            }
         }
-    }
-
-    /// The collaboration guarantee the native text path already provides: a
-    /// keystroke driven through the production `Widget::handle_event` splices
-    /// into `root["source"]`, and an independent replica that merges the change
-    /// converges byte-identically (same head hashes, not merely the same text) —
-    /// exactly what an action executor would give, so no action is needed.
-    #[test]
-    fn typing_replicates_byte_identically_on_a_peer() {
-        let (mut app, mut doc) = synced();
-        let src = source_id(&doc);
-        doc.commit();
-        let base = doc.save();
-        let before = doc.text(&src).unwrap();
-
-        let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "precondition: replicas share a base"
-        );
-
-        // No modifiers → the keystroke falls through to the focused editor, which
-        // splices it into the bound source object on the CRDT-native text path.
-        assert!(
-            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default()),
-            "keystroke consumed by the editor"
-        );
-        doc.commit();
-        let after = doc.text(&src).unwrap();
-        assert_eq!(
-            after.chars().count(),
-            before.chars().count() + 1,
-            "the keystroke inserted exactly one character into the shared text"
-        );
-
-        peer.merge_incoming(&mut doc).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "byte-identical convergence after merge"
-        );
-        assert_eq!(
-            peer.text(&src).unwrap(),
-            after,
-            "the peer sees the same source text"
-        );
-    }
-
-    /// Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
-    /// Text — a native text diff — not a structural mutation. The source content
-    /// changes, but the document still holds only the one `source` key and still
-    /// the same `Text` object, so there is no structural operation to encode.
-    #[test]
-    fn switching_documents_is_a_native_text_diff() {
-        let (mut app, mut doc) = synced();
-        let src_before = source_id(&doc);
-        let text_before = doc.text(&src_before).unwrap();
-
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(
-            send(&mut app, &mut doc, &char_event("]"), ctrl),
-            "Ctrl+] consumed"
-        );
-
-        let keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(
-            keys,
-            vec!["source".to_string()],
-            "still only the source key: {keys:?}"
-        );
-        let src_after = source_id(&doc);
-        assert_eq!(
-            src_before, src_after,
-            "same Text object, spliced in place — not replaced"
-        );
-        assert_ne!(
-            doc.text(&src_after).unwrap(),
-            text_before,
-            "the switch swapped the source content"
-        );
+        // Case `exports_effect_and_view_operations_without_fake_document_actions`:
+        // The source remains native text while effects/views are discoverable.
+        {
+            let (mut app, doc) = synced();
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].kind, "typst.workspace");
+            assert_eq!(
+                resources[0].children.len(),
+                1,
+                "workspace owns the active document"
+            );
+            let document = &resources[0].children[0];
+            assert_eq!(document.kind, "typst.document");
+            assert!(
+                document
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "typst.preview")
+            );
+            assert!(
+                document
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "typst.export")
+            );
+            let actions = tilo_actions::flatten(&resources);
+            assert!(actions.iter().any(|a| {
+                a.action.id == "compile" && a.action.kind == tilo_actions::OperationKind::Effect
+            }));
+            assert!(actions.iter().any(|a| {
+                a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
+            }));
+            assert!(
+                actions.iter().all(|flat| {
+                    flat.action.kind != tilo_actions::OperationKind::Document
+                        || flat.action.id == "apply"
+                        || flat.action.id == "group"
+                }),
+                "the only document actions are the resource apply and group door"
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_none(),
+                "effects/views do not create document undo boundaries"
+            );
+        }
     }
 
     // Typst publishes only effects and views (the source is native text), so
@@ -417,51 +601,10 @@ mod tests {
     ui::action_contract_tests! {
         seed: synced().1,
         registry: tilo_actions::ActionRegistry::new(),
-        resources: |doc| resources(doc),
+        resources: |_| resources(&TypstResourceCtx {
+            diagnostics: &[],
+            page_count: 0,
+        }),
         palette: ["Open Typst file", "Save Typst file", "Recompile", "Export PDF", "Zoom in"],
-    }
-
-    /// The source remains native text while effects/views are discoverable.
-    #[test]
-    fn exports_effect_and_view_operations_without_fake_document_actions() {
-        let (mut app, doc) = synced();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].kind, "typst.workspace");
-        assert_eq!(
-            resources[0].children.len(),
-            1,
-            "workspace owns the active document"
-        );
-        let document = &resources[0].children[0];
-        assert_eq!(document.kind, "typst.document");
-        assert!(
-            document
-                .children
-                .iter()
-                .any(|child| child.kind == "typst.preview")
-        );
-        assert!(
-            document
-                .children
-                .iter()
-                .any(|child| child.kind == "typst.export")
-        );
-        let actions = tilo_actions::flatten(&resources);
-        assert!(actions.iter().any(|a| {
-            a.action.id == "compile" && a.action.kind == tilo_actions::OperationKind::Effect
-        }));
-        assert!(actions.iter().any(|a| {
-            a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
-        }));
-        assert!(
-            actions
-                .iter()
-                .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
-        );
-        assert!(
-            app.take_committed_action().is_none(),
-            "effects/views do not create document undo boundaries"
-        );
     }
 }

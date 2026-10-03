@@ -358,264 +358,275 @@ mod tests {
     }
 
     #[test]
-    fn provider_finds_events_by_title_location_and_notes() {
-        let model = seeded();
-        let mut notes = std::collections::HashMap::new();
-        let event = &model.events[0];
-        notes.insert(event.id.to_string(), "private launch dossier".into());
-        let provider = CalendarSearchProvider::new_with_notes(&model, &notes);
-        assert!(
-            provider
-                .search("design")
-                .iter()
-                .any(|hit| hit.title == "Design review")
-        );
-        assert!(
-            provider
-                .search("bright smiles")
-                .iter()
-                .any(|hit| hit.title == "Dentist")
-        );
-        assert!(
-            provider
-                .search("launch dossier")
-                .iter()
-                .any(|hit| hit.title == event.display_title())
-        );
-    }
-
-    #[test]
-    fn every_hit_has_a_canonical_resource_action() {
-        let model = seeded();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(CalendarSearchProvider::new(&model)));
-        let groups = registry.query_grouped("");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups[0].results.len(),
-            model.projects.len() + model.events.len() + model.tasks.len()
-        );
-        assert!(
-            groups[0]
-                .results
-                .iter()
-                .all(|hit| hit.action_address().is_some())
-        );
-    }
-
-    #[test]
-    fn unique_late_record_is_findable_without_a_corpus_scan() {
-        let mut records = 0;
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let mut model = seeded();
-                let template = model.events[0].clone();
-                model.events.extend(corpus.map(|row| {
-                    let mut event = template.clone();
-                    event.id = uuid::Uuid::from_u128(row.index as u128 + 1);
-                    event.title = row.text;
-                    event
-                }));
-                records = model.projects.len() + model.events.len() + model.tasks.len();
-                CalendarSearchProvider::new(&model)
-            },
-            3_000,
-        );
-        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
-        assert_eq!(page.inspected, 1);
-        let address = hit
-            .action_address()
-            .expect("a late hit retains its canonical address");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("the retained provider materializes the exact late resource");
-        assert_eq!(resource.id.as_str(), address.resource);
-        assert!(
-            tilo_actions::door::resolve(&[resource], &address).is_some(),
-            "the exact open action exists without constructing the resource tree"
-        );
-        assert_eq!(provider.stats().records, records);
-    }
-
-    #[test]
-    fn pages_bound_work_and_results_without_losing_broad_matches() {
-        let mut model = seeded();
-        let template = model.events[0].clone();
-        model.events = (0..257u128)
-            .map(|index| {
-                let mut event = template.clone();
-                event.id = uuid::Uuid::from_u128(index + 1);
-                event.title = format!("common calendar event {index}");
-                event
-            })
-            .collect();
-        model.tasks.clear();
-        model.projects.clear();
-        let provider = CalendarSearchProvider::new(&model);
-        let mut cursor = None;
-        let mut seen = BTreeSet::new();
-        loop {
-            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
-            assert!(page.inspected <= 17);
-            assert!(page.results.len() <= 5);
-            seen.extend(page.results.iter().map(|result| result.action_id.clone()));
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
-        }
-        assert_eq!(seen.len(), 257);
-    }
-
-    #[test]
-    fn oversized_result_requests_stay_within_the_shared_display_cap() {
-        let mut model = seeded();
-        let template = model.events[0].clone();
-        model.events = (0..(DEFAULT_SEARCH_RESULT_LIMIT as u128 + 32))
-            .map(|index| {
-                let mut event = template.clone();
-                event.id = uuid::Uuid::from_u128(index + 1);
-                event.title = format!("common capped event {index}");
-                event
-            })
-            .collect();
-        model.tasks.clear();
-        model.projects.clear();
-        let provider = CalendarSearchProvider::new(&model);
-
-        assert_eq!(
-            provider.search_limited("common", usize::MAX).len(),
-            DEFAULT_SEARCH_RESULT_LIMIT
-        );
-        let page = provider.search_page("common", None, 1_024, usize::MAX);
-        assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
-        assert!(page.inspected <= 1_024);
-    }
-
-    #[test]
-    fn stale_cursor_and_colliding_titles_keep_exact_stable_addresses() {
-        let mut model = seeded();
-        let template = model.events[0].clone();
-        let first_id = uuid::Uuid::from_u128(90_001);
-        let second_id = uuid::Uuid::from_u128(90_002);
-        for id in [first_id, second_id] {
-            let mut event = template.clone();
-            event.id = id;
-            event.title = "Same visible title".into();
-            model.events.push(event);
-        }
-        let provider = CalendarSearchProvider::new(&model);
-        let hits = provider.search_limited("same visible", 8);
-        let addresses: Vec<_> = hits
-            .iter()
-            .filter_map(SearchResult::action_address)
-            .filter(|address| {
-                address.resource == event_resource_id(first_id)
-                    || address.resource == event_resource_id(second_id)
-            })
-            .collect();
-        assert_eq!(
-            addresses.len(),
-            2,
-            "equal labels cannot collide in identity"
-        );
-        assert_ne!(addresses[0].resource, addresses[1].resource);
-        for address in &addresses {
-            let resource = provider
-                .resolve_action_resource(address)
-                .expect("each exact collision-safe address resolves");
-            assert_eq!(resource.id.as_str(), address.resource);
-            assert!(tilo_actions::door::resolve(&[resource], address).is_some());
-        }
-
-        let first_page = provider.search_page("same visible", None, 4, 1);
-        let cursor = first_page.next.expect("more collision-safe rows remain");
-        model.events[0].title = "revision invalidates cursors".into();
-        provider
-            .refresh(&model, &std::collections::HashMap::new())
-            .expect("a canonical revision rebuilds atomically");
-        assert!(
-            !provider.action_directory_cursor_is_current(&cursor),
-            "a cursor from the prior catalogue generation is stale"
-        );
-    }
-
-    #[test]
-    fn refresh_replaces_changed_rows_and_withdraws_deleted_resources() {
-        let mut model = seeded();
-        let provider = CalendarSearchProvider::new(&model);
-        let event = model.events[0].id;
-        model.events[0].title = "revised calendar event".into();
-        provider
-            .refresh(&model, &std::collections::HashMap::new())
-            .expect("canonical rows rebuild the search catalogue");
-        assert!(provider.search("revised").iter().any(
-            |result| result.action_address() == Some(crate::actions::open_event_address(event))
-        ));
-        model.events.retain(|candidate| candidate.id != event);
-        provider
-            .refresh(&model, &std::collections::HashMap::new())
-            .expect("canonical rows rebuild the search catalogue");
-        assert!(provider.search("revised").is_empty());
-    }
-
-    #[test]
-    fn configured_calendars_are_searchable_at_their_canonical_open_addresses() {
-        let model = seeded();
-        let provider = CalendarSearchProvider::new(&model);
-        let calendars = vec![crate::actions::CalendarCollectionResource {
-            id: "account/team".into(),
-            label: "Work · Team schedule".into(),
-            color: Some(0),
-            visible: true,
-        }];
-        provider
-            .refresh_with_calendars(&model, &std::collections::HashMap::new(), &calendars)
-            .expect("canonical rows rebuild the search catalogue");
-        let hit = provider
-            .search("team schedule")
-            .into_iter()
-            .find(|hit| hit.title == "Work · Team schedule")
-            .expect("configured collection is searchable");
-        assert_eq!(
-            hit.action_address(),
-            Some(crate::actions::open_calendar_address("account/team"))
-        );
-    }
-
-    #[test]
-    fn hidden_calendar_events_and_notes_do_not_enter_global_search() {
-        let mut model = seeded();
-        let event = &mut model.events[0];
-        event.title = "Private board strategy".into();
-        event.location = "Secret annex".into();
-        event.calendar_id = Some("work/private".into());
-        let mut notes = std::collections::HashMap::new();
-        notes.insert(event.id.to_string(), "restricted launch plan".into());
-        let provider = CalendarSearchProvider::new(&model);
-        let calendars = vec![crate::actions::CalendarCollectionResource {
-            id: "work/private".into(),
-            label: "Private work".into(),
-            color: None,
-            visible: false,
-        }];
-
-        provider
-            .refresh_with_calendars(&model, &notes, &calendars)
-            .expect("canonical rows rebuild the search catalogue");
-        for query in ["board strategy", "secret annex", "restricted launch"] {
+    fn provider_finds_events_and_calendars_at_canonical_resource_addresses() {
+        // Case `provider_finds_events_by_title_location_and_notes`.
+        {
+            let model = seeded();
+            let mut notes = std::collections::HashMap::new();
+            let event = &model.events[0];
+            notes.insert(event.id.to_string(), "private launch dossier".into());
+            let provider = CalendarSearchProvider::new_with_notes(&model, &notes);
             assert!(
-                provider.search(query).is_empty(),
-                "hidden event content escaped through query {query:?}"
+                provider
+                    .search("design")
+                    .iter()
+                    .any(|hit| hit.title == "Design review")
+            );
+            assert!(
+                provider
+                    .search("bright smiles")
+                    .iter()
+                    .any(|hit| hit.title == "Dentist")
+            );
+            assert!(
+                provider
+                    .search("launch dossier")
+                    .iter()
+                    .any(|hit| hit.title == event.display_title())
             );
         }
-
-        // The collection remains discoverable so the user can re-enable it,
-        // but its private event records stay absent.
-        assert!(
+        // Case `every_hit_has_a_canonical_resource_action`.
+        {
+            let model = seeded();
+            let mut registry = SearchRegistry::new();
+            registry.register(Box::new(CalendarSearchProvider::new(&model)));
+            let groups = registry.query_grouped("");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].results.len(),
+                model.projects.len() + model.events.len() + model.tasks.len()
+            );
+            assert!(
+                groups[0]
+                    .results
+                    .iter()
+                    .all(|hit| hit.action_address().is_some())
+            );
+        }
+        // Case `configured_calendars_are_searchable_at_their_canonical_open_addresses`.
+        {
+            let model = seeded();
+            let provider = CalendarSearchProvider::new(&model);
+            let calendars = vec![crate::actions::CalendarCollectionResource {
+                id: "account/team".into(),
+                label: "Work · Team schedule".into(),
+                color: Some(0),
+                visible: true,
+            }];
             provider
-                .search("private work")
+                .refresh_with_calendars(&model, &std::collections::HashMap::new(), &calendars)
+                .expect("canonical rows rebuild the search catalogue");
+            let hit = provider
+                .search("team schedule")
+                .into_iter()
+                .find(|hit| hit.title == "Work · Team schedule")
+                .expect("configured collection is searchable");
+            assert_eq!(
+                hit.action_address(),
+                Some(crate::actions::open_calendar_address("account/team"))
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn paging_bounds_work_and_results_while_keeping_exact_stable_addresses() {
+        // Case `unique_late_record_is_findable_without_a_corpus_scan`.
+        {
+            let mut records = 0;
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let mut model = seeded();
+                    let template = model.events[0].clone();
+                    model.events.extend(corpus.map(|row| {
+                        let mut event = template.clone();
+                        event.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        event.title = row.text;
+                        event
+                    }));
+                    records = model.projects.len() + model.events.len() + model.tasks.len();
+                    CalendarSearchProvider::new(&model)
+                },
+                3_000,
+            );
+            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            assert_eq!(page.inspected, 1);
+            let address = hit
+                .action_address()
+                .expect("a late hit retains its canonical address");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("the retained provider materializes the exact late resource");
+            assert_eq!(resource.id.as_str(), address.resource);
+            assert!(
+                tilo_actions::door::resolve(&[resource], &address).is_some(),
+                "the exact open action exists without constructing the resource tree"
+            );
+            assert_eq!(provider.stats().records, records);
+        }
+        // Case `pages_bound_work_and_results_without_losing_broad_matches`.
+        {
+            let mut model = seeded();
+            let template = model.events[0].clone();
+            model.events = (0..257u128)
+                .map(|index| {
+                    let mut event = template.clone();
+                    event.id = uuid::Uuid::from_u128(index + 1);
+                    event.title = format!("common calendar event {index}");
+                    event
+                })
+                .collect();
+            model.tasks.clear();
+            model.projects.clear();
+            let provider = CalendarSearchProvider::new(&model);
+            let mut cursor = None;
+            let mut seen = BTreeSet::new();
+            loop {
+                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                assert!(page.inspected <= 17);
+                assert!(page.results.len() <= 5);
+                seen.extend(page.results.iter().map(|result| result.action_id.clone()));
+                let Some(next) = page.next else { break };
+                cursor = Some(next);
+            }
+            assert_eq!(seen.len(), 257);
+        }
+        // Case `oversized_result_requests_stay_within_the_shared_display_cap`.
+        {
+            let mut model = seeded();
+            let template = model.events[0].clone();
+            model.events = (0..(DEFAULT_SEARCH_RESULT_LIMIT as u128 + 32))
+                .map(|index| {
+                    let mut event = template.clone();
+                    event.id = uuid::Uuid::from_u128(index + 1);
+                    event.title = format!("common capped event {index}");
+                    event
+                })
+                .collect();
+            model.tasks.clear();
+            model.projects.clear();
+            let provider = CalendarSearchProvider::new(&model);
+
+            assert_eq!(
+                provider.search_limited("common", usize::MAX).len(),
+                DEFAULT_SEARCH_RESULT_LIMIT
+            );
+            let page = provider.search_page("common", None, 1_024, usize::MAX);
+            assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(page.inspected <= 1_024);
+        }
+        // Case `stale_cursor_and_colliding_titles_keep_exact_stable_addresses`.
+        {
+            let mut model = seeded();
+            let template = model.events[0].clone();
+            let first_id = uuid::Uuid::from_u128(90_001);
+            let second_id = uuid::Uuid::from_u128(90_002);
+            for id in [first_id, second_id] {
+                let mut event = template.clone();
+                event.id = id;
+                event.title = "Same visible title".into();
+                model.events.push(event);
+            }
+            let provider = CalendarSearchProvider::new(&model);
+            let hits = provider.search_limited("same visible", 8);
+            let addresses: Vec<_> = hits
                 .iter()
-                .any(|hit| hit.title == "Private work")
-        );
+                .filter_map(SearchResult::action_address)
+                .filter(|address| {
+                    address.resource == event_resource_id(first_id)
+                        || address.resource == event_resource_id(second_id)
+                })
+                .collect();
+            assert_eq!(
+                addresses.len(),
+                2,
+                "equal labels cannot collide in identity"
+            );
+            assert_ne!(addresses[0].resource, addresses[1].resource);
+            for address in &addresses {
+                let resource = provider
+                    .resolve_action_resource(address)
+                    .expect("each exact collision-safe address resolves");
+                assert_eq!(resource.id.as_str(), address.resource);
+                assert!(tilo_actions::door::resolve(&[resource], address).is_some());
+            }
+
+            let first_page = provider.search_page("same visible", None, 4, 1);
+            let cursor = first_page.next.expect("more collision-safe rows remain");
+            model.events[0].title = "revision invalidates cursors".into();
+            provider
+                .refresh(&model, &std::collections::HashMap::new())
+                .expect("a canonical revision rebuilds atomically");
+            assert!(
+                !provider.action_directory_cursor_is_current(&cursor),
+                "a cursor from the prior catalogue generation is stale"
+            );
+        }
+    }
+
+    #[test]
+    fn index_withdraws_deleted_and_hidden_calendar_resources() {
+        // Case `refresh_replaces_changed_rows_and_withdraws_deleted_resources`.
+        {
+            let mut model = seeded();
+            let provider = CalendarSearchProvider::new(&model);
+            let event = model.events[0].id;
+            model.events[0].title = "revised calendar event".into();
+            provider
+                .refresh(&model, &std::collections::HashMap::new())
+                .expect("canonical rows rebuild the search catalogue");
+            assert!(
+                provider
+                    .search("revised")
+                    .iter()
+                    .any(|result| result.action_address()
+                        == Some(crate::actions::open_event_address(event)))
+            );
+            model.events.retain(|candidate| candidate.id != event);
+            provider
+                .refresh(&model, &std::collections::HashMap::new())
+                .expect("canonical rows rebuild the search catalogue");
+            assert!(provider.search("revised").is_empty());
+        }
+        // Case `hidden_calendar_events_and_notes_do_not_enter_global_search`.
+        {
+            let mut model = seeded();
+            let event = &mut model.events[0];
+            event.title = "Private board strategy".into();
+            event.location = "Secret annex".into();
+            event.calendar_id = Some("work/private".into());
+            let mut notes = std::collections::HashMap::new();
+            notes.insert(event.id.to_string(), "restricted launch plan".into());
+            let provider = CalendarSearchProvider::new(&model);
+            let calendars = vec![crate::actions::CalendarCollectionResource {
+                id: "work/private".into(),
+                label: "Private work".into(),
+                color: None,
+                visible: false,
+            }];
+
+            provider
+                .refresh_with_calendars(&model, &notes, &calendars)
+                .expect("canonical rows rebuild the search catalogue");
+            for query in ["board strategy", "secret annex", "restricted launch"] {
+                assert!(
+                    provider.search(query).is_empty(),
+                    "hidden event content escaped through query {query:?}"
+                );
+            }
+
+            // The collection remains discoverable so the user can re-enable it,
+            // but its private event records stay absent.
+            assert!(
+                provider
+                    .search("private work")
+                    .iter()
+                    .any(|hit| hit.title == "Private work")
+            );
+        }
     }
 }

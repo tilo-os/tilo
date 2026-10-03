@@ -5,9 +5,9 @@
 # bytes or silently turn this into a multi-architecture release.
 FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 
-# The same pinned, S3-capable sccache client as the OS image, from the
-# workflow's checksum-verified asset context. The runner's bucket-scoped
-# credential reaches only the compile RUN, as BuildKit secrets.
+# The same pinned sccache client as the OS image, from the workflow's
+# checksum-verified asset context. The runner's Actions cache URL and job token
+# reach only the compile RUN, as BuildKit secrets.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
@@ -18,18 +18,9 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
     && install -m 0755 "/tmp/${name}/sccache" /usr/local/bin/sccache \
     && rm -rf "/tmp/${name}"
 
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/registry-server/v1"
-ARG SCCACHE_S3_USE_SSL="false"
 ENV CARGO_INCREMENTAL=0 \
-    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
-    SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
-    SCCACHE_REGION=${SCCACHE_REGION} \
-    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
-    SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
     SCCACHE_IGNORE_SERVER_IO_ERROR=0 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     RUSTC_WRAPPER=/usr/local/bin/sccache
 
 WORKDIR /workspace
@@ -37,13 +28,18 @@ COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \
-    --mount=type=secret,id=aws_access_key_id,required=true \
-    --mount=type=secret,id=aws_secret_access_key,required=true \
-    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id)" \
-    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key)" \
-    && sccache --start-server \
+    --mount=type=secret,id=actions_cache_url,required=false \
+    --mount=type=secret,id=actions_runtime_token,required=false \
+    if [ -s /run/secrets/actions_cache_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
+      export ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url)"; \
+      export ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token)"; \
+      export SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-registry-server-v1; \
+      sccache --start-server; \
+    else \
+      unset RUSTC_WRAPPER; \
+    fi \
     && cargo build --locked --release -p registry-server --bin tilo-registry-server \
-    && sccache --show-stats \
+    && if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi \
     && install -D -m 0755 target/release/tilo-registry-server /out/tilo-registry-server \
     && install -d -m 0750 -o 65532 -g 65532 /out/state
 

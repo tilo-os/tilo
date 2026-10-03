@@ -35,18 +35,21 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         # object key. Sharing the namespace by architecture safely reuses the
         # large distro-neutral Rust graph while ABI-specific objects naturally
         # miss, instead of forcing five entirely isolated cold caches.
-        export SCCACHE_S3_KEY_PREFIX="tilo/package/v2/$arch"
+        # The runner's sccache backend is the job's Actions cache
+        # (SCCACHE_GHA_ENABLED, ACTIONS_CACHE_URL, ACTIONS_RUNTIME_TOKEN).
+        export SCCACHE_GHA_VERSION="tilo/package/v2/$arch"
         export SCCACHE_IGNORE_SERVER_IO_ERROR=1
         while IFS= read -r name; do
             cache_env+=(--env "$name")
-        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+        done < <(compgen -e | grep -E '^(SCCACHE_|ACTIONS_CACHE_URL$|ACTIONS_RUNTIME_TOKEN$)' || true)
     else
         # PRoot inherits this process's environment, unlike Docker where only
-        # cache_env is forwarded. Scrub runner-injected credentials before an
-        # untrusted pull request can enter either target userspace.
+        # cache_env is forwarded. Scrub the runner's cache configuration and
+        # any credentials before an untrusted pull request can enter either
+        # target userspace.
         while IFS= read -r name; do
             unset "$name"
-        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_|ACTIONS_CACHE_URL$|ACTIONS_RUNTIME_TOKEN$|RUSTC_WRAPPER$)' || true)
     fi
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -411,9 +414,22 @@ arch)
     fi
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
+    # Arch's rustup keeps toolchains per user, and the compiler cache turns
+    # auto-install off and probes rustc outside this checkout: install the
+    # pinned toolchain as the default for root and for the package builder.
+    useradd --create-home builder
+    toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+    rustup default "$toolchain"
+    su builder -c "cd /workspace && rustup toolchain install && rustup default '$toolchain'"
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
+    # The probe above started the cache server as root; makepkg compiles as
+    # the builder, which cannot read what a root server writes. Its first
+    # compile starts the builder's own server.
+    if [[ -n ${RUSTC_WRAPPER:-} ]]; then
+        "$RUSTC_WRAPPER" --stop-server >/dev/null
+    fi
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
@@ -421,7 +437,6 @@ arch)
     # in this userspace while retaining its portable Rust implementation.
     export TILO_BLAKE3_PURE=1
     stage=prepare-arch-builder
-    useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'

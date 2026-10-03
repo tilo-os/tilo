@@ -6,15 +6,17 @@
 //! with IME preedit excluded from application state until commit.
 
 use std::ops::Range;
+use std::sync::Arc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::richtext::RichTextLayout;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextStyle;
 use crate::text_selection::{
     Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary,
@@ -40,6 +42,38 @@ pub enum QueryEventChange {
     Edited,
 }
 
+/// The query a [`QueryComposition`] paints: the committed text and its
+/// selection, the placeholder shown while it is empty, and whether the caret
+/// is visible.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryView<'a> {
+    pub text: &'a str,
+    pub selection: &'a Selection,
+    pub placeholder: &'a str,
+    pub show_caret: bool,
+}
+
+/// The colours a [`QueryComposition`] paints with.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryInk {
+    pub text: Color,
+    pub placeholder: Color,
+    pub selection: Color,
+    pub caret: Color,
+}
+
+impl QueryInk {
+    /// Caret in `accent`, selection bands in `accent` at 30% alpha.
+    pub fn accented(text: Color, placeholder: Color, accent: Color) -> Self {
+        Self {
+            text,
+            placeholder,
+            selection: accent.with_alpha_factor(0.3),
+            caret: accent,
+        }
+    }
+}
+
 /// Retained shaping and IME state for an inline query editor.
 pub struct QueryComposition {
     preedit: String,
@@ -47,6 +81,7 @@ pub struct QueryComposition {
     layout: Option<RichTextLayout>,
     layout_text: String,
     signature: u64,
+    layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
 }
 
@@ -64,6 +99,7 @@ impl QueryComposition {
             layout: None,
             layout_text: String::new(),
             signature: u64::MAX,
+            layout_epoch: None,
             caret: None,
         }
     }
@@ -79,6 +115,7 @@ impl QueryComposition {
         self.layout_text.clear();
         self.caret = None;
         self.signature = u64::MAX;
+        self.layout_epoch = None;
     }
 
     /// Apply one platform IME event. Preedit changes only this helper; commit
@@ -299,23 +336,23 @@ impl QueryComposition {
     /// Paint an unwrapped query into a clipped viewport. The shaped caret is
     /// kept visible by horizontal scrolling; placeholder, selection and
     /// preedit use the same layout and baseline.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        renderer: &mut TextRenderer,
-        text: &str,
-        selection: &Selection,
-        placeholder: &str,
+        ctx: &mut PaintCtx<'_>,
+        query: QueryView<'_>,
         rect: Rect,
         style: &TextStyle,
-        ink: Color,
-        dim_ink: Color,
-        selection_color: Color,
-        caret_color: Color,
-        show_caret: bool,
+        ink: QueryInk,
     ) {
+        let QueryView {
+            text,
+            selection,
+            placeholder,
+            show_caret,
+        } = query;
+        let transform = ctx.transform;
+        let scene = &mut *ctx.scene;
+        let renderer = &mut *ctx.text;
         let composing = !self.preedit.is_empty();
         let shows_placeholder = text.is_empty() && !composing;
         let display = if shows_placeholder {
@@ -324,15 +361,27 @@ impl QueryComposition {
             self.display_text(text, selection)
         };
         let signature = self.signature(&display, style, selection);
-        if self.layout.is_none() || self.signature != signature {
-            let mut layout =
-                RichTextLayout::shape_plain(&mut renderer.font_system, &display, style, None);
+        let epoch_stale = self
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()));
+        if self.layout.is_none() || self.signature != signature || epoch_stale {
+            let browser_emoji = renderer.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_plain_browser(
+                &mut renderer.font_system,
+                &display,
+                style,
+                None,
+                browser_emoji,
+            );
+            renderer.note_browser_rich_layout(&layout);
             if composing {
                 layout.add_underline(self.preedit_range(selection));
             }
             self.layout = Some(layout);
             self.layout_text.clone_from(&display);
             self.signature = signature;
+            self.layout_epoch = Some(Arc::clone(renderer.layout_epoch()));
         }
 
         let caret_byte = if shows_placeholder {
@@ -382,7 +431,7 @@ impl QueryComposition {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        selection_color,
+                        ink.selection,
                         None,
                         &band,
                     );
@@ -393,13 +442,17 @@ impl QueryComposition {
             scene,
             layout,
             transform.pre_translate(origin.to_vec2()),
-            if shows_placeholder { dim_ink } else { ink },
+            if shows_placeholder {
+                ink.placeholder
+            } else {
+                ink.text
+            },
         );
         if show_caret {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                caret_color,
+                ink.caret,
                 None,
                 &caret,
             );
@@ -542,7 +595,9 @@ fn handle_command_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::FontChoice;
+    use crate::text_render::{FontChoice, TextRenderer};
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };
@@ -562,187 +617,273 @@ mod tests {
     }
 
     #[test]
-    fn shared_editor_replaces_selection_and_deletes_extended_graphemes() {
-        let mut composition = QueryComposition::new();
-        let mut text = "a👨‍👩‍👧‍👦z".to_string();
-        let family_start = 1;
-        let family_end = text.len() - 1;
-        let mut selection = Selection {
-            anchor: family_start,
-            cursor: family_end,
-        };
-        assert_eq!(
+    fn shared_query_editor_edits_selections_graphemes_and_words() {
+        // Case `shared_editor_replaces_selection_and_deletes_extended_graphemes`.
+        {
+            let mut composition = QueryComposition::new();
+            let mut text = "a👨‍👩‍👧‍👦z".to_string();
+            let family_start = 1;
+            let family_end = text.len() - 1;
+            let mut selection = Selection {
+                anchor: family_start,
+                cursor: family_end,
+            };
+            assert_eq!(
+                composition.handle_event(
+                    &key(Key::Character("x".into()), Some("x")),
+                    &mut text,
+                    &mut selection,
+                    false,
+                    false,
+                ),
+                QueryEventChange::Edited
+            );
+            assert_eq!(text, "axz");
+            assert_eq!(selection, Selection::collapsed(2));
+
+            selection.move_to(2);
+            assert_eq!(
+                composition.handle_event(
+                    &key(Key::Named(NamedKey::Backspace), None),
+                    &mut text,
+                    &mut selection,
+                    false,
+                    false,
+                ),
+                QueryEventChange::Edited
+            );
+            assert_eq!(text, "az");
+        }
+
+        // Case `shared_editor_supports_selection_collapse_shift_and_word_motion`.
+        {
+            let mut composition = QueryComposition::new();
+            let mut text = "alpha beta".to_string();
+            let mut selection = Selection {
+                anchor: 2,
+                cursor: 8,
+            };
             composition.handle_event(
-                &key(Key::Character("x".into()), Some("x")),
+                &key(Key::Named(NamedKey::ArrowLeft), None),
                 &mut text,
                 &mut selection,
                 false,
                 false,
-            ),
-            QueryEventChange::Edited
-        );
-        assert_eq!(text, "axz");
-        assert_eq!(selection, Selection::collapsed(2));
+            );
+            assert_eq!(selection, Selection::collapsed(2));
 
-        selection.move_to(2);
-        assert_eq!(
             composition.handle_event(
-                &key(Key::Named(NamedKey::Backspace), None),
+                &key(Key::Named(NamedKey::ArrowRight), None),
                 &mut text,
                 &mut selection,
-                false,
-                false,
-            ),
-            QueryEventChange::Edited
-        );
-        assert_eq!(text, "az");
-    }
-
-    #[test]
-    fn shared_editor_supports_selection_collapse_shift_and_word_motion() {
-        let mut composition = QueryComposition::new();
-        let mut text = "alpha beta".to_string();
-        let mut selection = Selection {
-            anchor: 2,
-            cursor: 8,
-        };
-        composition.handle_event(
-            &key(Key::Named(NamedKey::ArrowLeft), None),
-            &mut text,
-            &mut selection,
-            false,
-            false,
-        );
-        assert_eq!(selection, Selection::collapsed(2));
-
-        composition.handle_event(
-            &key(Key::Named(NamedKey::ArrowRight), None),
-            &mut text,
-            &mut selection,
-            true,
-            true,
-        );
-        assert_eq!(selection.anchor, 2);
-        assert_eq!(selection.cursor, 6);
-    }
-
-    #[test]
-    fn preedit_replaces_selection_only_in_the_display_until_commit() {
-        let mut composition = QueryComposition::new();
-        let mut text = "search old value".to_string();
-        let mut selection = Selection {
-            anchor: 7,
-            cursor: 10,
-        };
-        assert_eq!(
-            composition.handle_ime(
-                &Ime::Preedit("新".into(), Some(("新".len(), "新".len()))),
-                &mut text,
-                &mut selection,
-            ),
-            QueryImeChange::Display
-        );
-        assert_eq!(text, "search old value");
-        assert_eq!(
-            composition.display_text(&text, &selection),
-            "search 新 value"
-        );
-        assert_eq!(
-            composition.handle_ime(&Ime::Commit("新".into()), &mut text, &mut selection),
-            QueryImeChange::Committed
-        );
-        assert_eq!(text, "search 新 value");
-        assert_eq!(selection, Selection::collapsed("search 新".len()));
-    }
-
-    #[test]
-    fn draw_publishes_an_internal_preedit_caret() {
-        let mut composition = QueryComposition::new();
-        let mut text = "ab".to_string();
-        let mut selection = Selection::collapsed(1);
-        composition.handle_ime(
-            &Ime::Preedit("漢字".into(), Some(("漢".len(), "漢".len()))),
-            &mut text,
-            &mut selection,
-        );
-        let mut renderer = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(10.0, 10.0, 210.0, 42.0);
-        composition.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &text,
-            &selection,
-            "Search…",
-            rect,
-            &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
-            Color::WHITE,
-            Color::from_rgb8(128, 128, 128),
-            Color::from_rgba8(80, 100, 255, 100),
-            Color::WHITE,
-            true,
-        );
-        assert!(rect.contains(composition.ime_cursor_rect().unwrap().center()));
-        assert_eq!(text, "ab");
-    }
-
-    #[test]
-    fn equal_preedit_and_committed_text_do_not_share_an_underlined_layout() {
-        let mut composition = QueryComposition::new();
-        let mut text = "a".to_string();
-        let mut selection = Selection {
-            anchor: 0,
-            cursor: 1,
-        };
-        let mut renderer = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
-        let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
-        let draw = |composition: &mut QueryComposition,
-                    scene: &mut Scene,
-                    renderer: &mut TextRenderer,
-                    text: &str,
-                    selection: &Selection| {
-            composition.draw(
-                scene,
-                Affine::IDENTITY,
-                renderer,
-                text,
-                selection,
-                "Search…",
-                rect,
-                &style,
-                Color::WHITE,
-                Color::from_rgb8(128, 128, 128),
-                Color::from_rgba8(80, 100, 255, 100),
-                Color::WHITE,
+                true,
                 true,
             );
+            assert_eq!(selection.anchor, 2);
+            assert_eq!(selection.cursor, 6);
+        }
+    }
+
+    #[test]
+    fn query_preedit_is_display_only_until_commit_with_its_own_caret_and_layout() {
+        // Case `preedit_replaces_selection_only_in_the_display_until_commit`.
+        {
+            let mut composition = QueryComposition::new();
+            let mut text = "search old value".to_string();
+            let mut selection = Selection {
+                anchor: 7,
+                cursor: 10,
+            };
+            assert_eq!(
+                composition.handle_ime(
+                    &Ime::Preedit("新".into(), Some(("新".len(), "新".len()))),
+                    &mut text,
+                    &mut selection,
+                ),
+                QueryImeChange::Display
+            );
+            assert_eq!(text, "search old value");
+            assert_eq!(
+                composition.display_text(&text, &selection),
+                "search 新 value"
+            );
+            assert_eq!(
+                composition.handle_ime(&Ime::Commit("新".into()), &mut text, &mut selection),
+                QueryImeChange::Committed
+            );
+            assert_eq!(text, "search 新 value");
+            assert_eq!(selection, Selection::collapsed("search 新".len()));
+        }
+
+        // Case `draw_publishes_an_internal_preedit_caret`.
+        {
+            let mut composition = QueryComposition::new();
+            let mut text = "ab".to_string();
+            let mut selection = Selection::collapsed(1);
+            composition.handle_ime(
+                &Ime::Preedit("漢字".into(), Some(("漢".len(), "漢".len()))),
+                &mut text,
+                &mut selection,
+            );
+            let mut renderer = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(10.0, 10.0, 210.0, 42.0);
+            composition.draw(
+                &mut PaintCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &crate::theme::Theme::dark(),
+                ),
+                QueryView {
+                    text: &text,
+                    selection: &selection,
+                    placeholder: "Search…",
+                    show_caret: true,
+                },
+                rect,
+                &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
+                QueryInk {
+                    text: Color::WHITE,
+                    placeholder: Color::from_rgb8(128, 128, 128),
+                    selection: Color::from_rgba8(80, 100, 255, 100),
+                    caret: Color::WHITE,
+                },
+            );
+            assert!(rect.contains(composition.ime_cursor_rect().unwrap().center()));
+            assert_eq!(text, "ab");
+        }
+
+        // Case `equal_preedit_and_committed_text_do_not_share_an_underlined_layout`.
+        {
+            let mut composition = QueryComposition::new();
+            let mut text = "a".to_string();
+            let mut selection = Selection {
+                anchor: 0,
+                cursor: 1,
+            };
+            let mut renderer = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+            let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
+            let draw = |composition: &mut QueryComposition,
+                        scene: &mut Scene,
+                        renderer: &mut TextRenderer,
+                        text: &str,
+                        selection: &Selection| {
+                composition.draw(
+                    &mut PaintCtx::new(
+                        scene,
+                        Affine::IDENTITY,
+                        renderer,
+                        &crate::theme::Theme::dark(),
+                    ),
+                    QueryView {
+                        text,
+                        selection,
+                        placeholder: "Search…",
+                        show_caret: true,
+                    },
+                    rect,
+                    &style,
+                    QueryInk {
+                        text: Color::WHITE,
+                        placeholder: Color::from_rgb8(128, 128, 128),
+                        selection: Color::from_rgba8(80, 100, 255, 100),
+                        caret: Color::WHITE,
+                    },
+                );
+            };
+
+            composition.handle_ime(
+                &Ime::Preedit("a".into(), Some((1, 1))),
+                &mut text,
+                &mut selection,
+            );
+            draw(
+                &mut composition,
+                &mut scene,
+                &mut renderer,
+                &text,
+                &selection,
+            );
+            let composing_signature = composition.signature;
+
+            composition.handle_ime(&Ime::Disabled, &mut text, &mut selection);
+            draw(
+                &mut composition,
+                &mut scene,
+                &mut renderer,
+                &text,
+                &selection,
+            );
+            assert_ne!(composition.signature, composing_signature);
+        }
+    }
+
+    #[test]
+    fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let mut composition = QueryComposition::new();
+        let text = "مَرْحَبًا".to_owned();
+        let selection = Selection::collapsed(text.len());
+        let mut scene = Scene::new();
+        let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
+        let mut draw = |composition: &mut QueryComposition, renderer: &mut TextRenderer| {
+            composition.draw(
+                &mut PaintCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    renderer,
+                    &crate::theme::Theme::dark(),
+                ),
+                QueryView {
+                    text: &text,
+                    selection: &selection,
+                    placeholder: "",
+                    show_caret: true,
+                },
+                Rect::new(0.0, 0.0, 220.0, 36.0),
+                &style,
+                QueryInk {
+                    text: Color::WHITE,
+                    placeholder: Color::WHITE,
+                    selection: Color::WHITE,
+                    caret: Color::WHITE,
+                },
+            );
         };
-
-        composition.handle_ime(
-            &Ime::Preedit("a".into(), Some((1, 1))),
-            &mut text,
-            &mut selection,
+        draw(&mut composition, &mut renderer);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
         );
-        draw(
-            &mut composition,
-            &mut scene,
-            &mut renderer,
-            &text,
-            &selection,
+        renderer.browser_font_failed();
+        draw(&mut composition, &mut renderer);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
         );
-        let composing_signature = composition.signature;
-
-        composition.handle_ime(&Ime::Disabled, &mut text, &mut selection);
-        draw(
-            &mut composition,
-            &mut scene,
-            &mut renderer,
-            &text,
-            &selection,
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        draw(&mut composition, &mut renderer);
+        assert!(
+            composition
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
         );
-        assert_ne!(composition.signature, composing_signature);
     }
 }

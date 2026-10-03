@@ -6,7 +6,8 @@
 //! (fanotify filesystem marks, pre-content events, bind mounts). Name the
 //! volumes in `TILO_FS_NATIVE_STORES=/store/a:/store/b` and run as root.
 //! Without them the tests skip with a message; `TILO_REQUIRE_FANOTIFY=1`
-//! turns every skip into a failure.
+//! turns every skip into a failure. `tools/native-tier1.sh` makes the two
+//! volumes on loop devices, runs the suite as root and removes them again.
 
 #![allow(
     clippy::unwrap_used,

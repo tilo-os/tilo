@@ -76,6 +76,44 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install --locked cargo-deny cargo-machete \
     && cargo deny --version && cargo machete --version
 
+# Android NDK and Rust targets for check.yml's Android lane (docs/android.md).
+# The NDK ships Linux host tools for x86_64 only, so the ARM builder, whose
+# jobs never run that lane, does not carry it. API 29 is the host's minimum.
+RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install-android-ndk.sh,ro \
+    if [ "$(uname -m)" = x86_64 ]; then \
+      TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \
+      && dnf clean all && rm -rf /var/cache/dnf; \
+    fi
+# The browser target for check.yml's wasm lane.
+RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
+# The web build's toolchain (`tilo-app build --platform web`, the web core's
+# scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,
+# and wasm-bindgen's CLI at exactly the version Cargo.lock pins the crate at,
+# from its checksum-pinned upstream release.
+ARG WASM_BINDGEN_VERSION=0.2.108
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli binutils \
+    && dnf clean all && rm -rf /var/cache/dnf \
+    && archive="wasm-bindgen-${WASM_BINDGEN_VERSION}-$(uname -m)-unknown-linux-musl.tar.gz" \
+    && sha=$(awk -F '\t' -v name="$archive" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-assets.tsv) \
+    && test -n "$sha" \
+    && echo "${sha}  /tilo-assets/${archive}" | sha256sum --check --strict \
+    && tar -xzf "/tilo-assets/${archive}" -C /tmp \
+    && install -m 0755 "/tmp/${archive%.tar.gz}/wasm-bindgen" /usr/local/bin/wasm-bindgen \
+    && rm -rf "/tmp/${archive%.tar.gz}" \
+    && wasm-bindgen --version && wasm-opt --version && wasm-ld --version && node --version
+ENV ANDROID_NDK_HOME=/opt/android-ndk \
+    ANDROID_NDK_ROOT=/opt/android-ndk \
+    CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang \
+    CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
+    CC_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang \
+    CXX_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++ \
+    AR_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+    CC_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
+    CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
+    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env

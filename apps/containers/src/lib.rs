@@ -40,13 +40,60 @@ pub mod app;
 pub mod combobox;
 pub mod doc;
 pub mod draw;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 pub mod model;
 pub mod panels;
 pub mod podman;
+pub mod presentation;
+pub mod resource;
 pub mod search_provider;
 pub mod terminal;
 
 pub use app::ContainersApp;
+
+/// Inert root for the binary's launch-composition tests. Not feature-gated:
+/// the binary's tests cannot switch on a library feature without a self
+/// dev-dependency, which would claim `--features containers/thin`.
+#[doc(hidden)]
+pub fn history_test_root() -> ContainersApp {
+    ContainersApp::history_test_root()
+}
+
+#[cfg(test)]
+pub fn history_test_open_create_root() -> ContainersApp {
+    ContainersApp::history_test_open_create_root()
+}
+
+#[cfg(test)]
+pub fn history_test_palette_root() -> ContainersApp {
+    ContainersApp::history_test_palette_root()
+}
+
+#[cfg(test)]
+pub fn history_test_prompt_root() -> ContainersApp {
+    ContainersApp::history_test_prompt_root()
+}
+
+#[cfg(test)]
+pub fn history_test_confirm_root() -> ContainersApp {
+    ContainersApp::history_test_confirm_root()
+}
+
+#[cfg(test)]
+pub fn history_test_pull_root() -> ContainersApp {
+    ContainersApp::history_test_pull_root()
+}
+
+#[cfg(test)]
+pub fn history_test_retention_root() -> (
+    ContainersApp,
+    std::sync::mpsc::Receiver<app::ControlledRuntimeRequest>,
+    std::rc::Rc<std::cell::RefCell<Option<app::HistoryRetentionSnapshot>>>,
+) {
+    ContainersApp::history_test_retention_root()
+}
 
 use ui::widget::Widget;
 
@@ -70,3 +117,4 @@ pub fn app_root_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot(scenario);
     Box::new(app)
 }
+pub use resource::{Containers, ContainersShell};

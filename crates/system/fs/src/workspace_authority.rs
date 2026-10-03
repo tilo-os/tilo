@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use collab_types::{CapOverride, Principal};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use wire_frame::{FrameError, Framing};
 
 use crate::sync::Ticket;
 use crate::{AclHandle, IdentityKey, WorkspaceAcl};
@@ -88,15 +89,6 @@ impl PersistedContentPeer {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PersistedContentPeersFile {
-    Current(Vec<PersistedContentPeer>),
-    /// Version-zero files contained bare endpoint addresses.  Keep them for
-    /// on-demand blob hydration, but never invent a workspace binding.
-    Legacy(Vec<iroh_base::EndpointAddr>),
-}
-
 /// Load the bounded, de-duplicated direct content peers for a cache.
 ///
 /// # Errors
@@ -108,17 +100,7 @@ pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<Pers
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let peers = match serde_json::from_slice(&std::fs::read(&path)?)? {
-        PersistedContentPeersFile::Current(peers) => peers,
-        PersistedContentPeersFile::Legacy(peers) => peers
-            .into_iter()
-            .map(|endpoint| PersistedContentPeer {
-                endpoint,
-                ticket: None,
-                relay_service_id: None,
-            })
-            .collect(),
-    };
+    let peers: Vec<PersistedContentPeer> = serde_json::from_slice(&std::fs::read(&path)?)?;
     anyhow::ensure!(
         peers.len() <= MAX_PERSISTED_CONTENT_PEERS,
         "persisted content peers exceed {MAX_PERSISTED_CONTENT_PEERS}"
@@ -161,7 +143,10 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         }
         peers.push(peer);
     }
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(())
 }
 
@@ -181,7 +166,10 @@ fn remove_persisted_content_peers(
         }
         !matches
     });
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(removed)
 }
 
@@ -379,7 +367,7 @@ impl WorkspaceAuthority {
             }
         }
         let bytes = postcard::to_allocvec(&next)?;
-        atomic_file::write(&self.path, &bytes)?;
+        tilo_files::native::atomic::write(&self.path, &bytes)?;
         self.handle
             .replace(project(self.subject, &self.principals, Some(&next)));
         *current = Some(next);
@@ -667,24 +655,22 @@ pub async fn local_authority_request(
     read_frame(&mut stream).await
 }
 
+/// Each authority and content-peer control message, over the local socket
+/// and the peer protocol alike: a little-endian `u32` length, then the
+/// postcard encoding.
+const AUTHORITY_FRAMING: Framing = Framing::little_endian(MAX_AUTHORITY_FRAME);
+
 /// Write one bounded authority control frame.
 ///
 /// # Errors
 ///
-/// Returns an error when serialization, length conversion, or the stream
-/// write fails.
+/// Returns an error when serialization, the frame bound, or the stream write
+/// fails.
 pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let bytes = postcard::to_allocvec(value)?;
-    anyhow::ensure!(
-        bytes.len() <= MAX_AUTHORITY_FRAME,
-        "authority frame too large"
-    );
-    writer.write_u32_le(u32::try_from(bytes.len())?).await?;
-    writer.write_all(&bytes).await?;
+    AUTHORITY_FRAMING.write_value_async(writer, value).await?;
     Ok(())
 }
 
@@ -692,16 +678,15 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize +
 ///
 /// # Errors
 ///
-/// Returns an error when the stream, frame bound, or payload decoding fails.
+/// Returns an error when the stream, frame bound, or payload decoding fails,
+/// including when the stream closes before the frame.
 pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {
-    use tokio::io::AsyncReadExt;
-    let len = usize::try_from(reader.read_u32_le().await?)?;
-    anyhow::ensure!(len <= MAX_AUTHORITY_FRAME, "authority frame too large");
-    let mut bytes = vec![0; len];
-    reader.read_exact(&mut bytes).await?;
-    Ok(postcard::from_bytes(&bytes)?)
+    Ok(AUTHORITY_FRAMING
+        .read_value_async(reader)
+        .await?
+        .ok_or(FrameError::Closed)?)
 }
 
 fn project(
@@ -721,333 +706,390 @@ fn project(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn authority_frames_are_little_endian_length_then_postcard() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &AuthorityResponse { authority: None })
+            .await
+            .unwrap();
+        assert_eq!(wire, [1, 0, 0, 0, 0]);
+
+        let mut wire: Vec<u8> = vec![18, 0, 0, 0, 16];
+        wire.extend_from_slice(&[0x44; 16]);
+        wire.push(0);
+        let request: AuthorityRequest = read_frame(&mut wire.as_slice()).await.unwrap();
+        assert_eq!(request.workspace, uuid::Uuid::from_bytes([0x44; 16]));
+        assert!(request.publish.is_none());
+    }
+
+    #[tokio::test]
+    async fn authority_frames_reject_oversized_truncated_and_closed_streams() {
+        let oversized = u32::try_from(MAX_AUTHORITY_FRAME + 1)
+            .unwrap()
+            .to_le_bytes();
+        assert!(
+            read_frame::<_, AuthorityResponse>(&mut &oversized[..])
+                .await
+                .is_err()
+        );
+        for wire in [&[][..], &[1, 0][..], &[2, 0, 0, 0, 0][..]] {
+            let error = read_frame::<_, AuthorityResponse>(&mut &wire[..])
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<FrameError>().map(FrameError::kind),
+                Some(std::io::ErrorKind::UnexpectedEof),
+                "{wire:?}"
+            );
+        }
+        let oversized = vec![0_u8; MAX_AUTHORITY_FRAME];
+        let mut wire = Vec::new();
+        assert!(write_frame(&mut wire, &oversized).await.is_err());
+        assert!(wire.is_empty());
+    }
+
     #[test]
-    fn persisted_peer_catalog_refreshes_and_reclaims_oldest_entry() {
-        let temp = tempfile::tempdir().unwrap();
-        for byte in 1..=u8::try_from(MAX_PERSISTED_CONTENT_PEERS).unwrap() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn peer_catalog_and_acl_tombstones_persist_and_reject_replay() {
+        // Phase `persisted_peer_catalog_refreshes_and_reclaims_oldest_entry`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            for byte in 1..=u8::try_from(MAX_PERSISTED_CONTENT_PEERS).unwrap() {
+                persist_content_peer(
+                    temp.path(),
+                    PersistedContentPeer {
+                        endpoint: iroh_base::EndpointAddr::new(
+                            iroh::SecretKey::from_bytes(&[byte; 32]).public(),
+                        ),
+                        ticket: None,
+                        relay_service_id: None,
+                    },
+                )
+                .unwrap();
+            }
+            let refreshed_id = iroh::SecretKey::from_bytes(&[1; 32]).public();
             persist_content_peer(
                 temp.path(),
                 PersistedContentPeer {
-                    endpoint: iroh_base::EndpointAddr::new(
-                        iroh::SecretKey::from_bytes(&[byte; 32]).public(),
-                    ),
+                    endpoint: iroh_base::EndpointAddr::new(refreshed_id)
+                        .with_ip_addr("127.0.0.1:4788".parse().unwrap()),
                     ticket: None,
                     relay_service_id: None,
                 },
             )
             .unwrap();
-        }
-        let refreshed_id = iroh::SecretKey::from_bytes(&[1; 32]).public();
-        persist_content_peer(
-            temp.path(),
-            PersistedContentPeer {
-                endpoint: iroh_base::EndpointAddr::new(refreshed_id)
-                    .with_ip_addr("127.0.0.1:4788".parse().unwrap()),
-                ticket: None,
-                relay_service_id: None,
-            },
-        )
-        .unwrap();
-        let replacement_id = iroh::SecretKey::from_bytes(&[0x7f; 32]).public();
-        persist_content_peer(
-            temp.path(),
-            PersistedContentPeer {
-                endpoint: iroh_base::EndpointAddr::new(replacement_id),
-                ticket: None,
-                relay_service_id: None,
-            },
-        )
-        .unwrap();
+            let replacement_id = iroh::SecretKey::from_bytes(&[0x7f; 32]).public();
+            persist_content_peer(
+                temp.path(),
+                PersistedContentPeer {
+                    endpoint: iroh_base::EndpointAddr::new(replacement_id),
+                    ticket: None,
+                    relay_service_id: None,
+                },
+            )
+            .unwrap();
 
-        let peers = load_persisted_content_peers(temp.path()).unwrap();
-        assert_eq!(peers.len(), MAX_PERSISTED_CONTENT_PEERS);
-        assert!(peers.iter().any(|peer| {
-            peer.endpoint
-                == iroh_base::EndpointAddr::new(refreshed_id)
-                    .with_ip_addr("127.0.0.1:4788".parse().unwrap())
-        }));
-        assert!(peers.iter().any(|peer| peer.endpoint.id == replacement_id));
-        let evicted = iroh::SecretKey::from_bytes(&[2; 32]).public();
-        assert!(!peers.iter().any(|peer| peer.endpoint.id == evicted));
+            let peers = load_persisted_content_peers(temp.path()).unwrap();
+            assert_eq!(peers.len(), MAX_PERSISTED_CONTENT_PEERS);
+            assert!(peers.iter().any(|peer| {
+                peer.endpoint
+                    == iroh_base::EndpointAddr::new(refreshed_id)
+                        .with_ip_addr("127.0.0.1:4788".parse().unwrap())
+            }));
+            assert!(peers.iter().any(|peer| peer.endpoint.id == replacement_id));
+            let evicted = iroh::SecretKey::from_bytes(&[2; 32]).public();
+            assert!(!peers.iter().any(|peer| peer.endpoint.id == evicted));
+        }
+        // Phase `newer_tombstone_replaces_live_acl_and_rejects_replay`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let governor = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let workspace = uuid::Uuid::new_v4();
+            let subject = [4; 32];
+            let authority = WorkspaceAuthority::open(
+                temp.path().join("authority.bin"),
+                workspace,
+                governor.verifying_key().to_bytes(),
+                subject,
+                Vec::new(),
+            )
+            .unwrap();
+            let grant = CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(subject)),
+                Scope::FsPath("/".into()),
+                Effect::Grant,
+                Verb::Read,
+            );
+            assert!(
+                authority
+                    .apply(
+                        WorkspaceAuthorityEnvelope::sign(
+                            workspace,
+                            1,
+                            vec![grant],
+                            false,
+                            &governor
+                        )
+                        .unwrap()
+                    )
+                    .unwrap()
+            );
+            assert!(authority.handle().permits(&subject, "/file", Access::Read));
+            assert!(
+                authority
+                    .apply(
+                        WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor)
+                            .unwrap()
+                    )
+                    .unwrap()
+            );
+            assert!(!authority.handle().permits(&subject, "/file", Access::Read));
+            assert!(
+                authority
+                    .apply(
+                        WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), true, &governor)
+                            .unwrap()
+                    )
+                    .is_err()
+            );
+        }
     }
     use crate::Access;
     use collab_types::{Effect, Scope, Subject, Verb};
     use std::sync::Arc;
 
-    #[test]
-    fn newer_tombstone_replaces_live_acl_and_rejects_replay() {
-        let temp = tempfile::tempdir().unwrap();
-        let governor = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let workspace = uuid::Uuid::new_v4();
-        let subject = [4; 32];
-        let authority = WorkspaceAuthority::open(
-            temp.path().join("authority.bin"),
-            workspace,
-            governor.verifying_key().to_bytes(),
-            subject,
-            Vec::new(),
-        )
-        .unwrap();
-        let grant = CapOverride::new(
-            Subject::User(collab_types::Ed25519PublicKey(subject)),
-            Scope::FsPath("/".into()),
-            Effect::Grant,
-            Verb::Read,
-        );
-        assert!(
-            authority
-                .apply(
-                    WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &governor)
-                        .unwrap()
-                )
-                .unwrap()
-        );
-        assert!(authority.handle().permits(&subject, "/file", Access::Read));
-        assert!(
-            authority
-                .apply(
-                    WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor)
-                        .unwrap()
-                )
-                .unwrap()
-        );
-        assert!(!authority.handle().permits(&subject, "/file", Access::Read));
-        assert!(
-            authority
-                .apply(
-                    WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), true, &governor)
-                        .unwrap()
-                )
-                .is_err()
-        );
-    }
-
     #[cfg(unix)]
     #[tokio::test]
-    async fn local_publisher_serializes_concurrent_revisions() {
-        let temp = tempfile::tempdir().unwrap();
-        let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        let workspace = uuid::Uuid::new_v4();
-        let authority = Arc::new(
-            WorkspaceAuthority::open(
-                temp.path().join("authority.bin"),
-                workspace,
-                governor.verifying_key().to_bytes(),
-                [1; 32],
-                Vec::new(),
-            )
-            .unwrap(),
-        );
-        let socket = temp.path().join(LOCAL_AUTHORITY_SOCKET);
-        let task = serve_local_authority(&socket, authority.clone()).unwrap();
-        let first =
-            WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &governor).unwrap();
-        let first_response = local_authority_request(
-            &socket,
-            AuthorityRequest {
-                workspace,
-                publish: Some(first.clone()),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(first_response.authority, Some(first));
-
-        // Two desktop mutations raced after seeing revision 1. Exactly one
-        // may become revision 2; the loser receives the winning envelope and
-        // must retry from that revision rather than claiming success.
-        let left =
-            WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), false, &governor).unwrap();
-        let right =
-            WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor).unwrap();
-        let (left_response, right_response) = tokio::join!(
-            local_authority_request(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn authenticated_discovery_updates_live_routes_and_rebinds() {
+        // Phase `local_publisher_serializes_concurrent_revisions`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+            let workspace = uuid::Uuid::new_v4();
+            let authority = Arc::new(
+                WorkspaceAuthority::open(
+                    temp.path().join("authority.bin"),
+                    workspace,
+                    governor.verifying_key().to_bytes(),
+                    [1; 32],
+                    Vec::new(),
+                )
+                .unwrap(),
+            );
+            let socket = temp.path().join(LOCAL_AUTHORITY_SOCKET);
+            let task = serve_local_authority(&socket, authority.clone()).unwrap();
+            let first =
+                WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &governor)
+                    .unwrap();
+            let first_response = local_authority_request(
                 &socket,
                 AuthorityRequest {
                     workspace,
-                    publish: Some(left.clone())
-                },
-            ),
-            local_authority_request(
-                &socket,
-                AuthorityRequest {
-                    workspace,
-                    publish: Some(right.clone())
+                    publish: Some(first.clone()),
                 },
             )
-        );
-        let left_response = left_response.unwrap().authority.unwrap();
-        let right_response = right_response.unwrap().authority.unwrap();
-        assert!(left_response == left || right_response == right);
-        assert_eq!(left_response, right_response);
-        task.abort();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn authenticated_discovery_handoff_updates_live_hydrator() {
-        let temp = tempfile::tempdir().unwrap();
-        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
             .await
             .unwrap();
-        let hydrator = Arc::new(crate::Hydrator::new(
-            endpoint.clone(),
-            Arc::new(crate::ContentStore::memory()),
-        ));
-        let socket = temp.path().join("content.sock");
-        let cache = temp.path().join("cache");
-        std::fs::create_dir_all(&cache).unwrap();
-        let active_workspace = Ticket::workspace_id_for_topic([0x71; 32]);
-        let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = serve_local_content_peer(
-            &socket,
-            hydrator.clone(),
-            Some(cache.clone()),
-            active_workspace,
-            Some(rebind_tx),
-        )
-        .unwrap();
-        let discovered =
-            iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
-                .with_ip_addr("127.0.0.1:45454".parse().unwrap());
-        let ticket = Ticket {
-            node: discovered.clone(),
-            workspace: [0x71; 32],
+            assert_eq!(first_response.authority, Some(first));
+
+            // Two desktop mutations raced after seeing revision 1. Exactly one
+            // may become revision 2; the loser receives the winning envelope and
+            // must retry from that revision rather than claiming success.
+            let left = WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), false, &governor)
+                .unwrap();
+            let right = WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor)
+                .unwrap();
+            let (left_response, right_response) = tokio::join!(
+                local_authority_request(
+                    &socket,
+                    AuthorityRequest {
+                        workspace,
+                        publish: Some(left.clone())
+                    },
+                ),
+                local_authority_request(
+                    &socket,
+                    AuthorityRequest {
+                        workspace,
+                        publish: Some(right.clone())
+                    },
+                )
+            );
+            let left_response = left_response.unwrap().authority.unwrap();
+            let right_response = right_response.unwrap().authority.unwrap();
+            assert!(left_response == left || right_response == right);
+            assert_eq!(left_response, right_response);
+            task.abort();
         }
-        .encode()
-        .unwrap();
-        register_local_content_peer(&socket, discovered.clone(), Some(ticket.clone()), None)
-            .await
+        // Phase `authenticated_discovery_handoff_updates_live_hydrator`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+                .await
+                .unwrap();
+            let hydrator = Arc::new(crate::Hydrator::new(
+                endpoint.clone(),
+                Arc::new(crate::ContentStore::memory()),
+            ));
+            let socket = temp.path().join("content.sock");
+            let cache = temp.path().join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            let active_workspace = Ticket::workspace_id_for_topic([0x71; 32]);
+            let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
+            let task = serve_local_content_peer(
+                &socket,
+                hydrator.clone(),
+                Some(cache.clone()),
+                active_workspace,
+                Some(rebind_tx),
+            )
             .unwrap();
-        assert!(hydrator.known_peers().contains(&discovered));
-        assert_eq!(
-            load_persisted_content_peers(&cache).unwrap(),
-            vec![PersistedContentPeer {
-                endpoint: discovered,
-                ticket: Some(ticket),
-                relay_service_id: None,
-            }]
-        );
-        assert!(rebind_rx.try_recv().is_err());
-        task.abort();
-        endpoint.close().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn authenticated_removal_drops_live_and_durable_relay_content_routes() {
-        let temp = tempfile::tempdir().unwrap();
-        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
-            .await
+            let discovered =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
+                    .with_ip_addr("127.0.0.1:45454".parse().unwrap());
+            let ticket = Ticket {
+                node: discovered.clone(),
+                workspace: [0x71; 32],
+            }
+            .encode()
             .unwrap();
-        let hydrator = Arc::new(crate::Hydrator::new(
-            endpoint.clone(),
-            Arc::new(crate::ContentStore::memory()),
-        ));
-        let socket = temp.path().join("content.sock");
-        let cache = temp.path().join("cache");
-        std::fs::create_dir_all(&cache).unwrap();
-        let workspace = Ticket::workspace_id_for_topic([0x71; 32]);
-        let task = serve_local_content_peer(
-            &socket,
-            hydrator.clone(),
-            Some(cache.clone()),
-            workspace,
-            None,
-        )
-        .unwrap();
-        let discovered =
-            iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
-        let relay_service_id = [0x99; 32];
-        let ticket = Ticket {
-            node: discovered.clone(),
-            workspace: [0x71; 32],
+            register_local_content_peer(&socket, discovered.clone(), Some(ticket.clone()), None)
+                .await
+                .unwrap();
+            assert!(hydrator.known_peers().contains(&discovered));
+            assert_eq!(
+                load_persisted_content_peers(&cache).unwrap(),
+                vec![PersistedContentPeer {
+                    endpoint: discovered,
+                    ticket: Some(ticket),
+                    relay_service_id: None,
+                }]
+            );
+            assert!(rebind_rx.try_recv().is_err());
+            task.abort();
+            endpoint.close().await;
         }
-        .encode()
-        .unwrap();
-        register_local_content_peer(
-            &socket,
-            discovered.clone(),
-            Some(ticket),
-            Some(relay_service_id),
-        )
-        .await
-        .unwrap();
-        assert!(hydrator.known_peers().contains(&discovered));
-
-        remove_local_content_peers(&socket, relay_service_id)
+        // Phase `authenticated_removal_drops_live_and_durable_relay_content_routes`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+                .await
+                .unwrap();
+            let hydrator = Arc::new(crate::Hydrator::new(
+                endpoint.clone(),
+                Arc::new(crate::ContentStore::memory()),
+            ));
+            let socket = temp.path().join("content.sock");
+            let cache = temp.path().join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            let workspace = Ticket::workspace_id_for_topic([0x71; 32]);
+            let task = serve_local_content_peer(
+                &socket,
+                hydrator.clone(),
+                Some(cache.clone()),
+                workspace,
+                None,
+            )
+            .unwrap();
+            let discovered =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
+            let relay_service_id = [0x99; 32];
+            let ticket = Ticket {
+                node: discovered.clone(),
+                workspace: [0x71; 32],
+            }
+            .encode()
+            .unwrap();
+            register_local_content_peer(
+                &socket,
+                discovered.clone(),
+                Some(ticket),
+                Some(relay_service_id),
+            )
             .await
             .unwrap();
-        assert!(!hydrator.known_peers().contains(&discovered));
-        assert!(load_persisted_content_peers(&cache).unwrap().is_empty());
+            assert!(hydrator.known_peers().contains(&discovered));
 
-        // A daemon restart reloads only the durable catalog. Its fresh
-        // Hydrator therefore cannot restore the endpoint after removal.
-        let restarted_endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
-            .await
-            .unwrap();
-        let restarted = crate::Hydrator::new(
-            restarted_endpoint.clone(),
-            Arc::new(crate::ContentStore::memory()),
-        );
-        for peer in load_persisted_content_peers(&cache).unwrap() {
-            restarted.add_peer(peer.endpoint);
+            remove_local_content_peers(&socket, relay_service_id)
+                .await
+                .unwrap();
+            assert!(!hydrator.known_peers().contains(&discovered));
+            assert!(load_persisted_content_peers(&cache).unwrap().is_empty());
+
+            // A daemon restart reloads only the durable catalog. Its fresh
+            // Hydrator therefore cannot restore the endpoint after removal.
+            let restarted_endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+                .await
+                .unwrap();
+            let restarted = crate::Hydrator::new(
+                restarted_endpoint.clone(),
+                Arc::new(crate::ContentStore::memory()),
+            );
+            for peer in load_persisted_content_peers(&cache).unwrap() {
+                restarted.add_peer(peer.endpoint);
+            }
+            assert!(!restarted.known_peers().contains(&discovered));
+            task.abort();
+            endpoint.close().await;
+            restarted_endpoint.close().await;
         }
-        assert!(!restarted.known_peers().contains(&discovered));
-        task.abort();
-        endpoint.close().await;
-        restarted_endpoint.close().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn distinct_nas_endpoint_persists_owner_ticket_and_requests_rebind() {
-        let temp = tempfile::tempdir().unwrap();
-        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
-            .await
+        // Phase `distinct_nas_endpoint_persists_owner_ticket_and_requests_rebind`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+                .await
+                .unwrap();
+            let hydrator = Arc::new(crate::Hydrator::new(
+                endpoint.clone(),
+                Arc::new(crate::ContentStore::memory()),
+            ));
+            let socket = temp.path().join("content.sock");
+            let cache = temp.path().join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            let active_workspace = uuid::Uuid::from_u128(0x11);
+            let remote_workspace = [0x22; 32];
+            let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
+            let task = serve_local_content_peer(
+                &socket,
+                hydrator.clone(),
+                Some(cache.clone()),
+                active_workspace,
+                Some(rebind_tx),
+            )
             .unwrap();
-        let hydrator = Arc::new(crate::Hydrator::new(
-            endpoint.clone(),
-            Arc::new(crate::ContentStore::memory()),
-        ));
-        let socket = temp.path().join("content.sock");
-        let cache = temp.path().join("cache");
-        std::fs::create_dir_all(&cache).unwrap();
-        let active_workspace = uuid::Uuid::from_u128(0x11);
-        let remote_workspace = [0x22; 32];
-        let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = serve_local_content_peer(
-            &socket,
-            hydrator.clone(),
-            Some(cache.clone()),
-            active_workspace,
-            Some(rebind_tx),
-        )
-        .unwrap();
-        let nas = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
-        let owner = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x43; 32]).public());
-        let ticket = Ticket {
-            node: owner,
-            workspace: remote_workspace,
+            let nas =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
+            let owner =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x43; 32]).public());
+            let ticket = Ticket {
+                node: owner,
+                workspace: remote_workspace,
+            }
+            .encode()
+            .unwrap();
+
+            register_local_content_peer(&socket, nas.clone(), Some(ticket.clone()), None)
+                .await
+                .unwrap();
+            assert!(hydrator.known_peers().contains(&nas));
+            let restored = load_persisted_content_peers(&cache).unwrap()[0]
+                .decoded_ticket()
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.workspace, remote_workspace);
+            assert_ne!(restored.node.id, nas.id, "the owner and NAS are distinct");
+            tilo_test_env::within("the daemon restart request", rebind_rx.recv())
+                .await
+                .expect("different workspace ticket asks the daemon to restart into it");
+            task.abort();
+            endpoint.close().await;
         }
-        .encode()
-        .unwrap();
-
-        register_local_content_peer(&socket, nas.clone(), Some(ticket.clone()), None)
-            .await
-            .unwrap();
-        assert!(hydrator.known_peers().contains(&nas));
-        let restored = load_persisted_content_peers(&cache).unwrap()[0]
-            .decoded_ticket()
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored.workspace, remote_workspace);
-        assert_ne!(restored.node.id, nas.id, "the owner and NAS are distinct");
-        tokio::time::timeout(std::time::Duration::from_secs(1), rebind_rx.recv())
-            .await
-            .unwrap()
-            .expect("different workspace ticket asks the daemon to restart into it");
-        task.abort();
-        endpoint.close().await;
     }
 }

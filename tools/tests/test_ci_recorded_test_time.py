@@ -40,6 +40,30 @@ class TestSecondsTests(unittest.TestCase):
                            check=True, capture_output=True)
             self.assertEqual(json.loads(output.read_text()), {"shell": 12})
 
+    def test_runs_take_the_median_of_full_suite_samples(self):
+        def report(seconds: float, cases: int) -> str:
+            body = "".join(f'<testcase name="t{index}" time="{seconds / cases}"/>'
+                           for index in range(cases))
+            return f'<testsuites><testsuite name="relay">{body}</testsuite></testsuites>'
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs = []
+            # Shards of one run add up; separate runs are separate samples.
+            for index, shards in enumerate(([(30, 10), (10, 10)], [(60, 20)], [(90, 20)],
+                                            [(1, 2)])):
+                run = root / f"run{index}"
+                for shard, (seconds, cases) in enumerate(shards):
+                    (run / f"shard{shard}").mkdir(parents=True)
+                    (run / f"shard{shard}" / "junit.xml").write_text(report(seconds, cases))
+                runs.append(run)
+            # The scoped two-test run is not a sample; median of 40, 60 and 90.
+            self.assertEqual(test_seconds.package_seconds(runs), {"relay": 60})
+            empty = root / "empty"
+            empty.mkdir()
+            with self.assertRaises(ValueError):
+                test_seconds.package_seconds([empty])
+
     def test_unnamed_suite_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "junit.xml"

@@ -40,7 +40,7 @@ ALWAYS_RUN_SOURCES = (
 DISCOVERED_PYTHON_DIRS = ("tools/tests", ".codex/hooks")
 TEST_NAME_PATTERNS = (
     "test_*.py", "*_test.py", "*_test.sh", "test-*.py", "test-*.sh", "*-test.sh",
-    "*_invariants.sh",
+    "*_invariants.sh", "*.test.mjs",
 )
 SUITE_TIMEOUT_SECONDS = 600
 
@@ -124,8 +124,8 @@ def parse(text: str) -> Manifest:
         inputs = tuple(_path(item, f"{where} input") for item in _strings(entry["inputs"], f"{where} inputs"))
         suites = tuple(_path(item, f"{where} suite") for item in _strings(entry["suites"], f"{where} suites"))
         for suite in suites:
-            if not suite.endswith((".py", ".sh")):
-                raise ValueError(f"{suite}: suites must be .py or .sh files")
+            if not suite.endswith((".py", ".sh", ".test.mjs")):
+                raise ValueError(f"{suite}: suites must be .py, .sh or .test.mjs files")
             claim(suite, f"group {name}")
         groups.append(Group(name, inputs, suites))
     covered: dict[str, str] = {}
@@ -251,7 +251,15 @@ def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, R
 
 
 def command(suite: str) -> list[str]:
-    return ["python3", suite] if suite.endswith(".py") else ["bash", suite]
+    # Every suite runs without the desktop session of whoever runs it, as the
+    # Rust tests do (tools/cargo-runner.sh).
+    if suite.endswith(".py"):
+        run = ["python3", suite]
+    elif suite.endswith(".mjs"):
+        run = ["node", "--test", suite]
+    else:
+        run = ["bash", suite]
+    return ["bash", str(ROOT / "tools/with-test-environment.sh"), *run]
 
 
 def run(root: Path, suites: list[str], jobs: int) -> int:

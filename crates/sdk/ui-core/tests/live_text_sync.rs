@@ -15,9 +15,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
@@ -35,7 +32,6 @@ fn live_text_edit_propagates_through_broker() {
     let broker = TypedBroker::new();
     let mut a = broker.manager("alice");
     let mut b = broker.manager("bob");
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
 
@@ -51,8 +47,7 @@ fn live_text_edit_propagates_through_broker() {
     let mut b_doc = AutoCommit::new();
     b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
     let mut adopted = false;
-    for _ in 0..40 {
-        thread::sleep(Duration::from_millis(50));
+    tilo_test_env::wait_until("alice's snapshot at bob", || {
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
             {
@@ -61,10 +56,8 @@ fn live_text_edit_propagates_through_broker() {
                 adopted = true;
             }
         }
-        if adopted {
-            break;
-        }
-    }
+        adopted
+    });
     assert!(adopted, "bob must receive alice's snapshot");
     assert_eq!(text_of(&b_doc), "hello", "bob adopts alice's text");
 
@@ -75,8 +68,7 @@ fn live_text_edit_propagates_through_broker() {
     a.send(CollabRequest::document_incremental(delta));
 
     let mut got_edit = false;
-    for _ in 0..40 {
-        thread::sleep(Duration::from_millis(50));
+    tilo_test_env::wait_until("alice's edit at bob", || {
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Incremental(data))) =
                 e.document_mutation()
@@ -85,10 +77,8 @@ fn live_text_edit_propagates_through_broker() {
                 got_edit = true;
             }
         }
-        if got_edit && text_of(&b_doc) == "hello world" {
-            break;
-        }
-    }
+        got_edit && text_of(&b_doc) == "hello world"
+    });
     assert_eq!(
         text_of(&b_doc),
         "hello world",

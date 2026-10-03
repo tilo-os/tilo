@@ -185,6 +185,7 @@ impl RouteKeys {
                 _ => Ok(None),
             };
         };
+        let ciphertext = collab_types::sealed_ciphertext(envelope).map_err(|_| Unopened::Never)?;
         let opened = match &mut self.keys {
             Keys::Plain => return Err(Unopened::Never),
             Keys::Pending(_) => return Err(Unopened::Later),
@@ -192,7 +193,7 @@ impl RouteKeys {
                 if group.channel_id() != metadata.channel {
                     return Err(Unopened::Never);
                 }
-                group.open_content(envelope.artifact, &metadata, &envelope.payload)
+                group.open_content(envelope.artifact, &metadata, &ciphertext)
             }
             Keys::Content { keys, .. } => {
                 if keys.channel_id() != metadata.channel {
@@ -201,7 +202,7 @@ impl RouteKeys {
                 if !keys.holds_epoch(metadata.epoch) {
                     return Err(Unopened::Later);
                 }
-                keys.open_content(envelope.artifact, &metadata, &envelope.payload)
+                keys.open_content(envelope.artifact, &metadata, &ciphertext)
             }
         };
         match opened {
@@ -349,6 +350,43 @@ mod tests {
                 .as_slice(),
             b"mine"
         );
+    }
+
+    #[test]
+    fn a_sealed_compaction_opens_like_a_sealed_snapshot() {
+        let channel = ChannelId::new();
+        let (group, encoded) = keys(channel);
+        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+        let (write_metadata, write) = group
+            .seal_content(artifact, ContentRetention::Delta, b"an edit")
+            .unwrap();
+        let superseded = envelope(write, Some(write_metadata));
+        let (metadata, sealed) = group
+            .seal_content(artifact, ContentRetention::Checkpoint, b"merged record")
+            .unwrap();
+        let payload = collab_types::SealedCompaction::new(&[superseded], sealed)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut compaction = envelope(payload, Some(metadata));
+        compaction.op_class = OpClass::Compaction;
+        let mut route = RouteKeys::requested();
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert_eq!(
+            route.open(&compaction, true).unwrap().unwrap().as_slice(),
+            b"merged record"
+        );
+        let mut grouped = RouteKeys::plain();
+        grouped.install_group(group);
+        assert_eq!(
+            grouped.open(&compaction, true).unwrap().unwrap().as_slice(),
+            b"merged record"
+        );
+        compaction.payload.push(0);
+        assert!(matches!(
+            route.open(&compaction, true),
+            Err(Unopened::Never)
+        ));
     }
 
     #[test]

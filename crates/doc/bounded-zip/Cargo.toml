@@ -2,9 +2,11 @@
 name = "bounded-zip"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Bounded reading of untrusted ZIP packages (zip-bomb and XXE defence) for Tilo's document formats"
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = []
@@ -18,3 +20,7 @@ roxmltree = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

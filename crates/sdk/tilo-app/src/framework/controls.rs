@@ -12,7 +12,9 @@ use std::rc::Rc;
 
 use tilo_actions::ActionBinding;
 use tilo_resource::{Binds, Invoke, Resource};
-use ui_core::widget::{Button, Checkbox, Dropdown, NumberInput, Slider, TextInput, Toggle};
+use ui_core::widget::{
+    Button, Checkbox, Dropdown, EditableLabel, NumberInput, Slider, TextInput, Toggle,
+};
 
 /// A toolkit control whose committed value `I` can invoke an action.
 pub trait ActionControl<I>: Sized {
@@ -48,6 +50,8 @@ action_control! {
     NumberInput => f64, |control| control.with_enabled(false);
     Dropdown => String, |control| control.with_enabled(false);
     Button => (), |control| control.with_enabled(false);
+    // Unavailable, an inline rename stays a label that is never committed.
+    EditableLabel => String, |control| control;
 }
 
 /// The actions a resource publishes, for binding controls that are built

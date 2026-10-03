@@ -327,171 +327,185 @@ mod tests {
     }
 
     #[test]
-    fn upsert_replaces_by_id_not_appends() {
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(cfg("a@x.example", "A")));
-        let mut updated = Account::new(cfg("a@x.example", "A renamed"));
-        updated.id = "a@x.example".into();
-        store.upsert(updated);
-        assert_eq!(store.len(), 1);
-        assert_eq!(store.accounts[0].config.display_name, "A renamed");
-    }
-
-    #[test]
-    fn active_is_clamped_after_remove() {
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(cfg("a@x.example", "A")));
-        store.upsert(Account::new(cfg("b@y.example", "B")));
-        store.set_active(1);
-        store.remove("b@y.example");
-        // active was 1, now only index 0 exists — must clamp, not panic.
-        assert_eq!(store.active_account().unwrap().config.email, "a@x.example");
-    }
-
-    #[test]
-    fn shared_store_round_trips_accounts_and_active() {
-        let root = temp_root();
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(cfg("a@x.example", "A")));
-        store.upsert(Account::new(cfg("b@y.example", "B")));
-        store.set_active(0);
-        store.persist_in(&root).expect("persist");
-
-        let back = AccountStore::load_in(&root);
-        assert_eq!(back.len(), 2);
-        assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
-        assert_eq!(back.accounts[1].config.display_name, "B");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn removing_an_account_reconciles_the_shared_store_on_persist() {
-        let root = temp_root();
-        // Two accounts persisted.
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(cfg("a@x.example", "A")));
-        store.upsert(Account::new(cfg("b@y.example", "B")));
-        store.persist_in(&root).expect("persist both");
-        assert_eq!(AccountStore::load_in(&root).len(), 2);
-
-        // Remove one and persist again — the shared store must drop it too, so
-        // a reload doesn't resurrect the removed account.
-        store.remove("a@x.example");
-        store.persist_in(&root).expect("persist after remove");
-        let back = AccountStore::load_in(&root);
-        assert_eq!(back.len(), 1);
-        assert_eq!(back.accounts[0].config.email, "b@y.example");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn removed_account_secret_is_purged_from_the_vault() {
-        let root = temp_root();
-        let mut c = cfg("a@x.example", "A");
-        c.password = "top-secret".into();
-        let mut store = AccountStore::single(c);
-        store.persist_in(&root).expect("persist");
-        assert!(
-            SecretVault::open_in(&root)
-                .get(&AccountId::from("a@x.example"))
-                .is_some()
-        );
-
-        store.remove("a@x.example");
-        store.persist_in(&root).expect("persist after remove");
-        assert!(
-            SecretVault::open_in(&root)
-                .get(&AccountId::from("a@x.example"))
-                .is_none(),
-            "the removed account's secret must be purged from the vault"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn persist_preserves_a_sealed_oauth_token_for_a_passwordless_account() {
-        let root = temp_root();
-        // Sign-in sealed an OAuth token before the account is saved.
-        let id = AccountId::from("g@gmail.com");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn account_store_upserts_clamps_and_round_trips_the_shared_store() {
+        // Phase `upsert_replaces_by_id_not_appends`.
         {
-            let mut vault = SecretVault::open_in(&root);
-            vault.put(
-                &id,
-                &accounts::Secret {
-                    password: String::new(),
-                    token: Some("{\"access_token\":\"tok\"}".into()),
-                },
-            );
-            vault.save();
+            let mut store = AccountStore::new();
+            store.upsert(Account::new(cfg("a@x.example", "A")));
+            let mut updated = Account::new(cfg("a@x.example", "A renamed"));
+            updated.id = "a@x.example".into();
+            store.upsert(updated);
+            assert_eq!(store.len(), 1);
+            assert_eq!(store.accounts[0].config.display_name, "A renamed");
         }
-        // Persist an OAuth (passwordless) account with that id.
-        let mut c = cfg("g@gmail.com", "G");
-        c.auth = crate::model::AuthMethod::OAuth;
-        c.password.clear();
-        let store = AccountStore::single(c);
-        store.persist_in(&root).expect("persist");
-        // The OAuth token must NOT be clobbered by the password-secret path.
-        let secret = SecretVault::open_in(&root)
-            .get(&id)
-            .expect("token survives");
-        assert_eq!(secret.token.as_deref(), Some("{\"access_token\":\"tok\"}"));
-        std::fs::remove_dir_all(&root).ok();
+
+        // Phase `active_is_clamped_after_remove`.
+        {
+            let mut store = AccountStore::new();
+            store.upsert(Account::new(cfg("a@x.example", "A")));
+            store.upsert(Account::new(cfg("b@y.example", "B")));
+            store.set_active(1);
+            store.remove("b@y.example");
+            // active was 1, now only index 0 exists — must clamp, not panic.
+            assert_eq!(store.active_account().unwrap().config.email, "a@x.example");
+        }
+
+        // Phase `shared_store_round_trips_accounts_and_active`.
+        {
+            let root = temp_root();
+            let mut store = AccountStore::new();
+            store.upsert(Account::new(cfg("a@x.example", "A")));
+            store.upsert(Account::new(cfg("b@y.example", "B")));
+            store.set_active(0);
+            store.persist_in(&root).expect("persist");
+
+            let back = AccountStore::load_in(&root);
+            assert_eq!(back.len(), 2);
+            assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
+            assert_eq!(back.accounts[1].config.display_name, "B");
+            std::fs::remove_dir_all(&root).ok();
+        }
+
+        // Phase `removing_an_account_reconciles_the_shared_store_on_persist`.
+        {
+            let root = temp_root();
+            // Two accounts persisted.
+            let mut store = AccountStore::new();
+            store.upsert(Account::new(cfg("a@x.example", "A")));
+            store.upsert(Account::new(cfg("b@y.example", "B")));
+            store.persist_in(&root).expect("persist both");
+            assert_eq!(AccountStore::load_in(&root).len(), 2);
+
+            // Remove one and persist again — the shared store must drop it too, so
+            // a reload doesn't resurrect the removed account.
+            store.remove("a@x.example");
+            store.persist_in(&root).expect("persist after remove");
+            let back = AccountStore::load_in(&root);
+            assert_eq!(back.len(), 1);
+            assert_eq!(back.accounts[0].config.email, "b@y.example");
+            std::fs::remove_dir_all(&root).ok();
+        }
     }
 
     #[test]
-    fn password_persists_to_the_vault_not_the_store_json() {
-        let root = temp_root();
-        let mut c = cfg("a@x.example", "A");
-        c.password = "hunter2".into();
-        let store = AccountStore::single(c);
-        store.persist_in(&root).expect("persist");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn account_secrets_live_in_the_vault_and_a_damaged_vault_blocks_changes() {
+        // Phase `removed_account_secret_is_purged_from_the_vault`.
+        {
+            let root = temp_root();
+            let mut c = cfg("a@x.example", "A");
+            c.password = "top-secret".into();
+            let mut store = AccountStore::single(c);
+            store.persist_in(&root).expect("persist");
+            assert!(
+                SecretVault::open_in(&root)
+                    .get(&AccountId::from("a@x.example"))
+                    .is_some()
+            );
 
-        // The plaintext store must never carry the password …
-        let store_json =
-            std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
-        assert!(
-            !store_json.contains("hunter2"),
-            "password must not reach the shared store JSON"
-        );
+            store.remove("a@x.example");
+            store.persist_in(&root).expect("persist after remove");
+            assert!(
+                SecretVault::open_in(&root)
+                    .get(&AccountId::from("a@x.example"))
+                    .is_none(),
+                "the removed account's secret must be purged from the vault"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
 
-        // … but a reload recovers it from the vault.
-        let back = AccountStore::load_in(&root);
-        assert_eq!(
-            back.accounts[0].config.password, "hunter2",
-            "password rehydrates from the vault"
-        );
-        std::fs::remove_dir_all(&root).ok();
-    }
+        // Phase `persist_preserves_a_sealed_oauth_token_for_a_passwordless_account`.
+        {
+            let root = temp_root();
+            // Sign-in sealed an OAuth token before the account is saved.
+            let id = AccountId::from("g@gmail.com");
+            {
+                let mut vault = SecretVault::open_in(&root);
+                vault.put(
+                    &id,
+                    &accounts::Secret {
+                        password: String::new(),
+                        token: Some("{\"access_token\":\"tok\"}".into()),
+                    },
+                );
+                vault.save();
+            }
+            // Persist an OAuth (passwordless) account with that id.
+            let mut c = cfg("g@gmail.com", "G");
+            c.auth = crate::model::AuthMethod::OAuth;
+            c.password.clear();
+            let store = AccountStore::single(c);
+            store.persist_in(&root).expect("persist");
+            // The OAuth token must NOT be clobbered by the password-secret path.
+            let secret = SecretVault::open_in(&root)
+                .get(&id)
+                .expect("token survives");
+            assert_eq!(secret.token.as_deref(), Some("{\"access_token\":\"tok\"}"));
+            std::fs::remove_dir_all(&root).ok();
+        }
 
-    #[test]
-    fn damaged_vault_rejects_account_changes_and_preserves_recovery_data() {
-        let root = tempfile::tempdir().unwrap();
-        let mut config = cfg("a@x.example", "Original");
-        config.password = "fixture-original-secret".into();
-        let mut store = AccountStore::single(config);
-        store.persist_in(root.path()).unwrap();
-        let metadata_path = accounts::store_path_in(root.path());
-        let original_metadata = std::fs::read(&metadata_path).unwrap();
-        let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
-        let original_vault = std::fs::read(&vault_path).unwrap();
-        let damaged = b"damaged fixture vault";
-        std::fs::write(&vault_path, damaged).unwrap();
-        store.accounts[0].config.display_name = "Unsaved change".into();
-        store.accounts[0].config.password = "fixture-new-secret".into();
+        // Phase `password_persists_to_the_vault_not_the_store_json`.
+        {
+            let root = temp_root();
+            let mut c = cfg("a@x.example", "A");
+            c.password = "hunter2".into();
+            let store = AccountStore::single(c);
+            store.persist_in(&root).expect("persist");
 
-        let error = store
-            .persist_in(root.path())
-            .expect_err("custody must succeed first");
-        assert!(error.to_string().contains("vault recovery required"));
-        assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
-        assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
+            // The plaintext store must never carry the password …
+            let store_json =
+                std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
+            assert!(
+                !store_json.contains("hunter2"),
+                "password must not reach the shared store JSON"
+            );
 
-        std::fs::write(&vault_path, original_vault).unwrap();
-        let restored = AccountStore::load_in(root.path());
-        assert_eq!(restored.accounts[0].config.display_name, "Original");
-        assert_eq!(
-            restored.accounts[0].config.password,
-            "fixture-original-secret"
-        );
+            // … but a reload recovers it from the vault.
+            let back = AccountStore::load_in(&root);
+            assert_eq!(
+                back.accounts[0].config.password, "hunter2",
+                "password rehydrates from the vault"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
+
+        // Phase `damaged_vault_rejects_account_changes_and_preserves_recovery_data`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut config = cfg("a@x.example", "Original");
+            config.password = "fixture-original-secret".into();
+            let mut store = AccountStore::single(config);
+            store.persist_in(root.path()).unwrap();
+            let metadata_path = accounts::store_path_in(root.path());
+            let original_metadata = std::fs::read(&metadata_path).unwrap();
+            let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
+            let original_vault = std::fs::read(&vault_path).unwrap();
+            let damaged = b"damaged fixture vault";
+            std::fs::write(&vault_path, damaged).unwrap();
+            store.accounts[0].config.display_name = "Unsaved change".into();
+            store.accounts[0].config.password = "fixture-new-secret".into();
+
+            let error = store
+                .persist_in(root.path())
+                .expect_err("custody must succeed first");
+            assert!(error.to_string().contains("vault recovery required"));
+            assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
+            assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
+
+            std::fs::write(&vault_path, original_vault).unwrap();
+            let restored = AccountStore::load_in(root.path());
+            assert_eq!(restored.accounts[0].config.display_name, "Original");
+            assert_eq!(
+                restored.accounts[0].config.password,
+                "fixture-original-secret"
+            );
+        }
     }
 }

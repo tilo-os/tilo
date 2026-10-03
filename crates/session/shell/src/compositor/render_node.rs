@@ -314,64 +314,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nvidia_proprietary_is_not_advertised_for_cpu_import() {
+    fn render_node_driver_advertisement_is_self_describing() {
+        // Phase `nvidia_proprietary_is_not_advertised_for_cpu_import`.
         // The whole point of the allow-list: `nvidia` exports dma-bufs that cannot be mmap'd, so steering a client there would make every foreign tile an import error.
         assert!(!driver_supports_cpu_map("nvidia"));
         assert!(!driver_supports_cpu_map("nvidia-drm"));
-    }
-
-    #[test]
-    fn mesa_drm_drivers_are_advertised() {
+        // Phase `mesa_drm_drivers_are_advertised`.
         for d in ["amdgpu", "i915", "xe", "nouveau", "virtio_gpu"] {
             assert!(
                 driver_supports_cpu_map(d),
                 "`{d}` exports CPU-mappable dma-bufs and must be advertisable"
             );
         }
-    }
+        // Phase `probe_result_is_self_describing`.
+        {
+            // Every rejection path has to say *why* in the boot log — "clients silently fell back to shm" is exactly the failure mode this module exists to prevent.
+            let e = ProbeError::NoneUsable(vec![(
+                PathBuf::from("/dev/dri/renderD129"),
+                "driver `nvidia` does not support CPU-mapping its dma-bufs".into(),
+            )]);
+            let text = e.to_string();
+            assert!(text.contains("renderD129"), "{text}");
+            assert!(text.contains("nvidia"), "{text}");
 
-    #[test]
-    fn probe_result_is_self_describing() {
-        // Every rejection path has to say *why* in the boot log — "clients silently fell back to shm" is exactly the failure mode this module exists to prevent.
-        let e = ProbeError::NoneUsable(vec![(
-            PathBuf::from("/dev/dri/renderD129"),
-            "driver `nvidia` does not support CPU-mapping its dma-bufs".into(),
-        )]);
-        let text = e.to_string();
-        assert!(text.contains("renderD129"), "{text}");
-        assert!(text.contains("nvidia"), "{text}");
-
-        assert!(
-            ProbeError::NoRenderNodes.to_string().contains("/dev/dri"),
-            "the no-GPU case must name the directory it looked in"
-        );
+            assert!(
+                ProbeError::NoRenderNodes.to_string().contains("/dev/dri"),
+                "the no-GPU case must name the directory it looked in"
+            );
+        }
     }
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn driver_lookup_rejects_paths_without_a_sysfs_entry() {
+    fn render_node_probe_reads_sysfs_consistently() {
+        // Phase `probe_reports_a_stat_consistent_device_number`.
+        // On a machine with a Mesa GPU the probe must succeed and hand back a node whose `dev` matches `stat(2)` — that number goes on the wire as `main_device`, and a wrong one strands the client.
+        fn probe_reports_a_stat_consistent_device_number() {
+            // Env-independent: skip when the box genuinely has no mappable GPU rather than asserting hardware into existence.
+            let Ok(node) = probe() else {
+                eprintln!("skipping: no CPU-mappable render node on this machine");
+                return;
+            };
+            let expected = dev_of(&node.path).expect("probe returned a node that no longer stats");
+            assert_eq!(
+                node.dev, expected,
+                "main_device must be the node's st_rdev; clients resolve the GPU from it"
+            );
+            let driver = node.driver.as_deref().unwrap_or("<none>");
+            assert!(
+                driver_supports_cpu_map(driver),
+                "probe returned `{driver}`, which cannot CPU-map its dma-bufs"
+            );
+        }
+        // Phase `driver_lookup_rejects_paths_without_a_sysfs_entry`.
         assert_eq!(driver_for(Path::new("/dev/null")), None);
         assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
-    }
-
-    /// On a machine with a Mesa GPU the probe must succeed and hand back a node whose `dev` matches `stat(2)` — that number goes on the wire as `main_device`, and a wrong one strands the client.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn probe_reports_a_stat_consistent_device_number() {
-        // Env-independent: skip when the box genuinely has no mappable GPU rather than asserting hardware into existence.
-        let Ok(node) = probe() else {
-            eprintln!("skipping: no CPU-mappable render node on this machine");
-            return;
-        };
-        let expected = dev_of(&node.path).expect("probe returned a node that no longer stats");
-        assert_eq!(
-            node.dev, expected,
-            "main_device must be the node's st_rdev; clients resolve the GPU from it"
-        );
-        let driver = node.driver.as_deref().unwrap_or("<none>");
-        assert!(
-            driver_supports_cpu_map(driver),
-            "probe returned `{driver}`, which cannot CPU-map its dma-bufs"
-        );
+        // Phase `probe_reports_a_stat_consistent_device_number` (defined above).
+        probe_reports_a_stat_consistent_device_number();
     }
 }

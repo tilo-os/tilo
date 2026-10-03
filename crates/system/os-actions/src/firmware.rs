@@ -192,7 +192,7 @@ fn run_fwupd_transaction(
             let line = match event {
                 Ok(line) => line,
                 Err(error) => {
-                    terminate_process_group(&mut child);
+                    bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
                     return Err(error);
                 }
             };
@@ -222,7 +222,7 @@ fn run_fwupd_transaction(
             break;
         }
         if started.elapsed() > deadline {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
             return Err("firmware update timed out after 45 minutes".into());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -265,17 +265,6 @@ fn read_firmware_progress(
     let _ = tx.send(Err(
         "firmware progress event count exceeded the safety limit".into(),
     ));
-}
-
-fn terminate_process_group(child: &mut std::process::Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: fwupdmgr is spawned into its own pid-named process group.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn progress_percent(line: &str) -> Option<u8> {
@@ -430,61 +419,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn firmware_progress_reader_bounds_lines_and_event_count() {
-        let (tx, rx) = mpsc::channel();
-        read_firmware_progress(
-            std::io::Cursor::new(vec![b'x'; MAX_FIRMWARE_LINE_BYTES + 1]),
-            &tx,
-        );
-        assert!(rx.recv().unwrap().unwrap_err().contains("line"));
+    fn fwupd_devices_history_and_progress_parse_bounded_and_sanitized() {
+        // Phase `firmware_progress_reader_bounds_lines_and_event_count`.
+        {
+            let (tx, rx) = mpsc::channel();
+            read_firmware_progress(
+                std::io::Cursor::new(vec![b'x'; MAX_FIRMWARE_LINE_BYTES + 1]),
+                &tx,
+            );
+            assert!(rx.recv().unwrap().unwrap_err().contains("line"));
 
-        let (tx, rx) = mpsc::channel();
-        read_firmware_progress(
-            std::io::Cursor::new("x\n".repeat(MAX_FIRMWARE_EVENTS + 1)),
-            &tx,
-        );
-        let events: Vec<_> = rx.try_iter().collect();
-        assert_eq!(events.len(), MAX_FIRMWARE_EVENTS + 1);
-        assert!(
-            events
-                .last()
-                .unwrap()
-                .as_ref()
-                .unwrap_err()
-                .contains("event")
-        );
-    }
-
-    #[test]
-    fn parses_fwupd_devices_and_releases() {
-        let updates = parse_updates(
-            r#"{"Devices":[{"DeviceId":"device-1","Name":"System Firmware","Version":"1.0","Releases":[{"Version":"1.2","Flags":4}]}]}"#,
-        )
-        .unwrap();
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].device_id.as_deref(), Some("device-1"));
-        assert_eq!(updates[0].device, "System Firmware");
-        assert_eq!(updates[0].new_version.as_deref(), Some("1.2"));
-        assert!(updates[0].problems.is_empty());
-    }
-
-    #[test]
-    fn parses_fwupd_transaction_history() {
-        let history = parse_history(
-            r#"{"Devices":[{"Name":"System Firmware","VersionOld":"1.0","Version":"1.2","UpdateState":"success"},{"Name":"Dock","Version":"3","UpdateState":"failed","UpdateError":"cable removed"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].from_version.as_deref(), Some("1.0"));
-        assert_eq!(history[1].error.as_deref(), Some("cable removed"));
-    }
-
-    #[test]
-    fn parses_fwupd_progress_without_trusting_terminal_control_bytes() {
-        assert_eq!(progress_percent("Installing… [  42%]"), Some(42));
-        assert_eq!(
-            clean_progress_message("\u{1b}[2KWriting firmware"),
-            "[2KWriting firmware"
-        );
+            let (tx, rx) = mpsc::channel();
+            read_firmware_progress(
+                std::io::Cursor::new("x\n".repeat(MAX_FIRMWARE_EVENTS + 1)),
+                &tx,
+            );
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), MAX_FIRMWARE_EVENTS + 1);
+            assert!(
+                events
+                    .last()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("event")
+            );
+        }
+        // Phase `parses_fwupd_devices_and_releases`.
+        {
+            let updates = parse_updates(
+                r#"{"Devices":[{"DeviceId":"device-1","Name":"System Firmware","Version":"1.0","Releases":[{"Version":"1.2","Flags":4}]}]}"#,
+            )
+            .unwrap();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].device_id.as_deref(), Some("device-1"));
+            assert_eq!(updates[0].device, "System Firmware");
+            assert_eq!(updates[0].new_version.as_deref(), Some("1.2"));
+            assert!(updates[0].problems.is_empty());
+        }
+        // Phase `parses_fwupd_transaction_history`.
+        {
+            let history = parse_history(
+                r#"{"Devices":[{"Name":"System Firmware","VersionOld":"1.0","Version":"1.2","UpdateState":"success"},{"Name":"Dock","Version":"3","UpdateState":"failed","UpdateError":"cable removed"}]}"#,
+            )
+            .unwrap();
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[0].from_version.as_deref(), Some("1.0"));
+            assert_eq!(history[1].error.as_deref(), Some("cable removed"));
+        }
+        // Phase `parses_fwupd_progress_without_trusting_terminal_control_bytes`.
+        {
+            assert_eq!(progress_percent("Installing… [  42%]"), Some(42));
+            assert_eq!(
+                clean_progress_message("\u{1b}[2KWriting firmware"),
+                "[2KWriting firmware"
+            );
+        }
     }
 }

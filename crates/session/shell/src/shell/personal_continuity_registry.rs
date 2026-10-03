@@ -245,10 +245,6 @@ impl ContinuationRegistry {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the report entry points forward each validated field of one report unchanged"
-    )]
     fn report_with_validator(
         &mut self,
         room: RoomId,
@@ -555,367 +551,387 @@ mod tests {
     }
 
     #[test]
-    fn replaces_only_changed_safe_reports() {
-        let room = RoomId::new();
-        let mut reports = ContinuationRegistry::default();
-        assert!(
+    fn registry_accepts_only_changed_safe_structurally_valid_reports() {
+        fn replaces_only_changed_safe_reports() {
+            let room = RoomId::new();
+            let mut reports = ContinuationRegistry::default();
+            assert!(
+                report_browser(
+                    &mut reports,
+                    room,
+                    AppInstanceId(11),
+                    br#"{"url":"https://tilo.so"}"#,
+                )
+                .unwrap()
+            );
+            assert!(
+                !report_browser(
+                    &mut reports,
+                    room,
+                    AppInstanceId(11),
+                    br#"{"url":"https://tilo.so"}"#,
+                )
+                .unwrap()
+            );
+            assert_eq!(reports.len(), 1);
+            assert!(
+                reports
+                    .resume_for(room, "so.tilo.browser", AppInstanceId(11))
+                    .is_some()
+            );
+        }
+
+        fn rejects_pathful_reports_before_they_enter_the_registry() {
+            let error = ContinuationRegistry::default()
+                .report(
+                    RoomId::new(),
+                    "so.tilo.browser",
+                    AppInstanceId(11),
+                    1,
+                    b"file:///home/alice/private".to_vec(),
+                )
+                .unwrap_err();
+            assert_eq!(error, ContinuityError::LocalPathInResumeState);
+        }
+
+        fn rejects_unknown_opaque_and_structurally_invalid_app_metadata() {
+            let room = RoomId::new();
+            let mut reports = ContinuationRegistry::default();
+            assert_eq!(
+                reports.report(
+                    room,
+                    "so.tilo.mail",
+                    AppInstanceId(1),
+                    1,
+                    br#"{"password":"secret"}"#.to_vec(),
+                ),
+                Err(ContinuityError::InvalidResumePayload)
+            );
+            assert_eq!(
+                reports.report(
+                    room,
+                    "so.tilo.browser",
+                    AppInstanceId(2),
+                    1,
+                    br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
+                ),
+                Err(ContinuityError::InvalidResumePayload)
+            );
+            assert_eq!(reports.len(), 0);
+        }
+
+        fn chat_continuation_accepts_only_bounded_semantic_call_intent() {
+            let safe = br#"{
+                "workspace_id":"ws_acme",
+                "channel_id":"c_huddle",
+                "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
+                "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
+            }"#;
+            assert!(validate_app_metadata("so.tilo.chat", 1, safe));
+            assert!(!validate_app_metadata(
+                "so.tilo.chat",
+                1,
+                br#"{
+                    "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
+                    "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                    "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+                }"#,
+            ));
+            assert!(!validate_app_metadata(
+                "so.tilo.chat",
+                1,
+                br#"{
+                    "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
+                    "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                    "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+                }"#,
+            ));
+        }
+
+        replaces_only_changed_safe_reports();
+        rejects_pathful_reports_before_they_enter_the_registry();
+        rejects_unknown_opaque_and_structurally_invalid_app_metadata();
+        chat_continuation_accepts_only_bounded_semantic_call_intent();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn manifest_semantics_cannot_opt_out_of_framework_presentation() {
+        fn unknown_app_semantics_cannot_suppress_framework_presentation() {
+            let metadata = ui::app::compose_structural_continuation_metadata(
+                ui::view::View {
+                    scroll: vec![24.0],
+                    focus: None,
+                    open_resource: None,
+                    viewport: ui::view::ViewRect::default(),
+                    view_mode: Some("grid".into()),
+                },
+                Some(ui::collaboration::ContinuationMetadata {
+                    schema_version: 1,
+                    bytes: br#"{"password":"must-not-survive"}"#.to_vec(),
+                }),
+            )
+            .unwrap();
+            let room = RoomId::new();
+            let instance = AppInstanceId(41);
+            let mut reports = ContinuationRegistry::default();
+            assert!(
+                reports
+                    .report(
+                        room,
+                        "so.tilo.custom",
+                        instance,
+                        metadata.schema_version,
+                        metadata.bytes,
+                    )
+                    .unwrap()
+            );
+            let retained = reports
+                .resume_for(room, "so.tilo.custom", instance)
+                .expect("generic presentation is retained");
+            let facets = ui::app::structural_continuation_facets(retained.bytes()).unwrap();
+            assert!(facets.presentation());
+            assert!(!facets.semantic());
+            assert!(
+                !retained
+                    .bytes()
+                    .windows(8)
+                    .any(|window| window == b"password")
+            );
+        }
+
+        fn semantic_manifest_contract_rejects_presentation_only_regression() {
+            let room = RoomId::new();
+            let instance = AppInstanceId(72);
+            let presentation_only =
+                ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                    .unwrap();
+            let required = [ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+            let mut reports = ContinuationRegistry::default();
+            assert_eq!(
+                reports.report_with_required_facets(
+                    room,
+                    "so.tilo.browser".into(),
+                    instance,
+                    presentation_only.schema_version,
+                    presentation_only.bytes,
+                    &required,
+                ),
+                Err(ContinuityError::InvalidResumePayload)
+            );
+
+            let complete = browser_checkpoint(br#"{"url":"https://tilo.so"}"#);
+            assert!(
+                reports
+                    .report_with_required_facets(
+                        room,
+                        "so.tilo.browser".into(),
+                        instance,
+                        complete.schema_version,
+                        complete.bytes,
+                        &required,
+                    )
+                    .unwrap()
+            );
+        }
+
+        fn third_party_app_uses_signed_portable_schema_not_package_allowlist() {
+            let room = RoomId::new();
+            let instance = AppInstanceId(74);
+            let contract = ContinuityContract {
+                required: vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic],
+                semantic_schema: Some(ContinuitySemanticSchema::WebLocationV1),
+            };
+            let safe = ui::app::compose_structural_continuation_metadata(
+                ui::view::View::default(),
+                Some(ui::collaboration::ContinuationMetadata {
+                    schema_version: 1,
+                    bytes: br#"{"url":"https://docs.example/guide"}"#.to_vec(),
+                }),
+            )
+            .unwrap();
+            let mut reports = ContinuationRegistry::default();
+            assert!(
+                reports
+                    .report_with_contract(
+                        room,
+                        "org.example.knowledge".into(),
+                        instance,
+                        safe.schema_version,
+                        safe.bytes,
+                        &contract,
+                    )
+                    .unwrap()
+            );
+
+            let unsafe_payload = ui::app::compose_structural_continuation_metadata(
+                ui::view::View::default(),
+                Some(ui::collaboration::ContinuationMetadata {
+                    schema_version: 1,
+                    bytes: br#"{"url":"file:///home/alice/private"}"#.to_vec(),
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                reports.report_with_contract(
+                    room,
+                    "org.example.knowledge".into(),
+                    AppInstanceId(75),
+                    unsafe_payload.schema_version,
+                    unsafe_payload.bytes,
+                    &contract,
+                ),
+                Err(ContinuityError::InvalidResumePayload)
+            );
+        }
+
+        fn empty_manifest_contract_cannot_opt_out_of_framework_presentation() {
+            let mut reports = ContinuationRegistry::default();
+            assert_eq!(
+                reports.report_with_required_facets(
+                    RoomId::new(),
+                    "so.tilo.browser".into(),
+                    AppInstanceId(73),
+                    1,
+                    br#"{"url":"https://tilo.so"}"#.to_vec(),
+                    &[],
+                ),
+                Err(ContinuityError::InvalidResumePayload)
+            );
+        }
+
+        unknown_app_semantics_cannot_suppress_framework_presentation();
+        semantic_manifest_contract_rejects_presentation_only_regression();
+        third_party_app_uses_signed_portable_schema_not_package_allowlist();
+        empty_manifest_contract_cannot_opt_out_of_framework_presentation();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn registry_instances_and_remote_tabs_keep_exact_projections() {
+        fn two_browser_instances_keep_distinct_urls() {
+            let room = RoomId::new();
+            let mut reports = ContinuationRegistry::default();
             report_browser(
                 &mut reports,
                 room,
                 AppInstanceId(11),
-                br#"{"url":"https://tilo.so"}"#,
+                br#"{"url":"https://a.test"}"#,
             )
-            .unwrap()
-        );
-        assert!(
-            !report_browser(
+            .unwrap();
+            report_browser(
                 &mut reports,
                 room,
-                AppInstanceId(11),
-                br#"{"url":"https://tilo.so"}"#,
+                AppInstanceId(22),
+                br#"{"url":"https://b.test"}"#,
             )
-            .unwrap()
-        );
-        assert_eq!(reports.len(), 1);
-        assert!(
-            reports
-                .resume_for(room, "so.tilo.browser", AppInstanceId(11))
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn rejects_pathful_reports_before_they_enter_the_registry() {
-        let error = ContinuationRegistry::default()
-            .report(
-                RoomId::new(),
-                "so.tilo.browser",
-                AppInstanceId(11),
-                1,
-                b"file:///home/alice/private".to_vec(),
-            )
-            .unwrap_err();
-        assert_eq!(error, ContinuityError::LocalPathInResumeState);
-    }
-
-    #[test]
-    fn rejects_unknown_opaque_and_structurally_invalid_app_metadata() {
-        let room = RoomId::new();
-        let mut reports = ContinuationRegistry::default();
-        assert_eq!(
-            reports.report(
-                room,
-                "so.tilo.mail",
-                AppInstanceId(1),
-                1,
-                br#"{"password":"secret"}"#.to_vec(),
-            ),
-            Err(ContinuityError::InvalidResumePayload)
-        );
-        assert_eq!(
-            reports.report(
-                room,
-                "so.tilo.browser",
-                AppInstanceId(2),
-                1,
-                br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
-            ),
-            Err(ContinuityError::InvalidResumePayload)
-        );
-        assert_eq!(reports.len(), 0);
-    }
-
-    #[test]
-    fn chat_continuation_accepts_only_bounded_semantic_call_intent() {
-        let safe = br#"{
-            "workspace_id":"ws_acme",
-            "channel_id":"c_huddle",
-            "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
-            "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
-        }"#;
-        assert!(validate_app_metadata("so.tilo.chat", 1, safe));
-        assert!(!validate_app_metadata(
-            "so.tilo.chat",
-            1,
-            br#"{
-                "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
-                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
-                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
-            }"#,
-        ));
-        assert!(!validate_app_metadata(
-            "so.tilo.chat",
-            1,
-            br#"{
-                "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
-                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
-                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
-            }"#,
-        ));
-    }
-
-    #[test]
-    fn unknown_app_semantics_cannot_suppress_framework_presentation() {
-        let metadata = ui::app::compose_structural_continuation_metadata(
-            ui::view::View {
-                scroll: vec![24.0],
-                focus: None,
-                open_resource: None,
-                viewport: ui::view::ViewRect::default(),
-                view_mode: Some("grid".into()),
-            },
-            Some(ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
-                bytes: br#"{"password":"must-not-survive"}"#.to_vec(),
-            }),
-        )
-        .unwrap();
-        let room = RoomId::new();
-        let instance = AppInstanceId(41);
-        let mut reports = ContinuationRegistry::default();
-        assert!(
-            reports
-                .report(
-                    room,
-                    "so.tilo.custom",
-                    instance,
-                    metadata.schema_version,
-                    metadata.bytes,
-                )
-                .unwrap()
-        );
-        let retained = reports
-            .resume_for(room, "so.tilo.custom", instance)
-            .expect("generic presentation is retained");
-        let facets = ui::app::structural_continuation_facets(retained.bytes()).unwrap();
-        assert!(facets.presentation());
-        assert!(!facets.semantic());
-        assert!(
-            !retained
-                .bytes()
-                .windows(8)
-                .any(|window| window == b"password")
-        );
-    }
-
-    #[test]
-    fn semantic_manifest_contract_rejects_presentation_only_regression() {
-        let room = RoomId::new();
-        let instance = AppInstanceId(72);
-        let presentation_only =
-            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
-                .unwrap();
-        let required = [ContinuityFacet::Presentation, ContinuityFacet::Semantic];
-        let mut reports = ContinuationRegistry::default();
-        assert_eq!(
-            reports.report_with_required_facets(
-                room,
-                "so.tilo.browser".into(),
-                instance,
-                presentation_only.schema_version,
-                presentation_only.bytes,
-                &required,
-            ),
-            Err(ContinuityError::InvalidResumePayload)
-        );
-
-        let complete = browser_checkpoint(br#"{"url":"https://tilo.so"}"#);
-        assert!(
-            reports
-                .report_with_required_facets(
-                    room,
-                    "so.tilo.browser".into(),
-                    instance,
-                    complete.schema_version,
-                    complete.bytes,
-                    &required,
-                )
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn third_party_app_uses_signed_portable_schema_not_package_allowlist() {
-        let room = RoomId::new();
-        let instance = AppInstanceId(74);
-        let contract = ContinuityContract {
-            required: vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic],
-            semantic_schema: Some(ContinuitySemanticSchema::WebLocationV1),
-        };
-        let safe = ui::app::compose_structural_continuation_metadata(
-            ui::view::View::default(),
-            Some(ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
-                bytes: br#"{"url":"https://docs.example/guide"}"#.to_vec(),
-            }),
-        )
-        .unwrap();
-        let mut reports = ContinuationRegistry::default();
-        assert!(
-            reports
-                .report_with_contract(
-                    room,
-                    "org.example.knowledge".into(),
-                    instance,
-                    safe.schema_version,
-                    safe.bytes,
-                    &contract,
-                )
-                .unwrap()
-        );
-
-        let unsafe_payload = ui::app::compose_structural_continuation_metadata(
-            ui::view::View::default(),
-            Some(ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
-                bytes: br#"{"url":"file:///home/alice/private"}"#.to_vec(),
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            reports.report_with_contract(
-                room,
-                "org.example.knowledge".into(),
-                AppInstanceId(75),
-                unsafe_payload.schema_version,
-                unsafe_payload.bytes,
-                &contract,
-            ),
-            Err(ContinuityError::InvalidResumePayload)
-        );
-    }
-
-    #[test]
-    fn empty_manifest_contract_cannot_opt_out_of_framework_presentation() {
-        let mut reports = ContinuationRegistry::default();
-        assert_eq!(
-            reports.report_with_required_facets(
-                RoomId::new(),
-                "so.tilo.browser".into(),
-                AppInstanceId(73),
-                1,
-                br#"{"url":"https://tilo.so"}"#.to_vec(),
-                &[],
-            ),
-            Err(ContinuityError::InvalidResumePayload)
-        );
-    }
-
-    #[test]
-    fn two_browser_instances_keep_distinct_urls() {
-        let room = RoomId::new();
-        let mut reports = ContinuationRegistry::default();
-        report_browser(
-            &mut reports,
-            room,
-            AppInstanceId(11),
-            br#"{"url":"https://a.test"}"#,
-        )
-        .unwrap();
-        report_browser(
-            &mut reports,
-            room,
-            AppInstanceId(22),
-            br#"{"url":"https://b.test"}"#,
-        )
-        .unwrap();
-        reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
-        reports.bind_tab(AppInstanceId(202), AppInstanceId(22));
-        let launch = LaunchIntent::app("so.tilo.browser").unwrap();
-        assert_eq!(reports.len(), 2);
-        assert_ne!(
-            reports.resume_for_tab(room, AppInstanceId(101), &launch),
-            reports.resume_for_tab(room, AppInstanceId(202), &launch),
-        );
-    }
-
-    #[test]
-    fn clear_removes_only_the_certified_instance_projection() {
-        let room = RoomId::new();
-        let mut reports = ContinuationRegistry::default();
-        for (instance, url) in [
-            (AppInstanceId(11), br#"{"url":"https://a.test"}"#.as_slice()),
-            (AppInstanceId(22), br#"{"url":"https://b.test"}"#.as_slice()),
-        ] {
-            report_browser(&mut reports, room, instance, url).unwrap();
+            .unwrap();
+            reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
+            reports.bind_tab(AppInstanceId(202), AppInstanceId(22));
+            let launch = LaunchIntent::app("so.tilo.browser").unwrap();
+            assert_eq!(reports.len(), 2);
+            assert_ne!(
+                reports.resume_for_tab(room, AppInstanceId(101), &launch),
+                reports.resume_for_tab(room, AppInstanceId(202), &launch),
+            );
         }
 
-        assert!(reports.clear(room, "so.tilo.browser", AppInstanceId(11)));
-        assert!(
-            reports
-                .resume_for(room, "so.tilo.browser", AppInstanceId(11))
-                .is_none()
-        );
-        assert!(
-            reports
-                .resume_for(room, "so.tilo.browser", AppInstanceId(22))
-                .is_some()
-        );
-        assert!(!reports.clear(room, "so.tilo.browser", AppInstanceId(11)));
-    }
+        fn clear_removes_only_the_certified_instance_projection() {
+            let room = RoomId::new();
+            let mut reports = ContinuationRegistry::default();
+            for (instance, url) in [
+                (AppInstanceId(11), br#"{"url":"https://a.test"}"#.as_slice()),
+                (AppInstanceId(22), br#"{"url":"https://b.test"}"#.as_slice()),
+            ] {
+                report_browser(&mut reports, room, instance, url).unwrap();
+            }
 
-    #[test]
-    fn remote_refresh_does_not_replace_a_live_tab_record() {
-        let room = RoomId::new();
-        let launch = LaunchIntent::app("so.tilo.browser").unwrap();
-        let mut reports = ContinuationRegistry::default();
-        reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
-        report_browser(
-            &mut reports,
-            room,
-            AppInstanceId(101),
-            br#"{"url":"https://local.test"}"#,
-        )
-        .unwrap();
-        reports.store_remote_resume(
-            room,
-            AppInstanceId(10),
-            "so.tilo.browser".into(),
-            ResumeMetadata::new(
-                1,
-                ResumeSensitivity::Syncable,
-                br#"{"url":"https://remote.test"}"#.to_vec(),
+            assert!(reports.clear(room, "so.tilo.browser", AppInstanceId(11)));
+            assert!(
+                reports
+                    .resume_for(room, "so.tilo.browser", AppInstanceId(11))
+                    .is_none()
+            );
+            assert!(
+                reports
+                    .resume_for(room, "so.tilo.browser", AppInstanceId(22))
+                    .is_some()
+            );
+            assert!(!reports.clear(room, "so.tilo.browser", AppInstanceId(11)));
+        }
+
+        fn remote_refresh_does_not_replace_a_live_tab_record() {
+            let room = RoomId::new();
+            let launch = LaunchIntent::app("so.tilo.browser").unwrap();
+            let mut reports = ContinuationRegistry::default();
+            reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
+            report_browser(
+                &mut reports,
+                room,
+                AppInstanceId(101),
+                br#"{"url":"https://local.test"}"#,
             )
-            .unwrap(),
-            AppInstanceId(202),
-        );
-        let resolved = reports
-            .continuation_for_tab(room, AppInstanceId(10), &launch)
             .unwrap();
-        assert_eq!(resolved.record_instance, AppInstanceId(101));
-        assert_eq!(
-            resolved.resume.schema_version(),
-            ui::app::STRUCTURAL_CONTINUATION_SCHEMA
-        );
-        let facets = ui::app::structural_continuation_facets(resolved.resume.bytes()).unwrap();
-        assert!(facets.presentation() && facets.semantic());
-    }
+            reports.store_remote_resume(
+                room,
+                AppInstanceId(10),
+                "so.tilo.browser".into(),
+                ResumeMetadata::new(
+                    1,
+                    ResumeSensitivity::Syncable,
+                    br#"{"url":"https://remote.test"}"#.to_vec(),
+                )
+                .unwrap(),
+                AppInstanceId(202),
+            );
+            let resolved = reports
+                .continuation_for_tab(room, AppInstanceId(10), &launch)
+                .unwrap();
+            assert_eq!(resolved.record_instance, AppInstanceId(101));
+            assert_eq!(
+                resolved.resume.schema_version(),
+                ui::app::STRUCTURAL_CONTINUATION_SCHEMA
+            );
+            let facets = ui::app::structural_continuation_facets(resolved.resume.bytes()).unwrap();
+            assert!(facets.presentation() && facets.semantic());
+        }
 
-    #[test]
-    fn removing_a_closed_remote_tab_drops_its_staged_checkpoint() {
-        let room = RoomId::new();
-        let tab = AppInstanceId(10);
-        let launch = LaunchIntent::app("so.tilo.browser").unwrap();
-        let mut reports = ContinuationRegistry::default();
-        let metadata = browser_checkpoint(br#"{"url":"https://closed.test"}"#);
-        reports.store_remote_resume(
-            room,
-            tab,
-            "so.tilo.browser".into(),
-            ResumeMetadata::new(
-                metadata.schema_version,
-                ResumeSensitivity::Syncable,
-                metadata.bytes,
-            )
-            .unwrap(),
-            AppInstanceId(101),
-        );
-        reports.remove_remote_tab(tab);
-        assert!(reports.continuation_for_tab(room, tab, &launch).is_none());
-        assert!(
-            reports
-                .record_instance_for_tab(room, tab, &launch)
-                .is_none()
-        );
+        fn removing_a_closed_remote_tab_drops_its_staged_checkpoint() {
+            let room = RoomId::new();
+            let tab = AppInstanceId(10);
+            let launch = LaunchIntent::app("so.tilo.browser").unwrap();
+            let mut reports = ContinuationRegistry::default();
+            let metadata = browser_checkpoint(br#"{"url":"https://closed.test"}"#);
+            reports.store_remote_resume(
+                room,
+                tab,
+                "so.tilo.browser".into(),
+                ResumeMetadata::new(
+                    metadata.schema_version,
+                    ResumeSensitivity::Syncable,
+                    metadata.bytes,
+                )
+                .unwrap(),
+                AppInstanceId(101),
+            );
+            reports.remove_remote_tab(tab);
+            assert!(reports.continuation_for_tab(room, tab, &launch).is_none());
+            assert!(
+                reports
+                    .record_instance_for_tab(room, tab, &launch)
+                    .is_none()
+            );
+        }
+
+        two_browser_instances_keep_distinct_urls();
+        clear_removes_only_the_certified_instance_projection();
+        remote_refresh_does_not_replace_a_live_tab_record();
+        removing_a_closed_remote_tab_drops_its_staged_checkpoint();
     }
 }

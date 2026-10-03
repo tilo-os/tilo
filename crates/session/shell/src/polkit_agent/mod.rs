@@ -212,7 +212,7 @@ async fn attempt(
     };
     loop {
         let Some(event) = read_event(io.output.as_mut()).await else {
-            return Attempt::Retry("Authentication ended unexpectedly.".into());
+            return Attempt::Retry(crate::shell::i18n::t("portal-auth-ended"));
         };
         let (prompt, echo) = match event {
             HelperEvent::Success => {
@@ -222,7 +222,7 @@ async fn attempt(
             }
             HelperEvent::Failure => {
                 return Attempt::Retry(
-                    notice.unwrap_or_else(|| "That password was not accepted.".into()),
+                    notice.unwrap_or_else(|| crate::shell::i18n::t("portal-auth-rejected")),
                 );
             }
             HelperEvent::Error(message) | HelperEvent::Info(message) => {
@@ -253,7 +253,7 @@ async fn attempt(
             reply.secret
         };
         if !answer(io.input.as_mut(), &secret).await {
-            return Attempt::Retry("Authentication ended unexpectedly.".into());
+            return Attempt::Retry(crate::shell::i18n::t("portal-auth-ended"));
         }
     }
 }

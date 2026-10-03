@@ -37,6 +37,8 @@ pub enum KeyAction {
     /// Switch the active letter layout to the named registered layout
     /// (e.g. `"azerty"`). Data-driven layout switching.
     Layout(String),
+    /// Open the emoji panel (or, while searching emoji, go back to it).
+    Emoji,
 }
 
 /// One key in a layout row.
@@ -143,7 +145,60 @@ impl Key {
             other => other.clone(),
         }
     }
+
+    /// What a long press on this key offers: the letter itself first (so a
+    /// press released without sliding types it), then its accented forms,
+    /// cased for `shift`. `usage` says how often the typing language uses a
+    /// form: forms it uses come first, most used first; the rest follow in
+    /// [`ALTERNATES`] order. Empty for keys without accented forms.
+    pub fn alternates(&self, shift: ShiftState, usage: impl Fn(char) -> f64) -> Vec<String> {
+        let KeyAction::Char(s) = &self.action else {
+            return Vec::new();
+        };
+        let Some(&(_, forms)) = ALTERNATES.iter().find(|(base, _)| base == s) else {
+            return Vec::new();
+        };
+        let mut ranked: Vec<(usize, f64, char)> = forms
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| (i, usage(c).max(0.0), c))
+            .collect();
+        // Stable on the inventory order for equal (including zero) usage.
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let case = |c: char| {
+            let form = c.to_string();
+            let upper = form.to_uppercase();
+            // Casing must not change the length (ß → SS): keep such forms.
+            if shift.is_upper() && upper.chars().count() == 1 {
+                upper
+            } else {
+                form
+            }
+        };
+        let base = s.chars().next().map(case);
+        base.into_iter()
+            .chain(ranked.into_iter().map(|(_, _, c)| case(c)))
+            .collect()
+    }
 }
+
+/// Accented forms offered on a long press, for the Latin letters the shipped
+/// layouts type: French (é è ê ë à â ç ù û ü ô œ î ï ÿ), German, Spanish,
+/// Portuguese, Nordic and Central European. The typing language's usage
+/// reorders them (see [`Key::alternates`]); this order breaks ties.
+const ALTERNATES: &[(&str, &[char])] = &[
+    ("a", &['à', 'â', 'á', 'ä', 'æ', 'ã', 'å', 'ā']),
+    ("c", &['ç', 'ć', 'č']),
+    ("e", &['é', 'è', 'ê', 'ë', 'ē', 'ę', 'ė']),
+    ("i", &['î', 'ï', 'í', 'ì', 'ī']),
+    ("l", &['ł']),
+    ("n", &['ñ', 'ń']),
+    ("o", &['ô', 'œ', 'ö', 'ó', 'ò', 'ø', 'õ', 'ō']),
+    ("s", &['ß', 'ś', 'š']),
+    ("u", &['ù', 'û', 'ü', 'ú', 'ū']),
+    ("y", &['ÿ', 'ý']),
+    ("z", &['ž', 'ź', 'ż']),
+];
 
 /// Shift / caps-lock state. The transition cycle on tapping Shift is
 /// Off → Shift → `CapsLock` → Off (deterministic and unit-tested). A single
@@ -237,6 +292,7 @@ impl KeyboardLayout {
         rows.push(vec![
             Key::action("?123", KeyAction::SymbolsToggle, 1.5),
             Key::ch(","),
+            Key::action("\u{1F642}", KeyAction::Emoji, 1.0),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
             Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
@@ -549,110 +605,180 @@ mod tests {
     use super::*;
 
     #[test]
-    fn qwerty_has_four_rows_and_a_wide_space() {
-        let l = KeyboardLayout::qwerty();
-        assert_eq!(l.row_count(), 4);
-        // Top row is the 10 QWERTY letters.
-        assert_eq!(l.rows[0].len(), 10);
-        // The space key is the widest in the function row.
-        let space = l.rows[3]
-            .iter()
-            .find(|k| k.action == KeyAction::Space)
-            .expect("space key present");
-        assert!(space.width >= 5.0, "spacebar should be wide");
+    fn letter_layouts_are_data_with_weighted_rows_and_icon_keys() {
+        eprintln!("phase qwerty_has_four_rows_and_a_wide_space");
+        {
+            let l = KeyboardLayout::qwerty();
+            assert_eq!(l.row_count(), 4);
+            // Top row is the 10 QWERTY letters.
+            assert_eq!(l.rows[0].len(), 10);
+            // The space key is the widest in the function row.
+            let space = l.rows[3]
+                .iter()
+                .find(|k| k.action == KeyAction::Space)
+                .expect("space key present");
+            assert!(space.width >= 5.0, "spacebar should be wide");
+        }
+
+        eprintln!("phase azerty_is_just_data");
+        {
+            let l = KeyboardLayout::azerty();
+            assert_eq!(l.name, "azerty");
+            assert_eq!(l.rows[0][0].label, "a");
+            assert_eq!(l.rows[1][0].label, "q");
+        }
+
+        // The ⇧ / ⌫ / ⏎ action keys must carry a vector icon on every layout
+        // that exposes them — their Unicode symbols have no glyph in the shipped
+        // UI font and would render as `.notdef` boxes otherwise. This asserts the
+        // production layout data (what the widget draws), not a helper.
+        eprintln!("phase modifier_and_edit_keys_carry_icons");
+        {
+            fn icon_for_action(l: &KeyboardLayout, action: &KeyAction) -> Option<Icon> {
+                l.rows
+                    .iter()
+                    .flatten()
+                    .find(|k| &k.action == action)
+                    .and_then(|k| k.icon)
+            }
+            // Every layout that has Shift/Backspace/Enter must icon it.
+            for l in [
+                KeyboardLayout::qwerty(),
+                KeyboardLayout::azerty(),
+                KeyboardLayout::email(),
+                KeyboardLayout::url(),
+                KeyboardLayout::symbols(),
+                KeyboardLayout::numeric(),
+                KeyboardLayout::decimal(),
+                KeyboardLayout::phone(),
+                KeyboardLayout::pin(),
+            ] {
+                if has_action(&l, &KeyAction::Shift) {
+                    assert_eq!(
+                        icon_for_action(&l, &KeyAction::Shift),
+                        Some(Icon::ArrowBigUp),
+                        "{} shift key needs an icon",
+                        l.name
+                    );
+                }
+                if has_action(&l, &KeyAction::Backspace) {
+                    assert_eq!(
+                        icon_for_action(&l, &KeyAction::Backspace),
+                        Some(Icon::Delete),
+                        "{} backspace key needs an icon",
+                        l.name
+                    );
+                }
+                if has_action(&l, &KeyAction::Enter) {
+                    assert_eq!(
+                        icon_for_action(&l, &KeyAction::Enter),
+                        Some(Icon::CornerDownLeft),
+                        "{} enter key needs an icon",
+                        l.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn azerty_is_just_data() {
-        let l = KeyboardLayout::azerty();
-        assert_eq!(l.name, "azerty");
-        assert_eq!(l.rows[0][0].label, "a");
-        assert_eq!(l.rows[1][0].label, "q");
+    fn key_rects_fill_width_respect_weights_and_scale() {
+        eprintln!("phase key_rects_fills_width_and_respects_weights");
+        {
+            let l = KeyboardLayout::qwerty();
+            let area = Rect::new(0.0, 0.0, 1000.0, 320.0);
+            let rects = key_rects(&l, area, ShiftState::Off);
+            assert_eq!(
+                rects.len(),
+                l.rows.iter().map(std::vec::Vec::len).sum::<usize>()
+            );
+
+            // Row 0 (10 equal keys) spans the full width with no gaps.
+            let row0: Vec<_> = rects.iter().filter(|(id, _)| id.row == 0).collect();
+            assert_eq!(row0.len(), 10);
+            let leftmost = row0.iter().map(|(_, r)| r.x0).fold(f64::MAX, f64::min);
+            let rightmost = row0.iter().map(|(_, r)| r.x1).fold(f64::MIN, f64::max);
+            assert!((leftmost - 0.0).abs() < 1e-6);
+            assert!((rightmost - 1000.0).abs() < 1e-6, "row fills full width");
+
+            // The spacebar (weight 5) is ~5× a weight-1 key in the same row.
+            let func: Vec<_> = rects.iter().filter(|(id, _)| id.row == 3).collect();
+            let space_id = KeyId::new(3, 3);
+            let comma_id = KeyId::new(3, 1);
+            let space_w = func
+                .iter()
+                .find(|(id, _)| *id == space_id)
+                .unwrap()
+                .1
+                .width();
+            let comma_w = func
+                .iter()
+                .find(|(id, _)| *id == comma_id)
+                .unwrap()
+                .1
+                .width();
+            assert!(
+                (space_w / comma_w - 5.0).abs() < 1e-3,
+                "space ≈ 5× a unit key"
+            );
+        }
+
+        eprintln!("phase key_rects_scales_with_area_width");
+        {
+            let l = KeyboardLayout::qwerty();
+            let narrow = key_rects(&l, Rect::new(0.0, 0.0, 360.0, 300.0), ShiftState::Off);
+            let wide = key_rects(&l, Rect::new(0.0, 0.0, 720.0, 300.0), ShiftState::Off);
+            let nk = narrow[0].1.width();
+            let wk = wide[0].1.width();
+            assert!(
+                (wk / nk - 2.0).abs() < 1e-6,
+                "2× width → 2× key width (phone→desktop)"
+            );
+        }
+
+        eprintln!("phase empty_layout_yields_no_rects");
+        {
+            let l = KeyboardLayout {
+                name: "empty".into(),
+                rows: vec![],
+            };
+            assert!(key_rects(&l, Rect::new(0.0, 0.0, 100.0, 100.0), ShiftState::Off).is_empty());
+        }
     }
 
     #[test]
-    fn key_rects_fills_width_and_respects_weights() {
-        let l = KeyboardLayout::qwerty();
-        let area = Rect::new(0.0, 0.0, 1000.0, 320.0);
-        let rects = key_rects(&l, area, ShiftState::Off);
-        assert_eq!(
-            rects.len(),
-            l.rows.iter().map(std::vec::Vec::len).sum::<usize>()
-        );
+    fn shift_transforms_only_letters_and_cycles_states() {
+        eprintln!("phase shift_transforms_letter_label_and_value");
+        {
+            let k = Key::letter('a');
+            assert_eq!(k.display_label(ShiftState::Off), "a");
+            assert_eq!(k.display_label(ShiftState::Shift), "A");
+            assert_eq!(k.display_label(ShiftState::CapsLock), "A");
+            assert_eq!(k.emit_action(ShiftState::Off), KeyAction::Char("a".into()));
+            assert_eq!(
+                k.emit_action(ShiftState::Shift),
+                KeyAction::Char("A".into())
+            );
+        }
 
-        // Row 0 (10 equal keys) spans the full width with no gaps.
-        let row0: Vec<_> = rects.iter().filter(|(id, _)| id.row == 0).collect();
-        assert_eq!(row0.len(), 10);
-        let leftmost = row0.iter().map(|(_, r)| r.x0).fold(f64::MAX, f64::min);
-        let rightmost = row0.iter().map(|(_, r)| r.x1).fold(f64::MIN, f64::max);
-        assert!((leftmost - 0.0).abs() < 1e-6);
-        assert!((rightmost - 1000.0).abs() < 1e-6, "row fills full width");
+        eprintln!("phase shift_does_not_transform_non_letters");
+        {
+            let k = Key::ch(",");
+            assert_eq!(k.display_label(ShiftState::Shift), ",");
+            assert_eq!(
+                k.emit_action(ShiftState::Shift),
+                KeyAction::Char(",".into())
+            );
+            let space = Key::action("space", KeyAction::Space, 5.0);
+            assert_eq!(space.emit_action(ShiftState::Shift), KeyAction::Space);
+        }
 
-        // The spacebar (weight 5) is ~5× a weight-1 key in the same row.
-        let func: Vec<_> = rects.iter().filter(|(id, _)| id.row == 3).collect();
-        let space_id = KeyId::new(3, 2);
-        let comma_id = KeyId::new(3, 1);
-        let space_w = func
-            .iter()
-            .find(|(id, _)| *id == space_id)
-            .unwrap()
-            .1
-            .width();
-        let comma_w = func
-            .iter()
-            .find(|(id, _)| *id == comma_id)
-            .unwrap()
-            .1
-            .width();
-        assert!(
-            (space_w / comma_w - 5.0).abs() < 1e-3,
-            "space ≈ 5× a unit key"
-        );
-    }
-
-    #[test]
-    fn key_rects_scales_with_area_width() {
-        let l = KeyboardLayout::qwerty();
-        let narrow = key_rects(&l, Rect::new(0.0, 0.0, 360.0, 300.0), ShiftState::Off);
-        let wide = key_rects(&l, Rect::new(0.0, 0.0, 720.0, 300.0), ShiftState::Off);
-        let nk = narrow[0].1.width();
-        let wk = wide[0].1.width();
-        assert!(
-            (wk / nk - 2.0).abs() < 1e-6,
-            "2× width → 2× key width (phone→desktop)"
-        );
-    }
-
-    #[test]
-    fn shift_transforms_letter_label_and_value() {
-        let k = Key::letter('a');
-        assert_eq!(k.display_label(ShiftState::Off), "a");
-        assert_eq!(k.display_label(ShiftState::Shift), "A");
-        assert_eq!(k.display_label(ShiftState::CapsLock), "A");
-        assert_eq!(k.emit_action(ShiftState::Off), KeyAction::Char("a".into()));
-        assert_eq!(
-            k.emit_action(ShiftState::Shift),
-            KeyAction::Char("A".into())
-        );
-    }
-
-    #[test]
-    fn shift_does_not_transform_non_letters() {
-        let k = Key::ch(",");
-        assert_eq!(k.display_label(ShiftState::Shift), ",");
-        assert_eq!(
-            k.emit_action(ShiftState::Shift),
-            KeyAction::Char(",".into())
-        );
-        let space = Key::action("space", KeyAction::Space, 5.0);
-        assert_eq!(space.emit_action(ShiftState::Shift), KeyAction::Space);
-    }
-
-    #[test]
-    fn shift_state_cycles() {
-        assert_eq!(ShiftState::Off.cycle(), ShiftState::Shift);
-        assert_eq!(ShiftState::Shift.cycle(), ShiftState::CapsLock);
-        assert_eq!(ShiftState::CapsLock.cycle(), ShiftState::Off);
+        eprintln!("phase shift_state_cycles");
+        {
+            assert_eq!(ShiftState::Off.cycle(), ShiftState::Shift);
+            assert_eq!(ShiftState::Shift.cycle(), ShiftState::CapsLock);
+            assert_eq!(ShiftState::CapsLock.cycle(), ShiftState::Off);
+        }
     }
 
     // --- input-type layouts -------------------------------------------
@@ -682,172 +808,117 @@ mod tests {
     }
 
     #[test]
-    fn numeric_has_all_digits_backspace_no_letters() {
-        let l = KeyboardLayout::numeric();
-        for d in "0123456789".chars() {
-            assert!(emits(&l, &d.to_string()), "numeric missing digit {d}");
-        }
-        assert!(has_action(&l, &KeyAction::Backspace));
-        assert!(!has_any_letter(&l), "numeric must have no letters");
-        // A minus sign and a decimal point are reasonable for plain numbers.
-        assert!(emits(&l, "-"));
-        assert!(emits(&l, "."));
-    }
-
-    #[test]
-    fn decimal_has_point_and_no_letters() {
-        let l = KeyboardLayout::decimal();
-        assert!(emits(&l, "."), "decimal must offer the decimal point");
-        for d in "0123456789".chars() {
-            assert!(emits(&l, &d.to_string()));
-        }
-        assert!(has_action(&l, &KeyAction::Backspace));
-        assert!(!has_any_letter(&l));
-    }
-
-    #[test]
-    fn phone_is_a_dialpad() {
-        let l = KeyboardLayout::phone();
-        for d in "0123456789".chars() {
-            assert!(emits(&l, &d.to_string()), "phone missing digit {d}");
-        }
-        // Dialpad-specific keys.
-        assert!(emits(&l, "*"));
-        assert!(emits(&l, "#"));
-        assert!(emits(&l, "+"));
-        assert!(has_action(&l, &KeyAction::Backspace));
-        assert!(!has_any_letter(&l));
-    }
-
-    #[test]
-    fn pin_is_digits_only() {
-        let l = KeyboardLayout::pin();
-        for d in "0123456789".chars() {
-            assert!(emits(&l, &d.to_string()), "pin missing digit {d}");
-        }
-        assert!(has_action(&l, &KeyAction::Backspace));
-        assert!(has_action(&l, &KeyAction::Enter));
-        assert!(!has_any_letter(&l));
-        // No decimal point, sign, or dialpad symbols in a secret code.
-        for forbidden in [".", "-", "*", "#", "+"] {
-            assert!(!emits(&l, forbidden), "pin must not offer {forbidden}");
-        }
-    }
-
-    #[test]
-    fn email_has_at_and_dot_and_letters() {
-        let l = KeyboardLayout::email();
-        assert!(emits(&l, "@"), "email needs an @ key");
-        assert!(emits(&l, "."), "email needs a . key");
-        assert!(has_any_letter(&l), "email is a letter layout");
-        // The convenience key is nice-to-have but expected here.
-        assert!(emits(&l, ".com"));
-        // Still has a space (email local parts don't, but the bar stays usable).
-        assert!(has_action(&l, &KeyAction::Space));
-    }
-
-    #[test]
-    fn url_has_slash_and_dot_and_letters() {
-        let l = KeyboardLayout::url();
-        assert!(emits(&l, "/"), "url needs a / key");
-        assert!(emits(&l, "."), "url needs a . key");
-        assert!(emits(&l, ".com"));
-        assert!(has_any_letter(&l), "url is a letter layout");
-    }
-
-    #[test]
-    fn for_purpose_maps_every_variant() {
-        use InputPurpose::*;
-        let cases = [
-            (Text, "qwerty"),
-            (Number, "numeric"),
-            (Decimal, "decimal"),
-            (Telephone, "phone"),
-            (Url, "url"),
-            (Email, "email"),
-            (Pin, "pin"),
-            (Password, "qwerty"),
-            (Date, "numeric"),
-            (Time, "numeric"),
-        ];
-        for (purpose, expect) in cases {
-            assert_eq!(
-                KeyboardLayout::for_purpose(purpose),
-                expect,
-                "{purpose:?} should map to {expect}"
-            );
-            // Every name `for_purpose` returns must be constructible.
-            assert!(
-                KeyboardLayout::by_name(expect).is_some(),
-                "{expect} must be a known layout"
-            );
-        }
-    }
-
-    #[test]
-    fn by_name_rejects_unknown() {
-        assert!(KeyboardLayout::by_name("dvorak").is_none());
-        assert_eq!(KeyboardLayout::by_name("phone").unwrap().name, "phone");
-    }
-
-    /// The ⇧ / ⌫ / ⏎ action keys must carry a vector icon on every layout
-    /// that exposes them — their Unicode symbols have no glyph in the shipped
-    /// UI font and would render as `.notdef` boxes otherwise. This asserts the
-    /// production layout data (what the widget draws), not a helper.
-    #[test]
-    fn modifier_and_edit_keys_carry_icons() {
-        fn icon_for_action(l: &KeyboardLayout, action: &KeyAction) -> Option<Icon> {
-            l.rows
-                .iter()
-                .flatten()
-                .find(|k| &k.action == action)
-                .and_then(|k| k.icon)
-        }
-        // Every layout that has Shift/Backspace/Enter must icon it.
-        for l in [
-            KeyboardLayout::qwerty(),
-            KeyboardLayout::azerty(),
-            KeyboardLayout::email(),
-            KeyboardLayout::url(),
-            KeyboardLayout::symbols(),
-            KeyboardLayout::numeric(),
-            KeyboardLayout::decimal(),
-            KeyboardLayout::phone(),
-            KeyboardLayout::pin(),
-        ] {
-            if has_action(&l, &KeyAction::Shift) {
-                assert_eq!(
-                    icon_for_action(&l, &KeyAction::Shift),
-                    Some(Icon::ArrowBigUp),
-                    "{} shift key needs an icon",
-                    l.name
-                );
+    fn purpose_layouts_carry_exactly_their_keys() {
+        eprintln!("phase numeric_has_all_digits_backspace_no_letters");
+        {
+            let l = KeyboardLayout::numeric();
+            for d in "0123456789".chars() {
+                assert!(emits(&l, &d.to_string()), "numeric missing digit {d}");
             }
-            if has_action(&l, &KeyAction::Backspace) {
-                assert_eq!(
-                    icon_for_action(&l, &KeyAction::Backspace),
-                    Some(Icon::Delete),
-                    "{} backspace key needs an icon",
-                    l.name
-                );
+            assert!(has_action(&l, &KeyAction::Backspace));
+            assert!(!has_any_letter(&l), "numeric must have no letters");
+            // A minus sign and a decimal point are reasonable for plain numbers.
+            assert!(emits(&l, "-"));
+            assert!(emits(&l, "."));
+        }
+
+        eprintln!("phase decimal_has_point_and_no_letters");
+        {
+            let l = KeyboardLayout::decimal();
+            assert!(emits(&l, "."), "decimal must offer the decimal point");
+            for d in "0123456789".chars() {
+                assert!(emits(&l, &d.to_string()));
             }
-            if has_action(&l, &KeyAction::Enter) {
+            assert!(has_action(&l, &KeyAction::Backspace));
+            assert!(!has_any_letter(&l));
+        }
+
+        eprintln!("phase phone_is_a_dialpad");
+        {
+            let l = KeyboardLayout::phone();
+            for d in "0123456789".chars() {
+                assert!(emits(&l, &d.to_string()), "phone missing digit {d}");
+            }
+            // Dialpad-specific keys.
+            assert!(emits(&l, "*"));
+            assert!(emits(&l, "#"));
+            assert!(emits(&l, "+"));
+            assert!(has_action(&l, &KeyAction::Backspace));
+            assert!(!has_any_letter(&l));
+        }
+
+        eprintln!("phase pin_is_digits_only");
+        {
+            let l = KeyboardLayout::pin();
+            for d in "0123456789".chars() {
+                assert!(emits(&l, &d.to_string()), "pin missing digit {d}");
+            }
+            assert!(has_action(&l, &KeyAction::Backspace));
+            assert!(has_action(&l, &KeyAction::Enter));
+            assert!(!has_any_letter(&l));
+            // No decimal point, sign, or dialpad symbols in a secret code.
+            for forbidden in [".", "-", "*", "#", "+"] {
+                assert!(!emits(&l, forbidden), "pin must not offer {forbidden}");
+            }
+        }
+
+        eprintln!("phase email_has_at_and_dot_and_letters");
+        {
+            let l = KeyboardLayout::email();
+            assert!(emits(&l, "@"), "email needs an @ key");
+            assert!(emits(&l, "."), "email needs a . key");
+            assert!(has_any_letter(&l), "email is a letter layout");
+            // The convenience key is nice-to-have but expected here.
+            assert!(emits(&l, ".com"));
+            // Still has a space (email local parts don't, but the bar stays usable).
+            assert!(has_action(&l, &KeyAction::Space));
+        }
+
+        eprintln!("phase url_has_slash_and_dot_and_letters");
+        {
+            let l = KeyboardLayout::url();
+            assert!(emits(&l, "/"), "url needs a / key");
+            assert!(emits(&l, "."), "url needs a . key");
+            assert!(emits(&l, ".com"));
+            assert!(has_any_letter(&l), "url is a letter layout");
+        }
+    }
+
+    #[test]
+    fn layout_lookup_maps_every_purpose_and_rejects_unknown_names() {
+        eprintln!("phase for_purpose_maps_every_variant");
+        {
+            use InputPurpose::*;
+            let cases = [
+                (Text, "qwerty"),
+                (Number, "numeric"),
+                (Decimal, "decimal"),
+                (Telephone, "phone"),
+                (Url, "url"),
+                (Email, "email"),
+                (Pin, "pin"),
+                (Password, "qwerty"),
+                (Date, "numeric"),
+                (Time, "numeric"),
+            ];
+            for (purpose, expect) in cases {
                 assert_eq!(
-                    icon_for_action(&l, &KeyAction::Enter),
-                    Some(Icon::CornerDownLeft),
-                    "{} enter key needs an icon",
-                    l.name
+                    KeyboardLayout::for_purpose(purpose),
+                    expect,
+                    "{purpose:?} should map to {expect}"
+                );
+                // Every name `for_purpose` returns must be constructible.
+                assert!(
+                    KeyboardLayout::by_name(expect).is_some(),
+                    "{expect} must be a known layout"
                 );
             }
         }
-    }
 
-    #[test]
-    fn empty_layout_yields_no_rects() {
-        let l = KeyboardLayout {
-            name: "empty".into(),
-            rows: vec![],
-        };
-        assert!(key_rects(&l, Rect::new(0.0, 0.0, 100.0, 100.0), ShiftState::Off).is_empty());
+        eprintln!("phase by_name_rejects_unknown");
+        {
+            assert!(KeyboardLayout::by_name("dvorak").is_none());
+            assert_eq!(KeyboardLayout::by_name("phone").unwrap().name, "phone");
+        }
     }
 }

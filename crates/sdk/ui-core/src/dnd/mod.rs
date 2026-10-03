@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use vello::kurbo::Point;
 
 #[derive(Clone, Debug)]
@@ -103,34 +101,29 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 
 /// The `text/uri-list` body for `paths`: one `file://` URI per line, CRLF
 /// terminated as RFC 2483 wants, with the bytes a URI cannot carry
-/// verbatim percent-encoded.
+/// verbatim percent-encoded. A path that is not absolute has no file URI and
+/// is left out.
 pub fn uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
-    for p in paths {
-        out.push_str("file://");
-        out.push_str(&percent_encode_path(&p.to_string_lossy()));
+    for uri in paths.iter().filter_map(|p| file_uri(p)) {
+        out.push_str(uri.as_str());
         out.push_str("\r\n");
     }
     out
 }
 
-/// Percent-encode the characters a `file://` URI may not carry literally.
-/// Deliberately conservative: everything outside the unreserved set plus
-/// `/` is escaped, so a space, a `#` or a newline in a file name survives.
-fn percent_encode_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for b in path.as_bytes() {
-        let c = *b;
-        let unreserved = c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'~' | b'/');
-        if unreserved {
-            out.push(c as char);
-        } else {
-            // Writing to a `String` cannot fail; discard the always-`Ok` result
-            // rather than allocating a temporary just to push it.
-            let _ = write!(out, "%{c:02X}");
-        }
+/// A path's `file://` URI. `url` has none on a target without a file system
+/// (`wasm32-unknown-unknown`), where no path is a local file.
+fn file_uri(path: &Path) -> Option<url::Url> {
+    #[cfg(any(unix, windows, target_os = "wasi"))]
+    {
+        url::Url::from_file_path(path).ok()
     }
-    out
+    #[cfg(not(any(unix, windows, target_os = "wasi")))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// The mime type to offer a file's bytes under, from its extension.
@@ -139,18 +132,7 @@ fn percent_encode_path(path: &str) -> String {
 /// URI list, rather than claiming
 /// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => return None,
-    })
+    mime_guess::from_path(path).first_raw()
 }
 
 /// Start a drag carrying `paths`, out of this app and into whatever
@@ -226,37 +208,40 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
 mod outgoing_tests {
     use super::*;
 
-    /// A dragged name has to survive the trip through a URI, which is the
-    /// case a naive `format!("file://{}")` gets wrong.
     #[test]
-    fn a_uri_list_escapes_what_a_uri_cannot_carry() {
-        assert_eq!(
-            uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
-            "file:///home/me/my%20photo%231.png\r\n"
-        );
-    }
+    fn outgoing_drags_encode_uri_lists_and_content_types() {
+        // Case `a_uri_list_escapes_what_a_uri_cannot_carry`:
+        // A dragged name has to survive the trip through a URI, which is the
+        // case a naive `format!("file://{}")` gets wrong.
+        {
+            assert_eq!(
+                uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
+                "file:///home/me/my%20photo%231.png\r\n"
+            );
+        }
 
-    #[test]
-    fn several_paths_are_one_entry_per_line() {
-        assert_eq!(
-            uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
-            "file:///a.png\r\nfile:///b.png\r\n"
-        );
-    }
+        // Case `several_paths_are_one_entry_per_line`.
+        {
+            assert_eq!(
+                uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
+                "file:///a.png\r\nfile:///b.png\r\n"
+            );
+        }
 
-    /// The content type is what a confined receiver actually uses, so an
-    /// unknown extension must not claim one.
-    #[test]
-    fn a_known_extension_names_a_content_type_and_an_unknown_one_does_not() {
-        assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
-        assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
-        assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
-        assert_eq!(mime_for_path(Path::new("/x/noext")), None);
-    }
+        // Case `a_known_extension_names_a_content_type_and_an_unknown_one_does_not`:
+        // The content type is what a confined receiver actually uses, so an
+        // unknown extension must not claim one.
+        {
+            assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
+            assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
+            assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
+            assert_eq!(mime_for_path(Path::new("/x/noext")), None);
+        }
 
-    /// Nothing to drag is not a drag.
-    #[test]
-    fn an_empty_selection_starts_nothing() {
-        assert!(!start_file_drag(&[]));
+        // Case `an_empty_selection_starts_nothing`:
+        // Nothing to drag is not a drag.
+        {
+            assert!(!start_file_drag(&[]));
+        }
     }
 }

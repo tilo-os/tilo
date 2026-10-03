@@ -47,21 +47,64 @@ pub fn sh_quote(word: &str) -> String {
     }
 }
 
+/// rsync on Windows is MSYS2, so its SSH child must come from the same
+/// runtime. Native Windows OpenSSH loses the rsync pipe before any bytes are
+/// sent (ERROR from cb :87). Its key and known-hosts paths must be MSYS paths.
+///
+/// # Errors
+/// Returns an error when rsync or its matching MSYS2 SSH executable is absent.
+pub fn rsync_rsh(endpoint: &SshEndpoint, key: Option<&str>) -> Result<String, CliError> {
+    let _rsync = crate::host::rsync_program().ok_or_else(|| CliError::ToolMissing {
+        tool: "rsync".into(),
+        purpose: "sync worktree and image layers into a VM".into(),
+    })?;
+    let ssh = remote::ssh_command(endpoint, key, &[], false);
+    #[cfg(windows)]
+    let mut ssh = ssh;
+    #[cfg(windows)]
+    {
+        let sibling = crate::host::rsync_ssh_program().ok_or_else(|| CliError::ToolMissing {
+            tool: "MSYS2 OpenSSH (pacman -S openssh)".into(),
+            purpose: format!("run as the SSH transport for {}", _rsync),
+        })?;
+        use_msys_ssh(&mut ssh, &sibling);
+    }
+    let mut words = vec![sh_quote(&ssh.program)];
+    let options = ssh.args.len().saturating_sub(1);
+    words.extend(ssh.args.iter().take(options).map(|arg| sh_quote(arg)));
+    Ok(words.join(" "))
+}
+
+#[cfg(windows)]
+fn use_msys_ssh(ssh: &mut CommandLine, sibling: &Path) {
+    ssh.program = rsync_source(sibling);
+    let mut key_next = false;
+    for arg in &mut ssh.args {
+        if key_next {
+            *arg = rsync_source(Path::new(arg));
+            key_next = false;
+        } else if arg == "-i" {
+            key_next = true;
+        } else if let Some(path) = arg.strip_prefix("UserKnownHostsFile=") {
+            *arg = format!("UserKnownHostsFile={}", rsync_source(Path::new(path)));
+        }
+    }
+}
+
 /// `rsync` that mirrors the worktree into `SRC_DIR/<id>/` in the VM:
 /// `.gitignore` rules apply, `.git` and `target/` stay behind (the VM's
 /// `target/` is its own build dir and is never deleted by the sync), and
 /// the remote side holds the worktree's build lock while it writes.
+///
+/// # Errors
+/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     root: &Path,
     endpoint: &SshEndpoint,
     key: Option<&str>,
     id: &str,
-) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![sh_quote(&ssh.program)];
-    // ssh_args ends with user@host, which rsync puts in the destination.
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
+) -> Result<CommandLine, CliError> {
+    let rsh = rsync_rsh(endpoint, key)?;
     let dest_dir = format!("{SRC_DIR}/{id}");
     let locks = "/var/lib/tilo-vm/locks";
     let rsync_path =
@@ -70,7 +113,7 @@ pub fn rsync_command(
     if !source.ends_with('/') {
         source.push('/');
     }
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &[
             "--archive",
@@ -83,11 +126,11 @@ pub fn rsync_command(
         ],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(rsync_path)
     .arg(source)
-    .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host))
+    .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host)))
 }
 
 /// MSYS2 rsync parses `C:\...` as a remote `host:path` operand. Use its
@@ -209,69 +252,84 @@ mod tests {
         }
     }
 
+    /// Worktree ids are readable and unique per host; rsync respects gitignore and leaves target alone; the
+    /// Windows worktree is a local MSYS2 rsync operand; job commands follow the configured daemon.
     #[test]
-    fn worktree_ids_are_readable_and_unique_per_host() {
-        let wt = Worktree {
-            root: PathBuf::from("/home/a/tilo/.claude/worktrees/agent-A74"),
-            branch: None,
-        };
-        let a = worktree_id(&wt, Some("laptop"));
-        assert!(a.starts_with("agent-a74-"), "{a}");
-        assert_eq!(a.len(), "agent-a74-".len() + 8);
-        assert_ne!(a, worktree_id(&wt, Some("desktop")));
-        assert_eq!(a, worktree_id(&wt, Some("laptop")));
-    }
-
-    #[test]
-    fn rsync_respects_gitignore_and_leaves_target_alone() {
-        let line = rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1");
-        let text = line.display();
-        assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
-        assert!(line.args.contains(&"--exclude=/target/".to_owned()));
-        assert!(line.args.contains(&"--delete".to_owned()));
-        assert!(
-            !line.args.iter().any(|a| a == "--delete-excluded"),
-            "excluded files (the VM's target/) must survive"
-        );
-        assert!(
-            text.ends_with("/w/tilo/ root@127.0.0.1:/var/lib/tilo-vm/src/wt-1/"),
-            "{text}"
-        );
-        let rsh = &line.args[line.args.iter().position(|a| a == "--rsh").unwrap() + 1];
-        assert!(rsh.contains("-p 2223"), "{rsh}");
-        assert!(rsh.contains("-i '/k/id x'"), "{rsh}");
-        assert!(!rsh.contains("root@"), "{rsh}");
-        let path = &line.args[line.args.iter().position(|a| a == "--rsync-path").unwrap() + 1];
-        assert!(
-            path.contains("flock --nonblock /var/lib/tilo-vm/locks/src-wt-1.lock rsync"),
-            "{path}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_worktree_is_a_local_msys2_rsync_operand() {
-        let line = rsync_command(
-            Path::new(r"C:\Users\bob\tilo-tilo-main"),
-            &endpoint(),
-            None,
-            "wt-1",
-        );
-        assert_eq!(
-            line.args[line.args.len() - 2],
-            "/c/Users/user/tilo-tilo-main/"
-        );
-        if let Some(found) = crate::host::which_all("rsync").first() {
-            assert_eq!(line.program, found.display().to_string());
+    fn vm_builds_sync_each_worktree_to_its_configured_daemon() {
+        // Phase: worktree_ids_are_readable_and_unique_per_host.
+        {
+            let wt = Worktree {
+                root: PathBuf::from("/home/a/tilo/.claude/worktrees/agent-A74"),
+                branch: None,
+            };
+            let a = worktree_id(&wt, Some("laptop"));
+            assert!(a.starts_with("agent-a74-"), "{a}");
+            assert_eq!(a.len(), "agent-a74-".len() + 8);
+            assert_ne!(a, worktree_id(&wt, Some("desktop")));
+            assert_eq!(a, worktree_id(&wt, Some("laptop")));
         }
-    }
 
-    #[test]
-    fn job_commands_follow_the_configured_daemon() {
-        assert_eq!(daemon_command(None, "build"), ["tilo-vmd", "build"]);
-        assert_eq!(
-            daemon_command(Some("sudo -n tilo-vmd rpc"), "ci-layer"),
-            ["sudo", "-n", "tilo-vmd", "ci-layer"]
-        );
+        // Phase: rsync_respects_gitignore_and_leaves_target_alone.
+        {
+            let line =
+                rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1").unwrap();
+            let text = line.display();
+            assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
+            assert!(line.args.contains(&"--exclude=/target/".to_owned()));
+            assert!(line.args.contains(&"--delete".to_owned()));
+            assert!(
+                !line.args.iter().any(|a| a == "--delete-excluded"),
+                "excluded files (the VM's target/) must survive"
+            );
+            assert!(
+                text.ends_with("/w/tilo/ root@127.0.0.1:/var/lib/tilo-vm/src/wt-1/"),
+                "{text}"
+            );
+            let rsh = &line.args[line.args.iter().position(|a| a == "--rsh").unwrap() + 1];
+            assert!(rsh.contains("-p 2223"), "{rsh}");
+            assert!(rsh.contains("-i '/k/id x'"), "{rsh}");
+            assert!(!rsh.contains("root@"), "{rsh}");
+            let path = &line.args[line.args.iter().position(|a| a == "--rsync-path").unwrap() + 1];
+            assert!(
+                path.contains("flock --nonblock /var/lib/tilo-vm/locks/src-wt-1.lock rsync"),
+                "{path}"
+            );
+        }
+
+        // Phase: windows_worktree_is_a_local_msys2_rsync_operand.
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                rsync_source(Path::new(r"C:\Users\bob\tilo-tilo-main")),
+                "/c/Users/user/tilo-tilo-main"
+            );
+            let mut ssh = remote::ssh_command(
+                &endpoint(),
+                Some(r"C:\Users\bob\keys\vm_ed25519"),
+                &[],
+                false,
+            );
+            use_msys_ssh(
+                &mut ssh,
+                Path::new(r"C:\Users\bob\msys64\usr\bin\ssh.exe"),
+            );
+            assert_eq!(ssh.program, "/c/Users/user/msys64/usr/bin/ssh.exe");
+            assert!(ssh.args.contains(&"-i".into()));
+            assert!(ssh.args.contains(&"/c/Users/user/keys/vm_ed25519".into()));
+            assert!(
+                ssh.args.contains(
+                    &"UserKnownHostsFile=/c/Users/user/keys/vm_ed25519.known_hosts".into()
+                )
+            );
+        }
+
+        // Phase: job_commands_follow_the_configured_daemon.
+        {
+            assert_eq!(daemon_command(None, "build"), ["tilo-vmd", "build"]);
+            assert_eq!(
+                daemon_command(Some("sudo -n tilo-vmd rpc"), "ci-layer"),
+                ["sudo", "-n", "tilo-vmd", "ci-layer"]
+            );
+        }
     }
 }

@@ -37,9 +37,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
@@ -426,7 +423,7 @@ impl RemoteRestoreStore {
                     .map_err(|error| format!("secure remote-desktop restore directory: {error}"))?;
             }
         }
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|error| format!("write remote-desktop restores: {error}"))
     }
 }
@@ -841,10 +838,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature"
-    )]
     async fn start(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -917,9 +910,7 @@ impl RemoteDesktopBackend {
                 app_id: app_id.clone(),
                 devices,
                 persist_mode,
-                issued_unix_seconds: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_secs()),
+                issued_unix_seconds: tilo_clock::unix_now(),
             };
             let stored = self
                 .restore
@@ -1333,117 +1324,127 @@ mod tests {
     }
 
     #[test]
-    fn recording_injector_captures_actions() {
-        let rec = Arc::new(RecordingInjector::new());
-        let h = RemoteInputInjectorHandle::new(rec.clone());
-        assert!(h.inject(RemoteAction::PointerButton {
-            button: 272,
-            pressed: true
-        }));
-        assert_eq!(rec.actions().len(), 1);
-    }
-
-    #[test]
-    fn channel_injector_forwards() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let inj = ChannelInjector::new(tx);
-        assert!(inj.inject(RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }));
-        let got = rx.recv().expect("action forwarded");
-        assert_eq!(
-            got,
-            RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }
-        );
-    }
-
-    #[test]
-    fn null_injector_drops() {
-        let h = RemoteInputInjectorHandle::null();
-        assert!(!h.inject(RemoteAction::PointerMotionRelative { dx: 0.0, dy: 0.0 }));
-    }
-
-    /// Un-started / un-granted sessions drop `Notify*` — proves the permission gate blocks injection until the user consents + Start.
-    #[test]
-    fn notify_dropped_when_session_not_started() {
-        let rec = Arc::new(RecordingInjector::new());
-        let backend = backend_with(RemoteInputInjectorHandle::new(rec.clone()));
-        let path: ObjectPath<'_> = "/s/never".try_into().unwrap();
-        backend.route(
-            "",
-            &path,
-            device_type::POINTER,
-            RemoteAction::PointerButton {
+    fn remote_desktop_injectors_record_forward_or_drop() {
+        // Phase `recording_injector_captures_actions`.
+        {
+            let rec = Arc::new(RecordingInjector::new());
+            let h = RemoteInputInjectorHandle::new(rec.clone());
+            assert!(h.inject(RemoteAction::PointerButton {
                 button: 272,
-                pressed: true,
-            },
-        );
-        assert_eq!(rec.actions().len(), 0, "no session => no injection");
+                pressed: true
+            }));
+            assert_eq!(rec.actions().len(), 1);
+        }
+        // Phase `channel_injector_forwards`.
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let inj = ChannelInjector::new(tx);
+            assert!(inj.inject(RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }));
+            let got = rx.recv().expect("action forwarded");
+            assert_eq!(
+                got,
+                RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }
+            );
+        }
+        // Phase `null_injector_drops`.
+        {
+            let h = RemoteInputInjectorHandle::null();
+            assert!(!h.inject(RemoteAction::PointerMotionRelative { dx: 0.0, dy: 0.0 }));
+        }
     }
 
-    /// A started session with the POINTER grant routes pointer actions but still drops keyboard actions it wasn't granted.
     #[test]
-    fn gate_scopes_to_granted_devices() {
-        let rec = Arc::new(RecordingInjector::new());
-        let backend = backend_with(RemoteInputInjectorHandle::new(rec.clone()));
-        let key = "/s/1".to_string();
-        // Hand-stage a started, pointer-only session.
-        backend.sessions.lock().unwrap().insert(
-            key,
-            RemoteDesktopSession {
-                owner: ":1.7".into(),
-                app_id: "org.remote".into(),
-                caller: None,
-                devices: device_type::POINTER,
-                consented: true,
-                selecting: false,
-                started: true,
-                clipboard_requested: false,
-                starting: false,
-                ..Default::default()
-            },
-        );
-        let path: ObjectPath<'_> = "/s/1".try_into().unwrap();
-        // Pointer is granted → routed.
-        backend.route(
-            ":1.7",
-            &path,
-            device_type::POINTER,
-            RemoteAction::PointerButton {
-                button: 272,
-                pressed: true,
-            },
-        );
-        // Keyboard is NOT granted → dropped.
-        backend.route(
-            ":1.7",
-            &path,
-            device_type::KEYBOARD,
-            RemoteAction::KeyboardKeycode {
+    fn remote_desktop_gate_admits_only_started_granted_devices() {
+        // Phase `notify_dropped_when_session_not_started`.
+        // Un-started / un-granted sessions drop `Notify*` — proves the permission gate blocks injection until the user consents + Start.
+        {
+            let rec = Arc::new(RecordingInjector::new());
+            let backend = backend_with(RemoteInputInjectorHandle::new(rec.clone()));
+            let path: ObjectPath<'_> = "/s/never".try_into().unwrap();
+            backend.route(
+                "",
+                &path,
+                device_type::POINTER,
+                RemoteAction::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+            );
+            assert_eq!(rec.actions().len(), 0, "no session => no injection");
+        }
+        // Phase `gate_scopes_to_granted_devices`.
+        // A started session with the POINTER grant routes pointer actions but still drops keyboard actions it wasn't granted.
+        {
+            let rec = Arc::new(RecordingInjector::new());
+            let backend = backend_with(RemoteInputInjectorHandle::new(rec.clone()));
+            let key = "/s/1".to_string();
+            // Hand-stage a started, pointer-only session.
+            backend.sessions.lock().unwrap().insert(
+                key,
+                RemoteDesktopSession {
+                    owner: ":1.7".into(),
+                    app_id: "org.remote".into(),
+                    caller: None,
+                    devices: device_type::POINTER,
+                    consented: true,
+                    selecting: false,
+                    started: true,
+                    clipboard_requested: false,
+                    starting: false,
+                    ..Default::default()
+                },
+            );
+            let path: ObjectPath<'_> = "/s/1".try_into().unwrap();
+            // Pointer is granted → routed.
+            backend.route(
+                ":1.7",
+                &path,
+                device_type::POINTER,
+                RemoteAction::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+            );
+            // Keyboard is NOT granted → dropped.
+            backend.route(
+                ":1.7",
+                &path,
+                device_type::KEYBOARD,
+                RemoteAction::KeyboardKeycode {
+                    keycode: 30,
+                    pressed: true,
+                },
+            );
+            let actions = rec.actions();
+            assert_eq!(actions.len(), 1, "only the granted pointer action routes");
+            assert!(matches!(actions[0], RemoteAction::PointerButton { .. }));
+        }
+        // Phase `eis_actions_are_limited_to_the_granted_device_classes`.
+        {
+            let keyboard = RemoteAction::KeyboardKeycode {
                 keycode: 30,
                 pressed: true,
-            },
-        );
-        let actions = rec.actions();
-        assert_eq!(actions.len(), 1, "only the granted pointer action routes");
-        assert!(matches!(actions[0], RemoteAction::PointerButton { .. }));
+            };
+            let pointer = RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 };
+            assert!(action_allowed_by_devices(&keyboard, device_type::KEYBOARD));
+            assert!(!action_allowed_by_devices(&keyboard, device_type::POINTER));
+            assert!(action_allowed_by_devices(&pointer, device_type::POINTER));
+            assert!(!action_allowed_by_devices(&pointer, device_type::KEYBOARD));
+        }
     }
 
     #[test]
-    fn eis_actions_are_limited_to_the_granted_device_classes() {
-        let keyboard = RemoteAction::KeyboardKeycode {
-            keycode: 30,
-            pressed: true,
-        };
-        let pointer = RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 };
-        assert!(action_allowed_by_devices(&keyboard, device_type::KEYBOARD));
-        assert!(!action_allowed_by_devices(&keyboard, device_type::POINTER));
-        assert!(action_allowed_by_devices(&pointer, device_type::POINTER));
-        assert!(!action_allowed_by_devices(&pointer, device_type::KEYBOARD));
-    }
-
-    #[test]
-    fn state_pressed_maps_freedesktop_convention() {
+    fn remote_desktop_wire_values_follow_the_standard() {
+        // Phase `state_pressed_maps_freedesktop_convention`.
         assert!(state_pressed(1));
         assert!(!state_pressed(0));
+        // Phase `v2_restore_data_is_a_standard_vendor_tuple`.
+        {
+            let key = uuid::Uuid::new_v4().to_string();
+            let mut options = HashMap::new();
+            options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
+            assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
+        }
     }
 
     #[test]
@@ -1453,13 +1454,5 @@ mod tests {
         // context implementation above: xdg-desktop-portal will only call
         // ConnectToEIS when this is two or newer.
         assert_eq!(REMOTE_DESKTOP_VERSION, 2);
-    }
-
-    #[test]
-    fn v2_restore_data_is_a_standard_vendor_tuple() {
-        let key = uuid::Uuid::new_v4().to_string();
-        let mut options = HashMap::new();
-        options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
-        assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
     }
 }

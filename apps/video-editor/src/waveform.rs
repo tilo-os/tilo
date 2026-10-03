@@ -55,17 +55,7 @@ const DECODE_BUDGET: Duration = Duration::from_secs(30);
 /// `None` means no samples could be obtained — the caller must show that as
 /// absence, never as a stand-in shape.
 pub fn peaks_from_file(path: &Path, buckets: usize) -> Option<Vec<f32>> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let data = if len <= READ_CAP {
-        std::fs::read(path).ok()?
-    } else {
-        use std::io::Read;
-        let mut f = std::fs::File::open(path).ok()?;
-        let mut buf = vec![0u8; READ_CAP as usize];
-        let n = f.read(&mut buf).ok()?;
-        buf.truncate(n);
-        buf
-    };
+    let data = crate::files::read_prefix(path, READ_CAP).ok()?;
     if let Some(p) = peaks_from_wav_bytes(&data, buckets) {
         return Some(p);
     }
@@ -180,10 +170,10 @@ fn pull_peak_windows(
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
-    let deadline = std::time::Instant::now() + DECODE_BUDGET;
+    let deadline = ui::time::now() + DECODE_BUDGET;
     let mut saw_any = false;
     loop {
-        if std::time::Instant::now() > deadline {
+        if ui::time::now() > deadline {
             break;
         }
         if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
@@ -429,7 +419,8 @@ impl WaveformCache {
             w.running = true;
             let work = self.work.clone();
             let tx = self.tx.clone();
-            std::thread::spawn(move || run_worker(&work, &tx));
+            // Without a thread (the page) waveforms are simply not drawn.
+            let _ = ui::rt::spawn_thread("video-editor-waveform", move || run_worker(&work, &tx));
         }
         drop(w);
         cv.notify_one();
@@ -571,116 +562,166 @@ mod tests {
     }
 
     #[test]
-    fn every_prefix_of_a_wav_is_read_without_panicking() {
-        // A download cut short can end anywhere: inside the chunk header,
-        // inside `fmt `, or mid-sample. None of those may read past the end.
-        let wav = wav_16(&[0.5, -0.5, 0.25, -0.25], 8000);
-        for n in 0..wav.len() {
-            let _ = peaks_from_wav_bytes(&wav[..n], 4);
+    fn wav_peaks_decode_every_format_and_prefix_safely() {
+        // Case `every_prefix_of_a_wav_is_read_without_panicking`.
+        {
+            // A download cut short can end anywhere: inside the chunk header,
+            // inside `fmt `, or mid-sample. None of those may read past the end.
+            let wav = wav_16(&[0.5, -0.5, 0.25, -0.25], 8000);
+            for n in 0..wav.len() {
+                let _ = peaks_from_wav_bytes(&wav[..n], 4);
+            }
+            // With the samples cut off entirely there is nothing to draw.
+            assert_eq!(peaks_from_wav_bytes(&wav[..44], 4), None);
+            assert!(peaks_from_wav_bytes(&wav, 4).is_some());
         }
-        // With the samples cut off entirely there is nothing to draw.
-        assert_eq!(peaks_from_wav_bytes(&wav[..44], 4), None);
-        assert!(peaks_from_wav_bytes(&wav, 4).is_some());
-    }
-
-    #[test]
-    fn every_supported_sample_format_decodes_to_the_same_level() {
-        // Half scale, as each PCM width spells it.
-        let cases: [(u16, u16, Vec<u8>); 5] = [
-            (1, 8, vec![192]),
-            (1, 16, 16_384i16.to_le_bytes().to_vec()),
-            (1, 24, vec![0x00, 0x00, 0x40]),
-            (1, 32, 1_073_741_824i32.to_le_bytes().to_vec()),
-            (3, 32, 0.5f32.to_le_bytes().to_vec()),
-        ];
-        for (fmt, bits, bytes) in cases {
-            let got = decode_samples(&bytes, fmt, bits, 1).expect("a supported format");
-            assert_eq!(got.len(), 1, "{fmt}/{bits}");
-            assert!((got[0] - 0.5).abs() < 1e-6, "{fmt}/{bits}: {}", got[0]);
+        // Case `every_supported_sample_format_decodes_to_the_same_level`.
+        {
+            // Half scale, as each PCM width spells it.
+            let cases: [(u16, u16, Vec<u8>); 5] = [
+                (1, 8, vec![192]),
+                (1, 16, 16_384i16.to_le_bytes().to_vec()),
+                (1, 24, vec![0x00, 0x00, 0x40]),
+                (1, 32, 1_073_741_824i32.to_le_bytes().to_vec()),
+                (3, 32, 0.5f32.to_le_bytes().to_vec()),
+            ];
+            for (fmt, bits, bytes) in cases {
+                let got = decode_samples(&bytes, fmt, bits, 1).expect("a supported format");
+                assert_eq!(got.len(), 1, "{fmt}/{bits}");
+                assert!((got[0] - 0.5).abs() < 1e-6, "{fmt}/{bits}: {}", got[0]);
+            }
+            // Negative 24-bit samples sign-extend rather than reading as huge.
+            let neg = decode_samples(&[0x00, 0x00, 0xC0], 1, 24, 1).expect("24-bit");
+            assert!((neg[0] + 0.5).abs() < 1e-6, "{}", neg[0]);
+            // An unknown width is refused, not guessed at.
+            assert_eq!(decode_samples(&[0, 0], 1, 12, 1), None);
+            // A partial trailing frame is dropped, not read past.
+            let stereo = decode_samples(&[0, 0x40, 0, 0x40, 0], 1, 16, 2).expect("stereo");
+            assert_eq!(stereo.len(), 1);
         }
-        // Negative 24-bit samples sign-extend rather than reading as huge.
-        let neg = decode_samples(&[0x00, 0x00, 0xC0], 1, 24, 1).expect("24-bit");
-        assert!((neg[0] + 0.5).abs() < 1e-6, "{}", neg[0]);
-        // An unknown width is refused, not guessed at.
-        assert_eq!(decode_samples(&[0, 0], 1, 12, 1), None);
-        // A partial trailing frame is dropped, not read past.
-        let stereo = decode_samples(&[0, 0x40, 0, 0x40, 0], 1, 16, 2).expect("stereo");
-        assert_eq!(stereo.len(), 1);
-    }
-
-    #[test]
-    fn peaks_reflect_the_real_pcm_envelope() {
-        // Loud first half, quiet second half → the peaks must mirror that shape.
-        let sr = 8000;
-        let n = sr as usize; // 1s
-        let mut samples = vec![0.0f32; n];
-        for (i, s) in samples.iter_mut().enumerate() {
-            let amp = if i < n / 2 { 0.9 } else { 0.1 };
-            *s = amp * (i as f32 * 0.2).sin();
+        // Case `peaks_reflect_the_real_pcm_envelope`.
+        {
+            // Loud first half, quiet second half → the peaks must mirror that shape.
+            let sr = 8000;
+            let n = sr as usize; // 1s
+            let mut samples = vec![0.0f32; n];
+            for (i, s) in samples.iter_mut().enumerate() {
+                let amp = if i < n / 2 { 0.9 } else { 0.1 };
+                *s = amp * (i as f32 * 0.2).sin();
+            }
+            let wav = wav_16(&samples, sr);
+            let peaks = peaks_from_wav_bytes(&wav, 16).expect("real WAV → peaks");
+            assert_eq!(peaks.len(), 16);
+            // Normalized: some bucket hits ~1.0 (the loud half).
+            assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.98);
+            // The first-half buckets are clearly louder than the second-half ones.
+            let first: f32 = peaks[..8].iter().sum();
+            let second: f32 = peaks[8..].iter().sum();
+            assert!(
+                first > second * 3.0,
+                "loud half dominates ({first} vs {second})"
+            );
         }
-        let wav = wav_16(&samples, sr);
-        let peaks = peaks_from_wav_bytes(&wav, 16).expect("real WAV → peaks");
-        assert_eq!(peaks.len(), 16);
-        // Normalized: some bucket hits ~1.0 (the loud half).
-        assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.98);
-        // The first-half buckets are clearly louder than the second-half ones.
-        let first: f32 = peaks[..8].iter().sum();
-        let second: f32 = peaks[8..].iter().sum();
-        assert!(
-            first > second * 3.0,
-            "loud half dominates ({first} vs {second})"
-        );
+        // Case `non_wav_bytes_yield_no_peaks`.
+        {
+            assert!(peaks_from_wav_bytes(b"not a wav file at all!!", 32).is_none());
+            assert!(peaks_from_wav_bytes(&[], 32).is_none());
+        }
+        // Case `peaks_track_the_source_and_are_not_a_fixed_shape`.
+        {
+            // Two different signals must give two different envelopes. A
+            // synthesized fallback would give the same picture for both — that is
+            // exactly what makes it indistinguishable from real data and wrong.
+            let sr = 8000;
+            let rising: Vec<f32> = (0..sr)
+                .map(|i| (i as f32 / sr as f32) * (i as f32 * 0.2).sin())
+                .collect();
+            let falling: Vec<f32> = rising.iter().rev().copied().collect();
+            let a = peaks_from_wav_bytes(&wav_16(&rising, sr as u32), 32).unwrap();
+            let b = peaks_from_wav_bytes(&wav_16(&falling, sr as u32), 32).unwrap();
+            assert_ne!(a, b, "different audio must produce different peaks");
+            assert!(a[28] > a[3], "a rising signal rises");
+            assert!(b[3] > b[28], "a falling signal falls");
+        }
     }
 
     #[test]
-    fn non_wav_bytes_yield_no_peaks() {
-        assert!(peaks_from_wav_bytes(b"not a wav file at all!!", 32).is_none());
-        assert!(peaks_from_wav_bytes(&[], 32).is_none());
-    }
+    fn waveform_cache_settles_real_missing_and_unavailable_sources() {
+        // Case `cache_warm_blocking_reads_a_real_file`.
+        {
+            let dir = std::env::temp_dir();
+            let f = dir.join(format!("tilo-ve-wave-{}.wav", std::process::id()));
+            let samples: Vec<f32> = (0..4000).map(|i| 0.7 * (i as f32 * 0.1).sin()).collect();
+            std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
 
-    #[test]
-    fn cache_warm_blocking_reads_a_real_file() {
-        let dir = std::env::temp_dir();
-        let f = dir.join(format!("tilo-ve-wave-{}.wav", std::process::id()));
-        let samples: Vec<f32> = (0..4000).map(|i| 0.7 * (i as f32 * 0.1).sin()).collect();
-        std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
+            let mut cache = WaveformCache::new();
+            let id = uuid::Uuid::new_v4();
+            let source = crate::media::MediaSource {
+                abs_path: f.clone(),
+                hydration: crate::media::Hydration::Local,
+            };
+            assert!(cache.peaks(id).is_none(), "nothing cached yet");
+            cache.warm_blocking(id, &source);
+            let peaks = cache.peaks(id).expect("warmed peaks");
+            assert_eq!(peaks.len(), WAVE_BUCKETS);
+            assert!(
+                peaks.iter().copied().fold(0.0, f32::max) > 0.9,
+                "a real signal is present"
+            );
+            std::fs::remove_file(&f).ok();
+        }
+        // Case `unhydrated_source_is_missing_not_pending`.
+        {
+            let mut cache = WaveformCache::new();
+            let id = uuid::Uuid::new_v4();
+            let source = crate::media::MediaSource {
+                abs_path: "/definitely/not/here.wav".into(),
+                hydration: crate::media::Hydration::Projected,
+            };
+            cache.request(id, &source);
+            assert!(
+                !cache.has_pending(),
+                "an un-hydrated source never spawns a compute"
+            );
+            assert!(cache.peaks(id).is_none());
+            assert_eq!(
+                cache.state(id),
+                WaveformState::Unavailable,
+                "the renderer is told there is nothing, so it draws nothing"
+            );
+        }
+        // Case `a_queued_compute_reaches_a_terminal_state_and_goes_quiet`.
+        {
+            // Drive the real queue + worker, not a stub: a readable WAV must land
+            // as Ready and `has_pending` must fall back to false.
+            let f = std::env::temp_dir().join(format!("tilo-ve-queue-{}.wav", std::process::id()));
+            let samples: Vec<f32> = (0..6000).map(|i| 0.8 * (i as f32 * 0.05).sin()).collect();
+            std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
+            let mut cache = WaveformCache::new();
+            let id = uuid::Uuid::new_v4();
+            let source = crate::media::MediaSource {
+                abs_path: f.clone(),
+                hydration: crate::media::Hydration::Local,
+            };
+            cache.request(id, &source);
+            assert!(cache.has_pending(), "the request is in flight");
+            assert_eq!(cache.state(id), WaveformState::Pending);
 
-        let mut cache = WaveformCache::new();
-        let id = uuid::Uuid::new_v4();
-        let source = crate::media::MediaSource {
-            abs_path: f.clone(),
-            hydration: crate::media::Hydration::Local,
-        };
-        assert!(cache.peaks(id).is_none(), "nothing cached yet");
-        cache.warm_blocking(id, &source);
-        let peaks = cache.peaks(id).expect("warmed peaks");
-        assert_eq!(peaks.len(), WAVE_BUCKETS);
-        assert!(
-            peaks.iter().copied().fold(0.0, f32::max) > 0.9,
-            "a real signal is present"
-        );
-        std::fs::remove_file(&f).ok();
-    }
-
-    #[test]
-    fn unhydrated_source_is_missing_not_pending() {
-        let mut cache = WaveformCache::new();
-        let id = uuid::Uuid::new_v4();
-        let source = crate::media::MediaSource {
-            abs_path: "/definitely/not/here.wav".into(),
-            hydration: crate::media::Hydration::Projected,
-        };
-        cache.request(id, &source);
-        assert!(
-            !cache.has_pending(),
-            "an un-hydrated source never spawns a compute"
-        );
-        assert!(cache.peaks(id).is_none());
-        assert_eq!(
-            cache.state(id),
-            WaveformState::Unavailable,
-            "the renderer is told there is nothing, so it draws nothing"
-        );
+            let deadline = tilo_test_env::hang_deadline();
+            while cache.has_pending() && ui::time::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                cache.drain();
+            }
+            assert!(
+                !cache.has_pending(),
+                "the worker delivered a terminal answer"
+            );
+            assert_eq!(cache.state(id), WaveformState::Ready);
+            let peaks = cache.peaks(id).expect("real peaks");
+            assert_eq!(peaks.len(), WAVE_BUCKETS);
+            assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.9);
+            std::fs::remove_file(&f).ok();
+        }
     }
 
     #[test]
@@ -697,60 +738,20 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         };
         assert_eq!(cache.state(id), WaveformState::Unrequested);
+        #[cfg(feature = "decode")]
+        let started = ui::time::now();
         cache.warm_blocking(id, &source);
         assert_eq!(cache.state(id), WaveformState::Unavailable);
+        // The failed pipeline settles on its own error, not by holding the
+        // worker until the decode budget runs out.
+        #[cfg(feature = "decode")]
+        assert!(
+            started.elapsed() < DECODE_BUDGET / 2,
+            "an unreadable source settled only after {:?}",
+            started.elapsed()
+        );
         assert!(cache.peaks(id).is_none());
         assert!(!cache.has_pending(), "a settled failure is not pending");
         std::fs::remove_file(&f).ok();
-    }
-
-    #[test]
-    fn a_queued_compute_reaches_a_terminal_state_and_goes_quiet() {
-        // Drive the real queue + worker, not a stub: a readable WAV must land
-        // as Ready and `has_pending` must fall back to false.
-        let f = std::env::temp_dir().join(format!("tilo-ve-queue-{}.wav", std::process::id()));
-        let samples: Vec<f32> = (0..6000).map(|i| 0.8 * (i as f32 * 0.05).sin()).collect();
-        std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
-        let mut cache = WaveformCache::new();
-        let id = uuid::Uuid::new_v4();
-        let source = crate::media::MediaSource {
-            abs_path: f.clone(),
-            hydration: crate::media::Hydration::Local,
-        };
-        cache.request(id, &source);
-        assert!(cache.has_pending(), "the request is in flight");
-        assert_eq!(cache.state(id), WaveformState::Pending);
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while cache.has_pending() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-            cache.drain();
-        }
-        assert!(
-            !cache.has_pending(),
-            "the worker delivered a terminal answer"
-        );
-        assert_eq!(cache.state(id), WaveformState::Ready);
-        let peaks = cache.peaks(id).expect("real peaks");
-        assert_eq!(peaks.len(), WAVE_BUCKETS);
-        assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.9);
-        std::fs::remove_file(&f).ok();
-    }
-
-    #[test]
-    fn peaks_track_the_source_and_are_not_a_fixed_shape() {
-        // Two different signals must give two different envelopes. A
-        // synthesized fallback would give the same picture for both — that is
-        // exactly what makes it indistinguishable from real data and wrong.
-        let sr = 8000;
-        let rising: Vec<f32> = (0..sr)
-            .map(|i| (i as f32 / sr as f32) * (i as f32 * 0.2).sin())
-            .collect();
-        let falling: Vec<f32> = rising.iter().rev().copied().collect();
-        let a = peaks_from_wav_bytes(&wav_16(&rising, sr as u32), 32).unwrap();
-        let b = peaks_from_wav_bytes(&wav_16(&falling, sr as u32), 32).unwrap();
-        assert_ne!(a, b, "different audio must produce different peaks");
-        assert!(a[28] > a[3], "a rising signal rises");
-        assert!(b[3] > b[28], "a falling signal falls");
     }
 }

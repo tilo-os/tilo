@@ -12,8 +12,13 @@ Build the host on macOS or Linux:
 cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
-In an installed layout, app startup finds the sibling `tilo-runtime-mcp` binary,
-then falls back to `PATH`. In a source checkout, the first ordinary `cargo run`
+In an installed layout, app startup attaches to a runtime host beside the app,
+then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP=tilo`, which the
+Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
+never attaches to a second authority beside it. Elsewhere — stock macOS or a
+foreign Linux desktop — the standalone `tilo-runtime` comes first, then
+`tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
+`tilo-runtime`. In a source checkout, the first ordinary `cargo run`
 can bootstrap a missing host with a bounded, serialized Cargo build using the
 checkout's normal Cargo cache, network, target directory, and explicit offline
 settings. Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a
@@ -28,6 +33,18 @@ development runs. The daemon owns the profile independently of every app and
 MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
 socket checks reject unsafe or competing owners.
+
+The standalone runtime keeps its workspace's files in the profile and shows
+them in `$HOME/Tilo/<workspace>` (`~/Tilo/Home` for a new profile), an ordinary
+folder any program can use. Changes cross both ways within about two seconds:
+a file saved in the folder becomes a version in the workspace's history, and a
+document in a legacy format (`.md`, `.docx`, `.odt`, …) is imported through its
+codec. A file changed on both sides keeps the folder's version; the
+workspace's version stays in its history. Symbolic links in the folder are not
+imported. On Linux, where `/dev/fuse` exists and `fusermount3` is on `PATH`,
+the workspace is mounted at that path instead (visible to this user only), and
+the folder takes over again whenever it cannot be. A profile the Tilo desktop
+serves has neither: the desktop projects its files itself.
 
 ## Assistant connection
 
@@ -48,6 +65,70 @@ Point the assistant at the existing host with `--connect` and the same profile:
 The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
+
+
+
+## Agent host (MCP beside local relay)
+
+A Cursor/Grok-style box on an existing Linux OS should not install the Tilo
+desktop or OS image. Keep three roles distinct: the **relay** (store-and-forward),
+the **home peer** (always-on replica — same OCI as the relay Compose), and the
+**agent host** (MCP client → local `tilo-runtime` enrolled under the user).
+
+Preferred layout: run `tilo-relay` as a home peer, run `tilo-runtime` beside it
+with MCP on loopback (`TILO_RUNTIME_MCP_HTTP=127.0.0.1:7391` plus
+`TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`), enroll the runtime as a personal device
+(`tilo-enroll pair-device --headless`), and point the assistant at that MCP.
+Never copy `user-identity/privkey.bin` into the container.
+
+Operator Compose and image: [`os/containers/tilo-agent-host/`](../os/containers/tilo-agent-host/).
+Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
+
+## HTTP endpoint
+
+A hosted machine (for example a provider's per-user VM) exposes the same tools
+over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon; a
+non-loopback address also requires `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose
+contents callers present as `Authorization: Bearer …`:
+
+```sh
+TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \
+TILO_RUNTIME_MCP_HTTP_TOKEN_FILE=/run/secrets/mcp-token \
+  tilo-runtime --profile /data/tilo --daemon
+```
+
+`POST /mcp` carries one JSON-RPC message and answers with JSON; `initialize`
+without an `Mcp-Session-Id` opens a session and returns its id, later requests
+must carry it, and `DELETE /mcp` ends it. No server-initiated stream is offered.
+`GET /health` needs no token.
+
+Each session is its own agent run: its invocations carry an `agent-run` action
+group named after the client's declared `clientInfo.name`, so history, undo and
+activity tell concurrent agents on one machine apart. Sessions act with the
+profile actor's authority. The token authenticates the fronting proxy only; that
+proxy owns end-user authentication and must route each user to their machine.
+
+## Pixel fallback
+
+Beside a compositor, `TILO_RUNTIME_COMPUTER_CONTROL=/abs/path/to/control.sock`
+(the compositor's `TILO_TEST_CONTROL` socket) adds the canonical `computer` and
+`computer_batch` tools that hosted computer-use providers and model vendors
+share: `screenshot`, the click family, `mouse_move`, `left_click_drag`,
+`left_mouse_down`/`up`, `scroll`, `type`, `key` and `hold_key` (xdotool names
+such as `ctrl+s`), `wait`, `zoom` and `cursor_position`. They exist for
+windows that publish no typed action; tool descriptions steer models to the
+typed tools first. Such legacy applications (a browser, an office suite) are
+started like any other: `tilo_query` with `workspace: true` lists each
+installed desktop application as `app.host:<desktop-id>` (kind
+`applications.host-app`), and its `open` action launches it unconfined into
+the workspace.
+
+Each action returns its post-action screenshot (JPEG by default, `format: png`
+on request) and a text block with `frame_id`, `width` and `height`.
+Coordinates are pixels in the last screenshot's frame; screens larger than
+1280×800 are scaled down and coordinates scaled back. A batch returns frames
+only for `screenshot` steps and its last step unless `no_screenshot` says
+otherwise, and stops at the first failing step.
 
 ## Explicit manifest mode
 
@@ -108,18 +189,151 @@ action host — the same `tilo_actions::remote` door apps, agents and peers use 
 so an invocation is identified by a UUID `invocation_id`. Pass your own
 `invocation_id` to `tilo_invoke` to make a retry safe: repeating the same id and
 request reports the original invocation instead of starting it again, and
-reusing an id for a different request is refused. Call `tilo_list_apps`, then `tilo_query`; preserve the returned peer
-id, revision, resource and action for `tilo_resolve` or `tilo_invoke`. Browse
-roots with an empty `parent_resource`, then use a returned resource as
-`parent_resource` to discover its actions and children. Follow `next_cursor`
-with the same revision and query. The optional `needle` searches declared
-search providers; it is not a search across every action label. After an
-invocation is accepted, poll `tilo_status` with its `invocation_id` until its
-real terminal update. Pass
-content resource references returned by one successful action as typed
+reusing an id for a different request is refused. Call `tilo_list_apps`, then `tilo_query`; keep the returned peer
+id (or name the app by `app_id`: its newest instance), resource and action for
+`tilo_resolve` or `tilo_invoke`. Browse roots with an empty `parent_resource`,
+then use a returned resource as `parent_resource` to discover its actions and
+children. Follow `next_cursor` with the same revision and query. `needle`
+finds actions and resources by name; several words must each begin a word of
+the row's names, and each of up to three resources a needle finds is listed
+with all its actions. When no row has every word, a compact page answers with
+the rows that have the most of them and says `"partial_match": true`, so a
+needle naming several actions ("open paragraph style heading") still finds
+`set-paragraph-style`; version 1 rows keep the every-word match. `revision` is
+optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
+against the directory as it is now; named, a target that changed since is
+refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
+update and answers with it; an invocation still running then says so in
+`pending` and is followed with `tilo_status`. One call is `resource`,
+`action` and `arguments`. Several that share a peer go in `calls`,
+`[{resource, action, arguments}, …]` (at most 32), and run in order: the
+first keeps the named revision, each later one reads the directory as it
+is then, and the first that does not succeed stops the rest. The answer is
+`results`, plus `stopped` at that call's index. The same `invocation_id`
+never runs the batch twice: the first step uses it, and each later step's
+id is derived from it. A number outside the range its
+action declares (`pageSize: 200` where the signature says `1..64`) fails
+validation before the action runs; the bridge then runs the call once more
+with the bound the refusal named and adds `adjusted` to the answer
+(`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
+Pass content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
 replays a mutation automatically.
+
+### Opening an app
+
+`tilo_invoke {workspace: true, resource: "app.<app_id>", action: "open"}`
+launches an installed app and answers, once the new instance has published its
+directory, with its `peer_id` and its `directory`: the compact page of its
+top-level resources with all their actions, and the resources beneath them
+while the page stays within 12 KiB (`"truncated": true` when something was left
+for `tilo_query`). An action line there is its label and parameters
+(`"save-as": "Save document as (path?)"`); the description sentence is left
+to `tilo_query`, because this reply is read again on every later turn. An
+agent acts on the reply without browsing first. An app
+may publish again while it starts, and a directory read in between lists
+nothing, so the reply waits up to 3 s more for one that lists a resource.
+
+`arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
+launch opens content only by hash, read through an authenticated app's scope,
+and a launch argument would bypass the instance's typed surface, so the bridge
+launches the app empty and then invokes the instance's own `open` action taking
+a `path` (or, for an app with none, `import-<extension>`, as Sheets offers for
+CSV). The app reads the file inside its sandbox, so only files the workspace
+granted it open; nothing is granted on the way. The reply's `opened` carries
+that invocation's update and the resource and action it used, or an `error`
+naming why the file is not open (the app started empty either way). Workspace
+pages list `path?` on each application's `open`. Host applications
+(`app.host:…`) open without a path.
+
+Once the file is open, the reply's `content` carries the document's first
+page, so an agent edits without reading it first: the bridge runs, with no
+arguments, the action the app tagged `read:document`
+(`ActionSpec::reads_document`) and answers `{resource, action, value}`, the
+value being that action's output. That is the Word Processor's `read-text`
+(Markdown with block ids, up to 64 blocks, and its `nextCursor`), a sheet's
+`read-cells` (its used range, as `rows`, `formulas` and `bold`) and the
+deck's `read` outline. The File Explorer's `open` itself answers the folder's
+`entries` in `opened`. A value over 6 KiB is cut to fit (text at a line,
+arrays by whole elements) and says `"truncated": true`; its cursor is
+dropped, and the same action answers the page whole. An app without a
+tagged action answers no `content`, nor does a file that did not open or an
+instance that already held it.
+
+### Reading back what an action did
+
+An agent sees the result of an edit in the edit's reply and reads a
+document as text, so it needs no screenshot to check its work. A document
+action whose contract declares a JSON result gets one: after the edit
+applies, ui-core diffs the document from the edit's base heads and asks the
+app through `PublishesResources::document_action_result`.
+
+- **Word Processor.** `read-text` answers Markdown, one block per line ending
+  in its `{#block id}`: headings as `#`…`######`, list items as `- ` or `1. `
+  indented two spaces per level, and a table as a Markdown table tagged
+  `{#table id}` whose every cell, empty or not, ends in its own `{#block id}`:
+
+  ```text
+  ## Standup {#b1}
+  - review {#b2}
+    1. screen reader {#b3}
+  | Person {#c1} | Blocked {#c2} | Next {#c3} | {#table t1}
+  | --- | --- | --- |
+  | Maya {#c4} | no {#c5} | {#c6} |
+  ```
+
+  A block id is what `select-block`, `select-range` and `move-caret` take,
+  so filling a cell is `select-block {block: "c6"}` then `type-text`; the
+  table's `word-processor.table:<table id>` resource adds and deletes rows
+  and columns. It pages up to 64 blocks through `nextCursor`;
+  `format: "segments"` returns the typed segments with their text offsets.
+  `paste` (Markdown, including headings, lists and pipe tables),
+  `set-paragraph-style`, `apply-named-style`, `insert-table` and a table's
+  `append-row` and `append-column` answer with the blocks they changed,
+  rendered the same way (`2 changed:` …, at most 32 listed, each cut at 160
+  characters with `…`, then `N removed`).
+- **Slides.** The deck's `read` answers the deck as text: each slide's
+  number, layout and `{#id}`, its title as a `# ` line, its body and other
+  elements each ending in its `{#id}`, then its speaker notes. `add-slide`,
+  `set-slide-text`, `move-slide` and the element edits answer with the same
+  outline. `set-slide-text {slide, title?, body?}` replaces a slide's title
+  (first text box) and body (second, a paragraph per line); `slide` is its
+  id or its number as `read` shows it.
+- **File Explorer.** `move {entries, folder, create?}` moves several entries
+  of the current folder into `folder` in one call, creating it unless
+  `create` is false, and answers `moved N into <folder>: …`. Nothing moves
+  when an entry is not there; the error lists the folder's entries.
+  `move-to` into a missing folder names the `move` call that creates it.
+
+Only these actions declare a result: each open document publishes its
+catalogue to the broker, and the broker's catalogue reply is capped at
+256 KiB (`MAX_PRIVATE_BYTES`), which five open Word Processor documents
+already nearly fill.
+
+### Page format
+
+`tilo_query` pages are compact (surface version 3, reported at `initialize`
+as `capabilities.experimental["so.tilo.mcp"].version`): each resource once,
+its actions as one-line signatures such as `"save-as": "Save document as
+(path?)"` (`p?` optional, `p:type` a non-text type, `a|b` the accepted values,
+`1..64` a numeric range), and string cursors. In an app instance's pages, a
+resource id longer than 24 characters is shown as a session handle such as
+`r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
+which provisioning code and prompts spell out. `tilo_query`'s
+`parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
+they take a resource, and full ids keep working. In `tilo_invoke`'s
+`arguments`, a handle this session issued is replaced by its id where the
+action declares a `resource` parameter. Where the parameter is text, the handle
+goes as given, since it may be meant literally. If the action refuses it, the
+call runs once more with the id, and `adjusted` says so. A bound UI resource's id is
+about 130 characters, repeated in every call. A model reads every page again
+on each later turn, and version 1's rows repeated each resource id three times
+and each contract twice. `detail: "full"` returns version 1 rows, with full
+ids, for one call; a client that parses them sends `{"so.tilo.mcp": {"detail":
+"full"}}` in `capabilities.experimental` at `initialize` to keep them for its
+session, and its `open` replies carry no directory. `resources/read` always
+returns full rows.
 
 A normal `ui::App` automatically obtains collaboration and identity
 connections from the shared runtime and publishes its current lazy directory.
@@ -134,9 +348,12 @@ construction.
 This is a local, same-user native host. The profile's workspace and actor are
 fixed when the host starts; MCP requests cannot select an actor, workspace, or
 executable. Discovery and invocation retain the production broker's workspace
-authority and current-instance checks. Actions requiring confirmation are
-refused because this stdio host has no real approval ceremony; a caller boolean
-cannot manufacture broker admission.
+authority and current-instance checks; the Tilo permission system decides what
+is visible and invokable. An action whose contract asks for confirmation is not
+refused: the MCP client's own allow/deny decision for the `tilo_invoke` call is
+the confirmation, and the host supplies the evidence the resolved contract
+names. Risk levels travel in each action's contract, and `tilo_invoke` is
+annotated as potentially destructive so clients can prompt.
 
 The concrete launcher uses Unix sockets, process execution, and descriptor
 inheritance and is currently qualified for macOS and Linux. Windows host

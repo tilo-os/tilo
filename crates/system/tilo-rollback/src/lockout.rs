@@ -34,7 +34,7 @@
 
 use crate::argv;
 use crate::exec::Runner;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::ffi::OsStr;
 
 /// What the hardware reports.
@@ -286,12 +286,10 @@ pub const RESET_AUTH_CHARS: usize = 32;
 ///
 /// # Errors
 ///
-/// Returns an error if `/dev/urandom` cannot be opened or read.
+/// Returns an error if the operating system's random source fails.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
     let mut b = [0u8; RESET_AUTH_CHARS / 2];
-    f.read_exact(&mut b).context("reading /dev/urandom")?;
+    getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
     Ok(zeroize::Zeroizing::new(hex::encode(b).into_bytes()))
 }
 
@@ -315,114 +313,109 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
 ";
 
     #[test]
-    fn parses_the_swtpm_defaults() {
-        let p = parse_properties(SWTPM);
-        assert_eq!(p.max_tries, 3);
-        assert_eq!(p.recovery_time, 1000);
-        assert_eq!(p.lockout_recovery, 1000);
-        assert_eq!(p.counter, 0);
-        assert!(!p.lockout_auth_set);
-        assert!(!p.in_lockout);
-    }
-
-    #[test]
-    fn parses_a_set_lockout_auth() {
-        let p = parse_properties(&SWTPM.replace(
-            "lockoutAuthSet:            0",
-            "lockoutAuthSet:            1",
-        ));
-        assert!(p.lockout_auth_set);
-    }
-
-    #[test]
-    fn an_empty_reset_auth_is_critical_not_a_warning() {
-        let a = assess(parse_properties(SWTPM), Target::default());
-        assert!(!a.pin_is_defensible());
-        assert!(
-            a.critical
-                .iter()
-                .any(|c| c.contains("reset authorisation is empty")),
-            "{:?}",
-            a.critical
-        );
-    }
-
-    #[test]
-    fn zero_max_tries_is_critical() {
-        let p = Params {
-            max_tries: 0,
-            recovery_time: 7200,
-            lockout_recovery: 86400,
-            lockout_auth_set: true,
-            ..Default::default()
-        };
-        let a = assess(p, Target::default());
-        assert!(!a.pin_is_defensible());
-    }
-
-    #[test]
-    fn zero_recovery_time_is_critical() {
-        let p = Params {
-            max_tries: 8,
-            recovery_time: 0,
-            lockout_recovery: 86400,
-            lockout_auth_set: true,
-            ..Default::default()
-        };
-        assert!(!assess(p, Target::default()).pin_is_defensible());
-    }
-
-    #[test]
-    fn generous_vendor_defaults_warn_but_do_not_block() {
-        // Typical Intel PTT shipping values.
-        let p = Params {
-            max_tries: 32,
-            recovery_time: 600,
-            lockout_recovery: 600,
-            lockout_auth_set: true,
-            ..Default::default()
-        };
-        let a = assess(p, Target::default());
-        assert!(a.pin_is_defensible(), "{:?}", a.critical);
-        assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
-    }
-
-    #[test]
-    fn a_configuration_at_target_is_clean() {
-        let p = Params {
-            max_tries: 8,
-            recovery_time: 7200,
-            lockout_recovery: 86400,
-            lockout_auth_set: true,
-            ..Default::default()
-        };
-        let a = assess(p, Target::default());
-        assert!(a.pin_is_defensible());
-        assert!(a.warnings.is_empty(), "{:?}", a.warnings);
-    }
-
-    #[test]
-    fn tighter_than_asked_for_is_not_a_warning() {
-        let p = Params {
-            max_tries: 4,
-            recovery_time: 86400,
-            lockout_recovery: 172_800,
-            lockout_auth_set: true,
-            ..Default::default()
-        };
-        let a = assess(p, Target::default());
-        assert!(a.warnings.is_empty(), "{:?}", a.warnings);
-    }
-
-    #[test]
-    fn reset_auth_is_random_and_within_the_tpm_auth_size_limit() {
-        let a = new_reset_auth().unwrap();
-        assert_eq!(a.len(), RESET_AUTH_CHARS);
-        assert!(
-            a.len() <= 48,
-            "TPM2B_AUTH is refused above ~48 bytes on real implementations"
-        );
-        assert!(a.iter().all(u8::is_ascii_hexdigit));
-        assert_ne!(*a, *new_reset_auth().unwrap());
+    fn lockout_parameters_parse_and_classify_against_the_target() {
+        // Phase `parses_the_swtpm_defaults`.
+        {
+            let p = parse_properties(SWTPM);
+            assert_eq!(p.max_tries, 3);
+            assert_eq!(p.recovery_time, 1000);
+            assert_eq!(p.lockout_recovery, 1000);
+            assert_eq!(p.counter, 0);
+            assert!(!p.lockout_auth_set);
+            assert!(!p.in_lockout);
+        }
+        // Phase `parses_a_set_lockout_auth`.
+        {
+            let p = parse_properties(&SWTPM.replace(
+                "lockoutAuthSet:            0",
+                "lockoutAuthSet:            1",
+            ));
+            assert!(p.lockout_auth_set);
+        }
+        // Phase `an_empty_reset_auth_is_critical_not_a_warning`.
+        {
+            let a = assess(parse_properties(SWTPM), Target::default());
+            assert!(!a.pin_is_defensible());
+            assert!(
+                a.critical
+                    .iter()
+                    .any(|c| c.contains("reset authorisation is empty")),
+                "{:?}",
+                a.critical
+            );
+        }
+        // Phase `zero_max_tries_is_critical`.
+        {
+            let p = Params {
+                max_tries: 0,
+                recovery_time: 7200,
+                lockout_recovery: 86400,
+                lockout_auth_set: true,
+                ..Default::default()
+            };
+            let a = assess(p, Target::default());
+            assert!(!a.pin_is_defensible());
+        }
+        // Phase `zero_recovery_time_is_critical`.
+        {
+            let p = Params {
+                max_tries: 8,
+                recovery_time: 0,
+                lockout_recovery: 86400,
+                lockout_auth_set: true,
+                ..Default::default()
+            };
+            assert!(!assess(p, Target::default()).pin_is_defensible());
+        }
+        // Phase `generous_vendor_defaults_warn_but_do_not_block`.
+        {
+            // Typical Intel PTT shipping values.
+            let p = Params {
+                max_tries: 32,
+                recovery_time: 600,
+                lockout_recovery: 600,
+                lockout_auth_set: true,
+                ..Default::default()
+            };
+            let a = assess(p, Target::default());
+            assert!(a.pin_is_defensible(), "{:?}", a.critical);
+            assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
+        }
+        // Phase `a_configuration_at_target_is_clean`.
+        {
+            let p = Params {
+                max_tries: 8,
+                recovery_time: 7200,
+                lockout_recovery: 86400,
+                lockout_auth_set: true,
+                ..Default::default()
+            };
+            let a = assess(p, Target::default());
+            assert!(a.pin_is_defensible());
+            assert!(a.warnings.is_empty(), "{:?}", a.warnings);
+        }
+        // Phase `tighter_than_asked_for_is_not_a_warning`.
+        {
+            let p = Params {
+                max_tries: 4,
+                recovery_time: 86400,
+                lockout_recovery: 172_800,
+                lockout_auth_set: true,
+                ..Default::default()
+            };
+            let a = assess(p, Target::default());
+            assert!(a.warnings.is_empty(), "{:?}", a.warnings);
+        }
+        // Phase `reset_auth_is_random_and_within_the_tpm_auth_size_limit`.
+        {
+            let a = new_reset_auth().unwrap();
+            assert_eq!(a.len(), RESET_AUTH_CHARS);
+            assert!(
+                a.len() <= 48,
+                "TPM2B_AUTH is refused above ~48 bytes on real implementations"
+            );
+            assert!(a.iter().all(u8::is_ascii_hexdigit));
+            assert_ne!(*a, *new_reset_auth().unwrap());
+        }
     }
 }

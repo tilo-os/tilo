@@ -124,8 +124,16 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     if path.exists() {
         return path;
     }
-    // Encode beside the final name and rename into place, so a concurrent
-    // test process sees either no clip or a complete one.
+    // Every test runs in its own process and they start together: the first
+    // to take the lock encodes, the rest wait for it and reuse its clip.
+    let _lock =
+        advisory_lock::FileLock::open(&cache.join(".lock"), advisory_lock::LockMode::Exclusive)
+            .expect("lock the generated clip cache");
+    if path.exists() {
+        return path;
+    }
+    // Encode beside the final name and rename into place, so a test process
+    // that checks before taking the lock sees either no clip or a complete one.
     let partial = cache.join(format!(
         "{}.{}.partial",
         path.file_name()
@@ -190,9 +198,9 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
         .expect("finish generated video stream");
 
     let bus = pipeline.bus().expect("fixture pipeline has a bus");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     let mut reached_eos = false;
-    while std::time::Instant::now() < deadline {
+    while ui::time::now() < deadline {
         let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) else {
             continue;
         };

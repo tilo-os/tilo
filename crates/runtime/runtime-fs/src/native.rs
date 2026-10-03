@@ -1038,56 +1038,57 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_capacity_never_returns_truncated_success() {
-        let (temp, _authority, session, root) = fixture();
-        for name in ["a", "b", "c", "d"] {
-            std::fs::write(temp.path().join(name), b"data").unwrap();
+    fn snapshots_never_truncate_and_die_with_their_lifetime() {
+        // phase: snapshot_capacity_never_returns_truncated_success
+        {
+            let (temp, _authority, session, root) = fixture();
+            for name in ["a", "b", "c", "d"] {
+                std::fs::write(temp.path().join(name), b"data").unwrap();
+            }
+            assert!(matches!(session.list(&root, None), Err(FsError::Busy)));
+            std::fs::remove_file(temp.path().join("d")).unwrap();
+            let page = session.list(&root, None).unwrap();
+            assert_eq!(page.entries.len(), 2);
+            let final_page = session.list(&root, page.next).unwrap();
+            assert_eq!(final_page.entries.len(), 1);
+            assert!(final_page.next.is_none());
         }
-        assert!(matches!(session.list(&root, None), Err(FsError::Busy)));
-        std::fs::remove_file(temp.path().join("d")).unwrap();
-        let page = session.list(&root, None).unwrap();
-        assert_eq!(page.entries.len(), 2);
-        let final_page = session.list(&root, page.next).unwrap();
-        assert_eq!(final_page.entries.len(), 1);
-        assert!(final_page.next.is_none());
-    }
-
-    #[test]
-    fn dead_lifetime_releases_retained_snapshot() {
-        let (temp, authority, session, root) = fixture();
-        for name in ["a", "b", "c"] {
-            std::fs::write(temp.path().join(name), b"").unwrap();
+        // phase: dead_lifetime_releases_retained_snapshot
+        {
+            let (temp, authority, session, root) = fixture();
+            for name in ["a", "b", "c"] {
+                std::fs::write(temp.path().join(name), b"").unwrap();
+            }
+            let alive = Arc::new(AtomicBool::new(true));
+            let predicate = Arc::clone(&alive);
+            session
+                .attach_lifetime(Arc::new(move || predicate.load(Ordering::Acquire)))
+                .unwrap();
+            let page = session.list(&root, None).unwrap();
+            assert!(page.next.is_some());
+            assert_eq!(lock(&authority.inner.state).unwrap().snapshots.len(), 1);
+            alive.store(false, Ordering::Release);
+            assert!(matches!(
+                session.check_directory(&root),
+                Err(FsError::Closed)
+            ));
+            assert!(lock(&authority.inner.state).unwrap().snapshots.is_empty());
         }
-        let alive = Arc::new(AtomicBool::new(true));
-        let predicate = Arc::clone(&alive);
-        session
-            .attach_lifetime(Arc::new(move || predicate.load(Ordering::Acquire)))
-            .unwrap();
-        let page = session.list(&root, None).unwrap();
-        assert!(page.next.is_some());
-        assert_eq!(lock(&authority.inner.state).unwrap().snapshots.len(), 1);
-        alive.store(false, Ordering::Release);
-        assert!(matches!(
-            session.check_directory(&root),
-            Err(FsError::Closed)
-        ));
-        assert!(lock(&authority.inner.state).unwrap().snapshots.is_empty());
-    }
-
-    #[test]
-    fn evicted_snapshot_cursor_is_stale() {
-        let (temp, _authority, session, root) = fixture();
-        for name in ["a", "b", "c"] {
-            std::fs::write(temp.path().join(name), b"").unwrap();
+        // phase: evicted_snapshot_cursor_is_stale
+        {
+            let (temp, _authority, session, root) = fixture();
+            for name in ["a", "b", "c"] {
+                std::fs::write(temp.path().join(name), b"").unwrap();
+            }
+            let first = session.list(&root, None).unwrap();
+            let second = session.list(&root, None).unwrap();
+            assert_ne!(first.generation, second.generation);
+            assert!(matches!(
+                session.list(&root, first.next),
+                Err(FsError::StalePage)
+            ));
+            assert_eq!(session.list(&root, second.next).unwrap().entries.len(), 1);
         }
-        let first = session.list(&root, None).unwrap();
-        let second = session.list(&root, None).unwrap();
-        assert_ne!(first.generation, second.generation);
-        assert!(matches!(
-            session.list(&root, first.next),
-            Err(FsError::StalePage)
-        ));
-        assert_eq!(session.list(&root, second.next).unwrap().entries.len(), 1);
     }
 }
 
@@ -1411,7 +1412,6 @@ impl FsSession {
         })
     }
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "bounded read-only directory, file and link verification share one confinement gate"
     )]

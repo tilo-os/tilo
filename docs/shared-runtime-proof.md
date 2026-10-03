@@ -53,9 +53,16 @@ Clippy passed for both changed SDK libraries.
 
 ## Shared code and platform boundary
 
-- `shell/src/runtime_host.rs`: lifecycle and composition of existing services.
-- `shell/src/runtime_host/unix.rs`: private runtime directory and Unix descriptor
-  inheritance, usable by both macOS and Linux.
+- `crates/runtime/tilo-runtime`: the profile, native endpoint, daemon start,
+  app attachment and MCP projection, reaching the services only through
+  `RuntimeServices`; its `unix` module holds the private runtime directory and
+  Unix descriptor inheritance, usable by both macOS and Linux.
+- `shell/src/runtime_host.rs`: the desktop session's `RuntimeServices`, over its
+  native brokers and adapters (`tilo-runtime-mcp`).
+- `crates/runtime/tilo-runtime/src/standalone.rs`: the same shared broker
+  (`tilo-action-broker`) and identity service (`tilo-identity-host`) without
+  the Tilo desktop, for the `tilo-runtime` executable on stock macOS or a
+  foreign Linux desktop. It links no shell or compositor code.
 - `crates/runtime/runtime-identity`: shared connection ownership and framing
   serialization, fixing repeated SDK metadata lookups closing a live signer.
 - `crates/system/content`: an explicit `TILO_BLOB_STORE` selects a shared
@@ -64,9 +71,14 @@ Clippy passed for both changed SDK libraries.
 - `shell/examples/shared-runtime-proof.rs`: verification driver, not a second
   action broker or workflow engine.
 
-The host still links the shell library because its broker depends on the
-workspace policy model. Extracting those modules into a smaller crate is future
-dependency cleanup; their implementations are shared now.
+The standalone services omit the desktop's native adapters: installed-app
+launch and declared app access, workspace governance, shortcuts, continuations,
+the durable document owner, durable collaboration history, channel encryption
+and the peer network. The broker answers for each as for any host without it.
+A profile the desktop session already served is adopted read only, keeping its
+room and owner; a new profile gets its own `desktop.json`. App auto-attach
+prefers `tilo-runtime` outside the Tilo desktop and uses only `tilo-runtime-mcp`
+inside it (see runtime-mcp.md); `TILO_RUNTIME_BINARY` overrides both.
 
 The same service composition is now available through the native
 `tilo-runtime-mcp` stdio entry point. Its user-supplied manifest launches apps

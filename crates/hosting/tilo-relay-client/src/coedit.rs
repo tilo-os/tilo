@@ -1,54 +1,16 @@
-//! Route the toolkit's co-edit protocol through the workspace host.
+//! The co-edit payloads the toolkit's collaboration layer exchanges through
+//! the workspace host: [`CoeditPayload`] inside an `Envelope::Delta`,
+//! [`AttributedPresence`] inside an `Envelope::Presence`, and the
+//! [`Inbound`] events a session surfaces. Browser and native peers share
+//! these; the relay session that speaks them over iroh
+//! (`tilo_relay::coedit::RelayCoeditSession`) lives in `tilo-relay`.
 //!
-//! The `ui` collaboration layer (`ui::collaboration`) speaks
-//! `CollabRequest` / `CollabEvent` frames carrying Automerge deltas and
-//! presence; the host speaks [`Envelope`]. [`RelayCoeditSession`] wraps a
-//! [`RelayClient`] and exposes the co-edit verbs an app needs — publish
-//! a document delta, publish presence, receive peer deltas/presence —
-//! mapping each onto an [`Envelope`]. Because document deltas travel as
-//! [`Envelope::Delta`] they inherit the host's fan-out **and** its
-//! on-disk store-and-forward: two peers that are not simultaneously
-//! online still converge on the shared document.
-//!
-//! # Correspondence with the toolkit protocol
-//!
-//! [`CoeditPayload`] is the self-describing body carried inside an
-//! `Envelope::Delta`. The production shell uses retained checkpoints and
-//! messages to carry its authenticated `NeighbourMsg` protocol through the
-//! durable host. Apps do not publish raw document bytes here; they use the
-//! certified local collaboration service, which signs and authorizes them
-//! before the shell transports them.
-//!
-//! Keeping the mapping here rather than importing `ui` mirrors the
-//! native shell collaboration service, which likewise translates the toolkit
-//! protocol without pulling `ui`/wgpu into a transport crate.
-//!
-//! # Presence attribution
-//!
-//! [`Envelope::Delta`] carries an `author_device_public_key`, so a
-//! document delta is attributed to its publisher for free. But
-//! [`Envelope::Presence`] has **no** author slot — the host fans the
-//! opaque bytes out without inspecting or stamping them. So presence
-//! attribution has to ride *inside* the payload: [`RelayCoeditSession::publish_presence`]
-//! wraps the toolkit body in an [`AttributedPresence`] carrying the
-//! session's own device key, and [`RelayCoeditSession::recv`] unwraps it
-//! into [`Inbound::Presence`]`{ author, payload }`. Without this a
-//! remote cursor would arrive unauthored and could not be drawn against
-//! the right collaborator.
-//!
-//! Document-op *authorisation* (a viewer without a write cap must not
-//! mutate the doc) is enforced by the broker/host layer that validates
-//! `SignedOp`s, not by this transport shim — the host stores and
-//! forwards `Envelope::Delta` bytes verbatim, exactly as it does for
-//! any workspace-directory delta.
+//! Presence carries its author inside the payload because the host's
+//! presence envelope has no author slot; see [`AttributedPresence`].
 
 use serde::{Deserialize, Serialize};
-use tilo_clock::unix_now_ns;
 
-use crate::client::RelayClient;
-use tilo_relay_protocol::transport::Envelope;
-
-/// Body carried inside an [`Envelope::Delta`]. Self-describing so the
+/// Body carried inside an `Envelope::Delta`. Self-describing so the
 /// receiver can distinguish retained checkpoints from their incremental tail.
 /// Retention metadata is deliberately visible to the host while the document
 /// body remains opaque.
@@ -92,9 +54,51 @@ impl CoeditPayload {
     }
 }
 
+// Only the native relay peer retains coedit history.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum RetentionKind {
+    Checkpoint,
+    Delta,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Deserialize)]
+enum RetentionMetadata<'a> {
+    Checkpoint {
+        channel: [u8; 32],
+        #[serde(borrow)]
+        body: &'a [u8],
+    },
+    RetainedDelta {
+        channel: [u8; 32],
+        #[serde(borrow)]
+        body: &'a [u8],
+    },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Decode only the host-visible retention route and kind. The opaque body is
+/// consumed without allocating or exposing it to diagnostics.
+#[doc(hidden)]
+pub fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {
+    let metadata: RetentionMetadata<'_> = postcard::from_bytes(bytes).ok()?;
+    match metadata {
+        RetentionMetadata::Checkpoint { channel, body } => {
+            let _ = body;
+            Some((channel, RetentionKind::Checkpoint))
+        }
+        RetentionMetadata::RetainedDelta { channel, body } => {
+            let _ = body;
+            Some((channel, RetentionKind::Delta))
+        }
+    }
+}
+
 /// Presence body wrapper that carries author attribution.
 ///
-/// [`Envelope::Presence`] has no author field — the host forwards the
+/// `Envelope::Presence` has no author field — the host forwards the
 /// bytes verbatim. So the publisher stamps its own device public key
 /// around the opaque toolkit presence `body`; the receiver recovers it
 /// in [`Inbound::Presence`]. (Document deltas ride
@@ -163,15 +167,49 @@ pub enum Inbound {
         /// The remote-action frame, as the sender encoded it.
         frame: Vec<u8>,
     },
+    /// A live-plane frame (presence, previews) another live member of the
+    /// workspace published: a native shell, a browser, an agent. The host
+    /// checked its sealed form and stamped the sender from its
+    /// authenticated session.
+    Live {
+        /// The publishing device's public key.
+        from: [u8; 32],
+        /// The canonical `tilo_relay_protocol::live::SealedLiveFrame` bytes.
+        frame: Vec<u8>,
+    },
     /// The host's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
     },
+    /// The room's governor answered about one of its calls.
+    Voice(VoiceEvent),
 }
 
-/// Failure modes for [`RelayCoeditSession`] operations.
+/// What the governor of a room says about its calls; see
+/// [`tilo_relay_protocol::voice`].
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    /// The outcome of a call change this device requested.
+    Result {
+        /// The request's id.
+        request: [u8; 16],
+        /// The call as governance now records it, or why it was refused.
+        result: Result<tilo_relay_protocol::voice::CallState, String>,
+    },
+    /// A participation's current grant.
+    Granted(Box<tilo_relay_protocol::voice::VoiceGrant>),
+    /// The device may not be in `call` (any more).
+    Refused {
+        /// The call.
+        call: [u8; 32],
+        /// Why.
+        reason: String,
+    },
+}
+
+/// Failure modes for `RelayCoeditSession` operations.
 #[derive(Debug)]
 pub enum CoeditError {
     /// The underlying relay connection is gone (the client's outbound
@@ -183,6 +221,9 @@ pub enum CoeditError {
     /// module encodes; surfaced rather than hidden so a future payload
     /// shape that can't serialize fails loudly instead of panicking.
     Encode(postcard::Error),
+    /// A live frame that is not sealed with its record's channel keys is
+    /// never sent.
+    Unsealed,
 }
 
 impl std::fmt::Display for CoeditError {
@@ -190,278 +231,9 @@ impl std::fmt::Display for CoeditError {
         match self {
             CoeditError::Disconnected => f.write_str("relay co-edit session disconnected"),
             CoeditError::Encode(error) => write!(f, "co-edit payload encode failed: {error}"),
+            CoeditError::Unsealed => f.write_str("a live frame is sent only sealed"),
         }
     }
 }
 
 impl std::error::Error for CoeditError {}
-
-/// A co-edit session bound to one workspace on one host connection.
-///
-/// Construct it from an already-connected [`RelayClient`] via
-/// [`RelayCoeditSession::join`]; then publish document deltas / presence
-/// and drain inbound events with [`RelayCoeditSession::recv`].
-pub struct RelayCoeditSession {
-    client: RelayClient,
-    workspace_id: u64,
-    author: [u8; 32],
-}
-
-impl RelayCoeditSession {
-    /// Subscribe `client` to `workspace_id` and wrap it as a co-edit
-    /// session authored as `author` (the device public key). The host
-    /// replies with a `Ready` (and flushes any queued deltas first);
-    /// drain them with [`Self::recv`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if `client`'s outbound
-    /// channel is already closed.
-    pub fn join(
-        client: RelayClient,
-        workspace_id: u64,
-        author: [u8; 32],
-    ) -> Result<Self, CoeditError> {
-        client
-            .send(Envelope::Subscribe { workspace_id })
-            .map_err(|_| CoeditError::Disconnected)?;
-        Ok(Self {
-            client,
-            workspace_id,
-            author,
-        })
-    }
-
-    /// The workspace this session is bound to.
-    pub fn workspace_id(&self) -> u64 {
-        self.workspace_id
-    }
-
-    /// Publish and retain a complete checkpoint for `channel`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
-    /// gone, or [`CoeditError::Encode`] if the payload can't be
-    /// postcard-encoded.
-    pub fn publish_checkpoint(&self, channel: [u8; 32], body: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::Checkpoint { channel, body })
-    }
-
-    /// Publish an incremental update and retain it after the current channel
-    /// checkpoint so a device that has never connected can catch up.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
-    /// gone, or [`CoeditError::Encode`] if the payload can't be
-    /// postcard-encoded.
-    pub fn publish_retained_delta(
-        &self,
-        channel: [u8; 32],
-        body: Vec<u8>,
-    ) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::RetainedDelta { channel, body })
-    }
-
-    fn publish_payload(&self, payload: &CoeditPayload) -> Result<(), CoeditError> {
-        let delta = payload.encode().map_err(CoeditError::Encode)?;
-        self.client
-            .send(Envelope::Delta {
-                workspace_id: self.workspace_id,
-                author_device_public_key: self.author,
-                // Metadata only: the host orders its pending queue by its
-                // own delivery seq.
-                authored_at_ns: unix_now_ns(),
-                delta,
-                // The op-level signature (for the signed variant) lives
-                // inside the CoeditPayload; the envelope-level slot is
-                // unused on the co-edit path, matching how the durable
-                // store forwards opaque delta bytes.
-                signature: [0u8; 64],
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Publish an ephemeral presence payload — the toolkit `Presence`
-    /// path. Rides an `Envelope::Presence`, so it is fanned out but
-    /// never persisted.
-    ///
-    /// `payload` is the opaque toolkit presence body; this method stamps
-    /// the session's `author` device key around it (via
-    /// [`AttributedPresence`]) so the receiver can attribute the
-    /// presence — the host's presence envelope carries no author of its
-    /// own.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
-    /// gone, or [`CoeditError::Encode`] if the wrapped payload can't be
-    /// postcard-encoded.
-    pub fn publish_presence(&self, payload: Vec<u8>) -> Result<(), CoeditError> {
-        let wrapped = AttributedPresence {
-            author: self.author,
-            body: payload,
-        };
-        let encoded = wrapped.encode().map_err(CoeditError::Encode)?;
-        self.client
-            .send(Envelope::Presence {
-                workspace_id: self.workspace_id,
-                payload: encoded,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Send a remote-action frame to one device of this workspace through
-    /// the host. The host routes it to that device's live connection only;
-    /// it is never stored or fanned out.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn publish_remote_action(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::RemoteAction {
-                workspace_id: self.workspace_id,
-                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: to,
-                // The host overwrites both from the authenticated connection.
-                from_device_public_key: self.author,
-                from_user_public_key: [0; 32],
-                frame,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Await the next inbound co-edit event, translating the host
-    /// [`Envelope`] into the toolkit-facing [`Inbound`]. Keep-alives
-    /// (`Ping`/`Pong`) and other non-co-edit frames are skipped; a
-    /// `NotAuthorised` reply or a closed connection ends the stream
-    /// (`None`).
-    pub async fn recv(&self) -> Option<Inbound> {
-        loop {
-            match self.client.recv().await? {
-                Envelope::Delta {
-                    author_device_public_key,
-                    delta,
-                    ..
-                } => {
-                    // A co-edit peer wraps its body in a CoeditPayload; a
-                    // plain workspace-directory delta from another tier
-                    // won't decode — skip it rather than mis-apply.
-                    match CoeditPayload::decode(&delta) {
-                        Some(
-                            CoeditPayload::Checkpoint { body: data, .. }
-                            | CoeditPayload::RetainedDelta { body: data, .. },
-                        ) => {
-                            return Some(Inbound::Delta {
-                                author: author_device_public_key,
-                                data,
-                            });
-                        }
-                        None => {}
-                    }
-                }
-                Envelope::Presence { payload, .. } => {
-                    // Presence rides an author-stamped wrapper (the host
-                    // envelope has no author of its own). A non-co-edit
-                    // presence frame won't decode — skip it rather than
-                    // surface it unattributed.
-                    if let Some(AttributedPresence { author, body }) =
-                        AttributedPresence::decode(&payload)
-                    {
-                        return Some(Inbound::Presence {
-                            author,
-                            payload: body,
-                        });
-                    }
-                }
-                Envelope::RemoteAction {
-                    workspace_id,
-                    from_device_public_key,
-                    frame,
-                    ..
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::RemoteAction {
-                        from: from_device_public_key,
-                        frame,
-                    });
-                }
-                Envelope::Ready { pending_deltas, .. } => {
-                    return Some(Inbound::Ready {
-                        pending: pending_deltas,
-                    });
-                }
-                Envelope::NotAuthorised { .. } => return None,
-                // Keep-alives and federation chatter carry no co-edit
-                // payload — keep waiting.
-                _ => {}
-            }
-        }
-    }
-
-    /// Consume the session and hand back the underlying client (e.g. to
-    /// unsubscribe or reuse the connection for another workspace).
-    pub fn into_client(self) -> RelayClient {
-        self.client
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn coedit_payload_round_trips_all_variants() {
-        let checkpoint = CoeditPayload::Checkpoint {
-            channel: [3; 32],
-            body: vec![6, 5],
-        };
-        let retained = CoeditPayload::RetainedDelta {
-            channel: [4; 32],
-            body: vec![2, 1],
-        };
-
-        for payload in [checkpoint, retained] {
-            assert_eq!(
-                CoeditPayload::decode(&payload.encode().unwrap()),
-                Some(payload)
-            );
-        }
-    }
-
-    #[test]
-    fn attributed_presence_round_trips_author_and_body() {
-        // The author key must survive the wrapper so a remote cursor is
-        // drawn against the right collaborator — the host envelope
-        // carries no author of its own.
-        let wrapped = AttributedPresence {
-            author: [7u8; 32],
-            body: vec![10, 20, 30],
-        };
-        let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
-        assert_eq!(decoded.author, [7u8; 32]);
-        assert_eq!(decoded.body, vec![10, 20, 30]);
-    }
-
-    #[test]
-    fn non_coedit_bytes_do_not_masquerade_as_coedit() {
-        use automerge::transaction::Transactable;
-
-        // Bodies that are not a CoeditPayload must not decode into a
-        // bogus variant — `recv` skips such frames rather than mis-apply
-        // them. Empty, an out-of-range enum tag, and a genuine Automerge
-        // incremental delta all fail to decode.
-        assert!(CoeditPayload::decode(&[]).is_none());
-        assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
-
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "k", "v").unwrap();
-        let raw_delta = doc.save_incremental();
-        assert!(!raw_delta.is_empty());
-        assert!(
-            CoeditPayload::decode(&raw_delta).is_none(),
-            "a raw Automerge delta must not be mistaken for a CoeditPayload"
-        );
-    }
-}

@@ -24,6 +24,7 @@ use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 use crate::draw::{self, Icon};
 use crate::model::{Container, ContainerStatus, DistroBox, Image, Stats, Volume};
 use crate::podman::{Action, ImageAction};
+use crate::presentation::{create_form_fields, create_form_geometry, draw_field_frame};
 
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
@@ -36,10 +37,9 @@ const ROW_TEXT_INSET: f64 = 8.0;
 pub(crate) const LAUNCHER_PLACEHOLDER: &str = "Search containers…";
 const LAUNCHER_PLACEHOLDER_SHORT: &str = "Search";
 
-/// Grouped inputs to a single container row's paint (position, the
-/// container itself, the shared column x-positions, and whether the
-/// compact/detail-open layout applies), kept together so the row-drawing
-/// methods' argument counts stay within the lint limit.
+/// One container row to paint: its position, the container itself, the
+/// shared column x-positions, and whether the compact/detail-open layout
+/// applies.
 #[derive(Clone, Copy)]
 struct ContainerRow<'a> {
     row: Rect,
@@ -176,10 +176,6 @@ impl ContainersApp {
     }
 
     /// The section list (Containers / Images / Volumes / Distrobox).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "rail painting combines paint context and the rail rect with view state and the expanded/compact layout flags"
-    )]
     fn draw_rail_sections(
         &mut self,
         scene: &mut Scene,
@@ -412,7 +408,7 @@ impl ContainersApp {
                 btn.x0 + 28.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.8,
         );
         draw::text(
@@ -420,7 +416,7 @@ impl ContainersApp {
             tr,
             shown,
             theme.tokens.typography.scale.base,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
             TextWeight::Semibold,
         );
@@ -638,40 +634,20 @@ impl ContainersApp {
         };
         let list = Rect::new(content.x0, body_y, content.x0 + list_w, content.y1);
 
-        let query = view.search.clone();
-        let rows: Vec<Container> = self
-            .visible_containers(&query)
-            .into_iter()
-            .cloned()
-            .collect();
-
         if !single_pane_detail {
             let list_compact = detail_open || self.uses_compact_layout(theme);
             let cols = Self::container_columns(list, list_compact);
             let colhead_bottom =
                 Self::draw_container_list_header(scene, tr, theme, list, list_compact, &cols);
             let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
-            self.draw_container_rows(
-                scene,
-                tr,
-                theme,
-                rows_area,
-                &rows,
-                &cols,
-                list_compact,
-                view,
-            );
+            self.draw_container_rows(scene, tr, theme, rows_area, list_compact, view);
         }
-        self.draw_container_detail_pane(
-            scene,
-            tr,
-            theme,
-            content,
-            list,
-            body_y,
-            single_pane_detail,
-            view,
-        );
+        let detail = if single_pane_detail {
+            Rect::new(content.x0, body_y, content.x1, content.y1)
+        } else {
+            Rect::new(list.x1, body_y, content.x1, content.y1)
+        };
+        self.draw_container_detail_pane(scene, tr, theme, detail, view);
     }
 
     /// The list column header (labels + divider) above the scrollable rows.
@@ -739,36 +715,37 @@ impl ContainersApp {
         colhead.y1
     }
 
-    /// The scrollable container rows, plus the empty-state fallbacks and the
-    /// list scrollbar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Container rows share render context, row bounds and column positions, container data, and selection/detail state."
-    )]
+    /// The scrollable rows of the containers matching the search, laid out
+    /// in `rows_area`'s columns, plus the empty-state fallbacks and the list
+    /// scrollbar.
     fn draw_container_rows(
         &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
         rows_area: Rect,
-        rows: &[Container],
-        cols: &[f64; 5],
-        detail_open: bool,
+        compact: bool,
         view: &ViewState,
     ) {
+        let rows: Vec<Container> = self
+            .visible_containers(&view.search)
+            .into_iter()
+            .cloned()
+            .collect();
+        let cols = Self::container_columns(rows_area, compact);
         let row_height = Self::row_height(theme);
         let content_h = rows.len() as f64 * row_height;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
-        for container in rows {
+        for container in &rows {
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_height);
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
                 let info = ContainerRow {
                     row,
                     container,
-                    cols,
-                    compact: detail_open,
+                    cols: &cols,
+                    compact,
                 };
                 self.draw_container_row(scene, tr, theme, info, view);
             }
@@ -808,29 +785,17 @@ impl ContainersApp {
         Self::draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
     }
 
-    /// The selected container's detail pane, if any (or the "no longer
-    /// exists" fallback when the selection went stale).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Detail painting needs render context, list/content bounds, the body origin, pane mode, and selected-container state."
-    )]
+    /// The selected container's detail pane in `detail`, if any (or the "no
+    /// longer exists" fallback when the selection went stale).
     fn draw_container_detail_pane(
         &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        list: Rect,
-        body_y: f64,
-        single_pane_detail: bool,
+        detail: Rect,
         view: &ViewState,
     ) {
         if let Some(sel) = &view.selected {
-            let detail = if single_pane_detail {
-                Rect::new(content.x0, body_y, content.x1, content.y1)
-            } else {
-                Rect::new(list.x1, body_y, content.x1, content.y1)
-            };
             if let Some(container) = self.engine.find(sel).cloned() {
                 self.draw_detail(scene, tr, theme, detail, &container, view);
             } else {
@@ -1883,7 +1848,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.5,
         );
         draw::text(
@@ -1891,7 +1856,7 @@ impl ContainersApp {
             tr,
             "Attach shell",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 32.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );
@@ -2665,7 +2630,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.6,
         );
         draw::text(
@@ -2673,7 +2638,7 @@ impl ContainersApp {
             tr,
             "Enter",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 30.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );
@@ -2700,9 +2665,7 @@ impl ContainersApp {
             None,
             &full,
         );
-        let mw = 520.0_f64.min(full.width() - 48.0);
-        let mh = 540.0_f64.min(full.height() - 32.0);
-        let modal = Rect::from_center_size(full.center(), (mw, mh));
+        let modal = create_form_geometry(full).modal;
         // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
@@ -2760,54 +2723,20 @@ impl ContainersApp {
         presence: &PresenceCtx,
         modal: Rect,
     ) -> Option<Rect> {
-        let c = &theme.tokens.colors;
         // Deferred so the caller can overlay the combobox dropdown on top of
         // the fields below it.
         let mut combo_input: Option<Rect> = None;
-
-        let row_step = 56.0;
-        let mut y = modal.y0 + 68.0;
-        for field in &CreateField::ALL {
-            let focused = self.create_focus == *field;
-            draw::text(
-                scene,
-                tr,
-                field.label(),
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                Point::new(modal.x0 + 24.0, y),
-                TextWeight::Medium,
-            );
-            let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            if focused {
-                draw::fill_round(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    c.surfaces.base,
-                );
-                draw::stroke_round(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    2.0,
-                    c.border_focus,
-                );
-            } else {
-                draw::card(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    c.surfaces.base,
-                );
-            }
-            let is_image = *field == CreateField::Image;
+        for geometry in create_form_fields(modal) {
+            let field = geometry.field;
+            let input = geometry.input;
+            draw_field_frame(scene, tr, theme, geometry, self.create_focus == field);
+            let is_image = field == CreateField::Image;
             let text_right = if is_image {
                 input.x1 - 38.0
             } else {
                 input.x1 - 12.0
             };
-            let editor = self.create_input_mut(*field);
+            let editor = self.create_input_mut(field);
             editor.apply_layout_external(Rect::new(
                 input.x0 + 12.0,
                 input.y0,
@@ -2815,13 +2744,12 @@ impl ContainersApp {
                 input.y1,
             ));
             Widget::draw(editor, scene, Affine::IDENTITY, tr, theme, presence);
-            self.push_hit(input, Hit::CreateField(*field));
+            self.push_hit(input, Hit::CreateField(field));
             if is_image {
                 // Dropdown chevron toggles the suggestion list.
                 self.draw_create_field_combo_toggle(scene, tr, theme, input);
                 combo_input = Some(input);
             }
-            y += row_step;
         }
         combo_input
     }
@@ -3310,8 +3238,16 @@ impl ContainersApp {
     pub(crate) fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
         match hit {
             Hit::Section(s) => {
-                ViewDoc::set_section(doc, s);
-                ViewDoc::set_selected(doc, None);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSection {
+                        section: s.as_str().to_owned(),
+                    },
+                );
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
                 self.list_scroll = 0.0;
             }
             Hit::ToggleSidebar => {
@@ -3324,7 +3260,12 @@ impl ContainersApp {
             }
             Hit::SelectContainer(id) => {
                 let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
-                ViewDoc::set_selected(doc, if already { None } else { Some(&id) });
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected {
+                        id: if already { None } else { Some(id) },
+                    },
+                );
                 self.detail_scroll = 0.0;
             }
             Hit::SelectImage(idx) => self.apply_hit_select_image(idx),
@@ -3361,11 +3302,19 @@ impl ContainersApp {
                 self.focus_create_field(CreateField::Name);
             }
             Hit::DetailTab(tab) => {
-                ViewDoc::set_tab(doc, tab);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetTab {
+                        tab: tab.as_str().to_owned(),
+                    },
+                );
                 self.detail_scroll = 0.0;
             }
             Hit::CloseDetail => {
-                ViewDoc::set_selected(doc, None);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
             }
             Hit::CreateField(field) => self.apply_hit_create_field(field),
             Hit::ComboToggle => {
@@ -3430,7 +3379,7 @@ impl ContainersApp {
 
     /// Pull whatever is typed into the create-form image field, or prompt
     /// via a quick image pull dialog when empty.
-    fn apply_hit_pull_typed(&mut self, doc: &mut AutoCommit) {
+    fn apply_hit_pull_typed(&mut self, doc: &AutoCommit) {
         let typed = ViewDoc::create_field(doc, CreateField::Image);
         if typed.trim().is_empty() {
             self.prompt = Some(crate::app::Prompt {
@@ -3482,7 +3431,13 @@ impl ContainersApp {
         if let Some(&idx) = filtered.get(pos)
             && let Some(reference) = options.get(idx)
         {
-            ViewDoc::set_create_field(doc, CreateField::Image, reference);
+            self.apply_view(
+                doc,
+                &crate::resource::ContainersAction::SetCreateField {
+                    field: CreateField::Image.key().to_string(),
+                    value: reference.clone(),
+                },
+            );
         }
         self.combo.close();
     }
@@ -3510,10 +3465,15 @@ impl ContainersApp {
     /// app running `distrobox enter <box>` (see [`crate::terminal`]).
     fn enter_distrobox(&mut self, name: &str) {
         if self.engine.live {
-            self.pending_control_invocation = Some(ui::tilo_actions::ControlInvocation {
-                address: ui::tilo_actions::ActionAddress::new(format!("distrobox:{name}"), "enter"),
-                arguments: serde_json::Map::new(),
-            });
+            let _ = self
+                .pending_control_invocation
+                .emit(ui::tilo_actions::ControlInvocation {
+                    address: ui::tilo_actions::ActionAddress::new(
+                        format!("distrobox:{name}"),
+                        "enter",
+                    ),
+                    arguments: serde_json::Map::new(),
+                });
             self.show_toast(format!("Enter {name} requested"), false);
         } else if !self.live {
             self.show_toast(format!("terminal → distrobox enter {name}"), false);
@@ -3522,20 +3482,11 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the complete Widget event context to modal-owned shared inputs"
-    )]
     pub(crate) fn on_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         if key.state != ElementState::Pressed {
             return;
@@ -3550,27 +3501,21 @@ impl ContainersApp {
                 self.combo.close();
             } else if self.create_open {
                 self.create_open = false;
-            } else if ViewDoc::selected(doc).is_some() {
-                ViewDoc::set_selected(doc, None);
+            } else if ViewDoc::selected(ctx.state).is_some() {
+                self.apply_view(
+                    ctx.state,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
             }
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
-            self.create_modal_key(
-                doc,
-                event,
-                key,
-                scale_factor,
-                modifiers,
-                path,
-                focus_target,
-                handled,
-            );
-            self.refresh_view(doc);
+            self.create_modal_key(event, ctx, key);
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -3579,55 +3524,66 @@ impl ContainersApp {
             let s = ch.to_lowercase();
             match s.as_str() {
                 "1" => {
-                    ViewDoc::set_section(doc, Section::Containers);
-                    *handled = true;
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Containers.as_str().into(),
+                        },
+                    );
+                    *ctx.handled = true;
                 }
                 "2" => {
-                    ViewDoc::set_section(doc, Section::Images);
-                    *handled = true;
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Images.as_str().into(),
+                        },
+                    );
+                    *ctx.handled = true;
                 }
                 "3" => {
-                    ViewDoc::set_section(doc, Section::Volumes);
-                    *handled = true;
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Volumes.as_str().into(),
+                        },
+                    );
+                    *ctx.handled = true;
                 }
                 "4" => {
-                    ViewDoc::set_section(doc, Section::Distrobox);
-                    *handled = true;
+                    self.apply_view(
+                        ctx.state,
+                        &crate::resource::ContainersAction::SetSection {
+                            section: Section::Distrobox.as_str().into(),
+                        },
+                    );
+                    *ctx.handled = true;
                 }
                 "/" => {
                     self.open_container_palette();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "n" => {
                     self.create_open = true;
                     self.create_focus = CreateField::Image;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "b" => {
                     self.toggle_sidebar();
                     self.structure_dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
         }
-        self.refresh_view(doc);
+        self.refresh_view(ctx.state);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "create-modal policy wraps the embedded TextInput Widget event path"
-    )]
     fn create_modal_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         let field = self.create_focus;
         let on_image = field == CreateField::Image;
@@ -3636,32 +3592,38 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(-1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = ViewDoc::create_field(doc, CreateField::Image);
+                    let typed = ViewDoc::create_field(ctx.state, CreateField::Image);
                     let options = self.engine.image_references();
                     let filtered = combobox::filter_options(&options, &typed);
                     if let Some(reference) = filtered
                         .get(self.combo.highlight)
                         .and_then(|&idx| options.get(idx))
                     {
-                        ViewDoc::set_create_field(doc, CreateField::Image, reference);
+                        self.apply_view(
+                            ctx.state,
+                            &crate::resource::ContainersAction::SetCreateField {
+                                field: CreateField::Image.key().to_string(),
+                                value: reference.clone(),
+                            },
+                        );
                         self.combo.close();
                     } else {
-                        self.submit_create(doc);
+                        self.submit_create(ctx.state);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -3674,32 +3636,32 @@ impl ContainersApp {
                     self.focus_create_field(field);
                 }
                 self.combo.close();
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.submit_create(doc);
-                *handled = true;
+                self.submit_create(ctx.state);
+                *ctx.handled = true;
             }
             _ => {
                 self.focus_create_field(field);
                 self.route_create_input(
                     field,
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 self.after_create_input(field);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }
 
     /// Number of locally-installed images matching the currently-typed image
     /// query — drives the combobox highlight clamp.
-    fn filtered_image_len(&self, doc: &mut AutoCommit) -> usize {
+    fn filtered_image_len(&self, doc: &AutoCommit) -> usize {
         let typed = ViewDoc::create_field(doc, CreateField::Image);
         let options = self.engine.image_references();
         combobox::filter_options(&options, &typed).len()
@@ -3739,92 +3701,148 @@ mod row_layout_tests {
             .expect("the sample engine has a running container")
     }
 
-    /// The status pill sits beside the name only while it ends before the
-    /// lifecycle buttons start; a 240px list beside an open detail pane does
-    /// not have that room and stacks the status under the name instead.
     #[test]
+    fn control_custody_containers_all_five_boundaries_copy_empty_descriptors_and_offline_preserves_last()
+     {
+        let (mut app, _requests, _results) = ContainersApp::history_test_runtime_root();
+        app.engine = ContainersApp::history_test_runtime_engine("controlled Podman", true);
+
+        let pending = |app: &ContainersApp| {
+            let invocation = app
+                .pending_control_invocation
+                .controlled_pending_for_test()
+                .expect("retained private descriptor");
+            assert!(invocation.arguments.is_empty());
+            invocation.address
+        };
+
+        app.apply_action(Action::Restart, "armed-container");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("container:armed-container", "restart")
+        );
+        app.remove_image("quay.io/example/image:1");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("image:quay.io/example/image:1", "remove")
+        );
+        app.remove_volume("example-volume");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("volume:example-volume", "remove")
+        );
+        app.attach_shell("armed-container");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("container:armed-container", "shell")
+        );
+        app.enter_distrobox("example-box");
+        let last = pending(&app);
+        assert_eq!(
+            last,
+            ui::tilo_actions::ActionAddress::new("distrobox:example-box", "enter")
+        );
+
+        app.engine.live = false;
+        app.remove_volume("offline-volume");
+        assert_eq!(
+            pending(&app),
+            last,
+            "an offline attempt does not clear the older descriptor"
+        );
+    }
+
+    /// Narrow rows stack the status pill before it reaches the actions, and heading and row names share one x.
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
     )]
-    fn narrow_list_stacks_status_when_the_pill_would_reach_the_actions() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let container = running_container();
-        assert_eq!(
-            ContainersApp::row_actions_width(&container),
-            3.0 * ICON_BTN + 2.0 * 4.0,
-            "a running container shows stop / restart / remove"
-        );
-        // 240px list (detail open): the pill column starts at 42% of the row.
-        let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
-        let cols = ContainersApp::container_columns(narrow, true);
-        let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
-        assert!(
-            !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
-            "a Running pill at x={} cannot end before the actions at x={actions_x0}",
-            cols[1]
-        );
-        // The same row layout at a laptop-wide list fits comfortably.
-        let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
-        let cols = ContainersApp::container_columns(wide, true);
-        let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
-        assert!(ContainersApp::status_pill_fits(
-            &mut tr, &theme, cols[1], actions_x0, &container
-        ));
-    }
-
-    /// The `NAME` heading and the row name it labels are painted on one x.
-    /// Both are read back from real draw passes (glyph-run origins), not from
-    /// the constants that produce them.
     #[test]
-    fn name_heading_and_row_name_share_one_x() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        draw::set_base(Affine::IDENTITY);
-        let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
-        let cols = ContainersApp::container_columns(list, false);
+    fn list_rows_stack_status_when_narrow_and_align_names() {
+        // --- phase: narrow_list_stacks_status_when_the_pill_would_reach_the_actions ---
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let container = running_container();
+            assert_eq!(
+                ContainersApp::row_actions_width(&container),
+                3.0 * ICON_BTN + 2.0 * 4.0,
+                "a running container shows stop / restart / remove"
+            );
+            // 240px list (detail open): the pill column starts at 42% of the row.
+            let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
+            let cols = ContainersApp::container_columns(narrow, true);
+            let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
+            assert!(
+                !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
+                "a Running pill at x={} cannot end before the actions at x={actions_x0}",
+                cols[1]
+            );
+            // The same row layout at a laptop-wide list fits comfortably.
+            let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
+            let cols = ContainersApp::container_columns(wide, true);
+            let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
+            assert!(ContainersApp::status_pill_fits(
+                &mut tr, &theme, cols[1], actions_x0, &container
+            ));
+        }
 
-        let mut header = Scene::new();
-        ContainersApp::draw_container_list_header(&mut header, &mut tr, &theme, list, false, &cols);
-        let heading_x = header
-            .encoding()
-            .resources
-            .glyph_runs
-            .first()
-            .map(|run| f64::from(run.transform.translation[0]))
-            .expect("the list header paints its NAME heading");
+        // --- phase: name_heading_and_row_name_share_one_x ---
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            draw::set_base(Affine::IDENTITY);
+            let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
+            let cols = ContainersApp::container_columns(list, false);
 
-        // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
-        // stacked and the wide layout, so the app's viewport does not matter.
-        let mut app = ContainersApp::new(false);
-        let view = ViewState::default();
-        let container = running_container();
-        let row = Rect::new(
-            list.x0,
-            list.y0 + 28.0,
-            list.x1,
-            list.y0 + 28.0 + crate::app::ROW_HEIGHT,
-        );
-        let info = ContainerRow {
-            row,
-            container: &container,
-            cols: &cols,
-            compact: false,
-        };
-        let mut scene = Scene::new();
-        app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
-        let name_x = scene
-            .encoding()
-            .resources
-            .glyph_runs
-            .first()
-            .map(|run| f64::from(run.transform.translation[0]))
-            .expect("the row paints its name first");
+            let mut header = Scene::new();
+            ContainersApp::draw_container_list_header(
+                &mut header,
+                &mut tr,
+                &theme,
+                list,
+                false,
+                &cols,
+            );
+            let heading_x = header
+                .encoding()
+                .resources
+                .glyph_runs
+                .first()
+                .map(|run| f64::from(run.transform.translation[0]))
+                .expect("the list header paints its NAME heading");
 
-        assert!(
-            (heading_x - name_x).abs() < 0.01,
-            "heading at x={heading_x} but the row name at x={name_x}"
-        );
+            // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
+            // stacked and the wide layout, so the app's viewport does not matter.
+            let mut app = ContainersApp::new(false);
+            let view = ViewState::default();
+            let container = running_container();
+            let row = Rect::new(
+                list.x0,
+                list.y0 + 28.0,
+                list.x1,
+                list.y0 + 28.0 + crate::app::ROW_HEIGHT,
+            );
+            let info = ContainerRow {
+                row,
+                container: &container,
+                cols: &cols,
+                compact: false,
+            };
+            let mut scene = Scene::new();
+            app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
+            let name_x = scene
+                .encoding()
+                .resources
+                .glyph_runs
+                .first()
+                .map(|run| f64::from(run.transform.translation[0]))
+                .expect("the row paints its name first");
+
+            assert!(
+                (heading_x - name_x).abs() < 0.01,
+                "heading at x={heading_x} but the row name at x={name_x}"
+            );
+        }
     }
 }

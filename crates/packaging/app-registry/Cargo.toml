@@ -11,9 +11,9 @@ name = "app_registry"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem
@@ -26,12 +26,12 @@ iroh-blobs.workspace = true
 # blob is fetched over iroh. Both async.
 tokio = { workspace = true, features = ["macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
-tilo-net = { path = "../../system/tilo-net", features = ["http"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -40,6 +40,7 @@ semver.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

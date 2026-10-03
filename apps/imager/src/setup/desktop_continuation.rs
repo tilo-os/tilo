@@ -448,9 +448,7 @@ pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
 /// off-thread; a missing, unauthentic or incomplete session keeps work pending.
 #[cfg(target_os = "linux")]
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or("No Tilo session runtime directory")?;
+    let runtime = tilo_paths::xdg::runtime_dir().ok_or("No Tilo session runtime directory")?;
     let display = std::env::var_os("WAYLAND_DISPLAY")
         .ok_or("Open Add folders inside Tilo after identity setup")?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -669,292 +667,412 @@ mod tests {
         (temp, store, choices)
     }
 
-    #[cfg(target_os = "linux")]
+    /// Readiness connection refusals on Linux.
     #[test]
-    fn direct_invocation_without_shell_and_fake_ready_peer_are_refused() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        use std::os::unix::net::UnixListener;
-        // Only the directory itself must be private; the platform temp
-        // directory keeps the socket paths below the sun_path limit.
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
-        let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
-        let trusted = Path::new("/usr/bin/true");
-        assert!(
-            authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted).is_err()
-        );
-        let ino = fs::symlink_metadata(root.join("wayland-1")).unwrap().ino();
-        let socket = root.join(format!("tilo-import-7761796c616e642d31-{ino}.sock"));
-        let _fake = UnixListener::bind(socket).unwrap();
-        let error = authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
-            .unwrap_err();
-        assert!(
-            error.contains("not the installed trusted Tilo shell"),
-            "{error}"
-        );
-        assert!(
-            authenticated_session_ready(root, std::ffi::OsStr::new("../escape"), trusted).is_err()
-        );
-    }
-
     #[cfg(target_os = "linux")]
-    #[test]
-    fn readiness_connection_refuses_a_full_backlog_without_hanging() {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::net::UnixListener;
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("gate");
-        let _server = UnixListener::bind(&path).unwrap();
-        // Pin the fixture backlog instead of inheriting the kernel's changing
-        // SOMAXCONN default. The production client remains non-blocking either
-        // way; this test only needs to reach a known full queue promptly.
-        assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
-        let mut held = Vec::new();
-        let started = std::time::Instant::now();
-        loop {
-            match connect_readiness(&path) {
-                Ok(stream) => held.push(stream),
-                Err(_) => break,
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuation_readiness_channel_refuses_untrusted_or_full_peers() {
+        // Phase `direct_invocation_without_shell_and_fake_ready_peer_are_refused`.
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            use std::os::unix::net::UnixListener;
+            // Only the directory itself must be private; the platform temp
+            // directory keeps the socket paths below the sun_path limit.
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+            let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
+            let trusted = Path::new("/usr/bin/true");
             assert!(
-                held.len() < 1024,
-                "fixture backlog was unexpectedly unbounded"
+                authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
+                    .is_err()
+            );
+            let ino = fs::symlink_metadata(root.join("wayland-1")).unwrap().ino();
+            let socket = root.join(format!("tilo-import-7761796c616e642d31-{ino}.sock"));
+            let _fake = UnixListener::bind(socket).unwrap();
+            let error =
+                authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
+                    .unwrap_err();
+            assert!(
+                error.contains("not the installed trusted Tilo shell"),
+                "{error}"
+            );
+            assert!(
+                authenticated_session_ready(root, std::ffi::OsStr::new("../escape"), trusted)
+                    .is_err()
             );
         }
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        // Phase `readiness_connection_refuses_a_full_backlog_without_hanging`.
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::net::UnixListener;
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("gate");
+            let _server = UnixListener::bind(&path).unwrap();
+            // Pin the fixture backlog instead of inheriting the kernel's changing
+            // SOMAXCONN default. The production client remains non-blocking either
+            // way; this test only needs to reach a known full queue promptly.
+            assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
+            let mut held = Vec::new();
+            let started = ui::time::now();
+            loop {
+                match connect_readiness(&path) {
+                    Ok(stream) => held.push(stream),
+                    Err(_) => break,
+                }
+                assert!(
+                    held.len() < 1024,
+                    "fixture backlog was unexpectedly unbounded"
+                );
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        }
     }
 
+    /// Edits and source/destination swaps after review are refused.
     #[test]
-    fn edits_after_inventory_validation_cannot_become_the_copy_baseline() {
-        for edit_already_copied in [false, true] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn post_review_edits_and_swaps_never_become_the_copy_baseline() {
+        // Phase `edits_after_inventory_validation_cannot_become_the_copy_baseline`.
+        {
+            for edit_already_copied in [false, true] {
+                let (_temp, store, choices) = fixture();
+                let source = &choices[0].scan.source;
+                fs::write(source.join("aaa"), b"before").unwrap();
+                fs::write(source.join("zzz"), b"before").unwrap();
+                let mut c = Continuation::capture(&choices).unwrap();
+                let parent = store.root().parent().unwrap().join("target");
+                fs::create_dir(&parent).unwrap();
+                c.resolve(0, &parent, true).unwrap();
+                let folder = &c.folders[0];
+                let r = folder.resolved.as_ref().unwrap();
+                let reviewed = (
+                    folder.source_identity.clone(),
+                    r.parent_identity.clone(),
+                    r.source_revision.unwrap(),
+                );
+                let destination = parent.join("Documents");
+                let journal = store.root().join("late-edit.journal");
+                let mut edited = false;
+                let report = super::super::migration_journal::copy_reviewed(
+                    source,
+                    &destination,
+                    &journal,
+                    &reviewed,
+                    false,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    |progress| {
+                        if progress.current_relative_path == Path::new("zzz") && !edited {
+                            edited = true;
+                            let path = source.join(if edit_already_copied { "aaa" } else { "zzz" });
+                            let reviewed_at = fs::metadata(&path).unwrap().modified().unwrap();
+                            fs::write(&path, b"edited").unwrap();
+                            // A same-size rewrite within one tick of the kernel's coarse
+                            // file clock keeps the reviewed mtime; stamp the edit a second
+                            // later, as a real later edit would be.
+                            fs::File::options()
+                                .write(true)
+                                .open(&path)
+                                .unwrap()
+                                .set_modified(reviewed_at + std::time::Duration::from_secs(1))
+                                .unwrap();
+                        }
+                    },
+                )
+                .unwrap();
+                assert!(!report.complete(), "{report:?}");
+                assert_eq!(fs::read(destination.join("aaa")).unwrap(), b"before");
+                if !edit_already_copied {
+                    assert!(!destination.join("zzz").exists());
+                }
+                // Even the ordinary resume route must retain the reviewed journal baseline.
+                assert!(
+                    super::super::migration_journal::resume_folder(
+                        &journal,
+                        &std::sync::atomic::AtomicBool::new(false),
+                        |_| {}
+                    )
+                    .is_err()
+                );
+            }
+        }
+
+        // Phase `existing_file_edited_after_final_review_is_refused_before_publication`.
+        {
+            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
-            let source = &choices[0].scan.source;
-            fs::write(source.join("aaa"), b"before").unwrap();
-            fs::write(source.join("zzz"), b"before").unwrap();
+            let file = choices[0].scan.source.join("existing.txt");
+            fs::write(&file, b"before").unwrap();
             let mut c = Continuation::capture(&choices).unwrap();
             let parent = store.root().parent().unwrap().join("target");
             fs::create_dir(&parent).unwrap();
             c.resolve(0, &parent, true).unwrap();
-            let folder = &c.folders[0];
-            let r = folder.resolved.as_ref().unwrap();
-            let reviewed = (
-                folder.source_identity.clone(),
-                r.parent_identity.clone(),
-                r.source_revision.unwrap(),
+            let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+            op.approve();
+            let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+            let modified = fs::metadata(&file).unwrap().modified().unwrap();
+            // Some CI overlay filesystems expose coarse ctime resolution. Cross a
+            // full timestamp tick so the metadata-preserving rewrite below still
+            // has a distinct change-time fact for the reviewed inventory.
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            fs::write(&file, b"edited").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            let mut worker = MigrationWorker::start(job).unwrap();
+            let WorkerEvent::Finished(outcome) = worker.wait_terminal() else {
+                panic!("expected finished terminal");
+            };
+            assert!(matches!(outcome, WorkerOutcome::Failed(_)), "{outcome:?}");
+            assert!(!op.journal().unwrap().exists());
+            assert!(!parent.join("Documents").exists());
+            assert_eq!(fs::read(&file).unwrap(), b"edited");
+            drop(worker);
+            c.resolve(0, &parent, true).unwrap();
+            let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+            let mut worker = MigrationWorker::start(job).unwrap();
+            let WorkerEvent::Finished(outcome) = worker.wait_terminal() else {
+                panic!("expected finished terminal");
+            };
+            assert!(matches!(outcome, WorkerOutcome::Complete(_)), "{outcome:?}");
+            assert_eq!(
+                fs::read(parent.join("Documents/existing.txt")).unwrap(),
+                b"edited"
             );
-            let destination = parent.join("Documents");
-            let journal = store.root().join("late-edit.journal");
-            let mut edited = false;
-            let report = super::super::migration_journal::copy_reviewed(
-                source,
-                &destination,
-                &journal,
-                &reviewed,
-                false,
-                &std::sync::atomic::AtomicBool::new(false),
-                |progress| {
-                    if progress.current_relative_path == Path::new("zzz") && !edited {
-                        edited = true;
-                        fs::write(
-                            source.join(if edit_already_copied { "aaa" } else { "zzz" }),
-                            b"edited",
-                        )
-                        .unwrap();
-                    }
-                },
+        }
+
+        // Phase `source_swapped_after_review_is_rejected_by_worker_before_journal_or_output`.
+        {
+            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+            op.approve();
+            let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+            fs::rename(
+                &choices[0].scan.source,
+                choices[0].scan.source.with_extension("old"),
             )
             .unwrap();
-            assert!(!report.complete(), "{report:?}");
-            assert_eq!(fs::read(destination.join("aaa")).unwrap(), b"before");
-            if !edit_already_copied {
-                assert!(!destination.join("zzz").exists());
-            }
-            // Even the ordinary resume route must retain the reviewed journal baseline.
+            fs::create_dir(&choices[0].scan.source).unwrap();
+            let mut worker = MigrationWorker::start(job).unwrap();
+            assert!(matches!(
+                worker.wait_terminal(),
+                WorkerEvent::Finished(WorkerOutcome::Failed(_))
+            ));
+            assert!(!op.journal().unwrap().exists());
+            assert!(!parent.join("Documents").exists());
+        }
+
+        // Phase `destination_swapped_after_review_is_rejected_before_output`.
+        {
+            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+            op.approve();
+            let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+            fs::rename(&parent, parent.with_extension("old")).unwrap();
+            fs::create_dir(&parent).unwrap();
+            let mut worker = MigrationWorker::start(job).unwrap();
+            assert!(matches!(
+                worker.wait_terminal(),
+                WorkerEvent::Finished(WorkerOutcome::Failed(_))
+            ));
+            assert!(!op.journal().unwrap().exists());
+            assert!(!parent.join("Documents").exists());
+        }
+    }
+
+    /// Private round trip, native paths and malformed records.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn private_continuation_record_round_trips_and_fails_closed() {
+        // Phase `native_non_utf8_source_survives_private_roundtrip`.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let (_temp, store, mut choices) = fixture();
+            let path = choices[0]
+                .scan
+                .source
+                .with_file_name(std::ffi::OsString::from_vec(vec![b'd', 255]));
+            fs::rename(&choices[0].scan.source, &path).unwrap();
+            choices[0].scan.source = path.clone();
+            Continuation::capture(&choices)
+                .unwrap()
+                .save(&store)
+                .unwrap();
+            assert_eq!(
+                Continuation::load(&store).unwrap().unwrap().folders[0]
+                    .source()
+                    .unwrap(),
+                path
+            );
+        }
+
+        // Phase `private_roundtrip_retains_native_paths_revision_and_per_folder_modes`.
+        {
+            let (_temp, store, mut choices) = fixture();
+            choices[0].mode = FolderMode::Later;
+            choices[0].mode_overridden = true;
+            let c = Continuation::capture(&choices).unwrap();
+            c.save(&store).unwrap();
+            let reopened = Continuation::load(&store).unwrap().unwrap();
+            assert_eq!(c.revision, reopened.revision);
+            assert_eq!(
+                reopened.folders[0].source().unwrap(),
+                choices[0].scan.source
+            );
+            assert_eq!(reopened.folders[0].mode, ChoiceMode::Later);
+            assert!(reopened.folders[0].mode_overridden);
+            assert!(reopened.folders[0].resolved.is_none());
             assert!(
-                super::super::migration_journal::resume_folder(
-                    &journal,
-                    &std::sync::atomic::AtomicBool::new(false),
-                    |_| {}
-                )
-                .is_err()
+                !String::from_utf8(store.load_continuation_bytes().unwrap().unwrap())
+                    .unwrap()
+                    .contains("secret")
             );
         }
-    }
 
-    #[test]
-    fn existing_file_edited_after_final_review_is_refused_before_publication() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
-        let (_temp, store, choices) = fixture();
-        let file = choices[0].scan.source.join("existing.txt");
-        fs::write(&file, b"before").unwrap();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        op.approve();
-        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
-        let modified = fs::metadata(&file).unwrap().modified().unwrap();
-        // Some CI overlay filesystems expose coarse ctime resolution. Cross a
-        // full timestamp tick so the metadata-preserving rewrite below still
-        // has a distinct change-time fact for the reviewed inventory.
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        fs::write(&file, b"edited").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&file)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(modified))
-            .unwrap();
-        let mut worker = MigrationWorker::start(job).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let outcome = loop {
-            if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
-                break outcome;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        };
-        assert!(matches!(outcome, WorkerOutcome::Failed(_)), "{outcome:?}");
-        assert!(!op.journal().unwrap().exists());
-        assert!(!parent.join("Documents").exists());
-        assert_eq!(fs::read(&file).unwrap(), b"edited");
-        drop(worker);
-        c.resolve(0, &parent, true).unwrap();
-        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
-        let mut worker = MigrationWorker::start(job).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
-                assert!(matches!(outcome, WorkerOutcome::Complete(_)), "{outcome:?}");
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
+        // Phase `malformed_oversized_wrong_platform_and_relative_paths_fail_closed`.
+        {
+            let (_temp, store, choices) = fixture();
+            assert!(Continuation::decode(b"{}").is_err());
+            assert!(Continuation::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
+            let c = Continuation::capture(&choices).unwrap();
+            let mut json = serde_json::to_value(&c).unwrap();
+            json["folders"][0]["source"] =
+                serde_json::json!({"platform":"Windows","units":[67,58,92]});
+            #[cfg(unix)]
+            assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
+            json["folders"][0]["source"] =
+                serde_json::to_value(NativePath::encode(std::path::Path::new("relative"))).unwrap();
+            assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
+            assert!(
+                store
+                    .save_continuation_bytes(&vec![0; MAX_BYTES + 1])
+                    .is_err()
+            );
         }
-        assert_eq!(
-            fs::read(parent.join("Documents/existing.txt")).unwrap(),
-            b"edited"
-        );
-    }
 
-    #[test]
-    fn source_swapped_after_review_is_rejected_by_worker_before_journal_or_output() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        op.approve();
-        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
-        fs::rename(
-            &choices[0].scan.source,
-            choices[0].scan.source.with_extension("old"),
-        )
-        .unwrap();
-        fs::create_dir(&choices[0].scan.source).unwrap();
-        let mut worker = MigrationWorker::start(job).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Some(event) = worker.try_next() {
-                assert!(matches!(
-                    event,
-                    WorkerEvent::Finished(WorkerOutcome::Failed(_))
-                ));
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
+        // Phase `source_substitution_or_missing_mount_never_resolves`.
+        {
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let source = &choices[0].scan.source;
+            fs::rename(source, source.with_extension("old")).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            assert!(c.resolve(0, &parent, true).is_err());
+            fs::create_dir(source).unwrap();
+            assert!(c.resolve(0, &parent, true).is_err());
         }
-        assert!(!op.journal().unwrap().exists());
-        assert!(!parent.join("Documents").exists());
     }
 
+    /// Retry, identity gates and interrupted acknowledgement.
     #[test]
-    fn destination_swapped_after_review_is_rejected_before_output() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        op.approve();
-        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
-        fs::rename(&parent, parent.with_extension("old")).unwrap();
-        fs::create_dir(&parent).unwrap();
-        let mut worker = MigrationWorker::start(job).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Some(event) = worker.try_next() {
-                assert!(matches!(
-                    event,
-                    WorkerEvent::Finished(WorkerOutcome::Failed(_))
-                ));
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        }
-        assert!(!op.journal().unwrap().exists());
-        assert!(!parent.join("Documents").exists());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn native_non_utf8_source_survives_private_roundtrip() {
-        use std::os::unix::ffi::OsStringExt;
-        let (_temp, store, mut choices) = fixture();
-        let path = choices[0]
-            .scan
-            .source
-            .with_file_name(std::ffi::OsString::from_vec(vec![b'd', 255]));
-        fs::rename(&choices[0].scan.source, &path).unwrap();
-        choices[0].scan.source = path.clone();
-        Continuation::capture(&choices)
-            .unwrap()
-            .save(&store)
-            .unwrap();
-        assert_eq!(
-            Continuation::load(&store).unwrap().unwrap().folders[0]
-                .source()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuation_retries_and_identity_gates_prevent_unsafe_copies() {
+        // Phase `unpublished_retry_refuses_existing_names_and_unavailable_parents`.
+        {
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            let mut record = c.prepare(0, &store, &[], true).unwrap().unwrap();
+            record.approve();
+            record.mark_running().unwrap();
+            store.save(&[record]).unwrap();
+            let record = store.load().unwrap().remove(0);
+            fs::write(record.journal().unwrap(), b"existing journal must remain").unwrap();
+            assert!(c.unpublished_retry(0, &record).unwrap().is_none());
+            fs::remove_file(record.journal().unwrap()).unwrap();
+            fs::create_dir(record.destination().unwrap()).unwrap();
+            fs::write(record.destination().unwrap().join("user-edit"), b"keep").unwrap();
+            assert!(c.unpublished_retry(0, &record).unwrap().is_none());
+            fs::rename(&parent, parent.with_extension("unavailable")).unwrap();
+            assert!(c.unpublished_retry(0, &record).is_err());
+            assert_eq!(
+                fs::read(
+                    parent
+                        .with_extension("unavailable")
+                        .join("Documents/user-edit")
+                )
                 .unwrap(),
-            path
-        );
-    }
+                b"keep"
+            );
+        }
 
-    #[test]
-    fn unpublished_retry_refuses_existing_names_and_unavailable_parents() {
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        let mut record = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        record.approve();
-        record.mark_running().unwrap();
-        store.save(&[record]).unwrap();
-        let record = store.load().unwrap().remove(0);
-        fs::write(record.journal().unwrap(), b"existing journal must remain").unwrap();
-        assert!(c.unpublished_retry(0, &record).unwrap().is_none());
-        fs::remove_file(record.journal().unwrap()).unwrap();
-        fs::create_dir(record.destination().unwrap()).unwrap();
-        fs::write(record.destination().unwrap().join("user-edit"), b"keep").unwrap();
-        assert!(c.unpublished_retry(0, &record).unwrap().is_none());
-        fs::rename(&parent, parent.with_extension("unavailable")).unwrap();
-        assert!(c.unpublished_retry(0, &record).is_err());
-        assert_eq!(
-            fs::read(
-                parent
-                    .with_extension("unavailable")
-                    .join("Documents/user-edit")
-            )
-            .unwrap(),
-            b"keep"
-        );
+        // Phase `identity_gate_collisions_and_destination_replacement_prevent_copy`.
+        {
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            assert!(c.resolve(0, &parent, false).is_err());
+            fs::create_dir(parent.join("Documents")).unwrap();
+            assert!(c.resolve(0, &parent, true).is_err());
+            fs::remove_dir(parent.join("Documents")).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            assert!(c.prepare(0, &store, &[], false).is_err());
+            fs::rename(&parent, parent.with_extension("old")).unwrap();
+            fs::create_dir(&parent).unwrap();
+            assert!(c.prepare(0, &store, &[], true).is_err());
+        }
+
+        // Phase `interrupted_acknowledgement_reuses_operation_and_later_never_copies`.
+        {
+            let (_temp, store, choices) = fixture();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            c.save(&store).unwrap();
+            let op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+            store.save(&[op]).unwrap();
+            let mut replay = Continuation::load(&store).unwrap().unwrap();
+            assert!(
+                replay
+                    .prepare(0, &store, &store.load().unwrap(), true)
+                    .unwrap()
+                    .is_none()
+            );
+            replay.set_mode(0, ChoiceMode::Later).unwrap();
+            assert!(
+                replay
+                    .prepare(0, &store, &store.load().unwrap(), true)
+                    .is_err()
+            );
+            replay.save(&store).unwrap();
+            assert_eq!(
+                Continuation::load(&store).unwrap().unwrap().folders[0].mode,
+                ChoiceMode::Later
+            );
+            assert!(MigrationStore::open_at(store.root()).is_err());
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -966,7 +1084,7 @@ mod tests {
         // wrong account and must never prepare another user's continuation.
         let uid = unsafe { libc::getuid() };
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
-        let home = xdg_paths::home().unwrap().canonicalize().unwrap();
+        let home = tilo_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(
             std::env::var_os("TILO_CONTINUATION_FIXTURE_SOURCE")
                 .expect("set the dedicated fixture root"),
@@ -1012,109 +1130,5 @@ mod tests {
             "Seeded reviewed Copy Documents + Later Pictures at {}",
             store.root().display()
         );
-    }
-
-    #[test]
-    fn private_roundtrip_retains_native_paths_revision_and_per_folder_modes() {
-        let (_temp, store, mut choices) = fixture();
-        choices[0].mode = FolderMode::Later;
-        choices[0].mode_overridden = true;
-        let c = Continuation::capture(&choices).unwrap();
-        c.save(&store).unwrap();
-        let reopened = Continuation::load(&store).unwrap().unwrap();
-        assert_eq!(c.revision, reopened.revision);
-        assert_eq!(
-            reopened.folders[0].source().unwrap(),
-            choices[0].scan.source
-        );
-        assert_eq!(reopened.folders[0].mode, ChoiceMode::Later);
-        assert!(reopened.folders[0].mode_overridden);
-        assert!(reopened.folders[0].resolved.is_none());
-        assert!(
-            !String::from_utf8(store.load_continuation_bytes().unwrap().unwrap())
-                .unwrap()
-                .contains("secret")
-        );
-    }
-
-    #[test]
-    fn malformed_oversized_wrong_platform_and_relative_paths_fail_closed() {
-        let (_temp, store, choices) = fixture();
-        assert!(Continuation::decode(b"{}").is_err());
-        assert!(Continuation::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
-        let c = Continuation::capture(&choices).unwrap();
-        let mut json = serde_json::to_value(&c).unwrap();
-        json["folders"][0]["source"] = serde_json::json!({"platform":"Windows","units":[67,58,92]});
-        #[cfg(unix)]
-        assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
-        json["folders"][0]["source"] =
-            serde_json::to_value(NativePath::encode(std::path::Path::new("relative"))).unwrap();
-        assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
-        assert!(
-            store
-                .save_continuation_bytes(&vec![0; MAX_BYTES + 1])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn source_substitution_or_missing_mount_never_resolves() {
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let source = &choices[0].scan.source;
-        fs::rename(source, source.with_extension("old")).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        assert!(c.resolve(0, &parent, true).is_err());
-        fs::create_dir(source).unwrap();
-        assert!(c.resolve(0, &parent, true).is_err());
-    }
-
-    #[test]
-    fn identity_gate_collisions_and_destination_replacement_prevent_copy() {
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        assert!(c.resolve(0, &parent, false).is_err());
-        fs::create_dir(parent.join("Documents")).unwrap();
-        assert!(c.resolve(0, &parent, true).is_err());
-        fs::remove_dir(parent.join("Documents")).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        assert!(c.prepare(0, &store, &[], false).is_err());
-        fs::rename(&parent, parent.with_extension("old")).unwrap();
-        fs::create_dir(&parent).unwrap();
-        assert!(c.prepare(0, &store, &[], true).is_err());
-    }
-
-    #[test]
-    fn interrupted_acknowledgement_reuses_operation_and_later_never_copies() {
-        let (_temp, store, choices) = fixture();
-        let mut c = Continuation::capture(&choices).unwrap();
-        let parent = store.root().parent().unwrap().join("target");
-        fs::create_dir(&parent).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        c.save(&store).unwrap();
-        let op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        store.save(&[op]).unwrap();
-        let mut replay = Continuation::load(&store).unwrap().unwrap();
-        assert!(
-            replay
-                .prepare(0, &store, &store.load().unwrap(), true)
-                .unwrap()
-                .is_none()
-        );
-        replay.set_mode(0, ChoiceMode::Later).unwrap();
-        assert!(
-            replay
-                .prepare(0, &store, &store.load().unwrap(), true)
-                .is_err()
-        );
-        replay.save(&store).unwrap();
-        assert_eq!(
-            Continuation::load(&store).unwrap().unwrap().folders[0].mode,
-            ChoiceMode::Later
-        );
-        assert!(MigrationStore::open_at(store.root()).is_err());
     }
 }

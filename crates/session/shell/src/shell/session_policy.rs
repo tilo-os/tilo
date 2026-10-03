@@ -174,138 +174,144 @@ pub fn update_output_presentation_repaint_pending(
 mod tests {
     use super::*;
     #[test]
-    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
-        let mut deferred = true;
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
-        assert!(deferred, "onboarding retains the pending start");
-        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
-        assert!(!deferred, "the current-session start is one-shot");
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    fn onboarding_and_identity_policy_keep_sessions_and_salts_consistent() {
+        // Phase `deferred_peer_sync_starts_in_the_session_that_finishes_onboarding`.
+        {
+            let mut deferred = true;
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+            assert!(deferred, "onboarding retains the pending start");
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            assert!(!deferred, "the current-session start is one-shot");
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+        }
+
+        // Phase `unfinished_post_identity_setup_reactivates_trusted_first_use_chrome`.
+        {
+            assert!(should_activate_first_use(false, true, false, false));
+            assert!(
+                !should_activate_first_use(false, false, false, false),
+                "an established user without a journal must not see first-use again"
+            );
+            assert!(
+                should_activate_first_use(false, false, true, false),
+                "a missing secret-service key must reopen the recovery flow"
+            );
+            assert!(
+                !should_activate_first_use(true, true, true, true),
+                "the explicit development control session remains isolated"
+            );
+        }
+
+        // Phase `fresh_workspace_salt_does_not_create_a_transport_identity`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let state_path = dir.path().join("config/state.json");
+            let peer_key_path = dir.path().join("system/device-key");
+
+            let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
+                .expect("create workspace salt");
+            let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
+                .expect("reload workspace salt");
+
+            assert_ne!(first, 0);
+            assert_eq!(first, second);
+            assert!(
+                !peer_key_path.exists(),
+                "allocating an object-id namespace must not mint a network identity"
+            );
+        }
+
+        // Phase `existing_transport_identity_keeps_its_historical_workspace_salt`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let state_path = dir.path().join("config/state.json");
+            let peer_key_path = dir.path().join("system/device-key");
+            let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
+                .expect("create existing transport identity");
+            let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
+
+            let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
+                .expect("migrate historical salt");
+
+            assert_eq!(actual, expected);
+            assert_eq!(
+                read_workspace_salt(
+                    &state_path
+                        .parent()
+                        .expect("fixture state path has a parent")
+                        .join("workspace-peer-salt"),
+                )
+                .expect("read persisted salt"),
+                expected
+            );
+        }
     }
 
     #[test]
-    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
-        let mut pending = false;
-        let mut previous_surface_count = 1;
+    fn presentation_and_lock_policy_waits_for_real_frames_and_fails_closed() {
+        // Phase `output_presentation_removal_stays_pending_until_a_full_frame_submits`.
+        {
+            let mut pending = false;
+            let mut previous_surface_count = 1;
 
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert_eq!(previous_surface_count, 0);
-        assert!(
-            pending,
-            "an off-cadence removal must survive until the next submitted frame"
-        );
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert_eq!(previous_surface_count, 0);
+            assert!(
+                pending,
+                "an off-cadence removal must survive until the next submitted frame"
+            );
 
-        pending = false;
-        assert!(!update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            true,
-        ));
-    }
+            pending = false;
+            assert!(!update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                true,
+            ));
+        }
 
-    #[test]
-    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
-        assert!(should_activate_first_use(false, true, false, false));
-        assert!(
-            !should_activate_first_use(false, false, false, false),
-            "an established user without a journal must not see first-use again"
-        );
-        assert!(
-            should_activate_first_use(false, false, true, false),
-            "a missing secret-service key must reopen the recovery flow"
-        );
-        assert!(
-            !should_activate_first_use(true, true, true, true),
-            "the explicit development control session remains isolated"
-        );
-    }
+        // Phase `portal_screencast_never_publishes_a_locked_frame`.
+        {
+            assert!(portal_screencast_should_publish(true, false));
+            assert!(!portal_screencast_should_publish(true, true));
+            assert!(!portal_screencast_should_publish(false, false));
+        }
 
-    #[test]
-    fn portal_screencast_never_publishes_a_locked_frame() {
-        assert!(portal_screencast_should_publish(true, false));
-        assert!(!portal_screencast_should_publish(true, true));
-        assert!(!portal_screencast_should_publish(false, false));
-    }
+        // Phase `sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss`.
+        {
+            // A prior desktop frame has retired, but lock frame #42 has not: it
+            // cannot release the sleep-delay inhibitor.  If the presenter dies
+            // first, the only safe result is likewise no acknowledgement.
+            assert_eq!(
+                sleep_lock_frame_status(42, 41, false),
+                SleepLockFrameStatus::Awaiting
+            );
+            assert_eq!(
+                sleep_lock_frame_status(42, 42, false),
+                SleepLockFrameStatus::Retired
+            );
+            assert_eq!(
+                sleep_lock_frame_status(42, 41, true),
+                SleepLockFrameStatus::PresenterLost
+            );
+        }
 
-    #[test]
-    fn fresh_workspace_salt_does_not_create_a_transport_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-
-        let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("create workspace salt");
-        let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("reload workspace salt");
-
-        assert_ne!(first, 0);
-        assert_eq!(first, second);
-        assert!(
-            !peer_key_path.exists(),
-            "allocating an object-id namespace must not mint a network identity"
-        );
-    }
-
-    #[test]
-    fn existing_transport_identity_keeps_its_historical_workspace_salt() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-        let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
-            .expect("create existing transport identity");
-        let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
-
-        let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("migrate historical salt");
-
-        assert_eq!(actual, expected);
-        assert_eq!(
-            read_workspace_salt(
-                &state_path
-                    .parent()
-                    .expect("fixture state path has a parent")
-                    .join("workspace-peer-salt"),
-            )
-            .expect("read persisted salt"),
-            expected
-        );
-    }
-
-    #[test]
-    fn sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss() {
-        // A prior desktop frame has retired, but lock frame #42 has not: it
-        // cannot release the sleep-delay inhibitor.  If the presenter dies
-        // first, the only safe result is likewise no acknowledgement.
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, false),
-            SleepLockFrameStatus::Awaiting
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 42, false),
-            SleepLockFrameStatus::Retired
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, true),
-            SleepLockFrameStatus::PresenterLost
-        );
-    }
-
-    #[test]
-    fn failed_suspend_only_unlocks_a_lock_it_prepared() {
-        assert!(should_unlock_after_suspend_failure(true, false));
-        assert!(!should_unlock_after_suspend_failure(true, true));
-        assert!(!should_unlock_after_suspend_failure(false, false));
+        // Phase `failed_suspend_only_unlocks_a_lock_it_prepared`.
+        {
+            assert!(should_unlock_after_suspend_failure(true, false));
+            assert!(!should_unlock_after_suspend_failure(true, true));
+            assert!(!should_unlock_after_suspend_failure(false, false));
+        }
     }
 }

@@ -9,9 +9,11 @@ use std::io;
 use collab_types::{FileActor, FileRecordId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
+use wire_frame::Framing;
 
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::record_replication::RecordEnvelopeV1;
 use crate::record_repository::{
     RecordRepository, RecordRepositoryKey, RecordStreamCursor, RecordStreamKey,
@@ -412,25 +414,31 @@ pub fn serve_authorized_request(
     }
 }
 
+/// Each mesh request and response: a big-endian `u32` length, then the
+/// canonical encoding.
+const RECORD_MESH_FRAMING: Framing = Framing::big_endian(MAX_RECORD_MESH_FRAME_BYTES);
+
+impl From<CanonicalFrameError> for RecordMeshFrameError {
+    fn from(error: CanonicalFrameError) -> Self {
+        match error {
+            CanonicalFrameError::Io(error) => Self::Io(error),
+            CanonicalFrameError::TooLarge(announced) => Self::TooLarge {
+                announced,
+                maximum: MAX_RECORD_MESH_FRAME_BYTES,
+            },
+            CanonicalFrameError::Empty
+            | CanonicalFrameError::Encode(_)
+            | CanonicalFrameError::Decode(_) => Self::NonCanonical,
+        }
+    }
+}
+
 async fn write_frame<W, T>(writer: &mut W, value: &T) -> Result<(), RecordMeshFrameError>
 where
     W: AsyncWrite + Unpin,
     T: Serialize + Sync,
 {
-    let bytes =
-        collab_types::canonical_bytes(value).map_err(|_| RecordMeshFrameError::NonCanonical)?;
-    if bytes.len() > MAX_RECORD_MESH_FRAME_BYTES {
-        return Err(RecordMeshFrameError::TooLarge {
-            announced: bytes.len(),
-            maximum: MAX_RECORD_MESH_FRAME_BYTES,
-        });
-    }
-    let length = u32::try_from(bytes.len()).map_err(|_| RecordMeshFrameError::TooLarge {
-        announced: bytes.len(),
-        maximum: MAX_RECORD_MESH_FRAME_BYTES,
-    })?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
+    canonical_frame::write(RECORD_MESH_FRAMING, writer, value).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -440,19 +448,7 @@ where
     R: AsyncRead + Unpin,
     T: serde::de::DeserializeOwned,
 {
-    let mut prefix = [0_u8; 4];
-    reader.read_exact(&mut prefix).await?;
-    let announced = u32::from_be_bytes(prefix) as usize;
-    if announced > MAX_RECORD_MESH_FRAME_BYTES {
-        return Err(RecordMeshFrameError::TooLarge {
-            announced,
-            maximum: MAX_RECORD_MESH_FRAME_BYTES,
-        });
-    }
-    let mut bytes = vec![0_u8; announced];
-    reader.read_exact(&mut bytes).await?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| RecordMeshFrameError::NonCanonical)
+    Ok(canonical_frame::read_required(RECORD_MESH_FRAMING, reader).await?)
 }
 
 fn validate_workspace(workspace_id: Uuid) -> Result<(), RecordMeshValidationError> {
@@ -586,294 +582,348 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_round_trips_over_bounded_duplex_frame() {
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let actor = actor(7);
-        let request = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id,
-            operation: RecordMeshOperationV1::Pull {
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after: Some(cursor(record_id, actor, 3)),
-                limit: 32,
-            },
-        };
-        let (mut writer, mut reader) = tokio::io::duplex(32);
-        let expected = request.clone();
-        let write = tokio::spawn(async move {
-            write_record_mesh_request(&mut writer, &request)
-                .await
-                .unwrap();
-        });
-        assert_eq!(
-            read_record_mesh_request(&mut reader).await.unwrap(),
-            expected
-        );
-        write.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn response_round_trips_and_enforces_contiguous_stream() {
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let actor = actor(11);
-        let response = RecordMeshResponseV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            result: RecordMeshResultV1::EnvelopeBatch {
-                workspace_id,
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after_sequence: 0,
-                envelopes: vec![envelope(record_id, actor, 1), envelope(record_id, actor, 2)],
-            },
-        };
-        let (mut writer, mut reader) = tokio::io::duplex(64);
-        let expected = response.clone();
-        let write = tokio::spawn(async move {
-            write_record_mesh_response(&mut writer, &response)
-                .await
-                .unwrap();
-        });
-        assert_eq!(
-            read_record_mesh_response(&mut reader).await.unwrap(),
-            expected
-        );
-        write.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_announced_frame_is_rejected_before_payload_read() {
-        let (mut writer, mut reader) = tokio::io::duplex(8);
-        let write = tokio::spawn(async move {
-            writer
-                .write_all(
-                    &u32::try_from(MAX_RECORD_MESH_FRAME_BYTES + 1)
-                        .unwrap()
-                        .to_be_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-        assert!(matches!(
-            read_record_mesh_request(&mut reader).await,
-            Err(RecordMeshFrameError::TooLarge { .. })
-        ));
-        write.await.unwrap();
-    }
-
-    #[test]
-    fn rejects_nil_workspace_zero_limits_and_cross_stream_cursors() {
-        let record_id = FileRecordId::new();
-        let other_record = FileRecordId::new();
-        let actor = actor(3);
-        let nil = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id: Uuid::nil(),
-            operation: RecordMeshOperationV1::Inventory {
-                after: None,
-                limit: 1,
-            },
-        };
-        assert_eq!(nil.validate(), Err(RecordMeshValidationError::NilWorkspace));
-
-        let zero = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id: Uuid::new_v4(),
-            operation: RecordMeshOperationV1::Inventory {
-                after: None,
-                limit: 0,
-            },
-        };
-        assert_eq!(
-            zero.validate(),
-            Err(RecordMeshValidationError::InvalidLimit)
-        );
-
-        let cross = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id: Uuid::new_v4(),
-            operation: RecordMeshOperationV1::Pull {
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after: Some(cursor(other_record, actor, 1)),
-                limit: 1,
-            },
-        };
-        assert_eq!(
-            cross.validate(),
-            Err(RecordMeshValidationError::CrossStreamCursor)
-        );
-    }
-
-    #[test]
-    fn inventory_page_requires_order_and_exact_continuation() {
-        let workspace_id = Uuid::new_v4();
-        let first_id = FileRecordId(Uuid::from_u128(1));
-        let second_id = FileRecordId(Uuid::from_u128(2));
-        let actor = actor(1);
-        let valid = RecordMeshResponseV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            result: RecordMeshResultV1::InventoryPage {
-                workspace_id,
-                cursors: vec![cursor(first_id, actor, 1), cursor(second_id, actor, 2)],
-                next: RecordMeshStreamV1 {
-                    record_id: second_id,
-                    actor,
-                },
-            },
-        };
-        assert_eq!(valid.validate(), Ok(()));
-
-        let reversed = RecordMeshResponseV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            result: RecordMeshResultV1::InventoryPage {
-                workspace_id,
-                cursors: vec![cursor(second_id, actor, 2), cursor(first_id, actor, 1)],
-                next: RecordMeshStreamV1 {
-                    record_id: first_id,
-                    actor,
-                },
-            },
-        };
-        assert_eq!(
-            reversed.validate(),
-            Err(RecordMeshValidationError::InventoryNotOrdered)
-        );
-    }
-
-    #[test]
-    fn batch_rejects_gaps_and_cross_stream_envelopes() {
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let other = FileRecordId::new();
-        let actor = actor(22);
-        let gap = RecordMeshResponseV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            result: RecordMeshResultV1::EnvelopeBatch {
-                workspace_id,
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after_sequence: 0,
-                envelopes: vec![envelope(record_id, actor, 2)],
-            },
-        };
-        assert_eq!(
-            gap.validate(),
-            Err(RecordMeshValidationError::NonContiguousEnvelopeBatch)
-        );
-
-        let cross = RecordMeshResponseV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            result: RecordMeshResultV1::EnvelopeBatch {
-                workspace_id,
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after_sequence: 0,
-                envelopes: vec![envelope(other, actor, 1)],
-            },
-        };
-        assert_eq!(
-            cross.validate(),
-            Err(RecordMeshValidationError::CrossStreamEnvelope)
-        );
-    }
-
-    #[test]
-    fn authorized_repository_response_pages_and_checks_prefix_digest() {
-        struct Allow(FileActor, FileRecordId);
-        impl RecordAuthorizer for Allow {
-            fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                *actor == self.0
-            }
-
-            fn allows(
-                &self,
-                actor: &FileActor,
-                record_id: FileRecordId,
-                _action: RecordAction,
-            ) -> bool {
-                *actor == self.0 && record_id == self.1
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let repository = RecordRepository::open(dir.path()).unwrap();
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let device = SigningKey::from_bytes(&[41; 32]);
-        let person = SigningKey::from_bytes(&[42; 32]);
-        let actor = FileActor {
-            person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
-            device: Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-        };
-        let make_envelope = |sequence| {
-            RecordEnvelopeV1::signed(
-                record_id,
-                actor,
-                sequence,
-                RecordOperationV1::SetMetadata(FileMetadataV1 {
-                    schema_version: 1,
-                    record_id,
-                    content_hash: None,
-                    byte_len: sequence,
-                    mime: None,
-                    previews: vec![],
-                    latest_actor: Some(actor),
-                    observed_at_ms: sequence,
-                    index_status: IndexStatus::Pending,
-                    properties: None,
-                }),
-                &device,
-            )
-            .unwrap()
-        };
-        let key = RecordRepositoryKey {
-            workspace_id,
-            record_id,
-        };
-        repository
-            .apply_batch(
-                key,
-                &[make_envelope(1), make_envelope(2)],
-                &Allow(actor, record_id),
-            )
-            .unwrap();
-
-        let inventory = serve_authorized_request(
-            &repository,
-            workspace_id,
-            &RecordMeshRequestV1 {
+    async fn mesh_frames_round_trip_bounded_and_contiguous() {
+        // Phase `request_round_trips_over_bounded_duplex_frame`.
+        {
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let actor = actor(7);
+            let request = RecordMeshRequestV1 {
                 protocol_version: RECORD_MESH_PROTOCOL_VERSION,
                 workspace_id,
+                operation: RecordMeshOperationV1::Pull {
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after: Some(cursor(record_id, actor, 3)),
+                    limit: 32,
+                },
+            };
+            let (mut writer, mut reader) = tokio::io::duplex(32);
+            let expected = request.clone();
+            let write = tokio::spawn(async move {
+                write_record_mesh_request(&mut writer, &request)
+                    .await
+                    .unwrap();
+            });
+            assert_eq!(
+                read_record_mesh_request(&mut reader).await.unwrap(),
+                expected
+            );
+            write.await.unwrap();
+        }
+        // Phase `response_round_trips_and_enforces_contiguous_stream`.
+        {
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let actor = actor(11);
+            let response = RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::EnvelopeBatch {
+                    workspace_id,
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after_sequence: 0,
+                    envelopes: vec![envelope(record_id, actor, 1), envelope(record_id, actor, 2)],
+                },
+            };
+            let (mut writer, mut reader) = tokio::io::duplex(64);
+            let expected = response.clone();
+            let write = tokio::spawn(async move {
+                write_record_mesh_response(&mut writer, &response)
+                    .await
+                    .unwrap();
+            });
+            assert_eq!(
+                read_record_mesh_response(&mut reader).await.unwrap(),
+                expected
+            );
+            write.await.unwrap();
+        }
+        // Phase `oversized_announced_frame_is_rejected_before_payload_read`.
+        {
+            let (mut writer, mut reader) = tokio::io::duplex(8);
+            let write = tokio::spawn(async move {
+                writer
+                    .write_all(
+                        &u32::try_from(MAX_RECORD_MESH_FRAME_BYTES + 1)
+                            .unwrap()
+                            .to_be_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(
+                read_record_mesh_request(&mut reader).await,
+                Err(RecordMeshFrameError::TooLarge { .. })
+            ));
+            write.await.unwrap();
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn mesh_pages_and_batches_require_exact_order_scope_and_prefix() {
+        // Phase `rejects_nil_workspace_zero_limits_and_cross_stream_cursors`.
+        {
+            let record_id = FileRecordId::new();
+            let other_record = FileRecordId::new();
+            let actor = actor(3);
+            let nil = RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id: Uuid::nil(),
                 operation: RecordMeshOperationV1::Inventory {
                     after: None,
+                    limit: 1,
+                },
+            };
+            assert_eq!(nil.validate(), Err(RecordMeshValidationError::NilWorkspace));
+
+            let zero = RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id: Uuid::new_v4(),
+                operation: RecordMeshOperationV1::Inventory {
+                    after: None,
+                    limit: 0,
+                },
+            };
+            assert_eq!(
+                zero.validate(),
+                Err(RecordMeshValidationError::InvalidLimit)
+            );
+
+            let cross = RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id: Uuid::new_v4(),
+                operation: RecordMeshOperationV1::Pull {
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after: Some(cursor(other_record, actor, 1)),
+                    limit: 1,
+                },
+            };
+            assert_eq!(
+                cross.validate(),
+                Err(RecordMeshValidationError::CrossStreamCursor)
+            );
+        }
+        // Phase `inventory_page_requires_order_and_exact_continuation`.
+        {
+            let workspace_id = Uuid::new_v4();
+            let first_id = FileRecordId(Uuid::from_u128(1));
+            let second_id = FileRecordId(Uuid::from_u128(2));
+            let actor = actor(1);
+            let valid = RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::InventoryPage {
+                    workspace_id,
+                    cursors: vec![cursor(first_id, actor, 1), cursor(second_id, actor, 2)],
+                    next: RecordMeshStreamV1 {
+                        record_id: second_id,
+                        actor,
+                    },
+                },
+            };
+            assert_eq!(valid.validate(), Ok(()));
+
+            let reversed = RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::InventoryPage {
+                    workspace_id,
+                    cursors: vec![cursor(second_id, actor, 2), cursor(first_id, actor, 1)],
+                    next: RecordMeshStreamV1 {
+                        record_id: first_id,
+                        actor,
+                    },
+                },
+            };
+            assert_eq!(
+                reversed.validate(),
+                Err(RecordMeshValidationError::InventoryNotOrdered)
+            );
+        }
+        // Phase `batch_rejects_gaps_and_cross_stream_envelopes`.
+        {
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let other = FileRecordId::new();
+            let actor = actor(22);
+            let gap = RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::EnvelopeBatch {
+                    workspace_id,
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after_sequence: 0,
+                    envelopes: vec![envelope(record_id, actor, 2)],
+                },
+            };
+            assert_eq!(
+                gap.validate(),
+                Err(RecordMeshValidationError::NonContiguousEnvelopeBatch)
+            );
+
+            let cross = RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::EnvelopeBatch {
+                    workspace_id,
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after_sequence: 0,
+                    envelopes: vec![envelope(other, actor, 1)],
+                },
+            };
+            assert_eq!(
+                cross.validate(),
+                Err(RecordMeshValidationError::CrossStreamEnvelope)
+            );
+        }
+        // Phase `authorized_repository_response_pages_and_checks_prefix_digest`.
+        {
+            struct Allow(FileActor, FileRecordId);
+            impl RecordAuthorizer for Allow {
+                fn actor_is_certified(&self, actor: &FileActor) -> bool {
+                    *actor == self.0
+                }
+
+                fn allows(
+                    &self,
+                    actor: &FileActor,
+                    record_id: FileRecordId,
+                    _action: RecordAction,
+                ) -> bool {
+                    *actor == self.0 && record_id == self.1
+                }
+            }
+
+            let dir = tempfile::tempdir().unwrap();
+            let repository = RecordRepository::open(dir.path()).unwrap();
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let device = SigningKey::from_bytes(&[41; 32]);
+            let person = SigningKey::from_bytes(&[42; 32]);
+            let actor = FileActor {
+                person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
+                device: Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            };
+            let make_envelope = |sequence| {
+                RecordEnvelopeV1::signed(
+                    record_id,
+                    actor,
+                    sequence,
+                    RecordOperationV1::SetMetadata(FileMetadataV1 {
+                        schema_version: 1,
+                        record_id,
+                        content_hash: None,
+                        byte_len: sequence,
+                        mime: None,
+                        previews: vec![],
+                        latest_actor: Some(actor),
+                        observed_at_ms: sequence,
+                        index_status: IndexStatus::Pending,
+                        properties: None,
+                    }),
+                    &device,
+                )
+                .unwrap()
+            };
+            let key = RecordRepositoryKey {
+                workspace_id,
+                record_id,
+            };
+            repository
+                .apply_batch(
+                    key,
+                    &[make_envelope(1), make_envelope(2)],
+                    &Allow(actor, record_id),
+                )
+                .unwrap();
+
+            let inventory = serve_authorized_request(
+                &repository,
+                workspace_id,
+                &RecordMeshRequestV1 {
+                    protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                    workspace_id,
+                    operation: RecordMeshOperationV1::Inventory {
+                        after: None,
+                        limit: 8,
+                    },
+                },
+            );
+            let RecordMeshResultV1::InventoryPage { cursors, .. } = inventory.result else {
+                panic!("expected inventory page");
+            };
+            assert_eq!(cursors.len(), 1);
+
+            let mut prefix = repository.stream_cursor(key, &actor, 1).unwrap();
+            let pull = |after| RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id,
+                operation: RecordMeshOperationV1::Pull {
+                    stream: RecordMeshStreamV1 { record_id, actor },
+                    after: Some(after),
                     limit: 8,
                 },
-            },
-        );
-        let RecordMeshResultV1::InventoryPage { cursors, .. } = inventory.result else {
-            panic!("expected inventory page");
-        };
-        assert_eq!(cursors.len(), 1);
+            };
+            let response = serve_authorized_request(&repository, workspace_id, &pull(prefix));
+            let RecordMeshResultV1::EnvelopeBatch { envelopes, .. } = response.result else {
+                panic!("expected suffix batch");
+            };
+            assert_eq!(envelopes.len(), 1);
+            assert_eq!(envelopes[0].sequence, 2);
 
-        let mut prefix = repository.stream_cursor(key, &actor, 1).unwrap();
-        let pull = |after| RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id,
-            operation: RecordMeshOperationV1::Pull {
-                stream: RecordMeshStreamV1 { record_id, actor },
-                after: Some(after),
-                limit: 8,
-            },
-        };
-        let response = serve_authorized_request(&repository, workspace_id, &pull(prefix));
-        let RecordMeshResultV1::EnvelopeBatch { envelopes, .. } = response.result else {
-            panic!("expected suffix batch");
-        };
-        assert_eq!(envelopes.len(), 1);
-        assert_eq!(envelopes[0].sequence, 2);
+            prefix.prefix_digest[0] ^= 1;
+            assert_eq!(
+                serve_authorized_request(&repository, workspace_id, &pull(prefix)).result,
+                RecordMeshResultV1::Error(RecordMeshErrorCodeV1::PrefixMismatch)
+            );
+        }
+    }
 
-        prefix.prefix_digest[0] ^= 1;
+    #[tokio::test]
+    async fn frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_record_mesh_response(
+            &mut wire,
+            &RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::Error(RecordMeshErrorCodeV1::PrefixMismatch),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(wire, [0, 0, 0, 3, 2, 4, 4]);
+
+        let mut wire: Vec<u8> = vec![0, 0, 0, 21, 2, 16];
+        wire.extend_from_slice(&[0x33; 16]);
+        wire.extend_from_slice(&[0, 0, 16]);
         assert_eq!(
-            serve_authorized_request(&repository, workspace_id, &pull(prefix)).result,
-            RecordMeshResultV1::Error(RecordMeshErrorCodeV1::PrefixMismatch)
+            read_record_mesh_request(&mut wire.as_slice())
+                .await
+                .unwrap(),
+            RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id: Uuid::from_bytes([0x33; 16]),
+                operation: RecordMeshOperationV1::Inventory {
+                    after: None,
+                    limit: 16,
+                },
+            }
         );
+    }
+
+    #[tokio::test]
+    async fn empty_and_truncated_frames_are_rejected() {
+        assert!(matches!(
+            read_record_mesh_request(&mut &[0, 0, 0, 0][..]).await,
+            Err(RecordMeshFrameError::NonCanonical)
+        ));
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 3, 2][..]] {
+            assert!(
+                matches!(
+                    read_record_mesh_request(&mut &wire[..]).await,
+                    Err(RecordMeshFrameError::Io(ref error)) if error.kind() == io::ErrorKind::UnexpectedEof
+                ),
+                "{wire:?}"
+            );
+        }
     }
 }

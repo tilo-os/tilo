@@ -409,7 +409,18 @@ mod tests {
             .and_then(|(value, _)| value.as_i64())
     }
 
+    /// A submission is visible before the host replies, out-of-order acknowledgements advance in
+    /// submission order, reconnect resends without applying twice, and direct live writes are detected
+    /// instead of silently lost.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn optimistic_submissions_show_at_once_and_settle_exactly_once() {
+        submission_is_visible_before_the_host_replies();
+        out_of_order_acknowledgements_advance_in_submission_order();
+        reconnect_resends_without_applying_twice();
+        direct_live_writes_are_detected_instead_of_silently_lost();
+    }
+
     fn submission_is_visible_before_the_host_replies() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);
@@ -423,7 +434,6 @@ mod tests {
         assert_eq!(queue.reconnect_batch(), [envelope]);
     }
 
-    #[test]
     fn out_of_order_acknowledgements_advance_in_submission_order() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);
@@ -447,7 +457,16 @@ mod tests {
         assert_eq!(queue.confirmed_heads(), live.get_heads());
     }
 
+    /// A rejection rolls back and rebases survivors, an authoritative merge rebases pending work,
+    /// and rejecting a later action keeps and reissues its predecessor.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn host_rejections_and_merges_rebase_the_surviving_pending_work() {
+        rejection_rolls_back_and_rebases_survivors();
+        authoritative_merge_rebases_pending_work();
+        rejecting_a_later_action_keeps_and_reissues_its_predecessor();
+    }
+
     fn rejection_rolls_back_and_rebases_survivors() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);
@@ -476,7 +495,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn authoritative_merge_rebases_pending_work() {
         let mut live = AutoCommit::new();
         live.put(&ROOT, "seed", true).unwrap();
@@ -502,7 +520,6 @@ mod tests {
         assert_eq!(value(queue.confirmed(), "score"), None);
     }
 
-    #[test]
     fn reconnect_resends_without_applying_twice() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);
@@ -521,7 +538,6 @@ mod tests {
         assert_eq!(value(&live, "score"), Some(1));
     }
 
-    #[test]
     fn rejecting_a_later_action_keeps_and_reissues_its_predecessor() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);
@@ -545,7 +561,6 @@ mod tests {
         assert_eq!(queue.reconnect_batch(), batch.outbound);
     }
 
-    #[test]
     fn direct_live_writes_are_detected_instead_of_silently_lost() {
         let mut live = AutoCommit::new();
         let mut queue = OptimisticQueue::new(&mut live);

@@ -29,7 +29,20 @@ fn fixture() -> (ChannelId, MemberKey, MemberKey) {
     )
 }
 
+/// The owner alone is a one-member group, adding a member increments epoch and count, Bob joins
+/// via Alice's welcome, the channel id is preserved, fresh key packages are distinct, and a
+/// member key's Debug exposes no secret.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_two_member_group_forms_from_an_owner_and_a_welcome() {
+    owner_alone_is_a_one_member_group();
+    add_member_increments_epoch_and_member_count();
+    bob_can_join_via_welcome_alice_minted();
+    channel_id_is_preserved_across_create_and_join();
+    fresh_key_packages_are_distinct();
+    member_key_does_not_expose_secret_in_debug();
+}
+
 fn owner_alone_is_a_one_member_group() {
     let (cid, alice, _bob) = fixture();
     let g = ChannelGroup::create(cid, alice).unwrap();
@@ -40,7 +53,6 @@ fn owner_alone_is_a_one_member_group() {
     assert_eq!(g.epoch(), 0);
 }
 
-#[test]
 fn add_member_increments_epoch_and_member_count() {
     let (cid, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
@@ -55,7 +67,6 @@ fn add_member_increments_epoch_and_member_count() {
     assert_eq!(alice_g.member_count(), pre_count + 1);
 }
 
-#[test]
 fn bob_can_join_via_welcome_alice_minted() {
     let (cid, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
@@ -71,7 +82,16 @@ fn bob_can_join_via_welcome_alice_minted() {
     assert_eq!(bob_g.epoch(), alice_g.epoch());
 }
 
+/// Alice encrypts and Bob decrypts, Bob encrypts and Alice decrypts, and multiple messages
+/// round-trip in sequence.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn two_members_exchange_messages_both_ways() {
+    alice_encrypts_bob_decrypts();
+    bob_encrypts_alice_decrypts();
+    multiple_messages_round_trip_in_sequence();
+}
+
 fn alice_encrypts_bob_decrypts() {
     let (cid, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
@@ -85,7 +105,6 @@ fn alice_encrypts_bob_decrypts() {
     assert_eq!(pt, b"hello bob");
 }
 
-#[test]
 fn bob_encrypts_alice_decrypts() {
     // Direction-reverse of the previous test — proves the group key
     // schedule is symmetric.
@@ -101,7 +120,6 @@ fn bob_encrypts_alice_decrypts() {
     assert_eq!(pt, b"hello alice");
 }
 
-#[test]
 fn multiple_messages_round_trip_in_sequence() {
     // Sanity check that the key schedule advances correctly across
     // many messages within one epoch.
@@ -125,7 +143,6 @@ fn multiple_messages_round_trip_in_sequence() {
     }
 }
 
-#[test]
 fn channel_id_is_preserved_across_create_and_join() {
     let cid = ChannelId::new();
     let alice = MemberKey::generate("alice").unwrap();
@@ -139,7 +156,6 @@ fn channel_id_is_preserved_across_create_and_join() {
     assert_eq!(bob_g.channel_id(), cid);
 }
 
-#[test]
 fn fresh_key_packages_are_distinct() {
     // MLS rejects a re-used KeyPackage: two back-to-back
     // `fresh_key_package` calls must produce structurally distinct
@@ -154,7 +170,6 @@ fn fresh_key_packages_are_distinct() {
     );
 }
 
-#[test]
 fn member_key_does_not_expose_secret_in_debug() {
     // Defence-in-depth: a developer accidentally `{:?}`-printing a
     // MemberKey must not leak signature secret bytes into logs.

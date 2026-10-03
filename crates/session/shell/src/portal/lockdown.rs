@@ -6,57 +6,43 @@
 //! Settings uses [`LockdownBackend::set_policy`] in-process.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
 use zbus::interface;
 
 #[cfg(target_os = "linux")]
 use super::PortalContext;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LockdownPolicy {
-    pub disable_printing: bool,
-    pub disable_save_to_disk: bool,
-    pub disable_application_handlers: bool,
-    pub disable_location: bool,
-    pub disable_camera: bool,
-    pub disable_microphone: bool,
-    pub disable_sound_output: bool,
+pub use tilo_lockdown_policy::LockdownPolicy;
+use tilo_lockdown_policy::PolicyStore;
+pub(crate) use tilo_lockdown_policy::watch_policy_at;
+
+pub(crate) fn watch_policy(
+    listener: &std::sync::Arc<dyn Fn(&LockdownPolicy) + Send + Sync>,
+) -> std::io::Result<()> {
+    watch_policy_at(default_path(), listener)
 }
 
 #[derive(Clone)]
 pub struct LockdownBackend {
-    policy: Arc<Mutex<LockdownPolicy>>,
-    path: Arc<PathBuf>,
+    state: PolicyStore,
 }
-
 impl LockdownBackend {
     #[cfg(target_os = "linux")]
     pub fn new(_ctx: PortalContext) -> Self {
         Self::at_path(default_path())
     }
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        let policy = atomic_file::json::load_or_default(&path);
         Self {
-            policy: Arc::new(Mutex::new(policy)),
-            path: Arc::new(path),
+            state: PolicyStore::at_path(path),
         }
     }
     pub fn policy(&self) -> LockdownPolicy {
-        self.policy.lock().map(|v| v.clone()).unwrap_or_default()
+        self.state.policy()
     }
-    /// Trusted in-process policy update; intentionally not a D-Bus property mutation.
     pub fn set_policy(&self, policy: LockdownPolicy) -> zbus::fdo::Result<()> {
-        let mut held = self
-            .policy
-            .lock()
-            .map_err(|_| failed("lockdown policy lock poisoned"))?;
-        atomic_file::json::write_private(&self.path, &policy)
-            .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
-        *held = policy;
-        Ok(())
+        self.state
+            .set_policy(policy)
+            .map_err(|error| failed(&error.to_string()))
     }
 }
 
@@ -64,7 +50,7 @@ impl LockdownBackend {
 /// enforce Lockdown themselves; merely exposing these properties would let a
 /// policy controller report a restriction while privileged work still runs.
 pub fn current_policy() -> LockdownPolicy {
-    atomic_file::json::load_or_default(&default_path())
+    tilo_files::native::atomic::json::load_or_default(&default_path())
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Lockdown")]
@@ -147,32 +133,35 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     #[test]
-    fn trusted_policy_persists() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("policy.json");
-        let b = LockdownBackend::at_path(&p);
-        b.set_policy(LockdownPolicy {
-            disable_camera: true,
-            ..LockdownPolicy::default()
-        })
-        .unwrap();
-        assert!(LockdownBackend::at_path(p).policy().disable_camera);
-        assert_eq!(
-            fs::metadata(dir.path().join("policy.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
-    #[test]
-    fn dbus_setter_is_denied() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            LockdownBackend::at_path(dir.path().join("lockdown.json"))
-                .set_disable_camera(false)
-                .is_err()
-        );
+    fn lockdown_policy_is_trusted_persistent_and_not_dbus_settable() {
+        // Phase `trusted_policy_persists`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("policy.json");
+            let b = LockdownBackend::at_path(&p);
+            b.set_policy(LockdownPolicy {
+                disable_camera: true,
+                ..LockdownPolicy::default()
+            })
+            .unwrap();
+            assert!(LockdownBackend::at_path(p).policy().disable_camera);
+            assert_eq!(
+                fs::metadata(dir.path().join("policy.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        // Phase `dbus_setter_is_denied`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                LockdownBackend::at_path(dir.path().join("lockdown.json"))
+                    .set_disable_camera(false)
+                    .is_err()
+            );
+        }
     }
 }

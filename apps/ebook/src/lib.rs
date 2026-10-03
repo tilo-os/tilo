@@ -39,6 +39,7 @@ pub mod actions;
 pub mod app;
 pub mod chrome;
 mod comment_overlay;
+pub mod component;
 pub mod content;
 pub mod doc;
 pub mod epub;
@@ -50,11 +51,16 @@ pub mod paint;
 mod reader_bubble;
 pub mod reader_theme;
 mod reading_settings;
+pub mod resource;
 pub mod search_provider;
 mod shelf_controls;
+#[cfg(test)]
+mod test_epub;
+mod web_file;
 pub mod xhtml;
 
 pub use app::BooksApp;
+pub use component::definition;
 
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
@@ -75,3 +81,5 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+pub use resource::launch_spec;
+pub use resource::{Ebook, EbookShell, EbookState, standalone_launch};

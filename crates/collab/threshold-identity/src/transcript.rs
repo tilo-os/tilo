@@ -86,10 +86,12 @@ impl PairingTranscript {
 mod tests {
     use super::*;
 
+    /// The transcript hash is independent of commitment order but binds the
+    /// commitment bytes and the confirmation code.
     #[test]
-    fn transcript_is_order_independent() {
-        // Same commitments in different order produce the same transcript
-        // hash — the constructor sorts.
+    fn transcript_hash_binds_commitments_and_code_but_not_their_order() {
+        // Case: order independence — same commitments in different order
+        // produce the same transcript hash; the constructor sorts.
         let a = EnrolmentRound1 {
             from_share_index: 1,
             package_bytes: vec![1, 2, 3],
@@ -101,10 +103,8 @@ mod tests {
         let t1 = PairingTranscript::new(123_456, vec![a.clone(), b.clone()]);
         let t2 = PairingTranscript::new(123_456, vec![b, a]);
         assert_eq!(t1.compute_hash().unwrap(), t2.compute_hash().unwrap());
-    }
 
-    #[test]
-    fn transcript_changes_with_commitment_bytes() {
+        // Case: the hash changes with commitment bytes.
         let a = EnrolmentRound1 {
             from_share_index: 1,
             package_bytes: vec![1, 2, 3],
@@ -120,10 +120,8 @@ mod tests {
         let t1 = PairingTranscript::new(1, vec![a, b.clone()]);
         let t2 = PairingTranscript::new(1, vec![a2, b]);
         assert_ne!(t1.compute_hash().unwrap(), t2.compute_hash().unwrap());
-    }
 
-    #[test]
-    fn transcript_changes_with_code() {
+        // Case: the hash changes with the code.
         let a = EnrolmentRound1 {
             from_share_index: 1,
             package_bytes: vec![1, 2, 3],

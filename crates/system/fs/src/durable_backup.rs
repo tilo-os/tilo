@@ -109,7 +109,7 @@ pub fn read_or_recover(
     let recovered_hash = hash(&recovered);
     let evidence_path =
         backup_dir.join(format!("evidence-{generation:020}-{damaged_hash}.corrupt"));
-    atomic_file::write(&evidence_path, &primary)?;
+    tilo_files::native::atomic::write(&evidence_path, &primary)?;
     let receipt_path = backup_dir.join(format!("recovery-{generation:020}.json"));
     let mut receipt = RecoveryReceiptV1 {
         schema_version: RECEIPT_VERSION,
@@ -122,17 +122,17 @@ pub fn read_or_recover(
         evidence_file: file_name(&evidence_path)?,
     };
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(io::Error::other)?;
-    atomic_file::write(&receipt_path, &receipt_bytes)?;
+    tilo_files::native::atomic::write(&receipt_path, &receipt_bytes)?;
     // Do not route this through `write`: that deliberately refuses to replace
     // an invalid primary. The exact bad bytes and recovery intent are durable.
-    atomic_file::write(path, &recovered)?;
+    tilo_files::native::atomic::write(path, &recovered)?;
     receipt.completed = true;
     if let Ok(receipt_bytes) = serde_json::to_vec_pretty(&receipt) {
         // If this final annotation cannot be written (for example, the device
         // became full after the primary rename), the durable `completed:false`
         // receipt remains. That is conservative and still identifies every
         // byte involved; startup can compare the named recovered hash.
-        if let Err(error) = atomic_file::write(&receipt_path, &receipt_bytes) {
+        if let Err(error) = tilo_files::native::atomic::write(&receipt_path, &receipt_bytes) {
             eprintln!(
                 "workspace state recovered but completion receipt update failed at {}: {error}",
                 receipt_path.display()
@@ -199,12 +199,12 @@ pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io:
                 "generation-{generation:020}-{}.bak",
                 hash(&previous)
             ));
-            atomic_file::write(&backup, &previous)?;
-            atomic_file::write(path, bytes)?;
+            tilo_files::native::atomic::write(&backup, &previous)?;
+            tilo_files::native::atomic::write(path, bytes)?;
             prune_generations(&backup_dir)?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            atomic_file::write(path, bytes)?;
+            tilo_files::native::atomic::write(path, bytes)?;
         }
         Err(error) => return Err(error),
     }
@@ -359,121 +359,123 @@ mod tests {
     }
 
     #[test]
-    fn retains_three_generations_and_recovers_with_evidence() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("namespace.bin");
-        for value in 0..6 {
-            write(&path, format!("valid:{value}").as_bytes(), valid).unwrap();
+    fn backups_retain_generations_and_recover_from_the_newest_valid_one() {
+        // Phase `retains_three_generations_and_recovers_with_evidence`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("namespace.bin");
+            for value in 0..6 {
+                write(&path, format!("valid:{value}").as_bytes(), valid).unwrap();
+            }
+            let backups = backup_files(&backup_dir(&path).unwrap()).unwrap();
+            assert_eq!(backups.len(), RETAINED_GENERATIONS);
+
+            fs::write(&path, b"damaged-current").unwrap();
+            let outcome = read_or_recover(&path, valid).unwrap().unwrap();
+            assert_eq!(outcome.bytes, b"valid:4");
+            let evidence = outcome.recovery.unwrap();
+            assert_eq!(
+                fs::read(&evidence.damaged_evidence_path).unwrap(),
+                b"damaged-current"
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"valid:4");
+            let receipt: RecoveryReceiptV1 =
+                serde_json::from_slice(&fs::read(evidence.receipt_path).unwrap()).unwrap();
+            assert_eq!(receipt.damaged_blake3, hash(b"damaged-current"));
+            assert_eq!(receipt.recovered_blake3, hash(b"valid:4"));
+            assert!(receipt.completed);
         }
-        let backups = backup_files(&backup_dir(&path).unwrap()).unwrap();
-        assert_eq!(backups.len(), RETAINED_GENERATIONS);
-
-        fs::write(&path, b"damaged-current").unwrap();
-        let outcome = read_or_recover(&path, valid).unwrap().unwrap();
-        assert_eq!(outcome.bytes, b"valid:4");
-        let evidence = outcome.recovery.unwrap();
-        assert_eq!(
-            fs::read(&evidence.damaged_evidence_path).unwrap(),
-            b"damaged-current"
-        );
-        assert_eq!(fs::read(&path).unwrap(), b"valid:4");
-        let receipt: RecoveryReceiptV1 =
-            serde_json::from_slice(&fs::read(evidence.receipt_path).unwrap()).unwrap();
-        assert_eq!(receipt.damaged_blake3, hash(b"damaged-current"));
-        assert_eq!(receipt.recovered_blake3, hash(b"valid:4"));
-        assert!(receipt.completed);
-    }
-
-    #[test]
-    fn invalid_primary_without_valid_backup_is_preserved() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        fs::write(&path, b"damaged").unwrap();
-        assert!(read_or_recover(&path, valid).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"damaged");
-        assert!(!backup_dir(&path).unwrap().exists());
-    }
-
-    #[test]
-    fn write_refuses_to_overwrite_concurrently_damaged_primary() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        write(&path, b"valid:one", valid).unwrap();
-        write(&path, b"valid:two", valid).unwrap();
-        fs::write(&path, b"damaged").unwrap();
-        assert!(write(&path, b"valid:three", valid).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"damaged");
-    }
-
-    #[test]
-    fn a_corrupt_newest_backup_falls_back_to_an_older_valid_generation() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        write(&path, b"valid:one", valid).unwrap();
-        write(&path, b"valid:two", valid).unwrap();
-        write(&path, b"valid:three", valid).unwrap();
-        let backup_dir = backup_dir(&path).unwrap();
-        let newest = backup_files(&backup_dir)
-            .unwrap()
-            .into_iter()
-            .max_by_key(|(generation, _)| *generation)
-            .unwrap()
-            .1;
-        fs::write(newest, b"valid:tampered").unwrap();
-        fs::write(&path, b"damaged").unwrap();
-        let outcome = read_or_recover(&path, valid).unwrap().unwrap();
-        assert_eq!(outcome.bytes, b"valid:one");
-    }
-
-    #[test]
-    fn repeated_recovery_retains_distinct_evidence_and_receipts() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        write(&path, b"valid:one", valid).unwrap();
-        write(&path, b"valid:two", valid).unwrap();
-        for damaged in [b"damaged-one".as_slice(), b"damaged-two".as_slice()] {
-            fs::write(&path, damaged).unwrap();
-            assert!(
-                read_or_recover(&path, valid)
-                    .unwrap()
-                    .unwrap()
-                    .recovery
-                    .is_some()
+        // Phase `a_corrupt_newest_backup_falls_back_to_an_older_valid_generation`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            write(&path, b"valid:one", valid).unwrap();
+            write(&path, b"valid:two", valid).unwrap();
+            write(&path, b"valid:three", valid).unwrap();
+            let backup_dir = backup_dir(&path).unwrap();
+            let newest = backup_files(&backup_dir)
+                .unwrap()
+                .into_iter()
+                .max_by_key(|(generation, _)| *generation)
+                .unwrap()
+                .1;
+            fs::write(newest, b"valid:tampered").unwrap();
+            fs::write(&path, b"damaged").unwrap();
+            let outcome = read_or_recover(&path, valid).unwrap().unwrap();
+            assert_eq!(outcome.bytes, b"valid:one");
+        }
+        // Phase `repeated_recovery_retains_distinct_evidence_and_receipts`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            write(&path, b"valid:one", valid).unwrap();
+            write(&path, b"valid:two", valid).unwrap();
+            for damaged in [b"damaged-one".as_slice(), b"damaged-two".as_slice()] {
+                fs::write(&path, damaged).unwrap();
+                assert!(
+                    read_or_recover(&path, valid)
+                        .unwrap()
+                        .unwrap()
+                        .recovery
+                        .is_some()
+                );
+            }
+            let backup_dir = backup_dir(&path).unwrap();
+            let names = fs::read_dir(backup_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| name.starts_with("evidence-"))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| name.starts_with("recovery-"))
+                    .count(),
+                2
             );
         }
-        let backup_dir = backup_dir(&path).unwrap();
-        let names = fs::read_dir(backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names
-                .iter()
-                .filter(|name| name.starts_with("evidence-"))
-                .count(),
-            2
-        );
-        assert_eq!(
-            names
-                .iter()
-                .filter(|name| name.starts_with("recovery-"))
-                .count(),
-            2
-        );
     }
 
     #[test]
-    fn oversized_primary_fails_before_allocation_and_remains_untouched() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        let file = fs::File::create(&path).unwrap();
-        file.set_len(MAX_DURABLE_STATE_BYTES + 1).unwrap();
-        drop(file);
-        let error = read_or_recover(&path, |_| true).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(
-            fs::metadata(&path).unwrap().len(),
-            MAX_DURABLE_STATE_BYTES + 1
-        );
+    fn damaged_or_oversized_primaries_are_preserved_untouched() {
+        // Phase `invalid_primary_without_valid_backup_is_preserved`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            fs::write(&path, b"damaged").unwrap();
+            assert!(read_or_recover(&path, valid).is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"damaged");
+            assert!(!backup_dir(&path).unwrap().exists());
+        }
+        // Phase `write_refuses_to_overwrite_concurrently_damaged_primary`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            write(&path, b"valid:one", valid).unwrap();
+            write(&path, b"valid:two", valid).unwrap();
+            fs::write(&path, b"damaged").unwrap();
+            assert!(write(&path, b"valid:three", valid).is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"damaged");
+        }
+        // Phase `oversized_primary_fails_before_allocation_and_remains_untouched`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            let file = fs::File::create(&path).unwrap();
+            file.set_len(MAX_DURABLE_STATE_BYTES + 1).unwrap();
+            drop(file);
+            let error = read_or_recover(&path, |_| true).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                fs::metadata(&path).unwrap().len(),
+                MAX_DURABLE_STATE_BYTES + 1
+            );
+        }
     }
 }

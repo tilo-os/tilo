@@ -32,6 +32,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use ui::doc::read_str_or_text;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -40,10 +41,12 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::i18n::{t, t_args};
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
+use ui::i18n::ArgValue;
 
 fn time_bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
     match crate::actions::time_date_bool_binding(id) {
@@ -313,14 +316,25 @@ impl TimeZoneMap {
     fn active_label(&self) -> String {
         let active = self.hover.or_else(|| self.cursor.filter(|_| self.focused));
         active.and_then(|index| self.points.get(index)).map_or_else(
-            || format!("Selected: {}", self.selected),
+            || {
+                t_args(
+                    "time-map-selected",
+                    &[("zone", ArgValue::from(self.selected.as_str()))],
+                )
+            },
             |point| format!("{} — {}", point.city, point.region),
         )
     }
 }
 
 impl Widget for TimeZoneMap {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::undo::UndoPoints
+    );
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.action.is_some() {
             return;
         }
@@ -354,20 +368,6 @@ impl Widget for TimeZoneMap {
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(ui::widget::ActionEmitter::take)
-    }
-
-    fn on_commit(&mut self) {
-        self.needs_commit = false;
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -434,7 +434,7 @@ impl Widget for TimeZoneMap {
         if self.points.is_empty() {
             text_renderer.draw_text(
                 scene,
-                "Map coordinates are unavailable; use the selector above.",
+                &t("time-map-unavailable"),
                 11.0,
                 theme.text_dim,
                 transform * Affine::translate((plot.x0 + 8.0, plot.center().y - 6.0)),
@@ -482,25 +482,15 @@ impl Widget for TimeZoneMap {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.point_at(self.last_cursor);
                 if hover != self.hover {
                     self.hover = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -509,9 +499,9 @@ impl Widget for TimeZoneMap {
                 ..
             } => {
                 if let Some(index) = self.point_at(self.last_cursor) {
-                    self.commit(index, state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.commit(index, ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -525,12 +515,12 @@ impl Widget for TimeZoneMap {
                     Key::Named(NamedKey::ArrowDown) => self.move_cursor(0.0, 1.0),
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         if let Some(index) = self.cursor {
-                            self.commit(index, state, root);
+                            self.commit(index, ctx.state, ctx.path);
                         }
                     }
                     _ => return,
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -578,25 +568,28 @@ impl Widget for TimeZoneMap {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name("Time-zone map")
-                .with_description(
-                    "Installed IANA time zones with published coordinates. Use arrow keys to move and Enter to apply; the searchable selector includes aliases without coordinates.",
-                )
+                .with_name(t("time-map-a11y-name"))
+                .with_description(t("time-map-a11y-desc"))
                 .with_value(
                     self.cursor
                         .and_then(|index| self.points.get(index))
                         .map_or_else(|| self.selected.clone(), |point| point.id.clone()),
                 )
-                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.focused)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.focused),
+                ),
         )
     }
 
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         match action {
             ui::a11y::Action::Activate => {
                 if let Some(index) = self.cursor.or_else(|| self.selected_index()) {
@@ -616,6 +609,23 @@ impl Widget for TimeZoneMap {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::undo::UndoPoints for TimeZoneMap {
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
+    fn on_commit(&mut self) {
+        self.needs_commit = false;
+    }
+}
+
+impl ui::widget::controls::ActionControls for TimeZoneMap {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(ui::widget::ActionEmitter::take)
     }
 }
 
@@ -810,11 +820,40 @@ impl TimeDatePane {
         let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
         let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
 
+        let clock_format = if self.h24 {
+            t("time-clock-24h")
+        } else {
+            t("time-clock-12h")
+        };
+        let sync = match self.sync_status.synchronized {
+            Some(true) => t("time-sync-ok"),
+            Some(false) if self.initial_auto => t("time-sync-waiting"),
+            Some(false) => t("time-sync-disabled"),
+            None => t("time-sync-unknown"),
+        };
+        let source_name = self
+            .sync_status
+            .source
+            .clone()
+            .unwrap_or_else(|| t("time-source-unknown"));
+        let mapped = self.timezone_points.len();
+        let map_note = if mapped == 0 {
+            t("time-map-empty")
+        } else {
+            t_args(
+                "time-map-count",
+                &[(
+                    "mapped",
+                    ArgValue::from(i64::try_from(mapped).unwrap_or(i64::MAX)),
+                )],
+            )
+        };
+
         let clock = card(
-            "Clock",
+            &t("time-clock-title"),
             rows(vec![
                 setting_row(
-                    "Set time automatically",
+                    &t("time-auto"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.last_auto))
                             .on_action(time_bool_action("automatic-time"))
@@ -822,7 +861,7 @@ impl TimeDatePane {
                     ),
                 ),
                 setting_row(
-                    "24-hour clock",
+                    &t("time-24h"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.last_h24))
                             .on_action(time_bool_action("24-hour"))
@@ -830,7 +869,7 @@ impl TimeDatePane {
                     ),
                 ),
                 choice_row(
-                    "Time zone",
+                    &t("time-timezone"),
                     Box::new(
                         Dropdown::from_state(
                             self.timezones.clone(),
@@ -841,33 +880,21 @@ impl TimeDatePane {
                         .with_placeholder(&self.timezone),
                     ),
                 ),
-                value_row("Current time", &now),
-                value_row("Current date", &today),
+                value_row(&t("time-current-time"), &now),
+                value_row(&t("time-current-date"), &today),
             ]),
         );
 
         let formats = card(
-            "Display",
+            &t("time-display-title"),
             rows(vec![
-                value_row("Clock format", if self.h24 { "24-hour" } else { "12-hour" }),
-                caption(
-                    "Date and number formats are set system-wide in \
-                     Region & Formats; this pane shows the clock surface.",
-                ),
+                value_row(&t("time-clock-format"), &clock_format),
+                caption(&t("time-display-caption")),
             ]),
         );
 
-        let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
-            "This tzdata installation does not publish map coordinates. The searchable selector remains complete; Tilo does not guess your location."
-                .to_string()
-        } else {
-            format!(
-                "Showing {mapped} installed zones with coordinates published by tzdata. This chooses a zone; it does not detect your location. Aliases remain in the selector."
-            )
-        };
         let map = card(
-            "Time-zone map",
+            &t("time-map-title"),
             rows(vec![
                 Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
@@ -878,33 +905,20 @@ impl TimeDatePane {
         );
 
         let source = card(
-            "Automatic time source",
+            &t("time-source-title"),
             rows(vec![
-                value_row(
-                    "Synchronization",
-                    match self.sync_status.synchronized {
-                        Some(true) => "Synchronized",
-                        Some(false) if self.initial_auto => "Waiting for synchronization",
-                        Some(false) => "Automatic time is disabled",
-                        None => "Not reported by the time service",
-                    },
-                ),
-                value_row(
-                    "Source",
-                    self.sync_status
-                        .source
-                        .as_deref()
-                        .unwrap_or("Not reported by the active NTP provider"),
-                ),
-                caption(
-                    "Time zones come from the installed IANA tzdata database. Both pickers submit only identifiers from timedated's accepted list.",
-                ),
+                value_row(&t("time-sync"), &sync),
+                value_row(&t("time-source"), &source_name),
+                caption(&t("time-source-caption")),
             ]),
         );
 
         let mut cards = vec![clock, map, source, formats];
         if let Some(notice) = &self.notice {
-            cards.insert(0, card("That did not work", rows(vec![caption(notice)])));
+            cards.insert(
+                0,
+                card(&t("time-notice-title"), rows(vec![caption(notice)])),
+            );
         }
         crate::widgets::cards(cards)
     }
@@ -915,14 +929,7 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for TimeDatePane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Time service and locale values are device-local effects. Do not
-        // seed, observe, or compensate them through Automerge: a remote
-        // replay must never change this machine's clock configuration.
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
-    }
+    ui::provides!(dyn ui::undo::UndoPoints);
 
     fn build_layout(
         &mut self,
@@ -976,36 +983,15 @@ impl Widget for TimeDatePane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1024,20 +1010,6 @@ impl Widget for TimeDatePane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "time-date",
-            "Time & date",
-            "Change time and date preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "TimeDatePane"
     }
@@ -1053,6 +1025,22 @@ impl Widget for TimeDatePane {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+}
+
+impl ui::undo::UndoPoints for TimeDatePane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "time-date",
+            "Time & date",
+            "Change time and date preferences",
+        )
     }
 }
 
@@ -1099,164 +1087,175 @@ mod tests {
         )
     }
 
+    /// tzdata parsing, map projection, keyboard access and non-empty timezones.
     #[test]
-    fn tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids() {
-        let points = fixture_points();
-        assert_eq!(
-            points
-                .iter()
-                .map(|point| point.id.as_str())
-                .collect::<Vec<_>>(),
-            ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
-        );
-        let new_york = &points[0];
-        assert_eq!(new_york.latitude_e6, 40_714_167);
-        assert_eq!(new_york.longitude_e6, -74_006_389);
-        assert!(
-            points.iter().all(|point| point.id != "Europe/London"),
-            "a coordinate-table entry not accepted by timedated must not enter the map"
-        );
-        assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
-        assert_eq!(parse_iso6709_coordinate("garbage"), None);
-    }
+    fn timezone_map_parses_projects_and_commits_known_zones() {
+        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
+        {
+            let points = fixture_points();
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
+            );
+            let new_york = &points[0];
+            assert_eq!(new_york.latitude_e6, 40_714_167);
+            assert_eq!(new_york.longitude_e6, -74_006_389);
+            assert!(
+                points.iter().all(|point| point.id != "Europe/London"),
+                "a coordinate-table entry not accepted by timedated must not enter the map"
+            );
+            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
+            assert_eq!(parse_iso6709_coordinate("garbage"), None);
+        }
 
-    #[test]
-    fn map_projects_points_inside_normal_and_narrow_layouts() {
-        for width in [280.0, 720.0] {
-            let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = map.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(width),
-                            height: Dimension::auto(),
+        // Case `map_projects_points_inside_normal_and_narrow_layouts`.
+        {
+            for width in [280.0, 720.0] {
+                let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = map.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(width),
+                                height: Dimension::auto(),
+                            },
+                            ..Default::default()
                         },
-                        ..Default::default()
-                    },
-                    &[node],
-                )
-                .unwrap();
-            taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
-            map.apply_layout(&taffy, node, Point::ZERO);
+                        &[node],
+                    )
+                    .unwrap();
+                taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                map.apply_layout(&taffy, node, Point::ZERO);
 
-            assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
-            assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
-            for index in 0..map.points.len() {
-                assert!(map.plot_rect().contains(map.projected(index)));
+                assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
+                assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
+                for index in 0..map.points.len() {
+                    assert!(map.plot_rect().contains(map.projected(index)));
+                }
             }
+        }
+
+        // Case `map_is_keyboard_accessible_and_only_commits_known_zone`.
+        {
+            let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
+            map.set_focus(true);
+            let access = map.accessibility().expect("map semantics");
+            assert_eq!(access.role, ui::a11y::Role::Canvas);
+            assert!(access.state.focusable);
+            assert!(access.state.focused);
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(map.perform_action(
+                &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(
+                read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
+                Some("Europe/Berlin")
+            );
+            assert!(
+                ui::undo::needs_commit(&map),
+                "a real timezone choice is durable"
+            );
+            ui::undo::on_commit(&mut map);
+            assert!(!ui::undo::needs_commit(&map));
+            assert!(!map.perform_action(
+                &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
+                &mut doc,
+                &root,
+            ));
+        }
+
+        // Case `timezone_is_never_empty`.
+        {
+            assert!(!timezone().is_empty());
         }
     }
 
+    /// Document timezone, NTP and 24h edits stay local; the pane lays out.
     #[test]
-    fn map_is_keyboard_accessible_and_only_commits_known_zone() {
-        let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
-        map.set_focus(true);
-        let access = map.accessibility().expect("map semantics");
-        assert_eq!(access.role, ui::a11y::Role::Canvas);
-        assert!(access.state.focusable);
-        assert!(access.state.focused);
+    fn document_time_edits_never_reach_the_local_authority() {
+        // Case `document_timezone_edits_do_not_reach_the_local_authority`.
+        {
+            let ntp = Arc::new(RecordingNtp::default());
+            let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
+            pane.timezones.push("Etc/UTC".to_string());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(map.perform_action(
-            &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(
-            read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
-            Some("Europe/Berlin")
-        );
-        assert!(map.needs_commit(), "a real timezone choice is durable");
-        map.on_commit();
-        assert!(!map.needs_commit());
-        assert!(!map.perform_action(
-            &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
-            &mut doc,
-            &root,
-        ));
-    }
+            // This is the representation `Dropdown::commit_value` uses.
+            let text = doc.put_object(&root, TIMEZONE_KEY, ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "Etc/UTC").unwrap();
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert!(ntp.zones.lock().unwrap().is_empty());
+        }
 
-    #[test]
-    fn document_timezone_edits_do_not_reach_the_local_authority() {
-        let ntp = Arc::new(RecordingNtp::default());
-        let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
-        pane.timezones.push("Etc/UTC".to_string());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+        // Case `document_auto_time_toggle_does_not_invoke_set_ntp`.
+        // Toggling "Set time automatically" forwards to `set_ntp` exactly once
+        // per change, with the new value — the real dispatch path.
+        {
+            let ntp = Arc::new(RecordingNtp::default());
+            // Start with auto=true (the seed), then flip off.
+            let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(
+                ntp.calls.lock().unwrap().is_empty(),
+                "seed must not dispatch"
+            );
+            let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            assert!(ntp.calls.lock().unwrap().is_empty());
+            // Flip back on.
+            let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(ntp.calls.lock().unwrap().is_empty());
+        }
 
-        // This is the representation `Dropdown::commit_value` uses.
-        let text = doc.put_object(&root, TIMEZONE_KEY, ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "Etc/UTC").unwrap();
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert!(ntp.zones.lock().unwrap().is_empty());
-    }
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
 
-    /// Toggling "Set time automatically" forwards to `set_ntp` exactly once
-    /// per change, with the new value — the real dispatch path.
-    #[test]
-    fn document_auto_time_toggle_does_not_invoke_set_ntp() {
-        let ntp = Arc::new(RecordingNtp::default());
-        // Start with auto=true (the seed), then flip off.
-        let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(
-            ntp.calls.lock().unwrap().is_empty(),
-            "seed must not dispatch"
-        );
-        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        assert!(ntp.calls.lock().unwrap().is_empty());
-        // Flip back on.
-        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(ntp.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
-    #[test]
-    fn timezone_is_never_empty() {
-        assert!(!timezone().is_empty());
-    }
-
-    /// Flipping the 24-hour key re-renders the clock (structure dirty), updates
-    /// the pane's format flag, and forwards the new value to the format sink —
-    /// proof the toggle is live and drives the persistence path (asserted
-    /// against disk in the `prefs_persistence` integration test).
-    #[test]
-    fn document_h24_toggle_does_not_persist_or_reformat_clock() {
-        let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink_calls = sunk.clone();
-        // Build the hermetic test pane (24h start, no disk) but swap in a
-        // recording format sink so we can prove the toggle drives persistence.
-        let mut pane = TimeDatePane::with_ntp(Arc::new(RecordingNtp::default()), true);
-        pane.persist_format = Arc::new(move |b| sink_calls.lock().unwrap().push(b));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(sunk.lock().unwrap().is_empty(), "seed must not persist");
-        // Seed wrote h24=true; flip to false.
-        let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-        assert!(pane.h24, "the pane ignores a collaborative clock value");
-        assert!(!pane.take_structure_dirty());
-        assert!(sunk.lock().unwrap().is_empty());
+        // Case `document_h24_toggle_does_not_persist_or_reformat_clock`.
+        // Flipping the 24-hour key re-renders the clock (structure dirty), updates
+        // the pane's format flag, and forwards the new value to the format sink —
+        // proof the toggle is live and drives the persistence path (asserted
+        // against disk in the `prefs_persistence` integration test).
+        {
+            let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink_calls = sunk.clone();
+            // Build the hermetic test pane (24h start, no disk) but swap in a
+            // recording format sink so we can prove the toggle drives persistence.
+            let mut pane = TimeDatePane::with_ntp(Arc::new(RecordingNtp::default()), true);
+            pane.persist_format = Arc::new(move |b| sink_calls.lock().unwrap().push(b));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(sunk.lock().unwrap().is_empty(), "seed must not persist");
+            // Seed wrote h24=true; flip to false.
+            let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
+            assert!(pane.h24, "the pane ignores a collaborative clock value");
+            assert!(!pane.take_structure_dirty());
+            assert!(sunk.lock().unwrap().is_empty());
+        }
     }
 }

@@ -11,7 +11,7 @@
 //! subtle tier, ≈ 10 for the medium one — `ui/src/tokens/colors.rs`).
 //!
 //! A case that cannot observe its subject fails: there is no adapter skip.
-//! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump every rendered PNG.
+//! Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump every rendered PNG.
 
 #![allow(
     clippy::unwrap_used,
@@ -89,14 +89,16 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
     let mut focus = None;
     widget.handle_event(
         event,
-        1.0,
-        &Modifiers::default(),
-        &mut doc,
-        &ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -143,7 +145,7 @@ impl Rendered {
     }
 
     fn dump(&self, name: &str) {
-        let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+        let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
             return;
         };
         std::fs::create_dir_all(&dir).unwrap();
@@ -251,216 +253,262 @@ fn labels() -> [&'static str; 4] {
 }
 
 #[test]
-fn context_menu_pointer_hover_is_visible_in_both_themes() {
-    for (name, theme) in themes() {
-        let mut menu = ContextMenu::new();
-        for label in labels() {
-            menu.push(MenuItem::action(label, || {}));
+fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
+    // Case `context_menu_pointer_hover_is_visible_in_both_themes`.
+    {
+        for (name, theme) in themes() {
+            let mut menu = ContextMenu::new();
+            for label in labels() {
+                menu.push(MenuItem::action(label, || {}));
+            }
+            // The legacy point-placement path every right-click host uses.
+            menu.open_at([40.0, 40.0]);
+            let row1 = menu.item_rect(1).expect("row 1 is an action row");
+            dispatch(&mut menu, &cursor_moved(row1.center()));
+            assert_eq!(menu.hovered(), Some(1), "pointer over row 1 highlights it");
+            let row2 = menu.item_rect(2).unwrap();
+
+            let presence = PresenceCtx::default();
+            let rendered = render(&theme, |scene, tr| {
+                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row1),
+                text_free_probe(row2),
+                &theme,
+                name,
+                "context-menu/pointer",
+            );
         }
-        // The legacy point-placement path every right-click host uses.
-        menu.open_at([40.0, 40.0]);
-        let row1 = menu.item_rect(1).expect("row 1 is an action row");
-        dispatch(&mut menu, &cursor_moved(row1.center()));
-        assert_eq!(menu.hovered(), Some(1), "pointer over row 1 highlights it");
-        let row2 = menu.item_rect(2).unwrap();
-
-        let presence = PresenceCtx::default();
-        let rendered = render(&theme, |scene, tr| {
-            menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row1),
-            text_free_probe(row2),
-            &theme,
-            name,
-            "context-menu/pointer",
-        );
     }
-}
 
-#[test]
-fn context_menu_keyboard_highlight_is_visible_when_anchored() {
-    for (name, theme) in themes() {
-        let mut menu = ContextMenu::new();
-        for label in labels() {
-            menu.push(MenuItem::action(label, || {}));
+    // Case `context_menu_keyboard_highlight_is_visible_when_anchored`.
+    {
+        for (name, theme) in themes() {
+            let mut menu = ContextMenu::new();
+            for label in labels() {
+                menu.push(MenuItem::action(label, || {}));
+            }
+            let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
+            // The measured, viewport-bounded path shared hosts (toolbar
+            // overflow, shell) use.
+            menu.open_anchored(Rect::new(40.0, 20.0, 120.0, 48.0), viewport);
+            let presence = PresenceCtx::default();
+            let mut tr_probe = TextRenderer::new();
+            menu.layout_within(&mut tr_probe, &theme);
+            dispatch(&mut menu, &key_press(NamedKey::ArrowDown));
+            dispatch(&mut menu, &key_press(NamedKey::ArrowDown));
+            assert_eq!(menu.hovered(), Some(1), "two ArrowDowns land on row 1");
+            let row1 = menu.item_rect(1).unwrap();
+            let row2 = menu.item_rect(2).unwrap();
+
+            let rendered = render(&theme, |scene, tr| {
+                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row1),
+                text_free_probe(row2),
+                &theme,
+                name,
+                "context-menu/keyboard",
+            );
         }
-        let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
-        // The measured, viewport-bounded path shared hosts (toolbar
-        // overflow, shell) use.
-        menu.open_anchored(Rect::new(40.0, 20.0, 120.0, 48.0), viewport);
-        let presence = PresenceCtx::default();
-        let mut tr_probe = TextRenderer::new();
-        menu.layout_within(&mut tr_probe, &theme);
-        dispatch(&mut menu, &key_press(NamedKey::ArrowDown));
-        dispatch(&mut menu, &key_press(NamedKey::ArrowDown));
-        assert_eq!(menu.hovered(), Some(1), "two ArrowDowns land on row 1");
-        let row1 = menu.item_rect(1).unwrap();
-        let row2 = menu.item_rect(2).unwrap();
+    }
 
-        let rendered = render(&theme, |scene, tr| {
-            menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row1),
-            text_free_probe(row2),
-            &theme,
-            name,
-            "context-menu/keyboard",
-        );
+    // Case `context_menu_highlight_is_visible_in_every_shipped_theme`.
+    // Every preset `Theme::named` resolves, including the accessibility track:
+    // the veneer polarity and the accent are per-theme decisions, so a highlight
+    // that survives the two defaults can still vanish on a preset.
+    // The armed context-menu row must read on every shipped theme, and its
+    // label must stay legible on the fill it sits on — the reported surface,
+    // swept across every palette the OS can be set to.
+    {
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped preset resolves");
+            let mut menu = ContextMenu::new();
+            for label in labels() {
+                menu.push(MenuItem::action(label, || {}));
+            }
+            menu.open_at([40.0, 40.0]);
+            let row1 = menu.item_rect(1).unwrap();
+            dispatch(&mut menu, &cursor_moved(row1.center()));
+            assert_eq!(menu.hovered(), Some(1));
+            let row2 = menu.item_rect(2).unwrap();
+
+            let presence = PresenceCtx::default();
+            let rendered = render(&theme, |scene, tr| {
+                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row1),
+                text_free_probe(row2),
+                &theme,
+                name,
+                "context-menu/preset",
+            );
+        }
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
 #[test]
-fn dropdown_open_list_highlight_is_visible_in_both_themes() {
-    for (name, theme) in themes() {
-        let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
-        let mut dd = Dropdown::new(options, "choice").open();
-        let control = Rect::new(40.0, 20.0, 300.0, 60.0);
-        dd.apply_layout_external(control);
-        let mut doc = AutoCommit::new();
-        dd.sync(&mut doc, &ROOT);
-        // Rows hang directly under the control: LIST_GAP 4, ITEM_HEIGHT 32.
-        let row = |i: f64| {
-            let top = control.y1 + 4.0 + i * 32.0;
-            Rect::new(control.x0, top, control.x1, top + 32.0)
-        };
-        dispatch(&mut dd, &cursor_moved(row(1.0).center()));
-        assert_eq!(
-            dd.highlight_index(),
-            1,
-            "pointer over row 1 moves the highlight"
-        );
+fn list_menu_cursor_rows_are_visible_in_both_themes() {
+    // Case `dropdown_open_list_highlight_is_visible_in_both_themes`.
+    {
+        for (name, theme) in themes() {
+            let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
+            let mut dd = Dropdown::new(options, "choice").open();
+            let control = Rect::new(40.0, 20.0, 300.0, 60.0);
+            dd.apply_layout_external(control);
+            let mut doc = AutoCommit::new();
+            dd.sync(&mut doc, &ROOT);
+            // Rows hang directly under the control: LIST_GAP 4, ITEM_HEIGHT 32.
+            let row = |i: f64| {
+                let top = control.y1 + 4.0 + i * 32.0;
+                Rect::new(control.x0, top, control.x1, top + 32.0)
+            };
+            dispatch(&mut dd, &cursor_moved(row(1.0).center()));
+            assert_eq!(
+                dd.highlight_index(),
+                1,
+                "pointer over row 1 moves the highlight"
+            );
 
-        let presence = PresenceCtx::default();
-        let rendered = render(&theme, |scene, tr| {
-            dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-            dd.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        rendered.dump(&format!("menu_highlight_dropdown_hover_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row(1.0)),
-            text_free_probe(row(2.0)),
-            &theme,
-            name,
-            "dropdown",
-        );
+            let presence = PresenceCtx::default();
+            let rendered = render(&theme, |scene, tr| {
+                dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                dd.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            rendered.dump(&format!("menu_highlight_dropdown_hover_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row(1.0)),
+                text_free_probe(row(2.0)),
+                &theme,
+                name,
+                "dropdown",
+            );
+        }
     }
-}
 
-#[test]
-fn autocomplete_pointer_hover_is_visible_in_both_themes() {
-    for (name, theme) in themes() {
-        let mut ac = Autocomplete::new();
-        let field = Rect::new(40.0, 20.0, 300.0, 60.0);
-        ac.apply_layout_external(field);
-        ac.begin_edit();
-        ac.set_suggestions_open(labels().iter().map(|s| Suggestion::new(*s)).collect());
-        assert!(ac.is_open(), "the suggestion list is open");
-        // Panel starts DROPDOWN_GAP (6) under the field with a 4 px inset;
-        // rows are ROW_H (32) tall and inset 4 px from each side.
-        let row = |i: f64| {
-            let top = field.y1 + 6.0 + 4.0 + i * 32.0;
-            Rect::new(field.x0 + 4.0, top, field.x1 - 4.0, top + 32.0)
-        };
-        dispatch(&mut ac, &cursor_moved(row(1.0).center()));
-        assert!(
-            ac.highlighted().is_none(),
-            "a pointer hover must not arm the row — that is the keyboard's state"
-        );
+    // Case `autocomplete_pointer_hover_is_visible_in_both_themes`.
+    {
+        for (name, theme) in themes() {
+            let mut ac = Autocomplete::new();
+            let field = Rect::new(40.0, 20.0, 300.0, 60.0);
+            ac.apply_layout_external(field);
+            ac.begin_edit();
+            ac.set_suggestions_open(labels().iter().map(|s| Suggestion::new(*s)).collect());
+            assert!(ac.is_open(), "the suggestion list is open");
+            // Panel starts DROPDOWN_GAP (6) under the field with a 4 px inset;
+            // rows are ROW_H (32) tall and inset 4 px from each side.
+            let row = |i: f64| {
+                let top = field.y1 + 6.0 + 4.0 + i * 32.0;
+                Rect::new(field.x0 + 4.0, top, field.x1 - 4.0, top + 32.0)
+            };
+            dispatch(&mut ac, &cursor_moved(row(1.0).center()));
+            assert!(
+                ac.highlighted().is_none(),
+                "a pointer hover must not arm the row — that is the keyboard's state"
+            );
 
-        let presence = PresenceCtx::default();
-        let rendered = render(&theme, |scene, tr| {
-            ac.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-            ac.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        rendered.dump(&format!("menu_highlight_autocomplete_hover_{name}"));
-        assert_highlight_visible(
-            &rendered,
-            text_free_probe(row(1.0)),
-            text_free_probe(row(2.0)),
-            name,
-            "autocomplete/hover",
-        );
+            let presence = PresenceCtx::default();
+            let rendered = render(&theme, |scene, tr| {
+                ac.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                ac.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            rendered.dump(&format!("menu_highlight_autocomplete_hover_{name}"));
+            assert_highlight_visible(
+                &rendered,
+                text_free_probe(row(1.0)),
+                text_free_probe(row(2.0)),
+                name,
+                "autocomplete/hover",
+            );
+        }
     }
-}
 
-#[test]
-fn slash_menu_cursor_row_is_visible_in_both_themes() {
-    for (name, theme) in themes() {
-        let mut menu = SlashMenu::new();
-        menu.set_anchor(Point::new(40.0, 20.0));
-        menu.set_visible(true);
-        let row1 = menu.row_rect(1).expect("slash menu has at least two rows");
-        let row2 = menu
-            .row_rect(2)
-            .expect("slash menu has at least three rows");
-        assert!(
-            menu.hover_at(row1.center()),
-            "hovering row 1 moves the cursor"
-        );
+    // Case `slash_menu_cursor_row_is_visible_in_both_themes`.
+    {
+        for (name, theme) in themes() {
+            let mut menu = SlashMenu::new();
+            menu.set_anchor(Point::new(40.0, 20.0));
+            menu.set_visible(true);
+            let row1 = menu.row_rect(1).expect("slash menu has at least two rows");
+            let row2 = menu
+                .row_rect(2)
+                .expect("slash menu has at least three rows");
+            assert!(
+                menu.hover_at(row1.center()),
+                "hovering row 1 moves the cursor"
+            );
 
-        let rendered = render(&theme, |scene, tr| {
-            menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
-        });
-        rendered.dump(&format!("menu_highlight_slash_menu_hover_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row1),
-            text_free_probe(row2),
-            &theme,
-            name,
-            "slash-menu",
-        );
+            let rendered = render(&theme, |scene, tr| {
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
+            });
+            rendered.dump(&format!("menu_highlight_slash_menu_hover_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row1),
+                text_free_probe(row2),
+                &theme,
+                name,
+                "slash-menu",
+            );
+        }
     }
-}
 
-#[test]
-fn page_palette_cursor_row_is_visible_in_both_themes() {
-    for (name, theme) in themes() {
-        let mut palette = PagePalette::new();
-        palette.set_items(
-            labels()
-                .iter()
-                .map(|s| PageEntry {
-                    id: uuid::Uuid::new_v4(),
-                    title: (*s).to_string(),
-                })
-                .collect(),
-        );
-        palette.set_anchor(Point::new(0.0, 0.0));
-        palette.set_visible(true);
-        dispatch_key_to_palette(&mut palette, NamedKey::ArrowDown);
-        assert_eq!(
-            palette.highlighted().map(|e| e.title.as_str()),
-            Some("Open"),
-            "ArrowDown moves the cursor to row 1"
-        );
-        // Card PADDING 12; input INPUT_HEIGHT 44; rows ROW_HEIGHT 36.
-        let rect = palette.rect();
-        let list_top = rect.y0 + 12.0 + 44.0 + 12.0;
-        let row = |i: f64| {
-            let top = list_top + i * 36.0;
-            Rect::new(rect.x0 + 12.0, top, rect.x1 - 12.0, top + 36.0)
-        };
+    // Case `page_palette_cursor_row_is_visible_in_both_themes`.
+    {
+        for (name, theme) in themes() {
+            let mut palette = PagePalette::new();
+            palette.set_items(
+                labels()
+                    .iter()
+                    .map(|s| PageEntry {
+                        id: uuid::Uuid::new_v4(),
+                        title: (*s).to_string(),
+                    })
+                    .collect(),
+            );
+            palette.set_anchor(Point::new(0.0, 0.0));
+            palette.set_visible(true);
+            dispatch_key_to_palette(&mut palette, NamedKey::ArrowDown);
+            assert_eq!(
+                palette.highlighted().map(|e| e.title.as_str()),
+                Some("Open"),
+                "ArrowDown moves the cursor to row 1"
+            );
+            // Card PADDING 12; input INPUT_HEIGHT 44; rows ROW_HEIGHT 36.
+            let rect = palette.rect();
+            let list_top = rect.y0 + 12.0 + 44.0 + 12.0;
+            let row = |i: f64| {
+                let top = list_top + i * 36.0;
+                Rect::new(rect.x0 + 12.0, top, rect.x1 - 12.0, top + 36.0)
+            };
 
-        let rendered = render(&theme, |scene, tr| {
-            palette.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
-        });
-        rendered.dump(&format!("menu_highlight_page_palette_cursor_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row(1.0)),
-            text_free_probe(row(2.0)),
-            &theme,
-            name,
-            "page-palette",
-        );
+            let rendered = render(&theme, |scene, tr| {
+                palette.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
+            });
+            rendered.dump(&format!("menu_highlight_page_palette_cursor_{name}"));
+            assert_armed_row(
+                &rendered,
+                text_free_probe(row(1.0)),
+                text_free_probe(row(2.0)),
+                &theme,
+                name,
+                "page-palette",
+            );
+        }
     }
 }
 
@@ -472,90 +520,59 @@ fn dispatch_key_to_palette(palette: &mut PagePalette, key: NamedKey) {
 }
 
 #[test]
-fn bg_app_ground_is_opaque_so_samples_are_meaningful() {
-    // Guards the sampling method itself: every case composites over the
-    // theme's window ground, so a transparent ground would make each ΔL*
-    // above meaningless rather than merely wrong.
-    for name in Theme::ALL {
-        let theme = Theme::named(name).expect("shipped preset resolves");
-        let px = theme.bg_app.to_rgba8();
-        assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
-    }
-}
-
-/// Every preset `Theme::named` resolves, including the accessibility track:
-/// the veneer polarity and the accent are per-theme decisions, so a highlight
-/// that survives the two defaults can still vanish on a preset.
-/// The armed context-menu row must read on every shipped theme, and its
-/// label must stay legible on the fill it sits on — the reported surface,
-/// swept across every palette the OS can be set to.
-#[test]
-fn context_menu_highlight_is_visible_in_every_shipped_theme() {
-    for name in Theme::ALL {
-        let theme = Theme::named(name).expect("shipped preset resolves");
-        let mut menu = ContextMenu::new();
-        for label in labels() {
-            menu.push(MenuItem::action(label, || {}));
+fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
+    // Case `bg_app_ground_is_opaque_so_samples_are_meaningful`.
+    {
+        // Guards the sampling method itself: every case composites over the
+        // theme's window ground, so a transparent ground would make each ΔL*
+        // above meaningless rather than merely wrong.
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped preset resolves");
+            let px = theme.bg_app.to_rgba8();
+            assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
         }
-        menu.open_at([40.0, 40.0]);
-        let row1 = menu.item_rect(1).unwrap();
-        dispatch(&mut menu, &cursor_moved(row1.center()));
-        assert_eq!(menu.hovered(), Some(1));
-        let row2 = menu.item_rect(2).unwrap();
-
-        let presence = PresenceCtx::default();
-        let rendered = render(&theme, |scene, tr| {
-            menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
-        assert_armed_row(
-            &rendered,
-            text_free_probe(row1),
-            text_free_probe(row2),
-            &theme,
-            name,
-            "context-menu/preset",
-        );
     }
-}
 
-/// The closed control itself: a pointer resting on a dropdown must be
-/// answered (HIG §7), which the widget tracked but never painted.
-#[test]
-fn dropdown_closed_control_hover_is_visible_in_both_themes() {
-    // Half the medium tier's floor: the resting hover is the *subtle* veneer
-    // (≈ 5 ΔL*), the quietest step the token set promises to be visible.
-    const MIN_SUBTLE_DELTA_L: f64 = 3.0;
-    for (name, theme) in themes() {
-        let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
-        let mut dd = Dropdown::new(options, "choice");
-        let control = Rect::new(40.0, 20.0, 300.0, 60.0);
-        dd.apply_layout_external(control);
-        let mut doc = AutoCommit::new();
-        dd.sync(&mut doc, &ROOT);
-        let presence = PresenceCtx::default();
-        // Clear of both the label (left) and the chevron (right 30 px).
-        let probe = Point::new(control.x1 - 44.0, control.center().y);
+    // Case `dropdown_closed_control_hover_is_visible_in_both_themes`.
+    // The closed control itself: a pointer resting on a dropdown must be
+    // answered (HIG §7), which the widget tracked but never painted.
+    {
+        // Half the medium tier's floor: the resting hover is the *subtle* veneer
+        // (≈ 5 ΔL*), the quietest step the token set promises to be visible.
+        const MIN_SUBTLE_DELTA_L: f64 = 3.0;
+        for (name, theme) in themes() {
+            let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
+            let mut dd = Dropdown::new(options, "choice");
+            let control = Rect::new(40.0, 20.0, 300.0, 60.0);
+            dd.apply_layout_external(control);
+            let mut doc = AutoCommit::new();
+            dd.sync(&mut doc, &ROOT);
+            let presence = PresenceCtx::default();
+            // Clear of both the label (left) and the chevron (right 30 px).
+            let probe = Point::new(control.x1 - 44.0, control.center().y);
 
-        let resting = render(&theme, |scene, tr| {
-            dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        dispatch(&mut dd, &cursor_moved(control.center()));
-        assert!(!dd.is_open(), "a hover must not open the list");
-        let hovered = render(&theme, |scene, tr| {
-            dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
-        });
-        hovered.dump(&format!("menu_highlight_dropdown_control_hover_{name}"));
+            let resting = render(&theme, |scene, tr| {
+                dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            dispatch(&mut dd, &cursor_moved(control.center()));
+            assert!(!dd.is_open(), "a hover must not open the list");
+            let hovered = render(&theme, |scene, tr| {
+                dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+            });
+            hovered.dump(&format!("menu_highlight_dropdown_control_hover_{name}"));
 
-        let rest = resting.sample(probe);
-        let hov = hovered.sample(probe);
-        assert_eq!(rest.3, 0xff, "{name}: resting control sample is not opaque");
-        assert_eq!(hov.3, 0xff, "{name}: hovered control sample is not opaque");
-        let delta = (lightness(hov) - lightness(rest)).abs();
-        eprintln!("dropdown-control/{name}: hovered {hov:?} vs resting {rest:?} → ΔL*={delta:.2}");
-        assert!(
-            delta >= MIN_SUBTLE_DELTA_L,
-            "{name}: hovering the closed dropdown changed the fill by only ΔL*={delta:.2}"
-        );
+            let rest = resting.sample(probe);
+            let hov = hovered.sample(probe);
+            assert_eq!(rest.3, 0xff, "{name}: resting control sample is not opaque");
+            assert_eq!(hov.3, 0xff, "{name}: hovered control sample is not opaque");
+            let delta = (lightness(hov) - lightness(rest)).abs();
+            eprintln!(
+                "dropdown-control/{name}: hovered {hov:?} vs resting {rest:?} → ΔL*={delta:.2}"
+            );
+            assert!(
+                delta >= MIN_SUBTLE_DELTA_L,
+                "{name}: hovering the closed dropdown changed the fill by only ΔL*={delta:.2}"
+            );
+        }
     }
 }

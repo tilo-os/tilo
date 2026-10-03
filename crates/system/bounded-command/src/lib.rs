@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::io::{Read, Write as _};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -17,6 +17,90 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+/// Start `command`'s child as the leader of its own process tree, so
+/// [`kill_tree`] also reaches every descendant it starts. On Unix this is a
+/// new process group named after the child's pid.
+pub fn own_process_tree(command: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+/// Start `command`'s child without a console window of its own. On Windows a
+/// console program otherwise opens one; elsewhere this changes nothing.
+pub fn without_console_window(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
+/// Kill a child started with [`own_process_tree`] together with its
+/// descendants, and the child itself as a fallback. The caller still reaps it.
+pub fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: the child was placed in its own pid-named process group; a
+        // negative pid targets exactly that group.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
+
+/// Stop a child started with [`own_process_tree`] and reap it. With a
+/// non-zero `grace`, the tree is first asked to exit (`SIGTERM` on Unix) and
+/// the child gets that long to do so; whatever remains is then killed with
+/// [`kill_tree`].
+pub fn terminate_tree(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    if !grace.is_zero()
+        && let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: the child was placed in its own pid-named process group; a
+        // negative pid targets exactly that group.
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    kill_tree(child);
+    let _ = child.wait();
+}
+
+/// Mark a script or program file executable for everyone and writable only
+/// by its owner (mode `0755` on Unix). A no-op where executability is not a
+/// file permission.
+///
+/// # Errors
+/// Returns the metadata lookup's or permission change's error.
+pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
 
 /// Maximum secret/request body accepted by this narrow helper.
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -289,8 +373,7 @@ fn run_prepared_inner(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(unix)]
-    command.process_group(0);
+    own_process_tree(&mut command);
     let mut child = command.spawn()?;
     let input_writer = if let Some(bytes) = input {
         let mut stdin = child
@@ -321,15 +404,7 @@ fn run_prepared_inner(
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
         if cancelled || Instant::now() >= deadline {
-            #[cfg(unix)]
-            if let Ok(pid) = i32::try_from(child.id())
-                && let Some(group) = pid.checked_neg()
-            {
-                // SAFETY: the child was placed in its own pid-named process
-                // group; a negative pid targets exactly that group.
-                unsafe { libc::kill(group, libc::SIGKILL) };
-            }
-            let _ = child.kill();
+            kill_tree(&mut child);
             let _ = child.wait();
             break None;
         }
@@ -373,117 +448,141 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
+    /// For tests of anything but the timeout: long enough that a loaded
+    /// machine never turns the expected error into `Error::Timeout`.
+    const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
+
     #[test]
-    fn rejects_input_and_both_output_stream_overflows() {
-        assert!(matches!(
-            run(
-                "true",
-                &[],
-                Some(&vec![0; MAX_INPUT_BYTES + 1]),
-                16,
-                Duration::from_secs(1)
-            ),
-            Err(Error::InputTooLarge)
-        ));
-        for (script, stream) in [
-            ("#!/bin/sh\nhead -c 8192 /dev/zero\n", "stdout"),
-            ("#!/bin/sh\nhead -c 8192 /dev/zero >&2\n", "stderr"),
-        ] {
+    fn input_and_output_limits_are_enforced_independently() {
+        // Phase `rejects_input_and_both_output_stream_overflows`.
+        {
+            assert!(matches!(
+                run(
+                    "true",
+                    &[],
+                    Some(&vec![0; MAX_INPUT_BYTES + 1]),
+                    16,
+                    UNTESTED_TIMEOUT
+                ),
+                Err(Error::InputTooLarge)
+            ));
+            for (script, stream) in [
+                ("#!/bin/sh\nhead -c 8192 /dev/zero\n", "stdout"),
+                ("#!/bin/sh\nhead -c 8192 /dev/zero >&2\n", "stderr"),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let helper = directory.path().join("helper");
+                fs::write(&helper, script).unwrap();
+                fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+                let error =
+                    run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
+                assert!(
+                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
+                );
+            }
+        }
+        // Phase `enforces_independent_output_limits`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
+            let error =
+                run_prepared_with_limits(command, None, 64, 32, UNTESTED_TIMEOUT).unwrap_err();
+            assert!(matches!(
+                error,
+                Error::OutputTooLarge {
+                    stream: "stderr",
+                    limit: 32
+                }
+            ));
+        }
+        // Phase `explicit_input_limit_supports_bounded_bulk_payloads`.
+        {
+            let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
+            let output = run_prepared_with_input_limit(
+                Command::new("cat"),
+                Some(&bytes),
+                bytes.len(),
+                bytes.len(),
+                64,
+                UNTESTED_TIMEOUT,
+            )
+            .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, bytes);
+
+            assert!(matches!(
+                run_prepared_with_input_limit(
+                    Command::new("cat"),
+                    Some(&bytes),
+                    bytes.len() - 1,
+                    bytes.len(),
+                    64,
+                    UNTESTED_TIMEOUT,
+                ),
+                Err(Error::InputTooLarge)
+            ));
+        }
+    }
+
+    #[test]
+    fn timeouts_and_dropped_handles_terminate_children_promptly() {
+        // Phase `timeout_kills_descendants_which_inherit_output_pipes`.
+        {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, script).unwrap();
+            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
             let error = run(
                 helper.to_str().unwrap(),
                 &[],
                 None,
                 4096,
-                Duration::from_secs(1),
+                Duration::from_millis(25),
             )
             .unwrap_err();
-            assert!(matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream));
+            assert!(matches!(error, Error::Timeout(_)));
+            assert!(started.elapsed() < Duration::from_secs(1));
         }
-    }
+        // Phase `timeout_interrupts_a_child_which_does_not_read_input`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let helper = directory.path().join("helper");
+            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
+            let error = run(
+                helper.to_str().unwrap(),
+                &[],
+                Some(&vec![0; MAX_INPUT_BYTES]),
+                4096,
+                Duration::from_millis(25),
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Timeout(_)));
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+        // Phase `asynchronous_handle_is_nonblocking_and_drop_cancels_promptly`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf ready; sleep 5"]);
+            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
+            assert!(child.try_wait().is_none());
 
-    #[test]
-    fn enforces_independent_output_limits() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
-        let error =
-            run_prepared_with_limits(command, None, 64, 32, Duration::from_secs(1)).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::OutputTooLarge {
-                stream: "stderr",
-                limit: 32
-            }
-        ));
-    }
-
-    #[test]
-    fn explicit_input_limit_supports_bounded_bulk_payloads() {
-        let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
-        let output = run_prepared_with_input_limit(
-            Command::new("cat"),
-            Some(&bytes),
-            bytes.len(),
-            bytes.len(),
-            64,
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        assert!(output.status.success());
-        assert_eq!(output.stdout, bytes);
-
-        assert!(matches!(
-            run_prepared_with_input_limit(
-                Command::new("cat"),
-                Some(&bytes),
-                bytes.len() - 1,
-                bytes.len(),
-                64,
-                Duration::from_secs(1),
-            ),
-            Err(Error::InputTooLarge)
-        ));
-    }
-
-    #[test]
-    fn timeout_kills_descendants_which_inherit_output_pipes() {
-        let directory = tempfile::tempdir().unwrap();
-        let helper = directory.path().join("helper");
-        fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = run(
-            helper.to_str().unwrap(),
-            &[],
-            None,
-            4096,
-            Duration::from_millis(25),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::Timeout(_)));
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn timeout_interrupts_a_child_which_does_not_read_input() {
-        let directory = tempfile::tempdir().unwrap();
-        let helper = directory.path().join("helper");
-        fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = run(
-            helper.to_str().unwrap(),
-            &[],
-            Some(&vec![0; MAX_INPUT_BYTES]),
-            4096,
-            Duration::from_millis(25),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::Timeout(_)));
-        assert!(started.elapsed() < Duration::from_secs(1));
+            let started = Instant::now();
+            drop(child);
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+        // Phase `terminate_tree_escalates_when_the_grace_period_is_ignored`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "trap '' TERM; sleep 5"]);
+            let mut child = own_process_tree(&mut command).spawn().unwrap();
+            let started = Instant::now();
+            terminate_tree(&mut child, Duration::from_millis(50));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(child.try_wait().unwrap().is_some());
+        }
     }
 
     #[test]
@@ -495,23 +594,11 @@ mod tests {
             &[("TILO_BOUNDED_COMMAND_TEST", "isolated")],
             None,
             64,
-            Duration::from_secs(1),
+            UNTESTED_TIMEOUT,
         )
         .unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"isolated");
         assert_eq!(std::env::var_os("TILO_BOUNDED_COMMAND_TEST"), parent_value);
-    }
-
-    #[test]
-    fn asynchronous_handle_is_nonblocking_and_drop_cancels_promptly() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "printf ready; sleep 5"]);
-        let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
-        assert!(child.try_wait().is_none());
-
-        let started = Instant::now();
-        drop(child);
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

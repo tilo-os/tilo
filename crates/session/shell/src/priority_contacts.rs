@@ -247,7 +247,7 @@ fn write_record(path: &Path, record: &DiskRecord) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    atomic_file::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
 }
 
 #[cfg(test)]
@@ -255,34 +255,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_endpoint_is_never_persisted_and_matching_is_normalised() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("priority.json");
-        let registry = PriorityContactRegistry::open(Some(path.clone()));
-        registry
-            .replace_verified(vec![ContactProjection {
-                id: "ca761232-ed42-11ce-bacd-00aa0057b223".into(),
-                name: "Ada".into(),
-                endpoints: vec![" Ada@Example.COM ".into(), "+49 123 456789".into()],
-            }])
-            .unwrap();
-        let raw = std::fs::read_to_string(path).unwrap();
-        assert!(!raw.contains("Ada@Example.COM"));
-        assert!(!raw.contains("123 456789"));
-        assert!(registry.matches("ada@example.com"));
-        assert!(registry.matches("+49 (123) 456789"));
-    }
-
-    #[test]
-    fn malformed_and_oversized_claims_are_not_registered() {
-        let registry = PriorityContactRegistry::in_memory();
-        let count = registry
-            .replace_verified(vec![ContactProjection {
-                id: "../escape".into(),
-                name: "x".repeat(1000),
-                endpoints: vec!["a@example.com".into()],
-            }])
-            .unwrap();
-        assert_eq!(count, 0);
+    fn priority_contact_claims_are_normalised_bounded_and_never_persist_endpoints() {
+        // Phase `raw_endpoint_is_never_persisted_and_matching_is_normalised`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("priority.json");
+            let registry = PriorityContactRegistry::open(Some(path.clone()));
+            registry
+                .replace_verified(vec![ContactProjection {
+                    id: "ca761232-ed42-11ce-bacd-00aa0057b223".into(),
+                    name: "Ada".into(),
+                    endpoints: vec![" Ada@Example.COM ".into(), "+49 123 456789".into()],
+                }])
+                .unwrap();
+            let raw = std::fs::read_to_string(path).unwrap();
+            assert!(!raw.contains("Ada@Example.COM"));
+            assert!(!raw.contains("123 456789"));
+            assert!(registry.matches("ada@example.com"));
+            assert!(registry.matches("+49 (123) 456789"));
+        }
+        // Phase `malformed_and_oversized_claims_are_not_registered`.
+        {
+            let registry = PriorityContactRegistry::in_memory();
+            let count = registry
+                .replace_verified(vec![ContactProjection {
+                    id: "../escape".into(),
+                    name: "x".repeat(1000),
+                    endpoints: vec!["a@example.com".into()],
+                }])
+                .unwrap();
+            assert_eq!(count, 0);
+        }
     }
 }

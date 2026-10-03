@@ -29,30 +29,28 @@ def pem_der(path: Path, label: str) -> bytes:
 
 
 class ReleaseTrustRootsTest(unittest.TestCase):
-    def test_efi_certificate_is_an_rsa2048_code_signing_certificate(self) -> None:
-        der = pem_der(KEYS / 'efi-signing.crt', 'CERTIFICATE')
-        self.assertIn(SHA256_WITH_RSA, der)
-        self.assertIn(CODE_SIGNING, der)
-        self.assertIn(RSA_ENCRYPTION, der)
-        # A 2048-bit modulus is encoded as a 257-byte INTEGER.
-        self.assertIn(bytes.fromhex('0282010100'), der)
-
-    def test_documented_efi_fingerprint_matches_the_certificate(self) -> None:
-        der = pem_der(KEYS / 'efi-signing.crt', 'CERTIFICATE')
-        fingerprint = hashlib.sha256(der).hexdigest()
-        readme = (KEYS / 'README.md').read_text(encoding='utf-8')
-        documented = set(re.findall(r'DER SHA-256 `([0-9a-f]{64})`', readme))
-        self.assertEqual(documented, {fingerprint})
-
-    def test_pcr_authority_is_an_rsa2048_public_key(self) -> None:
-        der = pem_der(KEYS / 'tpm2-pcr-signing.public.pem', 'PUBLIC KEY')
-        self.assertEqual(len(der), RSA_2048_SPKI_LENGTH)
-        self.assertEqual(der[4:4 + len(RSA_ENCRYPTION) + 2][2:], RSA_ENCRYPTION)
-
-    def test_no_private_key_material_is_tracked(self) -> None:
-        for path in KEYS.iterdir():
-            if path.suffix in {'.pem', '.crt', '.pub'} and 'private' not in path.name:
-                self.assertNotIn('PRIVATE KEY', path.read_text(encoding='ascii'), path)
+    def test_tracked_trust_roots_are_the_documented_public_keys_only(self) -> None:
+        with self.subTest(phase='efi certificate is an rsa2048 code signing certificate'):
+            der = pem_der(KEYS / 'efi-signing.crt', 'CERTIFICATE')
+            self.assertIn(SHA256_WITH_RSA, der)
+            self.assertIn(CODE_SIGNING, der)
+            self.assertIn(RSA_ENCRYPTION, der)
+            # A 2048-bit modulus is encoded as a 257-byte INTEGER.
+            self.assertIn(bytes.fromhex('0282010100'), der)
+        with self.subTest(phase='documented efi fingerprint matches the certificate'):
+            der = pem_der(KEYS / 'efi-signing.crt', 'CERTIFICATE')
+            fingerprint = hashlib.sha256(der).hexdigest()
+            readme = (KEYS / 'README.md').read_text(encoding='utf-8')
+            documented = set(re.findall(r'DER SHA-256 `([0-9a-f]{64})`', readme))
+            self.assertEqual(documented, {fingerprint})
+        with self.subTest(phase='pcr authority is an rsa2048 public key'):
+            der = pem_der(KEYS / 'tpm2-pcr-signing.public.pem', 'PUBLIC KEY')
+            self.assertEqual(len(der), RSA_2048_SPKI_LENGTH)
+            self.assertEqual(der[4:4 + len(RSA_ENCRYPTION) + 2][2:], RSA_ENCRYPTION)
+        with self.subTest(phase='no private key material is tracked'):
+            for path in KEYS.iterdir():
+                if path.suffix in {'.pem', '.crt', '.pub'} and 'private' not in path.name:
+                    self.assertNotIn('PRIVATE KEY', path.read_text(encoding='ascii'), path)
 
 
 if __name__ == '__main__':

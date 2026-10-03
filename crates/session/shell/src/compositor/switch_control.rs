@@ -160,85 +160,85 @@ mod tests {
     }
 
     #[test]
-    fn disabled_configuration_has_no_scan_deadline() {
-        let now = Instant::now();
-        let mut runtime = SwitchControlRuntime {
-            config: Config {
-                enabled: false,
-                pair: KeyPair::F6F7,
-                scan: Some(Duration::from_secs(1)),
-            },
-            next_reload: now + Duration::from_secs(60),
-            next_scan: None,
-        };
-        assert_eq!(runtime.tick(now + Duration::from_secs(2)), None);
-    }
-
-    #[test]
-    fn automatic_scan_advances_and_reschedules() {
-        let now = Instant::now();
-        let mut runtime = SwitchControlRuntime {
-            config: Config {
-                enabled: true,
-                pair: KeyPair::F6F7,
-                scan: Some(Duration::from_secs(2)),
-            },
-            next_reload: now + Duration::from_secs(60),
-            next_scan: Some(now + Duration::from_secs(2)),
-        };
-        assert_eq!(runtime.tick(now + Duration::from_secs(1)), None);
-        assert_eq!(
-            runtime.tick(now + Duration::from_secs(2)),
-            Some(SwitchAction::Next)
-        );
-        assert_eq!(runtime.tick(now + Duration::from_secs(3)), None);
-        assert_eq!(
-            runtime.tick(now + Duration::from_secs(4)),
-            Some(SwitchAction::Next)
-        );
-    }
-
-    #[test]
-    fn configured_pair_maps_next_and_activate_but_nothing_else() {
-        let now = Instant::now();
-        let mut runtime = SwitchControlRuntime {
-            config: Config {
-                enabled: true,
-                pair: KeyPair::F9F10,
-                scan: None,
-            },
-            next_reload: now + Duration::from_secs(60),
-            next_scan: None,
-        };
-        assert_eq!(
-            runtime.translate(&key(Key::Named(NamedKey::F9), true), now),
-            Some((SwitchAction::Next, true))
-        );
-        assert_eq!(
-            runtime.translate(&key(Key::Named(NamedKey::F10), true), now),
-            Some((SwitchAction::Activate, true))
-        );
-        assert_eq!(
-            runtime.translate(&key(Key::Named(NamedKey::F6), true), now),
-            None
-        );
-    }
-
-    #[test]
-    fn disabled_mode_preserves_even_the_configured_keys() {
-        let now = Instant::now();
-        let mut runtime = SwitchControlRuntime {
-            config: Config {
-                enabled: false,
-                pair: KeyPair::F6F7,
-                scan: None,
-            },
-            next_reload: now + Duration::from_secs(60),
-            next_scan: None,
-        };
-        assert_eq!(
-            runtime.translate(&key(Key::Named(NamedKey::F6), true), now),
-            None
-        );
+    fn switch_control_scans_and_maps_only_the_configured_pair() {
+        // Phase `disabled_configuration_has_no_scan_deadline`.
+        {
+            let now = Instant::now();
+            let mut runtime = SwitchControlRuntime {
+                config: Config {
+                    enabled: false,
+                    pair: KeyPair::F6F7,
+                    scan: Some(Duration::from_secs(1)),
+                },
+                next_reload: now + Duration::from_secs(60),
+                next_scan: None,
+            };
+            assert_eq!(runtime.tick(now + Duration::from_secs(2)), None);
+        }
+        // Phase `automatic_scan_advances_and_reschedules`.
+        {
+            let now = Instant::now();
+            let mut runtime = SwitchControlRuntime {
+                config: Config {
+                    enabled: true,
+                    pair: KeyPair::F6F7,
+                    scan: Some(Duration::from_secs(2)),
+                },
+                next_reload: now + Duration::from_secs(60),
+                next_scan: Some(now + Duration::from_secs(2)),
+            };
+            assert_eq!(runtime.tick(now + Duration::from_secs(1)), None);
+            assert_eq!(
+                runtime.tick(now + Duration::from_secs(2)),
+                Some(SwitchAction::Next)
+            );
+            assert_eq!(runtime.tick(now + Duration::from_secs(3)), None);
+            assert_eq!(
+                runtime.tick(now + Duration::from_secs(4)),
+                Some(SwitchAction::Next)
+            );
+        }
+        // Phase `configured_pair_maps_next_and_activate_but_nothing_else`.
+        {
+            let now = Instant::now();
+            let mut runtime = SwitchControlRuntime {
+                config: Config {
+                    enabled: true,
+                    pair: KeyPair::F9F10,
+                    scan: None,
+                },
+                next_reload: now + Duration::from_secs(60),
+                next_scan: None,
+            };
+            assert_eq!(
+                runtime.translate(&key(Key::Named(NamedKey::F9), true), now),
+                Some((SwitchAction::Next, true))
+            );
+            assert_eq!(
+                runtime.translate(&key(Key::Named(NamedKey::F10), true), now),
+                Some((SwitchAction::Activate, true))
+            );
+            assert_eq!(
+                runtime.translate(&key(Key::Named(NamedKey::F6), true), now),
+                None
+            );
+        }
+        // Phase `disabled_mode_preserves_even_the_configured_keys`.
+        {
+            let now = Instant::now();
+            let mut runtime = SwitchControlRuntime {
+                config: Config {
+                    enabled: false,
+                    pair: KeyPair::F6F7,
+                    scan: None,
+                },
+                next_reload: now + Duration::from_secs(60),
+                next_scan: None,
+            };
+            assert_eq!(
+                runtime.translate(&key(Key::Named(NamedKey::F6), true), now),
+                None
+            );
+        }
     }
 }

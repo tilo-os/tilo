@@ -5,7 +5,7 @@
 //! their signing preimage through the same three-step pipeline:
 //!
 //! 1. Build a view of the struct that omits its `signature` field.
-//! 2. `postcard::to_allocvec` the view.
+//! 2. Encode the view with postcard directly into the hasher.
 //! 3. Prepend a fixed byte-constant "domain tag" (`tilo-devcert-v1\0`
 //!    etc.) and hash the concatenation with BLAKE3-256.
 //!
@@ -51,9 +51,9 @@ pub enum CanonicalError {
 
 /// Serialise a value to its canonical byte form.
 ///
-/// Every signature in the crate flows through this function. Two
-/// peers running the same crate version will produce identical
-/// bytes for the same input.
+/// This uses the same postcard encoding as [`signing_digest`]. Two
+/// peers running the same crate version will produce identical bytes
+/// for the same input.
 ///
 /// # Errors
 ///
@@ -111,10 +111,33 @@ pub fn signing_digest<T: Serialize>(
 ) -> Result<[u8; 32], CanonicalError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain_tag);
-    let body = canonical_bytes(view)?;
-    hasher.update(&body);
-    Ok(*hasher.finalize().as_bytes())
+    postcard::serialize_with_flavor(view, SigningHash(hasher))
+        .map_err(|e| CanonicalError::Serialize(e.to_string()))
 }
+
+/// Consume the canonical encoding without retaining a temporary preimage.
+struct SigningHash(blake3::Hasher);
+
+impl postcard::ser_flavors::Flavor for SigningHash {
+    type Output = [u8; 32];
+
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        self.0.update(&[byte]);
+        Ok(())
+    }
+
+    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+        self.0.update(bytes);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(*self.0.finalize().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests;
 
 #[cfg(test)]
 mod tests {
@@ -127,51 +150,56 @@ mod tests {
         b: String,
     }
 
+    /// Values round-trip via canonical bytes, trailing bytes are rejected, the domain tag changes
+    /// the digest, and the digest is deterministic.
     #[test]
-    fn round_trip_via_canonical_bytes() {
-        let f = Fixture {
-            a: 42,
-            b: "hi".into(),
-        };
-        let bytes = canonical_bytes(&f).unwrap();
-        let back: Fixture = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(f, back);
-    }
+    fn canonical_bytes_round_trip_exactly_and_digests_are_domain_separated() {
+        // Phase: round_trip_via_canonical_bytes.
+        {
+            let f = Fixture {
+                a: 42,
+                b: "hi".into(),
+            };
+            let bytes = canonical_bytes(&f).unwrap();
+            let back: Fixture = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(f, back);
+        }
 
-    #[test]
-    fn rejects_trailing_bytes() {
-        let f = Fixture {
-            a: 1,
-            b: "x".into(),
-        };
-        let mut bytes = canonical_bytes(&f).unwrap();
-        bytes.push(0xff);
-        assert!(from_canonical_bytes::<Fixture>(&bytes).is_err());
-    }
+        // Phase: rejects_trailing_bytes.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "x".into(),
+            };
+            let mut bytes = canonical_bytes(&f).unwrap();
+            bytes.push(0xff);
+            assert!(from_canonical_bytes::<Fixture>(&bytes).is_err());
+        }
 
-    /// Different domain tags produce different digests even for
-    /// the same body — pinning the domain-separation property.
-    #[test]
-    fn domain_tag_changes_digest() {
-        let f = Fixture {
-            a: 1,
-            b: "same".into(),
-        };
-        let d1 = signing_digest(b"tag-a\0", &f).unwrap();
-        let d2 = signing_digest(b"tag-b\0", &f).unwrap();
-        assert_ne!(d1, d2);
-    }
+        // Phase: domain_tag_changes_digest.
+        // Different domain tags produce different digests even for
+        // the same body — pinning the domain-separation property.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "same".into(),
+            };
+            let d1 = signing_digest(b"tag-a\0", &f).unwrap();
+            let d2 = signing_digest(b"tag-b\0", &f).unwrap();
+            assert_ne!(d1, d2);
+        }
 
-    /// Digest is deterministic across independent runs.
-    #[test]
-    fn digest_is_deterministic() {
-        let f = Fixture {
-            a: 1,
-            b: "same".into(),
-        };
-        assert_eq!(
-            signing_digest(b"tag-a\0", &f).unwrap(),
-            signing_digest(b"tag-a\0", &f).unwrap(),
-        );
+        // Phase: digest_is_deterministic.
+        // Digest is deterministic across independent runs.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "same".into(),
+            };
+            assert_eq!(
+                signing_digest(b"tag-a\0", &f).unwrap(),
+                signing_digest(b"tag-a\0", &f).unwrap(),
+            );
+        }
     }
 }

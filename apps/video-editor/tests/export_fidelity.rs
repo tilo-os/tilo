@@ -266,243 +266,449 @@ fn tidy(path: &std::path::Path) {
     }
 }
 
-/// The WebM chain, end to end.
-///
-/// Every other test here exports MP4, so until now nothing decoded a file
-/// produced by the *other* encoder — a different element, a differently named
-/// bitrate property (`target-bitrate`, not `bitrate`) and a different muxer.
-/// A mistake anywhere in that branch would have reached a user before it
-/// reached a test.
-///
-/// The checks are the ones the MP4 test makes, for the same reason: a
-/// container-shaped file full of synthesized bands passes a magic-byte check
-/// and fails this one.
 #[test]
 #[serial_test::serial(video_editor_gst)]
-fn the_webm_chain_encodes_the_real_footage_too() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    let clip = demo_clip();
-    let project = project_over(&clip, 1.0, &format!("ve webm {}", std::process::id()));
-    let out = export_as(&project, Container::WebM);
-    assert_eq!(
-        out.extension().and_then(|e| e.to_str()),
-        Some("webm"),
-        "the WebM export writes a .webm file: {}",
-        out.display(),
-    );
+fn exported_files_carry_the_real_source_footage_and_grade() {
+    // Case `the_webm_chain_encodes_the_real_footage_too`:
+    // The WebM chain, end to end.
+    //
+    // Every other test here exports MP4, so until now nothing decoded a file
+    // produced by the *other* encoder — a different element, a differently named
+    // bitrate property (`target-bitrate`, not `bitrate`) and a different muxer.
+    // A mistake anywhere in that branch would have reached a user before it
+    // reached a test.
+    //
+    // The checks are the ones the MP4 test makes, for the same reason: a
+    // container-shaped file full of synthesized bands passes a magic-byte check
+    // and fails this one.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let clip = demo_clip();
+        let project = project_over(&clip, 1.0, &format!("ve webm {}", std::process::id()));
+        let out = export_as(&project, Container::WebM);
+        assert_eq!(
+            out.extension().and_then(|e| e.to_str()),
+            Some("webm"),
+            "the WebM export writes a .webm file: {}",
+            out.display(),
+        );
 
-    // Whatever encoder was picked for this container, it must be one that
-    // writes the codec the container carries — and it must have been given the
-    // bitrate under the property it actually names.
-    let (sel, _, _) = encode_chain(Container::WebM);
-    assert!(
-        video_codec(Container::WebM)
-            .candidates()
-            .iter()
-            .any(|c| c.element == sel.spec.element),
-        "WebM selected {}, which does not encode VP8",
-        sel.spec.element,
-    );
+        // Whatever encoder was picked for this container, it must be one that
+        // writes the codec the container carries — and it must have been given the
+        // bitrate under the property it actually names.
+        let (sel, _, _) = encode_chain(Container::WebM);
+        assert!(
+            video_codec(Container::WebM)
+                .candidates()
+                .iter()
+                .any(|c| c.element == sel.spec.element),
+            "WebM selected {}, which does not encode VP8",
+            sel.spec.element,
+        );
 
-    let source = decode_frame(&clip, 0.0);
-    let exported = decode_frame(&out, 0.0);
+        let source = decode_frame(&clip, 0.0);
+        let exported = decode_frame(&out, 0.0);
 
-    let source_detail = horizontal_detail(&source);
-    let export_detail = horizontal_detail(&exported);
-    let diff = mean_abs_diff(&source, &exported);
-    println!(
-        "webm horizontal detail  source={source_detail:.2}  export={export_detail:.2}\n\
+        let source_detail = horizontal_detail(&source);
+        let export_detail = horizontal_detail(&exported);
+        let diff = mean_abs_diff(&source, &exported);
+        println!(
+            "webm horizontal detail  source={source_detail:.2}  export={export_detail:.2}\n\
          mean abs difference source vs export = {diff:.2}",
-    );
+        );
 
-    assert!(
-        export_detail > 1.0,
-        "the exported WebM frame is flat along every row (detail {export_detail:.2}) — that \
+        assert!(
+            export_detail > 1.0,
+            "the exported WebM frame is flat along every row (detail {export_detail:.2}) — that \
          is the synthesized-gradient signature, not decoded footage",
-    );
-    assert!(
-        export_detail > source_detail * 0.25,
-        "the exported WebM frame carries only {:.0}% of the source's horizontal detail \
+        );
+        assert!(
+            export_detail > source_detail * 0.25,
+            "the exported WebM frame carries only {:.0}% of the source's horizontal detail \
          ({export_detail:.2} vs {source_detail:.2}) — it is not the real picture",
-        export_detail / source_detail * 100.0,
-    );
-    assert!(
-        diff < 60.0,
-        "the exported WebM frame does not resemble the source frame \
+            export_detail / source_detail * 100.0,
+        );
+        assert!(
+            diff < 60.0,
+            "the exported WebM frame does not resemble the source frame \
          (mean abs difference {diff:.2})",
-    );
+        );
 
-    tidy(&out);
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn the_exported_file_carries_the_source_footage() {
-    if !generated_clip::media_stack() {
-        return;
+        tidy(&out);
     }
-    let clip = demo_clip();
-    let out = export(&project_over(
-        &clip,
-        1.0,
-        &format!("ve fidelity {}", std::process::id()),
-    ));
+    // Case `the_exported_file_carries_the_source_footage`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let clip = demo_clip();
+        let out = export(&project_over(
+            &clip,
+            1.0,
+            &format!("ve fidelity {}", std::process::id()),
+        ));
 
-    let source = decode_frame(&clip, 0.0);
-    let exported = decode_frame(&out, 0.0);
+        let source = decode_frame(&clip, 0.0);
+        let exported = decode_frame(&out, 0.0);
 
-    let source_detail = horizontal_detail(&source);
-    let export_detail = horizontal_detail(&exported);
-    let diff = mean_abs_diff(&source, &exported);
-    println!(
-        "horizontal detail  source={source_detail:.2}  export={export_detail:.2}\n\
+        let source_detail = horizontal_detail(&source);
+        let export_detail = horizontal_detail(&exported);
+        let diff = mean_abs_diff(&source, &exported);
+        println!(
+            "horizontal detail  source={source_detail:.2}  export={export_detail:.2}\n\
          mean abs difference source vs export = {diff:.2}",
-    );
+        );
 
-    assert!(
-        export_detail > 1.0,
-        "the exported frame is flat along every row (detail {export_detail:.2}) — that is \
+        assert!(
+            export_detail > 1.0,
+            "the exported frame is flat along every row (detail {export_detail:.2}) — that is \
          the synthesized-gradient signature, not decoded footage",
-    );
-    assert!(
-        export_detail > source_detail * 0.25,
-        "the exported frame carries only {:.0}% of the source's horizontal detail \
+        );
+        assert!(
+            export_detail > source_detail * 0.25,
+            "the exported frame carries only {:.0}% of the source's horizontal detail \
          ({export_detail:.2} vs {source_detail:.2}) — it is not the real picture",
-        export_detail / source_detail * 100.0,
-    );
-    assert!(
-        diff < 60.0,
-        "the exported frame does not resemble the source frame (mean abs difference {diff:.2})",
-    );
+            export_detail / source_detail * 100.0,
+        );
+        assert!(
+            diff < 60.0,
+            "the exported frame does not resemble the source frame (mean abs difference {diff:.2})",
+        );
 
-    tidy(&out);
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn the_colour_grade_reaches_the_encoded_pixels() {
-    if !generated_clip::media_stack() {
-        return;
+        tidy(&out);
     }
-    // The grade used to be computed on the clip's palette colour, so it
-    // never touched a decoded pixel. Prove it changes the encoded file.
-    let clip = demo_clip();
-    let pid = std::process::id();
-    let neutral = project_over(&clip, 0.6, &format!("ve grade neutral {pid}"));
-    let plain = export(&neutral);
+    // Case `the_colour_grade_reaches_the_encoded_pixels`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        // The grade used to be computed on the clip's palette colour, so it
+        // never touched a decoded pixel. Prove it changes the encoded file.
+        let clip = demo_clip();
+        let pid = std::process::id();
+        let neutral = project_over(&clip, 0.6, &format!("ve grade neutral {pid}"));
+        let plain = export(&neutral);
 
-    let mut graded = project_over(&clip, 0.6, &format!("ve grade lifted {pid}"));
-    let cid = graded.clips[0].id;
-    graded.clip_mut(cid).unwrap().filters = video_editor::model::Filters {
-        brightness: 0.85,
-        contrast: 0.5,
-        saturation: 0.5,
-    };
-    let lifted = export(&graded);
-
-    let mean = |px: &[[u8; 3]]| {
-        px.iter()
-            .map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64)
-            .sum::<f64>()
-            / px.len() as f64
-    };
-    let a = decode_frame(&plain, 0.0);
-    let b = decode_frame(&lifted, 0.0);
-    let (la, lb) = (mean(&a), mean(&b));
-    println!("encoded luma: neutral={la:.1}  brightened={lb:.1}");
-    assert!(
-        lb > la + 10.0,
-        "raising brightness must brighten the ENCODED footage: {la:.1} → {lb:.1}",
-    );
-    // Still the same picture, just graded — not a different frame.
-    assert!(
-        horizontal_detail(&b) > horizontal_detail(&a) * 0.5,
-        "the brightened export is the same footage with a grade on it",
-    );
-
-    tidy(&plain);
-    tidy(&lifted);
-}
-
-/// A wipe has to reach the encoded file as *geometry*: halfway across,
-/// one side of the frame is the incoming clip and the other is still the
-/// outgoing one.
-///
-/// The transition this replaced was a flat full-frame flash that rendered
-/// identically for a dissolve, a fade and a wipe. Comparing whole-frame
-/// averages cannot tell those apart, so this asserts on the split between
-/// the two halves — which is the thing a wipe has and a dissolve does not.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_wipe_reaches_the_encoded_file_as_geometry() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::model::{ClipEffect, EffectKind, Transition};
-
-    let clip = demo_clip();
-    let pid = std::process::id();
-    // Both clips come off one source. Invert the incoming clip so the two
-    // sides of the wipe remain unmistakable regardless of source motion.
-    let build = |kind: Transition, name: String| {
-        let mut p = project_over(&clip, 1.0, &name);
-        let track = p.tracks[0].id;
-        let media = p.media[0].id;
-        let second = p.add_clip(track, media, 1.0).unwrap();
-        let c = p.clip_mut(second).unwrap();
-        c.in_point = 3.0;
-        c.out_point = 4.0;
-        c.transition = kind;
-        c.effects = vec![ClipEffect {
-            id: uuid::Uuid::new_v4(),
-            kind: EffectKind::Invert,
-            amount: 1.0,
-        }];
-        p
-    };
-
-    let wipe = export(&build(Transition::Wipe, format!("ve wipe {pid}")));
-    let dissolve = export(&build(
-        Transition::CrossDissolve,
-        format!("ve dissolve {pid}"),
-    ));
-
-    // Halfway through the transition on the incoming clip, which starts at
-    // 1.0s on the timeline.
-    let at = 1.0 + video_editor::preview::TRANSITION_SECS * 0.5;
-    let luma = |p: [u8; 3]| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
-    let half_split = |px: &[[u8; 3]]| {
-        let mean_of = |cols: std::ops::Range<usize>| {
-            let mut sum = 0.0;
-            let mut n = 0.0;
-            for row in 0..GRID_H {
-                for col in cols.clone() {
-                    sum += luma(px[row * GRID_W + col]);
-                    n += 1.0;
-                }
-            }
-            sum / n
+        let mut graded = project_over(&clip, 0.6, &format!("ve grade lifted {pid}"));
+        let cid = graded.clips[0].id;
+        graded.clip_mut(cid).unwrap().filters = video_editor::model::Filters {
+            brightness: 0.85,
+            contrast: 0.5,
+            saturation: 0.5,
         };
-        // Skip the feathered middle so the measurement is of the two sides.
-        (mean_of(0..GRID_W / 3), mean_of(GRID_W * 2 / 3..GRID_W))
-    };
+        let lifted = export(&graded);
 
-    let (wl, wr) = half_split(&decode_frame(&wipe, at));
-    let (dl, dr) = half_split(&decode_frame(&dissolve, at));
-    println!("wipe halves L={wl:.1} R={wr:.1}   dissolve halves L={dl:.1} R={dr:.1}");
+        let mean = |px: &[[u8; 3]]| {
+            px.iter()
+                .map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64)
+                .sum::<f64>()
+                / px.len() as f64
+        };
+        let a = decode_frame(&plain, 0.0);
+        let b = decode_frame(&lifted, 0.0);
+        let (la, lb) = (mean(&a), mean(&b));
+        println!("encoded luma: neutral={la:.1}  brightened={lb:.1}");
+        assert!(
+            lb > la + 10.0,
+            "raising brightness must brighten the ENCODED footage: {la:.1} → {lb:.1}",
+        );
+        // Still the same picture, just graded — not a different frame.
+        assert!(
+            horizontal_detail(&b) > horizontal_detail(&a) * 0.5,
+            "the brightened export is the same footage with a grade on it",
+        );
 
-    assert!(
-        (wl - wr).abs() > (dl - dr).abs() + 10.0,
-        "the encoded wipe must split the frame left/right ({:.1}) far more than an even \
+        tidy(&plain);
+        tidy(&lifted);
+    }
+    // Case `a_relative_media_path_is_resolved_or_refused_never_stood_in_for`:
+    // A project whose media path is relative — what a hand-built project or a
+    // `.qvp` copied next to its footage looks like — must either find the
+    // footage or refuse. What it must never do is encode the compositor's
+    // stand-in fill and report `Done`: that produced a valid MP4 of a flat
+    // gradient, 14 KB for sixty frames of 1080p, indistinguishable from a
+    // successful render to everything except a decoder.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::export::{begin_export, output_path};
+
+        let clip = demo_clip();
+        let dir = clip
+            .parent()
+            .expect("the clip has a directory")
+            .to_path_buf();
+        let file = clip
+            .file_name()
+            .expect("the clip has a name")
+            .to_string_lossy()
+            .into_owned();
+
+        // 1. No anchor, and nothing of that name in the working directory: the
+        //    source cannot be read, so the export refuses by name.
+        video_editor::media::set_project_anchor(None);
+        let pid = std::process::id();
+        let mut lost = project_over(&clip, 0.5, &format!("ve relative lost {pid}"));
+        lost.media[0].path = format!("tilo-not-here-{pid}/{file}");
+        let settings = ExportSettings {
+            resolution: Resolution::P720,
+            container: Container::Mp4,
+            frame_rate: FrameRate::F30,
+        };
+        let lost_out = output_path(&settings, &lost);
+        std::fs::remove_file(&lost_out).ok();
+        match begin_export(&lost, &settings) {
+            ExportStatus::Failed { reason } => {
+                println!("refused: {reason}");
+                assert!(
+                    reason.contains("demo"),
+                    "the refusal names the source: {reason:?}"
+                );
+            }
+            other => panic!("an unresolvable source must refuse, got {other:?}"),
+        }
+        assert!(
+            !lost_out.exists(),
+            "and leaves no file behind that looks like a render: {}",
+            lost_out.display(),
+        );
+
+        // 2. Anchored at the directory the project file would live in, the same
+        //    relative path finds the footage — and the file carries it.
+        video_editor::media::set_project_anchor(Some(dir));
+        let mut found = project_over(&clip, 0.5, &format!("ve relative found {pid}"));
+        found.media[0].path = file.clone();
+        let out = export(&found);
+        let exported = decode_frame(&out, 0.2);
+        let source = decode_frame(&clip, 0.2);
+        let detail = horizontal_detail(&exported);
+        let source_detail = horizontal_detail(&source);
+        let diff = mean_abs_diff(&exported, &source);
+        println!(
+            "relative-path export: detail {detail:.2} (source {source_detail:.2}), difference {diff:.2}"
+        );
+        assert!(
+            detail > source_detail * 0.4,
+            "the encoded frame has the source's structure, not a flat fill \
+         (detail {detail:.2} vs source {source_detail:.2})",
+        );
+        assert!(
+            diff < 30.0,
+            "and is the same picture: mean difference {diff:.2}"
+        );
+
+        video_editor::media::set_project_anchor(None);
+        tidy(&out);
+    }
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
+    // Case `a_wipe_reaches_the_encoded_file_as_geometry`:
+    // A wipe has to reach the encoded file as *geometry*: halfway across,
+    // one side of the frame is the incoming clip and the other is still the
+    // outgoing one.
+    //
+    // The transition this replaced was a flat full-frame flash that rendered
+    // identically for a dissolve, a fade and a wipe. Comparing whole-frame
+    // averages cannot tell those apart, so this asserts on the split between
+    // the two halves — which is the thing a wipe has and a dissolve does not.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::model::{ClipEffect, EffectKind, Transition};
+
+        let clip = demo_clip();
+        let pid = std::process::id();
+        // Both clips come off one source. Invert the incoming clip so the two
+        // sides of the wipe remain unmistakable regardless of source motion.
+        let build = |kind: Transition, name: String| {
+            let mut p = project_over(&clip, 1.0, &name);
+            let track = p.tracks[0].id;
+            let media = p.media[0].id;
+            let second = p.add_clip(track, media, 1.0).unwrap();
+            let c = p.clip_mut(second).unwrap();
+            c.in_point = 3.0;
+            c.out_point = 4.0;
+            c.transition = kind;
+            c.effects = vec![ClipEffect {
+                id: uuid::Uuid::new_v4(),
+                kind: EffectKind::Invert,
+                amount: 1.0,
+            }];
+            p
+        };
+
+        let wipe = export(&build(Transition::Wipe, format!("ve wipe {pid}")));
+        let dissolve = export(&build(
+            Transition::CrossDissolve,
+            format!("ve dissolve {pid}"),
+        ));
+
+        // Halfway through the transition on the incoming clip, which starts at
+        // 1.0s on the timeline.
+        let at = 1.0 + video_editor::preview::TRANSITION_SECS * 0.5;
+        let luma = |p: [u8; 3]| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
+        let half_split = |px: &[[u8; 3]]| {
+            let mean_of = |cols: std::ops::Range<usize>| {
+                let mut sum = 0.0;
+                let mut n = 0.0;
+                for row in 0..GRID_H {
+                    for col in cols.clone() {
+                        sum += luma(px[row * GRID_W + col]);
+                        n += 1.0;
+                    }
+                }
+                sum / n
+            };
+            // Skip the feathered middle so the measurement is of the two sides.
+            (mean_of(0..GRID_W / 3), mean_of(GRID_W * 2 / 3..GRID_W))
+        };
+
+        let (wl, wr) = half_split(&decode_frame(&wipe, at));
+        let (dl, dr) = half_split(&decode_frame(&dissolve, at));
+        println!("wipe halves L={wl:.1} R={wr:.1}   dissolve halves L={dl:.1} R={dr:.1}");
+
+        assert!(
+            (wl - wr).abs() > (dl - dr).abs() + 10.0,
+            "the encoded wipe must split the frame left/right ({:.1}) far more than an even \
          dissolve does ({:.1})",
-        (wl - wr).abs(),
-        (dl - dr).abs(),
-    );
+            (wl - wr).abs(),
+            (dl - dr).abs(),
+        );
 
-    tidy(&wipe);
-    tidy(&dissolve);
+        tidy(&wipe);
+        tidy(&dissolve);
+    }
+    // Case `a_title_reaches_the_encoded_file_as_real_glyphs`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let (p, _, _) = title_project("title_export", "HELLO");
+        let path = export(&p);
+        let frame = decode_frame(&path, 1.0);
+
+        let lit = bright_fraction(&frame);
+        assert!(
+            lit > 0.01,
+            "the encoded file carries the title's glyphs, not black: {:.4} of the frame is lit",
+            lit,
+        );
+        assert!(
+            lit < 0.5,
+            "and it is glyphs rather than a white card: {:.4} lit",
+            lit,
+        );
+        // Centred: the bright mass sits near the middle of the frame.
+        let (cx, cy) = bright_centre(&frame).expect("something is lit");
+        assert!(
+            (cx - GRID_W as f64 / 2.0).abs() < GRID_W as f64 * 0.15,
+            "a centred title encodes centred horizontally, got x={cx:.1}",
+        );
+        assert!(
+            (cy - GRID_H as f64 / 2.0).abs() < GRID_H as f64 * 0.15,
+            "and vertically, got y={cy:.1}",
+        );
+        tidy(&path);
+    }
+    // Case `a_transform_moves_the_picture_in_the_encoded_file`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        // The same title, pushed into the lower-right quadrant. If the export
+        // ignored geometry the two files would be identical.
+        let (mut p, _, cid) = title_project("title_moved_export", "HELLO");
+        p.clip_mut(cid).expect("clip").transform = Transform {
+            scale_x: 0.45,
+            scale_y: 0.45,
+            pos_x: 0.25,
+            pos_y: 0.25,
+            ..Transform::default()
+        };
+        let path = export(&p);
+        let frame = decode_frame(&path, 1.0);
+        let (cx, cy) = bright_centre(&frame).expect("the title is still on screen");
+        assert!(
+            cx > GRID_W as f64 * 0.6,
+            "the transform moved the title right in the encoded file, got x={cx:.1}",
+        );
+        assert!(cy > GRID_H as f64 * 0.6, "and down, got y={cy:.1}",);
+        tidy(&path);
+    }
+    // Case `a_keyframed_move_is_at_a_different_place_in_each_encoded_second`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        // An animated parameter has to be sampled per frame during the encode,
+        // not once for the whole file. Two instants of the same clip must
+        // therefore differ — and differ in the direction the curve runs.
+        let (mut p, _, cid) = title_project("title_animated_export", "HELLO");
+        {
+            let c = p.clip_mut(cid).expect("clip");
+            c.transform = Transform {
+                scale_x: 0.4,
+                scale_y: 0.4,
+                ..Transform::default()
+            };
+            c.set_key_at(Param::PosY, 0.0, -0.3, Interp::Linear);
+            c.set_key_at(Param::PosY, 3.0, 0.3, Interp::Linear);
+        }
+        let path = export(&p);
+        let (_, early) = {
+            let f = decode_frame(&path, 0.2);
+            (
+                bright_fraction(&f),
+                bright_centre(&f).expect("lit at the head"),
+            )
+        };
+        let (_, late) = {
+            let f = decode_frame(&path, 2.8);
+            (
+                bright_fraction(&f),
+                bright_centre(&f).expect("lit at the tail"),
+            )
+        };
+        assert!(
+            late.1 > early.1 + GRID_H as f64 * 0.2,
+            "the keyframed move travels down the encoded file: y {:.1} → {:.1}",
+            early.1,
+            late.1,
+        );
+        tidy(&path);
+    }
+    // Case `speed_shortens_the_encoded_file`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        // Timeline length is the source window divided by the rate, and the
+        // export encodes the timeline — so a sped-up clip must produce a
+        // shorter file, not the same file played faster.
+        let (mut p, _, cid) = title_project("title_speed_export", "HELLO");
+        let normal = p.duration();
+        p.clip_mut(cid).expect("clip").set_speed(2.0, false);
+        assert!(
+            (p.duration() - normal / 2.0).abs() < 1e-9,
+            "the timeline halves: {normal} → {}",
+            p.duration(),
+        );
+        let path = export(&p);
+        // Past the end of the sped-up timeline there is nothing to decode.
+        let frame = decode_frame(&path, 0.5);
+        assert!(
+            bright_fraction(&frame) > 0.005,
+            "the sped-up file still carries the title inside its own length",
+        );
+        tidy(&path);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -572,138 +778,6 @@ fn bright_centre(px: &[[u8; 3]]) -> Option<(f64, f64)> {
         }
     }
     (n > 0.0).then(|| (sx / n, sy / n))
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_title_reaches_the_encoded_file_as_real_glyphs() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    let (p, _, _) = title_project("title_export", "HELLO");
-    let path = export(&p);
-    let frame = decode_frame(&path, 1.0);
-
-    let lit = bright_fraction(&frame);
-    assert!(
-        lit > 0.01,
-        "the encoded file carries the title's glyphs, not black: {:.4} of the frame is lit",
-        lit,
-    );
-    assert!(
-        lit < 0.5,
-        "and it is glyphs rather than a white card: {:.4} lit",
-        lit,
-    );
-    // Centred: the bright mass sits near the middle of the frame.
-    let (cx, cy) = bright_centre(&frame).expect("something is lit");
-    assert!(
-        (cx - GRID_W as f64 / 2.0).abs() < GRID_W as f64 * 0.15,
-        "a centred title encodes centred horizontally, got x={cx:.1}",
-    );
-    assert!(
-        (cy - GRID_H as f64 / 2.0).abs() < GRID_H as f64 * 0.15,
-        "and vertically, got y={cy:.1}",
-    );
-    tidy(&path);
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_transform_moves_the_picture_in_the_encoded_file() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    // The same title, pushed into the lower-right quadrant. If the export
-    // ignored geometry the two files would be identical.
-    let (mut p, _, cid) = title_project("title_moved_export", "HELLO");
-    p.clip_mut(cid).expect("clip").transform = Transform {
-        scale_x: 0.45,
-        scale_y: 0.45,
-        pos_x: 0.25,
-        pos_y: 0.25,
-        ..Transform::default()
-    };
-    let path = export(&p);
-    let frame = decode_frame(&path, 1.0);
-    let (cx, cy) = bright_centre(&frame).expect("the title is still on screen");
-    assert!(
-        cx > GRID_W as f64 * 0.6,
-        "the transform moved the title right in the encoded file, got x={cx:.1}",
-    );
-    assert!(cy > GRID_H as f64 * 0.6, "and down, got y={cy:.1}",);
-    tidy(&path);
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_keyframed_move_is_at_a_different_place_in_each_encoded_second() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    // An animated parameter has to be sampled per frame during the encode,
-    // not once for the whole file. Two instants of the same clip must
-    // therefore differ — and differ in the direction the curve runs.
-    let (mut p, _, cid) = title_project("title_animated_export", "HELLO");
-    {
-        let c = p.clip_mut(cid).expect("clip");
-        c.transform = Transform {
-            scale_x: 0.4,
-            scale_y: 0.4,
-            ..Transform::default()
-        };
-        c.set_key_at(Param::PosY, 0.0, -0.3, Interp::Linear);
-        c.set_key_at(Param::PosY, 3.0, 0.3, Interp::Linear);
-    }
-    let path = export(&p);
-    let (_, early) = {
-        let f = decode_frame(&path, 0.2);
-        (
-            bright_fraction(&f),
-            bright_centre(&f).expect("lit at the head"),
-        )
-    };
-    let (_, late) = {
-        let f = decode_frame(&path, 2.8);
-        (
-            bright_fraction(&f),
-            bright_centre(&f).expect("lit at the tail"),
-        )
-    };
-    assert!(
-        late.1 > early.1 + GRID_H as f64 * 0.2,
-        "the keyframed move travels down the encoded file: y {:.1} → {:.1}",
-        early.1,
-        late.1,
-    );
-    tidy(&path);
-}
-
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn speed_shortens_the_encoded_file() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    // Timeline length is the source window divided by the rate, and the
-    // export encodes the timeline — so a sped-up clip must produce a
-    // shorter file, not the same file played faster.
-    let (mut p, _, cid) = title_project("title_speed_export", "HELLO");
-    let normal = p.duration();
-    p.clip_mut(cid).expect("clip").set_speed(2.0, false);
-    assert!(
-        (p.duration() - normal / 2.0).abs() < 1e-9,
-        "the timeline halves: {normal} → {}",
-        p.duration(),
-    );
-    let path = export(&p);
-    // Past the end of the sped-up timeline there is nothing to decode.
-    let frame = decode_frame(&path, 0.5);
-    assert!(
-        bright_fraction(&frame) > 0.005,
-        "the sped-up file still carries the title inside its own length",
-    );
-    tidy(&path);
 }
 
 // ---------------------------------------------------------------------------
@@ -968,9 +1042,9 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
         settled_in.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     let bus = pipeline.bus();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             panic!("decoding audio from {} timed out", path.display());
         }
         // A pipeline that has failed will never produce a sample, so stop
@@ -1044,46 +1118,204 @@ fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> P
     p
 }
 
-/// The generated source itself is a genuine audiovisual container, and the
-/// separate WAV used by mixer tests is independently verified too. This keeps
-/// source decoding and known-signal mixer assertions from depending on private
-/// footage or accidentally testing silence.
 #[test]
 #[serial_test::serial(video_editor_gst)]
-fn the_generated_footage_and_mixer_fixture_are_audible() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    let clip = demo_clip();
-    let decoded = decode_audio_full(&clip);
-    let (rate, channels) = decoded.native.unwrap_or_else(|| {
-        panic!("{} has no audio track", clip.display());
-    });
-    assert!(
-        rate > 0 && channels == 2 && peak(&decoded.pcm) > 0.1,
-        "the generated source has an audible stereo track: {:?}, peak {:.3}",
-        decoded.native,
-        peak(&decoded.pcm),
-    );
+fn exported_audio_is_real_audible_and_placed() {
+    // Case `the_generated_footage_and_mixer_fixture_are_audible`:
+    // The generated source itself is a genuine audiovisual container, and the
+    // separate WAV used by mixer tests is independently verified too. This keeps
+    // source decoding and known-signal mixer assertions from depending on private
+    // footage or accidentally testing silence.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let clip = demo_clip();
+        let decoded = decode_audio_full(&clip);
+        let (rate, channels) = decoded.native.unwrap_or_else(|| {
+            panic!("{} has no audio track", clip.display());
+        });
+        assert!(
+            rate > 0 && channels == 2 && peak(&decoded.pcm) > 0.1,
+            "the generated source has an audible stereo track: {:?}, peak {:.3}",
+            decoded.native,
+            peak(&decoded.pcm),
+        );
 
-    // And the fixture the audio tests do use is audible, at the rate and
-    // channel count they expect. A silent fixture would make them vacuous.
-    let fixture = audio_fixture();
-    let f = decode_audio_full(&fixture);
-    assert_eq!(
-        f.native,
-        Some((FIXTURE_RATE as i32, 2)),
-        "the generated fixture is {FIXTURE_RATE} Hz stereo",
-    );
-    println!(
-        "generated clip: {:?}, {:.3}s, peak {:.3}; mixer fixture: {:?}, {:.3}s, peak {:.3}",
-        decoded.native,
-        decoded.secs(),
-        peak(&decoded.pcm),
-        f.native,
-        f.secs(),
-        peak(&f.pcm),
-    );
+        // And the fixture the audio tests do use is audible, at the rate and
+        // channel count they expect. A silent fixture would make them vacuous.
+        let fixture = audio_fixture();
+        let f = decode_audio_full(&fixture);
+        assert_eq!(
+            f.native,
+            Some((FIXTURE_RATE as i32, 2)),
+            "the generated fixture is {FIXTURE_RATE} Hz stereo",
+        );
+        println!(
+            "generated clip: {:?}, {:.3}s, peak {:.3}; mixer fixture: {:?}, {:.3}s, peak {:.3}",
+            decoded.native,
+            decoded.secs(),
+            peak(&decoded.pcm),
+            f.native,
+            f.secs(),
+            peak(&f.pcm),
+        );
+    }
+    // Case `an_mp4_export_carries_the_timelines_real_audio`.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        assert_audio_round_trip(Container::Mp4);
+    }
+    // Case `a_webm_export_carries_the_timelines_real_audio`:
+    // The same for WebM, whose audio is a different encoder into a different
+    // muxer — `opusenc` into `webmmux`, not AAC into `mp4mux`. The WebM *video*
+    // chain went unproven until recently for exactly this reason; its audio chain
+    // shares none of MP4's elements either.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        assert_audio_round_trip(Container::WebM);
+    }
+    // Case `the_encoded_sources_audio_survives_mp4_and_webm_export`:
+    // The source fixture's AAC track must survive the same import/mix/export
+    // path as user footage, not merely prove decodable in isolation. Exercise
+    // both output muxers because their timestamp and encoder-delay handling are
+    // independent.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let source = demo_clip();
+        let pid = std::process::id();
+        for container in [Container::Mp4, Container::WebM] {
+            let name = format!("ve source audio {} {pid}", container.extension());
+            let output = export_as(&av_project(&name, &source, &source), container);
+            let decoded = decode_audio_full(&output);
+            let (rate, channels) = decoded.native.unwrap_or_else(|| {
+                panic!(
+                    "the {container:?} export dropped the encoded source's AAC track: {}",
+                    output.display()
+                );
+            });
+            assert_eq!(rate, FIXTURE_RATE.cast_signed());
+            assert_eq!(channels, 2);
+            assert!(
+                (decoded.secs() - FIXTURE_SECS).abs() < 0.15,
+                "{container:?} retained {:.3}s of the source's {FIXTURE_SECS}s audio cut",
+                decoded.secs(),
+            );
+            let left = channel(&decoded.pcm, 0);
+            assert!(peak(&left) > 0.1, "the propagated source audio is audible");
+            assert!(
+                goertzel(&left, 440.0) > 0.1,
+                "the propagated track retains the source's 440 Hz signal",
+            );
+            tidy(&output);
+        }
+    }
+    // Case `the_exported_audio_sits_where_the_timeline_puts_it`:
+    // Where the sound sits in time relative to the picture.
+    //
+    // The fixture's right channel changes tone at a known instant, so the
+    // exported audio can be asked where that instant ended up. A video frame's
+    // timeline position is fixed by the frame clock the export counts with, so
+    // audio landing at the wrong second *is* the two streams disagreeing.
+    //
+    // Measured in **both** containers, because they can see different things.
+    //
+    // Opus in WebM is delay-compensated end to end: the landmark comes back at
+    // exactly the second the fixture put it, and the track at exactly 2.000s, so
+    // its reading is the export's own placement with nothing added. That is the
+    // instrument here, and it is sharp — reinstating the half-block read offset
+    // `mix_block` once had moves it from +0 ms to -15 ms, which this catches.
+    //
+    // AAC in MP4 cannot be read that way. Its priming is not compensated on this
+    // round trip: the track comes back 2.048s long for a 2s timeline and the
+    // landmark lands 45 ms late with everything working correctly. So it gets a
+    // band wide enough for that, and catches gross displacement only.
+    //
+    // The spread between the two is asserted as well. It says nothing about a
+    // shift they share — that is what the Opus reading is for — but a container
+    // whose audio is placed differently from the other's, when both are fed by
+    // one mixer through one set of timestamps, has something wrong with it that
+    // neither absolute reading need show.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        let video = demo_clip();
+        let audio = audio_fixture();
+        let pid = std::process::id();
+
+        let mut found = Vec::new();
+        for container in [Container::Mp4, Container::WebM] {
+            let name = format!("ve sync {} {pid}", container.extension());
+            let out = export_as(&av_project(&name, &video, &audio), container);
+            let decoded = decode_audio_full(&out);
+            let right = channel(&decoded.pcm, 1);
+            assert!(
+                !right.is_empty(),
+                "there is no audio in {} to locate",
+                out.display()
+            );
+
+            let at = tone_switch_secs(&right).unwrap_or_else(|| {
+                panic!(
+                    "the {container:?} export never changes from {RIGHT_HZ_EARLY} Hz to \
+                 {RIGHT_HZ_LATE} Hz; the fixture's second half did not survive it",
+                )
+            });
+            println!(
+                "{container:?}: landmark at {at:.3}s (fixture has it at {SWITCH_SECS:.3}s, \
+             {:+.1} ms), track {:.3}s of an expected {FIXTURE_SECS}",
+                (at - SWITCH_SECS) * 1000.0,
+                decoded.secs(),
+            );
+            found.push((container, at, decoded.secs()));
+            tidy(&out);
+        }
+
+        for (container, at, secs) in &found {
+            let offset_ms = (at - SWITCH_SECS) * 1000.0;
+            // Opus adds no delay of its own, so its band is tight: measured at
+            // +0 ms working and -15 ms with the mixer's old half-block read
+            // offset put back, and 10 ms sits between those with two of the 5 ms
+            // detection windows to spare. AAC's own priming puts its landmark
+            // 45 ms late when everything is right, so its band has to cover that
+            // and it catches only gross displacement.
+            let (limit_ms, limit_len) = match container {
+                Container::WebM => (10.0, 0.02),
+                _ => (80.0, 0.08),
+            };
+            assert!(
+                offset_ms.abs() < limit_ms,
+                "the {container:?} export puts the {SWITCH_SECS}s landmark at {at:.3}s \
+             ({offset_ms:+.1} ms), past the {limit_ms} ms this container allows",
+            );
+            // Running long or short is the other way to lose sync: right at the
+            // start, wrong by the end.
+            assert!(
+                (secs - FIXTURE_SECS).abs() < limit_len,
+                "the {container:?} audio ends where the video does: {secs:.3}s of an \
+             expected {FIXTURE_SECS}",
+            );
+        }
+
+        // Both containers are fed by one mixer through one set of timestamps, so
+        // beyond their own priming they must agree about where a timeline instant
+        // is. Measured at 45 ms apart, which is AAC's priming; a container-
+        // specific fault would widen it.
+        let spread_ms = (found[0].1 - found[1].1).abs() * 1000.0;
+        println!("landmark spread between containers: {spread_ms:.1} ms");
+        assert!(
+            spread_ms < 80.0,
+            "the two containers disagree by {spread_ms:.1} ms about where the same timeline \
+         instant is, more than the priming of either accounts for",
+        );
+    }
 }
 
 /// The export's audio branch, end to end, for one container.
@@ -1176,67 +1408,6 @@ fn assert_audio_round_trip(container: Container) {
     tidy(&out);
 }
 
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn an_mp4_export_carries_the_timelines_real_audio() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    assert_audio_round_trip(Container::Mp4);
-}
-
-/// The same for WebM, whose audio is a different encoder into a different
-/// muxer — `opusenc` into `webmmux`, not AAC into `mp4mux`. The WebM *video*
-/// chain went unproven until recently for exactly this reason; its audio chain
-/// shares none of MP4's elements either.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_webm_export_carries_the_timelines_real_audio() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    assert_audio_round_trip(Container::WebM);
-}
-
-/// The source fixture's AAC track must survive the same import/mix/export
-/// path as user footage, not merely prove decodable in isolation. Exercise
-/// both output muxers because their timestamp and encoder-delay handling are
-/// independent.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn the_encoded_sources_audio_survives_mp4_and_webm_export() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    let source = demo_clip();
-    let pid = std::process::id();
-    for container in [Container::Mp4, Container::WebM] {
-        let name = format!("ve source audio {} {pid}", container.extension());
-        let output = export_as(&av_project(&name, &source, &source), container);
-        let decoded = decode_audio_full(&output);
-        let (rate, channels) = decoded.native.unwrap_or_else(|| {
-            panic!(
-                "the {container:?} export dropped the encoded source's AAC track: {}",
-                output.display()
-            );
-        });
-        assert_eq!(rate, FIXTURE_RATE.cast_signed());
-        assert_eq!(channels, 2);
-        assert!(
-            (decoded.secs() - FIXTURE_SECS).abs() < 0.15,
-            "{container:?} retained {:.3}s of the source's {FIXTURE_SECS}s audio cut",
-            decoded.secs(),
-        );
-        let left = channel(&decoded.pcm, 0);
-        assert!(peak(&left) > 0.1, "the propagated source audio is audible");
-        assert!(
-            goertzel(&left, 440.0) > 0.1,
-            "the propagated track retains the source's 440 Hz signal",
-        );
-        tidy(&output);
-    }
-}
-
 /// Where in the decoded audio the right channel changes tone, in seconds, or
 /// `None` when it never does.
 ///
@@ -1273,108 +1444,6 @@ fn tone_switch_secs(right: &[f32]) -> Option<f64> {
         }
     }
     Some(best_k as f64 * win as f64 / FIXTURE_RATE as f64)
-}
-
-/// Where the sound sits in time relative to the picture.
-///
-/// The fixture's right channel changes tone at a known instant, so the
-/// exported audio can be asked where that instant ended up. A video frame's
-/// timeline position is fixed by the frame clock the export counts with, so
-/// audio landing at the wrong second *is* the two streams disagreeing.
-///
-/// Measured in **both** containers, because they can see different things.
-///
-/// Opus in WebM is delay-compensated end to end: the landmark comes back at
-/// exactly the second the fixture put it, and the track at exactly 2.000s, so
-/// its reading is the export's own placement with nothing added. That is the
-/// instrument here, and it is sharp — reinstating the half-block read offset
-/// `mix_block` once had moves it from +0 ms to -15 ms, which this catches.
-///
-/// AAC in MP4 cannot be read that way. Its priming is not compensated on this
-/// round trip: the track comes back 2.048s long for a 2s timeline and the
-/// landmark lands 45 ms late with everything working correctly. So it gets a
-/// band wide enough for that, and catches gross displacement only.
-///
-/// The spread between the two is asserted as well. It says nothing about a
-/// shift they share — that is what the Opus reading is for — but a container
-/// whose audio is placed differently from the other's, when both are fed by
-/// one mixer through one set of timestamps, has something wrong with it that
-/// neither absolute reading need show.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn the_exported_audio_sits_where_the_timeline_puts_it() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    let video = demo_clip();
-    let audio = audio_fixture();
-    let pid = std::process::id();
-
-    let mut found = Vec::new();
-    for container in [Container::Mp4, Container::WebM] {
-        let name = format!("ve sync {} {pid}", container.extension());
-        let out = export_as(&av_project(&name, &video, &audio), container);
-        let decoded = decode_audio_full(&out);
-        let right = channel(&decoded.pcm, 1);
-        assert!(
-            !right.is_empty(),
-            "there is no audio in {} to locate",
-            out.display()
-        );
-
-        let at = tone_switch_secs(&right).unwrap_or_else(|| {
-            panic!(
-                "the {container:?} export never changes from {RIGHT_HZ_EARLY} Hz to \
-                 {RIGHT_HZ_LATE} Hz; the fixture's second half did not survive it",
-            )
-        });
-        println!(
-            "{container:?}: landmark at {at:.3}s (fixture has it at {SWITCH_SECS:.3}s, \
-             {:+.1} ms), track {:.3}s of an expected {FIXTURE_SECS}",
-            (at - SWITCH_SECS) * 1000.0,
-            decoded.secs(),
-        );
-        found.push((container, at, decoded.secs()));
-        tidy(&out);
-    }
-
-    for (container, at, secs) in &found {
-        let offset_ms = (at - SWITCH_SECS) * 1000.0;
-        // Opus adds no delay of its own, so its band is tight: measured at
-        // +0 ms working and -15 ms with the mixer's old half-block read
-        // offset put back, and 10 ms sits between those with two of the 5 ms
-        // detection windows to spare. AAC's own priming puts its landmark
-        // 45 ms late when everything is right, so its band has to cover that
-        // and it catches only gross displacement.
-        let (limit_ms, limit_len) = match container {
-            Container::WebM => (10.0, 0.02),
-            _ => (80.0, 0.08),
-        };
-        assert!(
-            offset_ms.abs() < limit_ms,
-            "the {container:?} export puts the {SWITCH_SECS}s landmark at {at:.3}s \
-             ({offset_ms:+.1} ms), past the {limit_ms} ms this container allows",
-        );
-        // Running long or short is the other way to lose sync: right at the
-        // start, wrong by the end.
-        assert!(
-            (secs - FIXTURE_SECS).abs() < limit_len,
-            "the {container:?} audio ends where the video does: {secs:.3}s of an \
-             expected {FIXTURE_SECS}",
-        );
-    }
-
-    // Both containers are fed by one mixer through one set of timestamps, so
-    // beyond their own priming they must agree about where a timeline instant
-    // is. Measured at 45 ms apart, which is AAC's priming; a container-
-    // specific fault would widen it.
-    let spread_ms = (found[0].1 - found[1].1).abs() * 1000.0;
-    println!("landmark spread between containers: {spread_ms:.1} ms");
-    assert!(
-        spread_ms < 80.0,
-        "the two containers disagree by {spread_ms:.1} ms about where the same timeline \
-         instant is, more than the priming of either accounts for",
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1595,182 +1664,325 @@ fn is_magentaish(q: [u8; 3]) -> bool {
     q[0] as i32 > q[1] as i32 + 40 && q[2] as i32 > q[1] as i32 + 40
 }
 
-/// The key has to reach the encoded file as *compositing*: where the plate
-/// was, the layer underneath is now visible, and the subject standing on the
-/// plate is still there.
-///
-/// Read against the same stack exported with the key off, so what the
-/// difference proves is the key and not the fixture.
 #[test]
 #[serial_test::serial(video_editor_gst)]
-fn a_chroma_key_reaches_the_encoded_file_as_compositing() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::model::ChromaKey;
+fn exported_keys_masks_and_curves_reach_the_encoded_file() {
+    // Case `a_chroma_key_reaches_the_encoded_file_as_compositing`:
+    // The key has to reach the encoded file as *compositing*: where the plate
+    // was, the layer underneath is now visible, and the subject standing on the
+    // plate is still there.
+    //
+    // Read against the same stack exported with the key off, so what the
+    // difference proves is the key and not the fixture.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::model::ChromaKey;
 
-    let pid = std::process::id();
-    let (plain_p, _) = plate_stack(&format!("ve key off {pid}"));
-    let plain = export(&plain_p);
+        let pid = std::process::id();
+        let (plain_p, _) = plate_stack(&format!("ve key off {pid}"));
+        let plain = export(&plain_p);
 
-    let (mut keyed_p, over) = plate_stack(&format!("ve key on {pid}"));
-    keyed_p.clip_mut(over).expect("clip").key = ChromaKey {
-        enabled: true,
-        color: [
-            PLATE_RGB[0] as f64 / 255.0,
-            PLATE_RGB[1] as f64 / 255.0,
-            PLATE_RGB[2] as f64 / 255.0,
-        ],
-        tolerance: 0.25,
-        softness: 0.1,
-        spill: 0.0,
-    };
-    let keyed = export(&keyed_p);
+        let (mut keyed_p, over) = plate_stack(&format!("ve key on {pid}"));
+        keyed_p.clip_mut(over).expect("clip").key = ChromaKey {
+            enabled: true,
+            color: [
+                PLATE_RGB[0] as f64 / 255.0,
+                PLATE_RGB[1] as f64 / 255.0,
+                PLATE_RGB[2] as f64 / 255.0,
+            ],
+            tolerance: 0.25,
+            softness: 0.1,
+            spill: 0.0,
+        };
+        let keyed = export(&keyed_p);
 
-    let a = decode_frame(&plain, 0.4);
-    let b = decode_frame(&keyed, 0.4);
-    // Well clear of the band, and off the frame edges where the encoder's
-    // chroma subsampling smears neighbouring regions together.
-    for v in [0.2, 0.82] {
-        let off = sample(&a, 0.5, v);
-        let on = sample(&b, 0.5, v);
-        println!("v={v}: key off {off:?}  key on {on:?}");
+        let a = decode_frame(&plain, 0.4);
+        let b = decode_frame(&keyed, 0.4);
+        // Well clear of the band, and off the frame edges where the encoder's
+        // chroma subsampling smears neighbouring regions together.
+        for v in [0.2, 0.82] {
+            let off = sample(&a, 0.5, v);
+            let on = sample(&b, 0.5, v);
+            println!("v={v}: key off {off:?}  key on {on:?}");
+            assert!(
+                is_greenish(off),
+                "unkeyed, the upper layer covers the frame at v={v}: {off:?}",
+            );
+            assert!(
+                is_magentaish(on),
+                "keyed, the ENCODED file shows the layer beneath at v={v}: {on:?}",
+            );
+        }
+        // The subject survives — a key that ate it would pass every check above
+        // and still be useless.
+        let subject = sample(&b, 0.5, 0.5);
         assert!(
-            is_greenish(off),
-            "unkeyed, the upper layer covers the frame at v={v}: {off:?}",
+            subject[0] > 130 && subject[0] as i32 > subject[2] as i32 + 40,
+            "the subject standing on the plate is still in the encoded file: {subject:?}",
         );
-        assert!(
-            is_magentaish(on),
-            "keyed, the ENCODED file shows the layer beneath at v={v}: {on:?}",
-        );
+
+        tidy(&plain);
+        tidy(&keyed);
     }
-    // The subject survives — a key that ate it would pass every check above
-    // and still be useless.
-    let subject = sample(&b, 0.5, 0.5);
-    assert!(
-        subject[0] > 130 && subject[0] as i32 > subject[2] as i32 + 40,
-        "the subject standing on the plate is still in the encoded file: {subject:?}",
-    );
+    // Case `a_mask_reaches_the_encoded_file_as_geometry`:
+    // A mask has to reach the encoded file as geometry: inside the shape the
+    // upper layer, outside it the layer beneath.
+    //
+    // Read against the same stack exported with no mask, so a frame that simply
+    // failed to composite cannot pass.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::model::{Mask, MaskShape};
 
-    tidy(&plain);
-    tidy(&keyed);
-}
+        let pid = std::process::id();
+        let (plain_p, _) = plate_stack(&format!("ve mask off {pid}"));
+        let plain = export(&plain_p);
 
-/// A mask has to reach the encoded file as geometry: inside the shape the
-/// upper layer, outside it the layer beneath.
-///
-/// Read against the same stack exported with no mask, so a frame that simply
-/// failed to composite cannot pass.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_mask_reaches_the_encoded_file_as_geometry() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::model::{Mask, MaskShape};
-
-    let pid = std::process::id();
-    let (plain_p, _) = plate_stack(&format!("ve mask off {pid}"));
-    let plain = export(&plain_p);
-
-    let (mut masked_p, over) = plate_stack(&format!("ve mask on {pid}"));
-    masked_p.clip_mut(over).expect("clip").mask = Mask {
-        shape: MaskShape::Ellipse,
-        w: 0.45,
-        h: 0.45,
-        feather: 0.05,
-        ..Mask::default()
-    };
-    let masked = export(&masked_p);
-
-    let a = decode_frame(&plain, 0.4);
-    let b = decode_frame(&masked, 0.4);
-    // Sampled off the middle band so what is being cut is the plate, not the
-    // subject. Inside the disc but above the band; outside it near the edge.
-    // v=0.35 is two thirds of the way out along the disc's vertical radius
-    // — clear of both the feathered rim and the subject band below it.
-    let inside = (0.5, 0.35);
-    let outside = (0.06, 0.12);
-    println!(
-        "unmasked edge {:?}   masked inside {:?}   masked edge {:?}",
-        sample(&a, outside.0, outside.1),
-        sample(&b, inside.0, inside.1),
-        sample(&b, outside.0, outside.1),
-    );
-    assert!(
-        is_greenish(sample(&a, outside.0, outside.1)),
-        "unmasked, the upper layer reaches the frame edge: {:?}",
-        sample(&a, outside.0, outside.1),
-    );
-    assert!(
-        is_greenish(sample(&b, inside.0, inside.1)),
-        "masked, the upper layer is still inside the disc: {:?}",
-        sample(&b, inside.0, inside.1),
-    );
-    assert!(
-        is_magentaish(sample(&b, outside.0, outside.1)),
-        "and the layer beneath shows outside it in the ENCODED file: {:?}",
-        sample(&b, outside.0, outside.1),
-    );
-
-    tidy(&plain);
-    tidy(&masked);
-}
-
-/// A keyframed mask has to be in a different place in each encoded second.
-/// A mask baked once at the head of the export would pass the geometry test
-/// above and still be motionless in the file.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_keyframed_mask_moves_across_the_encoded_file() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::model::{Mask, MaskShape};
-
-    let (mut p, over) = plate_stack(&format!("ve mask move {}", std::process::id()));
-    {
-        let c = p.clip_mut(over).expect("clip");
-        c.mask = Mask {
+        let (mut masked_p, over) = plate_stack(&format!("ve mask on {pid}"));
+        masked_p.clip_mut(over).expect("clip").mask = Mask {
             shape: MaskShape::Ellipse,
-            w: 0.4,
-            h: 0.9,
+            w: 0.45,
+            h: 0.45,
             feather: 0.05,
             ..Mask::default()
         };
-        c.set_key_at(Param::MaskX, 0.0, -0.3, Interp::Linear);
-        c.set_key_at(Param::MaskX, 0.85, 0.3, Interp::Linear);
+        let masked = export(&masked_p);
+
+        let a = decode_frame(&plain, 0.4);
+        let b = decode_frame(&masked, 0.4);
+        // Sampled off the middle band so what is being cut is the plate, not the
+        // subject. Inside the disc but above the band; outside it near the edge.
+        // v=0.35 is two thirds of the way out along the disc's vertical radius
+        // — clear of both the feathered rim and the subject band below it.
+        let inside = (0.5, 0.35);
+        let outside = (0.06, 0.12);
+        println!(
+            "unmasked edge {:?}   masked inside {:?}   masked edge {:?}",
+            sample(&a, outside.0, outside.1),
+            sample(&b, inside.0, inside.1),
+            sample(&b, outside.0, outside.1),
+        );
+        assert!(
+            is_greenish(sample(&a, outside.0, outside.1)),
+            "unmasked, the upper layer reaches the frame edge: {:?}",
+            sample(&a, outside.0, outside.1),
+        );
+        assert!(
+            is_greenish(sample(&b, inside.0, inside.1)),
+            "masked, the upper layer is still inside the disc: {:?}",
+            sample(&b, inside.0, inside.1),
+        );
+        assert!(
+            is_magentaish(sample(&b, outside.0, outside.1)),
+            "and the layer beneath shows outside it in the ENCODED file: {:?}",
+            sample(&b, outside.0, outside.1),
+        );
+
+        tidy(&plain);
+        tidy(&masked);
     }
-    let path = export(&p);
-    let early = decode_frame(&path, 0.05);
-    let late = decode_frame(&path, 0.8);
-    // Left of centre at the head, right of centre by the tail. Sampled above
-    // the subject band, so what moves is the mask and not the picture.
-    let (left, right) = ((0.22, 0.2), (0.78, 0.2));
-    println!(
-        "early L={:?} R={:?}   late L={:?} R={:?}",
-        sample(&early, left.0, left.1),
-        sample(&early, right.0, right.1),
-        sample(&late, left.0, left.1),
-        sample(&late, right.0, right.1),
-    );
-    assert!(
-        is_greenish(sample(&early, left.0, left.1)),
-        "the disc starts on the left of the encoded frame",
-    );
-    assert!(
-        is_magentaish(sample(&early, right.0, right.1)),
-        "and has not reached the right yet",
-    );
-    assert!(
-        is_magentaish(sample(&late, left.0, left.1)),
-        "by the end it has left the left",
-    );
-    assert!(
-        is_greenish(sample(&late, right.0, right.1)),
-        "and arrived on the right",
-    );
-    tidy(&path);
+    // Case `a_keyframed_mask_moves_across_the_encoded_file`:
+    // A keyframed mask has to be in a different place in each encoded second.
+    // A mask baked once at the head of the export would pass the geometry test
+    // above and still be motionless in the file.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::model::{Mask, MaskShape};
+
+        let (mut p, over) = plate_stack(&format!("ve mask move {}", std::process::id()));
+        {
+            let c = p.clip_mut(over).expect("clip");
+            c.mask = Mask {
+                shape: MaskShape::Ellipse,
+                w: 0.4,
+                h: 0.9,
+                feather: 0.05,
+                ..Mask::default()
+            };
+            c.set_key_at(Param::MaskX, 0.0, -0.3, Interp::Linear);
+            c.set_key_at(Param::MaskX, 0.85, 0.3, Interp::Linear);
+        }
+        let path = export(&p);
+        let early = decode_frame(&path, 0.05);
+        let late = decode_frame(&path, 0.8);
+        // Left of centre at the head, right of centre by the tail. Sampled above
+        // the subject band, so what moves is the mask and not the picture.
+        let (left, right) = ((0.22, 0.2), (0.78, 0.2));
+        println!(
+            "early L={:?} R={:?}   late L={:?} R={:?}",
+            sample(&early, left.0, left.1),
+            sample(&early, right.0, right.1),
+            sample(&late, left.0, left.1),
+            sample(&late, right.0, right.1),
+        );
+        assert!(
+            is_greenish(sample(&early, left.0, left.1)),
+            "the disc starts on the left of the encoded frame",
+        );
+        assert!(
+            is_magentaish(sample(&early, right.0, right.1)),
+            "and has not reached the right yet",
+        );
+        assert!(
+            is_magentaish(sample(&late, left.0, left.1)),
+            "by the end it has left the left",
+        );
+        assert!(
+            is_greenish(sample(&late, right.0, right.1)),
+            "and arrived on the right",
+        );
+        tidy(&path);
+    }
+    // Case `a_tone_curve_reaches_the_encoded_file_as_a_table`:
+    // The curve has to reach the encoded file **as a table**: every band of the
+    // wedge lands where `Curve::apply` says it should, and the two ends — which
+    // the curve pins — do not move.
+    //
+    // That last part is what tells a curve from a brightness slider. A slider
+    // lifting the midtones lifts the shadows and the highlights with them; the
+    // whole reason to have curves is that this one does not.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::curve::Curve;
+
+        let pid = std::process::id();
+        let (plain_project, _) = wedge_project(&format!("ve curve plain {pid}"));
+        let plain = export(&plain_project);
+
+        let (mut graded_project, cid) = wedge_project(&format!("ve curve shaped {pid}"));
+        // An S: crush the low midtones, lift the high ones, both ends pinned.
+        let mut curve = Curve::default();
+        curve.master.set_point(0.3, 0.14);
+        curve.master.set_point(0.7, 0.88);
+        graded_project.clip_mut(cid).unwrap().curves = curve.clone();
+        let shaped = export(&graded_project);
+
+        let before = decode_frame(&plain, 0.3);
+        let after = decode_frame(&shaped, 0.3);
+
+        // H.264 at this bitrate holds a flat band to within a few code values;
+        // the curve moves the midtones by 40+, so the margin is comfortable.
+        const TOL: f64 = 16.0;
+        let mut moved = 0;
+        for i in 0..WEDGE.len() {
+            let a = sample(&before, band_u(i), 0.5);
+            let b = sample(&after, band_u(i), 0.5);
+            let input = a[1] as f64 / 255.0;
+            let want = curve.apply(input, input, input).1 * 255.0;
+            println!("band {i}: encoded plain {a:?} -> shaped {b:?}, table says {want:.1}");
+            assert!(
+                (b[1] as f64 - want).abs() < TOL,
+                "band {i}: the encoded tone {} should be the table's {want:.1} for input {}",
+                b[1],
+                a[1],
+            );
+            if (b[1] as f64 - a[1] as f64).abs() > TOL {
+                moved += 1;
+            }
+        }
+        assert!(
+            moved >= 3,
+            "the curve really reshaped the picture, {moved} bands moved"
+        );
+
+        // And the shape is a *shape*: the two ends the curve pins barely move
+        // while the midtones move several times as far. A brightness or contrast
+        // slider cannot do that — it moves the whole wedge together — so this is
+        // the assertion that tells a curve from the sliders it sits beside.
+        let shift = |i: usize| {
+            (sample(&after, band_u(i), 0.5)[1] as f64 - sample(&before, band_u(i), 0.5)[1] as f64)
+                .abs()
+        };
+        let ends = shift(0).max(shift(WEDGE.len() - 1));
+        let mids = (1..WEDGE.len() - 1).map(shift).fold(0.0_f64, f64::max);
+        println!("ends moved at most {ends:.1}, midtones up to {mids:.1}");
+        assert!(
+            ends < 20.0,
+            "the pinned ends stay near where they were: {ends:.1}"
+        );
+        assert!(
+            mids > ends * 3.0,
+            "and the midtones move several times as far: {mids:.1} against {ends:.1}",
+        );
+
+        tidy(&plain);
+        tidy(&shaped);
+    }
+    // Case `a_per_channel_curve_reaches_the_encoded_file`:
+    // A per-channel curve reaches the file as a colour cast on a neutral wedge —
+    // something the three grade axes cannot produce at all.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::curve::Curve;
+
+        let pid = std::process::id();
+        let (mut project, cid) = wedge_project(&format!("ve curve channel {pid}"));
+        let mut curve = Curve::default();
+        curve.red.set_point(0.5, 0.9);
+        project.clip_mut(cid).unwrap().curves = curve;
+        let path = export(&project);
+
+        let frame = decode_frame(&path, 0.3);
+        // Band 3 is 112/255 ≈ 0.44 in, well inside the lifted region.
+        let q = sample(&frame, band_u(3), 0.5);
+        println!("mid band with red lifted: {q:?}");
+        assert!(
+            q[0] as i32 > q[1] as i32 + 40 && q[0] as i32 > q[2] as i32 + 40,
+            "only red was lifted, so the neutral band comes back red-cast: {q:?}",
+        );
+        // The far ends are pinned on every channel, so the wedge's dark end is
+        // still neutral — the cast is the curve's shape, not a tint.
+        let dark = sample(&frame, band_u(0), 0.5);
+        assert!(
+            dark[0].abs_diff(dark[1]) < 20,
+            "the pinned dark end stays neutral: {dark:?}",
+        );
+
+        tidy(&path);
+    }
+    // Case `an_animated_curve_amount_grades_each_encoded_second_differently`:
+    // An animated curve amount reaches the file as a grade that ramps: the same
+    // footage is graded differently in different seconds.
+    'case: {
+        if !generated_clip::media_stack() {
+            break 'case;
+        }
+        use video_editor::curve::Curve;
+
+        let pid = std::process::id();
+        let (mut project, cid) = wedge_project(&format!("ve curve anim {pid}"));
+        let mut curve = Curve::default();
+        curve.master.set_point(0.5, 0.95);
+        {
+            let c = project.clip_mut(cid).unwrap();
+            c.in_point = 0.0;
+            c.out_point = WEDGE_SECS;
+            c.curves = curve;
+            c.set_key_at(Param::CurveMix, 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::CurveMix, WEDGE_SECS, 1.0, Interp::Linear);
+        }
+        let path = export(&project);
+
+        let early = sample(&decode_frame(&path, 0.05), band_u(3), 0.5)[1] as f64;
+        let late = sample(&decode_frame(&path, WEDGE_SECS - 0.1), band_u(3), 0.5)[1] as f64;
+        println!("mid band: {early} early, {late} late");
+        assert!(
+            late > early + 60.0,
+            "the amount ramped on across the encoded file: {early} -> {late}",
+        );
+
+        tidy(&path);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1930,237 +2142,6 @@ fn wedge_project(name: &str) -> (Project, uuid::Uuid) {
     (p, cid)
 }
 
-/// The curve has to reach the encoded file **as a table**: every band of the
-/// wedge lands where `Curve::apply` says it should, and the two ends — which
-/// the curve pins — do not move.
-///
-/// That last part is what tells a curve from a brightness slider. A slider
-/// lifting the midtones lifts the shadows and the highlights with them; the
-/// whole reason to have curves is that this one does not.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::curve::Curve;
-
-    let pid = std::process::id();
-    let (plain_project, _) = wedge_project(&format!("ve curve plain {pid}"));
-    let plain = export(&plain_project);
-
-    let (mut graded_project, cid) = wedge_project(&format!("ve curve shaped {pid}"));
-    // An S: crush the low midtones, lift the high ones, both ends pinned.
-    let mut curve = Curve::default();
-    curve.master.set_point(0.3, 0.14);
-    curve.master.set_point(0.7, 0.88);
-    graded_project.clip_mut(cid).unwrap().curves = curve.clone();
-    let shaped = export(&graded_project);
-
-    let before = decode_frame(&plain, 0.3);
-    let after = decode_frame(&shaped, 0.3);
-
-    // H.264 at this bitrate holds a flat band to within a few code values;
-    // the curve moves the midtones by 40+, so the margin is comfortable.
-    const TOL: f64 = 16.0;
-    let mut moved = 0;
-    for i in 0..WEDGE.len() {
-        let a = sample(&before, band_u(i), 0.5);
-        let b = sample(&after, band_u(i), 0.5);
-        let input = a[1] as f64 / 255.0;
-        let want = curve.apply(input, input, input).1 * 255.0;
-        println!("band {i}: encoded plain {a:?} -> shaped {b:?}, table says {want:.1}");
-        assert!(
-            (b[1] as f64 - want).abs() < TOL,
-            "band {i}: the encoded tone {} should be the table's {want:.1} for input {}",
-            b[1],
-            a[1],
-        );
-        if (b[1] as f64 - a[1] as f64).abs() > TOL {
-            moved += 1;
-        }
-    }
-    assert!(
-        moved >= 3,
-        "the curve really reshaped the picture, {moved} bands moved"
-    );
-
-    // And the shape is a *shape*: the two ends the curve pins barely move
-    // while the midtones move several times as far. A brightness or contrast
-    // slider cannot do that — it moves the whole wedge together — so this is
-    // the assertion that tells a curve from the sliders it sits beside.
-    let shift = |i: usize| {
-        (sample(&after, band_u(i), 0.5)[1] as f64 - sample(&before, band_u(i), 0.5)[1] as f64).abs()
-    };
-    let ends = shift(0).max(shift(WEDGE.len() - 1));
-    let mids = (1..WEDGE.len() - 1).map(shift).fold(0.0_f64, f64::max);
-    println!("ends moved at most {ends:.1}, midtones up to {mids:.1}");
-    assert!(
-        ends < 20.0,
-        "the pinned ends stay near where they were: {ends:.1}"
-    );
-    assert!(
-        mids > ends * 3.0,
-        "and the midtones move several times as far: {mids:.1} against {ends:.1}",
-    );
-
-    tidy(&plain);
-    tidy(&shaped);
-}
-
-/// A per-channel curve reaches the file as a colour cast on a neutral wedge —
-/// something the three grade axes cannot produce at all.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_per_channel_curve_reaches_the_encoded_file() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::curve::Curve;
-
-    let pid = std::process::id();
-    let (mut project, cid) = wedge_project(&format!("ve curve channel {pid}"));
-    let mut curve = Curve::default();
-    curve.red.set_point(0.5, 0.9);
-    project.clip_mut(cid).unwrap().curves = curve;
-    let path = export(&project);
-
-    let frame = decode_frame(&path, 0.3);
-    // Band 3 is 112/255 ≈ 0.44 in, well inside the lifted region.
-    let q = sample(&frame, band_u(3), 0.5);
-    println!("mid band with red lifted: {q:?}");
-    assert!(
-        q[0] as i32 > q[1] as i32 + 40 && q[0] as i32 > q[2] as i32 + 40,
-        "only red was lifted, so the neutral band comes back red-cast: {q:?}",
-    );
-    // The far ends are pinned on every channel, so the wedge's dark end is
-    // still neutral — the cast is the curve's shape, not a tint.
-    let dark = sample(&frame, band_u(0), 0.5);
-    assert!(
-        dark[0].abs_diff(dark[1]) < 20,
-        "the pinned dark end stays neutral: {dark:?}",
-    );
-
-    tidy(&path);
-}
-
-/// An animated curve amount reaches the file as a grade that ramps: the same
-/// footage is graded differently in different seconds.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn an_animated_curve_amount_grades_each_encoded_second_differently() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::curve::Curve;
-
-    let pid = std::process::id();
-    let (mut project, cid) = wedge_project(&format!("ve curve anim {pid}"));
-    let mut curve = Curve::default();
-    curve.master.set_point(0.5, 0.95);
-    {
-        let c = project.clip_mut(cid).unwrap();
-        c.in_point = 0.0;
-        c.out_point = WEDGE_SECS;
-        c.curves = curve;
-        c.set_key_at(Param::CurveMix, 0.0, 0.0, Interp::Linear);
-        c.set_key_at(Param::CurveMix, WEDGE_SECS, 1.0, Interp::Linear);
-    }
-    let path = export(&project);
-
-    let early = sample(&decode_frame(&path, 0.05), band_u(3), 0.5)[1] as f64;
-    let late = sample(&decode_frame(&path, WEDGE_SECS - 0.1), band_u(3), 0.5)[1] as f64;
-    println!("mid band: {early} early, {late} late");
-    assert!(
-        late > early + 60.0,
-        "the amount ramped on across the encoded file: {early} -> {late}",
-    );
-
-    tidy(&path);
-}
-
 // ---------------------------------------------------------------------------
 // A source the export cannot read.
 // ---------------------------------------------------------------------------
-
-/// A project whose media path is relative — what a hand-built project or a
-/// `.qvp` copied next to its footage looks like — must either find the
-/// footage or refuse. What it must never do is encode the compositor's
-/// stand-in fill and report `Done`: that produced a valid MP4 of a flat
-/// gradient, 14 KB for sixty frames of 1080p, indistinguishable from a
-/// successful render to everything except a decoder.
-#[test]
-#[serial_test::serial(video_editor_gst)]
-fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
-    if !generated_clip::media_stack() {
-        return;
-    }
-    use video_editor::export::{begin_export, output_path};
-
-    let clip = demo_clip();
-    let dir = clip
-        .parent()
-        .expect("the clip has a directory")
-        .to_path_buf();
-    let file = clip
-        .file_name()
-        .expect("the clip has a name")
-        .to_string_lossy()
-        .into_owned();
-
-    // 1. No anchor, and nothing of that name in the working directory: the
-    //    source cannot be read, so the export refuses by name.
-    video_editor::media::set_project_anchor(None);
-    let pid = std::process::id();
-    let mut lost = project_over(&clip, 0.5, &format!("ve relative lost {pid}"));
-    lost.media[0].path = format!("tilo-not-here-{pid}/{file}");
-    let settings = ExportSettings {
-        resolution: Resolution::P720,
-        container: Container::Mp4,
-        frame_rate: FrameRate::F30,
-    };
-    let lost_out = output_path(&settings, &lost);
-    std::fs::remove_file(&lost_out).ok();
-    match begin_export(&lost, &settings) {
-        ExportStatus::Failed { reason } => {
-            println!("refused: {reason}");
-            assert!(
-                reason.contains("demo"),
-                "the refusal names the source: {reason:?}"
-            );
-        }
-        other => panic!("an unresolvable source must refuse, got {other:?}"),
-    }
-    assert!(
-        !lost_out.exists(),
-        "and leaves no file behind that looks like a render: {}",
-        lost_out.display(),
-    );
-
-    // 2. Anchored at the directory the project file would live in, the same
-    //    relative path finds the footage — and the file carries it.
-    video_editor::media::set_project_anchor(Some(dir));
-    let mut found = project_over(&clip, 0.5, &format!("ve relative found {pid}"));
-    found.media[0].path = file.clone();
-    let out = export(&found);
-    let exported = decode_frame(&out, 0.2);
-    let source = decode_frame(&clip, 0.2);
-    let detail = horizontal_detail(&exported);
-    let source_detail = horizontal_detail(&source);
-    let diff = mean_abs_diff(&exported, &source);
-    println!(
-        "relative-path export: detail {detail:.2} (source {source_detail:.2}), difference {diff:.2}"
-    );
-    assert!(
-        detail > source_detail * 0.4,
-        "the encoded frame has the source's structure, not a flat fill \
-         (detail {detail:.2} vs source {source_detail:.2})",
-    );
-    assert!(
-        diff < 30.0,
-        "and is the same picture: mean difference {diff:.2}"
-    );
-
-    video_editor::media::set_project_anchor(None);
-    tidy(&out);
-}

@@ -3,20 +3,22 @@
 //! portable player-state and command core.
 //!
 //! Real D-Bus serving requires Unix and the `mpris` feature (via zbus).
-//! Other platforms start no session. The service runs on its own worker
-//! thread with a private Tokio runtime so the UI thread is never blocked.
+//! The service runs on its own worker thread with a private Tokio runtime so
+//! the UI thread is never blocked. On macOS the same feature publishes the
+//! player to the system's now-playing controls instead
+//! (`tilo_media::NowPlayingSession`), and other platforms start no session.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the D-Bus MPRIS service runs on its own thread"
 )]
 
-#[cfg(all(feature = "mpris", not(unix)))]
+#[cfg(all(feature = "mpris", not(freedesktop)))]
 use std::sync::mpsc::Receiver;
 
 #[cfg(feature = "mpris")]
 use crate::mpris::MprisCommand;
 use crate::mpris::{MprisConfig, PlayerSnapshot};
-#[cfg(all(feature = "mpris", unix))]
+#[cfg(all(feature = "mpris", freedesktop))]
 use crate::mpris::{OBJECT_PATH, track_object_path};
 
 /// The native [`crate::host::MediaSessionFactory`]: MPRIS on the session bus.
@@ -38,6 +40,9 @@ pub fn start_desktop_session(
                 let _ = self.0.send(snapshot);
             }
         }
+        if let Some(session) = now_playing::start(&initial) {
+            return Some(session);
+        }
         let (commands, publish_tx) = imp::spawn(config, initial)?;
         Some(crate::host::MediaSession {
             commands,
@@ -51,13 +56,152 @@ pub fn start_desktop_session(
     }
 }
 
-#[cfg(all(feature = "mpris", not(unix)))]
+/// The player in the system's now-playing controls where `tilo-media` has
+/// them (macOS: Control Center and the media keys), before MPRIS. The
+/// session holds platform objects, so it stays on the thread that started
+/// it (the UI thread, which also publishes); the publisher reaches it there
+/// by id.
+#[cfg(feature = "mpris")]
+mod now_playing {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use tilo_media::{NowPlaying, NowPlayingAction, NowPlayingSession, NowPlayingState};
+
+    use crate::mpris::{MprisCommand, PlaybackStatus, PlayerSnapshot};
+
+    thread_local! {
+        #[allow(
+            clippy::zero_sized_map_values,
+            reason = "a session holds nothing where the platform has no controls"
+        )]
+        static SESSIONS: RefCell<HashMap<u64, NowPlayingSession>> = RefCell::new(HashMap::new());
+    }
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    /// `None` where the platform has no now-playing surface of its own.
+    pub(super) fn start(initial: &PlayerSnapshot) -> Option<crate::host::MediaSession> {
+        let (tx, commands) = std::sync::mpsc::channel();
+        let wake = tilo_rt::wake::WakeHandle::new();
+        let session = NowPlayingSession::start(move |action| {
+            if tx.send(command(action)).is_ok() {
+                wake.wake();
+            }
+        })?;
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        SESSIONS.with(|sessions| sessions.borrow_mut().insert(id, session));
+        let mut publisher = Publisher { id };
+        crate::host::MediaSessionPublisher::publish(&mut publisher, initial.clone());
+        Some(crate::host::MediaSession {
+            commands,
+            publisher: Box::new(publisher),
+        })
+    }
+
+    /// Publishes into the session this thread holds under `id`. Publishing
+    /// or dropping it from another thread finds nothing there.
+    struct Publisher {
+        id: u64,
+    }
+
+    impl crate::host::MediaSessionPublisher for Publisher {
+        fn publish(&mut self, snapshot: PlayerSnapshot) {
+            let (now, state) = describe(&snapshot);
+            SESSIONS.with(|sessions| {
+                if let Some(session) = sessions.borrow_mut().get_mut(&self.id) {
+                    session.update(&now, &state);
+                }
+            });
+        }
+    }
+
+    impl Drop for Publisher {
+        fn drop(&mut self) {
+            let _ = SESSIONS.try_with(|sessions| sessions.borrow_mut().remove(&self.id));
+        }
+    }
+
+    pub(super) fn command(action: NowPlayingAction) -> MprisCommand {
+        match action {
+            NowPlayingAction::Play => MprisCommand::Play,
+            NowPlayingAction::Pause => MprisCommand::Pause,
+            NowPlayingAction::Stop => MprisCommand::Stop,
+            NowPlayingAction::Next => MprisCommand::Next,
+            NowPlayingAction::Previous => MprisCommand::Previous,
+            NowPlayingAction::SeekTo(position) => {
+                MprisCommand::SetPosition(i64::try_from(position.as_micros()).unwrap_or(i64::MAX))
+            }
+        }
+    }
+
+    pub(super) fn describe(snapshot: &PlayerSnapshot) -> (NowPlaying, NowPlayingState) {
+        let micros = |value: i64| Duration::from_micros(u64::try_from(value).unwrap_or(0));
+        (
+            NowPlaying {
+                title: snapshot.title.clone(),
+                artist: snapshot.artist.clone(),
+                album: snapshot.album.clone(),
+                artwork_url: (!snapshot.art_url.is_empty()).then(|| snapshot.art_url.clone()),
+            },
+            NowPlayingState {
+                status: match snapshot.status {
+                    PlaybackStatus::Playing => tilo_media::PlaybackStatus::Playing,
+                    PlaybackStatus::Paused => tilo_media::PlaybackStatus::Paused,
+                    PlaybackStatus::Stopped => tilo_media::PlaybackStatus::Stopped,
+                },
+                position: micros(snapshot.position_us),
+                duration: (snapshot.length_us > 0).then(|| micros(snapshot.length_us)),
+                rate: 1.0,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_player_reaches_the_now_playing_controls_and_their_requests_come_back() {
+            let snapshot = PlayerSnapshot {
+                status: PlaybackStatus::Playing,
+                title: "Aria".into(),
+                length_us: 180_000_000,
+                position_us: 3_000_000,
+                ..PlayerSnapshot::default()
+            };
+            let (now, state) = describe(&snapshot);
+            assert_eq!(now.title, "Aria");
+            assert_eq!(state.duration, Some(Duration::from_secs(180)));
+            assert_eq!(state.status, tilo_media::PlaybackStatus::Playing);
+            assert_eq!(
+                command(NowPlayingAction::SeekTo(Duration::from_secs(2))),
+                MprisCommand::SetPosition(2_000_000)
+            );
+            let session = start(&snapshot);
+            assert_eq!(
+                session.is_some(),
+                cfg!(target_os = "macos"),
+                "macOS has a now-playing surface; elsewhere MPRIS serves"
+            );
+            if let Some(session) = session {
+                assert!(session.commands.try_recv().is_err());
+                drop(session);
+            }
+            SESSIONS.with(|sessions| assert!(sessions.borrow().is_empty()));
+        }
+    }
+}
+
+#[cfg(all(feature = "mpris", not(freedesktop)))]
 mod imp {
     use super::{MprisCommand, MprisConfig, PlayerSnapshot, Receiver};
     use tokio::sync::mpsc::UnboundedSender;
 
-    // MPRIS is a Unix session-bus protocol. Keep the common application API
-    // available without claiming a native Windows media-control service.
+    // MPRIS is a freedesktop session-bus protocol. Keep the common application
+    // API available on Android, macOS and Windows without claiming a bus
+    // service; macOS reaches now-playing first and falls through here.
     pub(super) fn spawn(
         _config: MprisConfig,
         _initial: PlayerSnapshot,
@@ -66,7 +210,7 @@ mod imp {
     }
 }
 
-#[cfg(all(feature = "mpris", unix))]
+#[cfg(all(feature = "mpris", freedesktop))]
 mod imp {
     #![allow(
         clippy::used_underscore_binding,
@@ -428,10 +572,10 @@ mod imp {
 #[cfg(all(test, feature = "mpris"))]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(freedesktop)]
     use crate::mpris::PlaybackStatus;
 
-    #[cfg(all(feature = "mpris", not(unix)))]
+    #[cfg(all(feature = "mpris", not(freedesktop)))]
     #[test]
     fn unsupported_platform_starts_no_session() {
         assert!(
@@ -446,7 +590,7 @@ mod tests {
     /// Hermetic round-trip over an in-process p2p socket pair (no session
     /// bus): proves the served MPRIS interfaces *respond* and *reflect* the
     /// player state a `VideoPlayer` publishes.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     #[tokio::test]
     async fn mpris_interface_responds_and_reflects_state() {
         use std::sync::mpsc::channel;
@@ -540,7 +684,7 @@ mod tests {
 
     /// The properties zbus serves for the snapshot [`spawn`] published match
     /// what was published.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_served_state_matches(player_proxy: &zbus::Proxy<'_>) {
         let status: String = player_proxy
             .get_property("PlaybackStatus")
@@ -566,7 +710,7 @@ mod tests {
 
     /// A client calling `Pause`/`Next`/`Play` over the proxy is forwarded to
     /// the widget as [`MprisCommand`]s, in order.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_commands_forwarded(
         player_proxy: &zbus::Proxy<'_>,
         cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
@@ -602,7 +746,7 @@ mod tests {
 
     /// Publishing an update through [`imp::apply_update`] is reflected back
     /// over the served property.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_update_reflected(
         server_conn: &zbus::Connection,
         player_proxy: &zbus::Proxy<'_>,

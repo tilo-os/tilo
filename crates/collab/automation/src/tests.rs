@@ -1090,3 +1090,106 @@ fn a_shortcut_round_trips_through_serde() {
     let back: Shortcut = serde_json::from_value(json).unwrap();
     assert_eq!(back, tidy);
 }
+
+#[test]
+fn binding_options_are_exactly_what_the_checker_accepts_in_scope() {
+    let host = FakeHost::new();
+    let catalog = host.catalog();
+    let mut tidy = shortcut(
+        "tidy",
+        vec![
+            list(),
+            Step::new(
+                "label",
+                StepKind::SetVar {
+                    name: "label".into(),
+                    value: Binding::Literal(json!("Inbox")),
+                },
+            ),
+            Step::new(
+                "each",
+                StepKind::ForEach {
+                    items: Binding::step("list", "/titles"),
+                    item: "title".into(),
+                    body: vec![invoke(
+                        "copy",
+                        NOTES,
+                        Selector::Fixed(INBOX.into()),
+                        "create",
+                        &[],
+                    )],
+                },
+            ),
+        ],
+    );
+    tidy.inputs = vec![
+        ActionParam::required("folder", ParamType::Text, "Folder"),
+        ActionParam::required("limit", ParamType::Integer, "Limit"),
+    ];
+    let title = ActionParam::required("title", ParamType::Text, "Title");
+    let offered = |at: &str, param: &ActionParam| {
+        let mut path = StepPath::root();
+        for segment in at.split('.') {
+            path = match segment {
+                "each" => path.each(None),
+                index => path.child(index.parse().unwrap()),
+            };
+        }
+        crate::binding_options(&tidy, &catalog, &path, param)
+            .into_iter()
+            .map(|option| option.binding)
+            .collect::<Vec<_>>()
+    };
+
+    // Inside the loop: text inputs, the text variable, the loop item; the
+    // integer input, the whole list result and its array field are not text.
+    let inside = offered("2.each.0", &title);
+    assert_eq!(
+        inside,
+        vec![
+            Binding::Input("folder".into()),
+            Binding::Var("label".into()),
+            Binding::Var("title".into()),
+        ]
+    );
+    // Before the variable is set only the input is in scope.
+    assert_eq!(offered("1", &title), vec![Binding::Input("folder".into())]);
+    // An array parameter is offered the list's array field.
+    let items = ActionParam::required("items", ParamType::Array, "Items");
+    assert_eq!(offered("1", &items), vec![Binding::step("list", "/titles")]);
+    // A number parameter takes the integer input and the declared count.
+    let number = ActionParam::required("n", ParamType::Number, "N");
+    assert!(offered("1", &number).contains(&Binding::Input("limit".into())));
+    assert!(offered("1", &number).contains(&Binding::step("list", "/count")));
+
+    // Every option offered checks cleanly when bound.
+    for binding in inside {
+        let mut bound = tidy.clone();
+        let StepKind::ForEach { body, .. } = &mut bound.steps[2].kind else {
+            panic!("the loop body is an action step")
+        };
+        let StepKind::Invoke { args, .. } = &mut body[0].kind else {
+            panic!("the loop body is an action step")
+        };
+        args.insert("title".into(), binding.clone());
+        assert_eq!(
+            check(&bound, &catalog, &NoShortcuts),
+            Ok(()),
+            "{binding:?} was offered, so it must check"
+        );
+    }
+
+    // Past the last step, everything the top level introduced.
+    let after = crate::values_at(&tidy, &catalog, &StepPath::root().child(3));
+    assert!(
+        after
+            .iter()
+            .any(|option| option.binding == Binding::Var("label".into()))
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|option| option.binding == Binding::Var("title".into())),
+        "the loop item is gone after the loop"
+    );
+}

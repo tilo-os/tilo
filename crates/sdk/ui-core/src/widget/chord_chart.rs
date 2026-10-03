@@ -5,7 +5,7 @@
     reason = "bounded radial and Bézier geometry"
 )]
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -323,7 +323,6 @@ fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> Bez
 }
 
 impl Widget for ChordChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -592,19 +591,9 @@ impl Widget for ChordChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _mods: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let node = ctx.node_id;
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -616,8 +605,8 @@ impl Widget for ChordChart {
                     self.hovered = self.hit(point);
                     if let Some(selection) = self.hovered.clone() {
                         self.activated = Some(selection);
-                        *handled = true;
-                        *focus = Some(node);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(node);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -625,7 +614,7 @@ impl Widget for ChordChart {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale, position.y / scale);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.hovered = self.hit(self.pointer);
             self.keyboard_inspection = false;
         }
@@ -642,7 +631,7 @@ impl Widget for ChordChart {
         ) && let Some(selection) = self.hit(self.pointer)
         {
             self.activated = Some(selection);
-            *handled = true;
+            *ctx.handled = true;
         }
         if let Some(action) = chart_nav_action(event) {
             if action == ChartNavAction::Activate {
@@ -670,8 +659,8 @@ impl Widget for ChordChart {
                     self.pointer = self.inspection_anchor(selection);
                 }
             }
-            *handled = true;
-            *focus = Some(node);
+            *ctx.handled = true;
+            *ctx.focus_target = Some(node);
         }
     }
     fn accessibility(&self) -> Option<AccessNode> {
@@ -719,8 +708,8 @@ impl Widget for ChordChart {
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -771,16 +760,21 @@ fn format_value(v: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn ribbon_is_closed_and_hit_testable() {
-        let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
-        assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
-    }
-    #[test]
-    fn invalid_links_do_not_panic() {
-        let mut chart = ChordChart::new(
-            vec![ChordNode::new("a", "A")],
-            vec![ChordLink::new("x", "missing", "a", 1.0)],
-        );
-        assert!(chart.take_activated().is_none());
+    fn chord_ribbons_hit_test_and_invalid_links_are_safe() {
+        fn ribbon_is_closed_and_hit_testable() {
+            let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
+            assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
+        }
+
+        fn invalid_links_do_not_panic() {
+            let mut chart = ChordChart::new(
+                vec![ChordNode::new("a", "A")],
+                vec![ChordLink::new("x", "missing", "a", 1.0)],
+            );
+            assert!(chart.take_activated().is_none());
+        }
+
+        ribbon_is_closed_and_hit_testable();
+        invalid_links_do_not_panic();
     }
 }

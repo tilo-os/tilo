@@ -46,12 +46,6 @@ pub fn valid_worktree_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 impl TargetStore {
     pub fn new(root: &Path) -> Self {
         Self {
@@ -83,7 +77,7 @@ impl TargetStore {
             worktree: worktree.to_owned(),
             owner,
             last_used: crate::slots::now(),
-            last_used_unix: unix_now(),
+            last_used_unix: tilo_clock::unix_now(),
             bytes: previous.map_or(0, |p| p.bytes),
         };
         self.save(&record)?;
@@ -216,69 +210,70 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_directory_safe() {
-        assert!(valid_worktree_id("agent-a74-3f9c1a2b"));
-        assert!(!valid_worktree_id("../etc"));
-        assert!(!valid_worktree_id("Upper"));
-        assert!(!valid_worktree_id(""));
-        assert!(!valid_worktree_id(&"a".repeat(65)));
-    }
-
-    #[test]
-    fn eviction_is_least_recently_used_first() {
-        let root = tempfile::tempdir().unwrap();
-        let store = store_with(
-            root.path(),
-            &[("old", 100, 10), ("mid", 200, 20), ("new", 300, 30)],
-        );
-        assert_eq!(
-            store
-                .list()
-                .iter()
-                .map(|r| r.worktree.as_str())
-                .collect::<Vec<_>>(),
-            ["new", "mid", "old"]
-        );
-        assert_eq!(store.total_bytes(), 60);
-        let names = |records: Vec<TargetRecord>| {
-            records.into_iter().map(|r| r.worktree).collect::<Vec<_>>()
-        };
-        // Keep two: the oldest goes.
-        assert_eq!(
-            names(store.plan_eviction(2, None, None, &mut |_| false)),
-            ["old"]
-        );
-        // A free-space goal takes more, oldest first, until it is met.
-        assert_eq!(
-            names(store.plan_eviction(3, Some(35), Some(10), &mut |_| false)),
-            ["old", "mid"]
-        );
-        // A running build is never evicted.
-        assert_eq!(
-            names(store.plan_eviction(0, None, None, &mut |id| id == "mid")),
-            ["old", "new"]
-        );
-        store.evict("old").unwrap();
-        assert!(!store.src("old").join("target").exists());
-        assert!(store.src("old").exists(), "sources stay");
-        assert_eq!(store.load("old").unwrap().bytes, 0);
-        assert_eq!(
-            names(store.plan_eviction(0, None, None, &mut |_| false)),
-            ["mid", "new"]
-        );
-    }
-
-    #[test]
-    fn touch_keeps_the_measured_size() {
-        let root = tempfile::tempdir().unwrap();
-        let store = TargetStore::new(root.path());
-        store.touch("wt-1", Owner::default()).unwrap();
-        fs::create_dir_all(store.src("wt-1").join("target")).unwrap();
-        fs::write(store.src("wt-1").join("target/big"), vec![1_u8; 8192]).unwrap();
-        let bytes = store.measure("wt-1").unwrap();
-        assert!(bytes >= 8192);
-        let again = store.touch("wt-1", Owner::default()).unwrap();
-        assert_eq!(again.bytes, bytes);
-        assert!(store.touch("../x", Owner::default()).is_err());
+    fn build_targets_are_directory_safe_and_evicted_least_recently_used() {
+        // Phase `ids_are_directory_safe`.
+        {
+            assert!(valid_worktree_id("agent-a74-3f9c1a2b"));
+            assert!(!valid_worktree_id("../etc"));
+            assert!(!valid_worktree_id("Upper"));
+            assert!(!valid_worktree_id(""));
+            assert!(!valid_worktree_id(&"a".repeat(65)));
+        }
+        // Phase `eviction_is_least_recently_used_first`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = store_with(
+                root.path(),
+                &[("old", 100, 10), ("mid", 200, 20), ("new", 300, 30)],
+            );
+            assert_eq!(
+                store
+                    .list()
+                    .iter()
+                    .map(|r| r.worktree.as_str())
+                    .collect::<Vec<_>>(),
+                ["new", "mid", "old"]
+            );
+            assert_eq!(store.total_bytes(), 60);
+            let names = |records: Vec<TargetRecord>| {
+                records.into_iter().map(|r| r.worktree).collect::<Vec<_>>()
+            };
+            // Keep two: the oldest goes.
+            assert_eq!(
+                names(store.plan_eviction(2, None, None, &mut |_| false)),
+                ["old"]
+            );
+            // A free-space goal takes more, oldest first, until it is met.
+            assert_eq!(
+                names(store.plan_eviction(3, Some(35), Some(10), &mut |_| false)),
+                ["old", "mid"]
+            );
+            // A running build is never evicted.
+            assert_eq!(
+                names(store.plan_eviction(0, None, None, &mut |id| id == "mid")),
+                ["old", "new"]
+            );
+            store.evict("old").unwrap();
+            assert!(!store.src("old").join("target").exists());
+            assert!(store.src("old").exists(), "sources stay");
+            assert_eq!(store.load("old").unwrap().bytes, 0);
+            assert_eq!(
+                names(store.plan_eviction(0, None, None, &mut |_| false)),
+                ["mid", "new"]
+            );
+        }
+        // Phase `touch_keeps_the_measured_size`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = TargetStore::new(root.path());
+            store.touch("wt-1", Owner::default()).unwrap();
+            fs::create_dir_all(store.src("wt-1").join("target")).unwrap();
+            fs::write(store.src("wt-1").join("target/big"), vec![1_u8; 8192]).unwrap();
+            let bytes = store.measure("wt-1").unwrap();
+            assert!(bytes >= 8192);
+            let again = store.touch("wt-1", Owner::default()).unwrap();
+            assert_eq!(again.bytes, bytes);
+            assert!(store.touch("../x", Owner::default()).is_err());
+        }
     }
 }

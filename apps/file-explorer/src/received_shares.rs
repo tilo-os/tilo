@@ -7,20 +7,13 @@
 //! Every call is async: the UI spawns it on the app runtime
 //! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
-#[cfg(unix)]
-use std::os::fd::{BorrowedFd, RawFd};
-
-#[cfg(unix)]
 use collab_types::{
-    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlRequestV1,
-};
-use collab_types::{
-    RecipientControlOperationV1, RecipientControlResponseV1, RecipientControlResultV1,
+    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlOperationV1,
+    RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
 };
-#[cfg(unix)]
+use runtime_portal::local_socket::{self, ServiceStreamError};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-#[cfg(unix)]
 use wire_frame::FrameError;
 
 use crate::i18n::{arg, t, t_args};
@@ -67,7 +60,6 @@ pub async fn retry(
 
 /// One request/response exchange with the recipient service. Must be polled
 /// in a tokio runtime context (the app runtime), which drives the socket.
-#[cfg(unix)]
 async fn transact(
     operation: RecipientControlOperationV1,
 ) -> Result<RecipientControlResponseV1, String> {
@@ -76,7 +68,6 @@ async fn transact(
 }
 
 /// One request and its response on the recipient-control socket.
-#[cfg(unix)]
 async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     operation: RecipientControlOperationV1,
@@ -110,38 +101,16 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         .map_err(|_| t("files-received-response-invalid"))
 }
 
-#[cfg(unix)]
-fn connected_service_stream() -> Result<tokio::net::UnixStream, String> {
-    let raw = service_fd().ok_or_else(|| t("files-received-not-available"))?;
-    // Clone the inherited descriptor: converting the clone into Tokio ownership
+fn connected_service_stream() -> Result<local_socket::Stream, String> {
+    // Work on a duplicate of the inherited descriptor: handing it to Tokio
     // must not close the launcher's stable descriptor after one transaction.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
-    let owned = borrowed
-        .try_clone_to_owned()
-        .map_err(|_| t("files-received-fd-clone-failed"))?;
-    let stream = std::os::unix::net::UnixStream::from(owned);
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| t("files-received-fd-invalid"))?;
-    tokio::net::UnixStream::from_std(stream).map_err(|_| t("files-received-fd-invalid"))
-}
-
-#[cfg(unix)]
-fn service_fd() -> Option<RawFd> {
     // `tilo-fs` is the shipped manifest name. Accept `fs` while older local
     // development manifests are still present.
-    runtime_portal::service_fd("tilo-fs").or_else(|| runtime_portal::service_fd("fs"))
-}
-
-#[cfg(not(unix))]
-#[allow(
-    clippy::unused_async,
-    reason = "matches the unix transport's signature"
-)]
-async fn transact(
-    _operation: RecipientControlOperationV1,
-) -> Result<RecipientControlResponseV1, String> {
-    Err(t("files-received-not-available"))
+    local_socket::duplicate_service(&["tilo-fs", "fs"]).map_err(|error| match error {
+        ServiceStreamError::Missing => t("files-received-not-available"),
+        ServiceStreamError::Duplicate(_) => t("files-received-fd-clone-failed"),
+        ServiceStreamError::Invalid(_) => t("files-received-fd-invalid"),
+    })
 }
 
 #[cfg(all(test, unix))]

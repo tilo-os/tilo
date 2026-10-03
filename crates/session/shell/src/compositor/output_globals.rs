@@ -265,6 +265,9 @@ impl OutputGlobals {
                         Some(out.logical_position.into()),
                     );
                     handle.set_preferred(mode);
+                    handle
+                        .user_data()
+                        .insert_if_missing_threadsafe(|| BackendOutput(id));
                     let global = handle.create_global::<D>(dh);
                     tracing::info!(
                         output = id.0,
@@ -319,6 +322,23 @@ impl OutputGlobals {
     }
 }
 
+/// The backend output a `wl_output` global stands for, stored on its
+/// Smithay handle when the global is created.
+#[derive(Clone, Copy, Debug)]
+struct BackendOutput(OutputId);
+
+/// The backend output a client's `wl_output` resource names, for protocols
+/// that take a `wl_output` argument (fullscreen, output power). `None` for
+/// an output that is not one of the compositor's advertised globals.
+pub fn output_id_of(
+    resource: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+) -> Option<OutputId> {
+    WlOutputHandle::from_resource(resource)?
+        .user_data()
+        .get::<BackendOutput>()
+        .map(|output| output.0)
+}
+
 /// The rate an output's `wl_output` mode advertises, in millihertz: its own
 /// mode's, else the compositor-wide fallback, else 60 Hz.
 fn advertised_refresh(out: &Output, fallback_refresh_mhz: Option<u32>) -> i32 {
@@ -345,23 +365,7 @@ fn mode_for(out: &Output, fallback_refresh_mhz: Option<u32>) -> OutputMode {
     }
 }
 
-/// The `wl_output` name: the connector (`DP-2`), as other compositors
-/// advertise it, so clients and users can refer to a monitor by port. It
-/// must be unique, so a connector label repeated across GPUs, or an output
-/// without one, gets its id appended.
-fn advertised_name(out: &Output, desired: &[Output]) -> String {
-    let connector = &out.identity.connector;
-    let repeated = desired
-        .iter()
-        .any(|other| other.id != out.id && other.identity.connector == *connector);
-    if connector.is_empty() {
-        format!("Tilo-{}", out.id.0)
-    } else if repeated {
-        format!("{connector}-{}", out.id.0)
-    } else {
-        connector.clone()
-    }
-}
+pub(crate) use super::output_heads::advertised_name;
 
 fn non_empty_or(value: &str, fallback: &str) -> String {
     if value.is_empty() {
@@ -404,119 +408,77 @@ mod tests {
     }
 
     #[test]
-    fn the_first_sync_advertises_every_output() {
-        let desired = [out(0, (0, 0), (1920, 1080), 1.0)];
-        assert_eq!(plan(&[], &desired), vec![GlobalChange::Create(OutputId(0))]);
-    }
-
-    #[test]
-    fn an_unchanged_set_produces_no_wire_traffic() {
-        let o = out(0, (0, 0), (1920, 1080), 1.0);
-        assert!(plan(&[advertised(&o)], std::slice::from_ref(&o)).is_empty());
-    }
-
-    #[test]
-    fn plugging_in_a_monitor_creates_exactly_one_global() {
-        let laptop = out(0, (0, 0), (1920, 1080), 1.5);
-        let external = out(1, (1920, 0), (2560, 1440), 1.0);
-        let changes = plan(&[advertised(&laptop)], &[laptop.clone(), external]);
-        assert_eq!(changes, vec![GlobalChange::Create(OutputId(1))]);
-    }
-
-    #[test]
-    fn unplugging_a_monitor_destroys_exactly_its_global() {
-        let laptop = out(0, (0, 0), (1920, 1080), 1.5);
-        let external = out(1, (1920, 0), (2560, 1440), 1.0);
-        let changes = plan(
-            &[advertised(&laptop), advertised(&external)],
-            std::slice::from_ref(&laptop),
-        );
-        assert_eq!(changes, vec![GlobalChange::Destroy(OutputId(1))]);
-    }
-
-    #[test]
-    fn a_mode_change_updates_in_place_rather_than_replacing() {
-        // Replacing the global would tell every client the monitor
-        // vanished and a different one appeared: `leave`, `enter`, and a
-        // visible re-layout for a change that is only a resolution.
-        let before = out(0, (0, 0), (1920, 1080), 1.0);
-        let after = out(0, (0, 0), (3840, 2160), 1.0);
-        let changes = plan(&[advertised(&before)], &[after]);
-        assert_eq!(changes, vec![GlobalChange::Update(OutputId(0))]);
-        assert!(
-            !changes.contains(&GlobalChange::Destroy(OutputId(0))),
-            "a re-mode must not withdraw the output's identity"
-        );
-    }
-
-    #[test]
-    fn a_scale_change_updates_the_global() {
-        // Changing the display-scale setting has to reach clients, or a
-        // HiDPI toolkit keeps rendering at the old factor.
-        let before = out(0, (0, 0), (3840, 2160), 1.0);
-        let after = out(0, (0, 0), (3840, 2160), 2.0);
-        assert_eq!(
-            plan(&[advertised(&before)], &[after]),
-            vec![GlobalChange::Update(OutputId(0))]
-        );
-    }
-
-    #[test]
-    fn a_survivor_that_slid_left_is_updated() {
-        // Unplugging the *first* of two monitors re-packs the second to
-        // the origin. Its global carries the position, so it has to move
-        // too — otherwise clients place windows on a coordinate space that
-        // no longer matches the compositor's.
-        let first = out(0, (0, 0), (1920, 1080), 1.0);
-        let second = out(1, (1920, 0), (2560, 1440), 1.0);
-        let second_moved = out(1, (0, 0), (2560, 1440), 1.0);
-        let changes = plan(&[advertised(&first), advertised(&second)], &[second_moved]);
-        assert_eq!(
-            changes,
-            vec![
-                GlobalChange::Update(OutputId(1)),
-                GlobalChange::Destroy(OutputId(0))
-            ]
-        );
-    }
-
-    #[test]
-    fn destroys_come_after_creates_and_updates() {
-        // Applying the list in order must never leave two globals claiming
-        // one identity, and must not tear an output down before its
-        // replacement exists.
-        let gone = out(0, (0, 0), (1920, 1080), 1.0);
-        let stays = out(1, (1920, 0), (1280, 1024), 1.0);
-        let fresh = out(2, (3200, 0), (1024, 768), 1.0);
-        let changes = plan(
-            &[advertised(&gone), advertised(&stays)],
-            &[stays.clone(), fresh],
-        );
-        let first_destroy = changes
-            .iter()
-            .position(|c| matches!(c, GlobalChange::Destroy(_)))
-            .expect("something was destroyed");
-        let last_other = changes
-            .iter()
-            .rposition(|c| !matches!(c, GlobalChange::Destroy(_)))
-            .expect("something was created");
-        assert!(
-            last_other < first_destroy,
-            "destroys must come last: {changes:?}"
-        );
-    }
-
-    #[test]
-    fn everything_unplugged_destroys_everything() {
-        let a = out(0, (0, 0), (1920, 1080), 1.0);
-        let b = out(1, (1920, 0), (1280, 1024), 1.0);
-        assert_eq!(
-            plan(&[advertised(&a), advertised(&b)], &[]),
-            vec![
-                GlobalChange::Destroy(OutputId(0)),
-                GlobalChange::Destroy(OutputId(1))
-            ]
-        );
+    fn output_globals_track_plugs_unplugs_and_in_place_updates() {
+        // Phase `the_first_sync_advertises_every_output`.
+        {
+            let desired = [out(0, (0, 0), (1920, 1080), 1.0)];
+            assert_eq!(plan(&[], &desired), vec![GlobalChange::Create(OutputId(0))]);
+        }
+        // Phase `an_unchanged_set_produces_no_wire_traffic`.
+        {
+            let o = out(0, (0, 0), (1920, 1080), 1.0);
+            assert!(plan(&[advertised(&o)], std::slice::from_ref(&o)).is_empty());
+        }
+        // Phase `plugging_in_a_monitor_creates_exactly_one_global`.
+        {
+            let laptop = out(0, (0, 0), (1920, 1080), 1.5);
+            let external = out(1, (1920, 0), (2560, 1440), 1.0);
+            let changes = plan(&[advertised(&laptop)], &[laptop.clone(), external]);
+            assert_eq!(changes, vec![GlobalChange::Create(OutputId(1))]);
+        }
+        // Phase `unplugging_a_monitor_destroys_exactly_its_global`.
+        {
+            let laptop = out(0, (0, 0), (1920, 1080), 1.5);
+            let external = out(1, (1920, 0), (2560, 1440), 1.0);
+            let changes = plan(
+                &[advertised(&laptop), advertised(&external)],
+                std::slice::from_ref(&laptop),
+            );
+            assert_eq!(changes, vec![GlobalChange::Destroy(OutputId(1))]);
+        }
+        // Phase `a_mode_change_updates_in_place_rather_than_replacing`.
+        {
+            // Replacing the global would tell every client the monitor
+            // vanished and a different one appeared: `leave`, `enter`, and a
+            // visible re-layout for a change that is only a resolution.
+            let before = out(0, (0, 0), (1920, 1080), 1.0);
+            let after = out(0, (0, 0), (3840, 2160), 1.0);
+            let changes = plan(&[advertised(&before)], &[after]);
+            assert_eq!(changes, vec![GlobalChange::Update(OutputId(0))]);
+            assert!(
+                !changes.contains(&GlobalChange::Destroy(OutputId(0))),
+                "a re-mode must not withdraw the output's identity"
+            );
+        }
+        // Phase `a_scale_change_updates_the_global`.
+        {
+            // Changing the display-scale setting has to reach clients, or a
+            // HiDPI toolkit keeps rendering at the old factor.
+            let before = out(0, (0, 0), (3840, 2160), 1.0);
+            let after = out(0, (0, 0), (3840, 2160), 2.0);
+            assert_eq!(
+                plan(&[advertised(&before)], &[after]),
+                vec![GlobalChange::Update(OutputId(0))]
+            );
+        }
+        // Phase `a_survivor_that_slid_left_is_updated`.
+        {
+            // Unplugging the *first* of two monitors re-packs the second to
+            // the origin. Its global carries the position, so it has to move
+            // too — otherwise clients place windows on a coordinate space that
+            // no longer matches the compositor's.
+            let first = out(0, (0, 0), (1920, 1080), 1.0);
+            let second = out(1, (1920, 0), (2560, 1440), 1.0);
+            let second_moved = out(1, (0, 0), (2560, 1440), 1.0);
+            let changes = plan(&[advertised(&first), advertised(&second)], &[second_moved]);
+            assert_eq!(
+                changes,
+                vec![
+                    GlobalChange::Update(OutputId(1)),
+                    GlobalChange::Destroy(OutputId(0))
+                ]
+            );
+        }
     }
 
     #[test]
@@ -579,14 +541,54 @@ mod tests {
         assert_eq!(advertised_name(&laptop, &all), "eDP-1");
         assert_eq!(advertised_name(&left, &all), "HDMI-A-1-1");
         assert_eq!(advertised_name(&right, &all), "HDMI-A-1-2");
-        assert_eq!(advertised_name(&unnamed, &all), "Tilo-3");
+        assert_eq!(advertised_name(&unnamed, &all), "VIRTUAL-4");
     }
 
     #[test]
-    fn a_fresh_registry_advertises_nothing() {
-        let g = OutputGlobals::new();
-        assert!(g.is_empty());
-        assert!(g.advertised_ids().is_empty());
-        assert!(g.handle(OutputId(0)).is_none());
+    fn output_global_ordering_and_empty_sets() {
+        // Phase `destroys_come_after_creates_and_updates`.
+        {
+            // Applying the list in order must never leave two globals claiming
+            // one identity, and must not tear an output down before its
+            // replacement exists.
+            let gone = out(0, (0, 0), (1920, 1080), 1.0);
+            let stays = out(1, (1920, 0), (1280, 1024), 1.0);
+            let fresh = out(2, (3200, 0), (1024, 768), 1.0);
+            let changes = plan(
+                &[advertised(&gone), advertised(&stays)],
+                &[stays.clone(), fresh],
+            );
+            let first_destroy = changes
+                .iter()
+                .position(|c| matches!(c, GlobalChange::Destroy(_)))
+                .expect("something was destroyed");
+            let last_other = changes
+                .iter()
+                .rposition(|c| !matches!(c, GlobalChange::Destroy(_)))
+                .expect("something was created");
+            assert!(
+                last_other < first_destroy,
+                "destroys must come last: {changes:?}"
+            );
+        }
+        // Phase `everything_unplugged_destroys_everything`.
+        {
+            let a = out(0, (0, 0), (1920, 1080), 1.0);
+            let b = out(1, (1920, 0), (1280, 1024), 1.0);
+            assert_eq!(
+                plan(&[advertised(&a), advertised(&b)], &[]),
+                vec![
+                    GlobalChange::Destroy(OutputId(0)),
+                    GlobalChange::Destroy(OutputId(1))
+                ]
+            );
+        }
+        // Phase `a_fresh_registry_advertises_nothing`.
+        {
+            let g = OutputGlobals::new();
+            assert!(g.is_empty());
+            assert!(g.advertised_ids().is_empty());
+            assert!(g.handle(OutputId(0)).is_none());
+        }
     }
 }

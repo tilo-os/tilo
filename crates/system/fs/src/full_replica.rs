@@ -22,7 +22,7 @@ use crate::{Hydrator, Namespace};
 /// claimed chunk lengths.
 const MAX_REPLICA_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPLICA_CHUNKS_PER_RECORD: usize = 100_000;
-const MAX_REPLICA_CHUNK_BYTES: u32 = 64 * 1024;
+const MAX_REPLICA_CHUNK_BYTES: u32 = crate::content::MAX_CHUNK_LEN;
 const MAX_REPLICA_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPLICA_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 /// A generation lease intentionally covers only a small physical deletion
@@ -60,13 +60,6 @@ pub struct HomePeerBundle {
 mod relay_workspace_ids_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Encoded {
-        Decimal(String),
-        Legacy(u64),
-    }
-
     pub fn serialize<S>(ids: &[u64], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -81,12 +74,9 @@ mod relay_workspace_ids_serde {
     where
         D: Deserializer<'de>,
     {
-        Vec::<Encoded>::deserialize(deserializer)?
+        Vec::<String>::deserialize(deserializer)?
             .into_iter()
-            .map(|encoded| match encoded {
-                Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
-                Encoded::Legacy(value) => Ok(value),
-            })
+            .map(|value| value.parse().map_err(serde::de::Error::custom))
             .collect()
     }
 }
@@ -222,7 +212,8 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = tilo_clock::unix_now_ms();
     let bytes = serde_json::to_vec_pretty(&status)?;
-    atomic_file::write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
+    tilo_files::native::atomic::write(path, &bytes)
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -282,10 +273,10 @@ pub async fn hydrate_full_workspace(
                 Ok(manifest) => manifest,
                 Err(error) => return status.failed(&error),
             };
-            if manifest.chunks.len() > MAX_REPLICA_CHUNKS_PER_RECORD {
+            if manifest.chunks().len() > MAX_REPLICA_CHUNKS_PER_RECORD {
                 return status.failed(&anyhow::anyhow!("manifest exceeds replica chunk budget"));
             }
-            for chunk in manifest.chunks {
+            for chunk in manifest.chunks().iter().copied() {
                 if chunk.len == 0 || chunk.len > MAX_REPLICA_CHUNK_BYTES {
                     return status.failed(&anyhow::anyhow!("manifest has an invalid chunk length"));
                 }
@@ -461,10 +452,10 @@ async fn retain_manifest_tree(
     );
     let manifest = Manifest::decode(&bytes)?;
     anyhow::ensure!(
-        manifest.chunks.len() <= MAX_REPLICA_CHUNKS_PER_RECORD,
+        manifest.chunks().len() <= MAX_REPLICA_CHUNKS_PER_RECORD,
         "retained manifest exceeds replica chunk budget"
     );
-    for chunk in manifest.chunks {
+    for chunk in manifest.chunks() {
         anyhow::ensure!(
             chunk.len > 0 && chunk.len <= MAX_REPLICA_CHUNK_BYTES,
             "retained manifest has an invalid chunk length"
@@ -477,6 +468,9 @@ async fn retain_manifest_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use crate::ContentStore;
     use crate::content::{ChunkRef, Manifest};
     use crate::namespace::ROOT_INO;
@@ -488,13 +482,14 @@ mod tests {
     async fn readiness_requires_manifest_chunks_and_thumbnail() {
         let store = Arc::new(ContentStore::memory());
         let chunk = store.ingest("payload").await.unwrap();
-        let manifest = Manifest {
-            chunks: vec![ChunkRef {
+        let manifest = Manifest::new(
+            crate::content::ChunkTier::Small,
+            vec![ChunkRef {
                 hash: *chunk.as_bytes(),
                 len: 7,
             }],
-        };
-        let manifest = store.ingest(manifest.encode().unwrap()).await.unwrap();
+        );
+        let manifest = store.ingest(manifest.encode()).await.unwrap();
         let thumbnail = store.ingest("thumb").await.unwrap();
         let mut namespace = Namespace::new("replica-test").unwrap();
         let file = namespace
@@ -517,14 +512,14 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         let oversized = store
             .ingest(
-                Manifest {
-                    chunks: vec![ChunkRef {
+                Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![ChunkRef {
                         hash: [7; 32],
                         len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
                     }],
-                }
-                .encode()
-                .unwrap(),
+                )
+                .encode(),
             )
             .await
             .unwrap();
@@ -543,78 +538,73 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_is_ready_only_when_every_workspace_is_complete() {
-        let mut ready = FullReplicaStatus::syncing();
-        ready.state = "ready".into();
-        ready.full_content_replication = true;
-        ready.records = u64::MAX;
-        ready.namespace_generation = Some("generation-a".into());
-        let aggregate = aggregate_status(&[ready.clone(), ready.clone()]);
-        assert!(aggregate.full_content_replication);
-        assert_eq!(aggregate.state, "ready");
-        assert_eq!(aggregate.records, u64::MAX);
-        assert_eq!(aggregate.namespace_generation, None);
+    fn replica_topology_and_relay_ids_are_validated() {
+        // Phase `aggregate_is_ready_only_when_every_workspace_is_complete`.
+        {
+            let mut ready = FullReplicaStatus::syncing();
+            ready.state = "ready".into();
+            ready.full_content_replication = true;
+            ready.records = u64::MAX;
+            ready.namespace_generation = Some("generation-a".into());
+            let aggregate = aggregate_status(&[ready.clone(), ready.clone()]);
+            assert!(aggregate.full_content_replication);
+            assert_eq!(aggregate.state, "ready");
+            assert_eq!(aggregate.records, u64::MAX);
+            assert_eq!(aggregate.namespace_generation, None);
 
-        let aggregate = aggregate_status(&[ready.clone()]);
-        assert_eq!(
-            aggregate.namespace_generation.as_deref(),
-            Some("generation-a")
-        );
+            let aggregate = aggregate_status(&[ready.clone()]);
+            assert_eq!(
+                aggregate.namespace_generation.as_deref(),
+                Some("generation-a")
+            );
 
-        let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
-        assert!(!aggregate.full_content_replication);
-        assert_eq!(aggregate.state, "syncing");
-        assert_eq!(aggregate.namespace_generation, None);
-    }
-
-    #[test]
-    fn global_files_topology_rejects_multiple_endpoint_workers() {
-        let workspace = HomePeerBundle {
-            ticket: "not-decoded-by-topology-validation".into(),
-            cache_dir: std::path::PathBuf::from("/tmp/files"),
-            capability_json: "[]".into(),
-            authority: None,
-            principals: Vec::new(),
-            relay_workspace_ids: vec![7, 8],
-        };
-        let one = HomePeerSet {
-            status_file: std::path::PathBuf::from("/tmp/status"),
-            workspaces: vec![workspace.clone()],
-        };
-        assert!(validate_home_peer_set(&one).is_ok());
-        let many = HomePeerSet {
-            status_file: one.status_file,
-            workspaces: vec![workspace.clone(), workspace],
-        };
-        assert!(validate_home_peer_set(&many).is_err());
-    }
-
-    #[test]
-    fn relay_workspace_ids_round_trip_high_bits_and_accept_legacy_integers() {
-        let high = (i64::MAX as u64) + 42;
-        let bundle = HomePeerSet {
-            status_file: std::path::PathBuf::from("/tmp/status"),
-            workspaces: vec![HomePeerBundle {
-                ticket: "opaque".into(),
-                cache_dir: std::path::PathBuf::from("/tmp/cache"),
+            let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
+            assert!(!aggregate.full_content_replication);
+            assert_eq!(aggregate.state, "syncing");
+            assert_eq!(aggregate.namespace_generation, None);
+        }
+        // Phase `global_files_topology_rejects_multiple_endpoint_workers`.
+        {
+            let workspace = HomePeerBundle {
+                ticket: "not-decoded-by-topology-validation".into(),
+                cache_dir: std::path::PathBuf::from("/tmp/files"),
                 capability_json: "[]".into(),
                 authority: None,
                 principals: Vec::new(),
-                relay_workspace_ids: vec![high],
-            }],
-        };
-        let text = toml::to_string(&bundle).unwrap();
-        assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
-        assert_eq!(
-            toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
-            vec![high]
-        );
-
-        let legacy = text.replace(&format!("\"{high}\""), "42");
-        assert_eq!(
-            toml::from_str::<HomePeerSet>(&legacy).unwrap().workspaces[0].relay_workspace_ids,
-            vec![42]
-        );
+                relay_workspace_ids: vec![7, 8],
+            };
+            let one = HomePeerSet {
+                status_file: std::path::PathBuf::from("/tmp/status"),
+                workspaces: vec![workspace.clone()],
+            };
+            assert!(validate_home_peer_set(&one).is_ok());
+            let many = HomePeerSet {
+                status_file: one.status_file,
+                workspaces: vec![workspace.clone(), workspace],
+            };
+            assert!(validate_home_peer_set(&many).is_err());
+        }
+        // Phase `relay_workspace_ids_round_trip_high_bits`.
+        {
+            let high = (i64::MAX as u64) + 42;
+            let bundle = HomePeerSet {
+                status_file: std::path::PathBuf::from("/tmp/status"),
+                workspaces: vec![HomePeerBundle {
+                    ticket: "opaque".into(),
+                    cache_dir: std::path::PathBuf::from("/tmp/cache"),
+                    capability_json: "[]".into(),
+                    authority: None,
+                    principals: Vec::new(),
+                    relay_workspace_ids: vec![high],
+                }],
+            };
+            let text = toml::to_string(&bundle).unwrap();
+            assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
+            assert_eq!(
+                toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
+                vec![high]
+            );
+        }
     }
 
     // The discovery address carried by a ready proof must be the endpoint
@@ -674,14 +664,14 @@ mod tests {
         let chunk = store.ingest(bytes.to_vec()).await.unwrap();
         let manifest = store
             .ingest(
-                Manifest {
-                    chunks: vec![ChunkRef {
+                Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![ChunkRef {
                         hash: *chunk.as_bytes(),
                         len: u32::try_from(bytes.len()).unwrap(),
                     }],
-                }
-                .encode()
-                .unwrap(),
+                )
+                .encode(),
             )
             .await
             .unwrap();
@@ -806,7 +796,7 @@ mod tests {
 
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(
-            Duration::from_secs(5),
+            HANG_BOUND,
             prune_obsolete_workspace_content(&namespace, &nas_hydrator, None),
         )
         .await

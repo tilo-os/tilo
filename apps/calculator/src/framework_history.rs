@@ -42,7 +42,7 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
         },
     ],
     selectors: &[],
-    preserved_roots: &["calculator_resources_v2", "mode"],
+    preserved_roots: &["calculator_resources_v2"],
     preserved: &[],
     validate,
     validate_result: validate,
@@ -57,7 +57,7 @@ fn collection(doc: &AutoCommit, key: &str) -> Result<Option<ObjId>, String> {
 // Closed, local navigation only. The host owns the accessible page controls at
 // every width; no pointer/key events or live Widget actions enter this object.
 
-fn validate(doc: &AutoCommit) -> Result<(), String> {
+pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
     for key in [crate::doc::HISTORY, crate::doc::FUNCS, crate::doc::SURFACES] {
         let Some(map) = collection(doc, key)? else {
             continue;
@@ -89,6 +89,15 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
                 ]
             };
             validate_fields(doc, &row, allowed)?;
+            for (field, _) in allowed {
+                if doc
+                    .get(&row, *field)
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+                {
+                    return Err(format!("Missing calculator field: {field}"));
+                }
+            }
         }
     }
     if let Some((v, _)) = doc
@@ -100,8 +109,8 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
     }
     Ok(())
 }
-fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
-    let mut model = crate::model::CalcModel {
+pub(crate) fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
+    let model = crate::model::CalcModel {
         history: crate::doc::load_history(doc),
         funcs: crate::doc::load_graph(doc, crate::doc::FUNCS),
         surfaces: crate::doc::load_graph(doc, crate::doc::SURFACES),
@@ -110,42 +119,6 @@ fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
     for key in [crate::doc::HISTORY, crate::doc::FUNCS, crate::doc::SURFACES] {
         match doc.get(ROOT, key).map_err(|e| e.to_string())? {
             None | Some((Value::Object(ObjType::Map), _)) => {}
-            Some((Value::Object(ObjType::List), list)) => {
-                for i in 0..doc.length(&list) {
-                    let Some((Value::Object(ObjType::Map), row)) =
-                        doc.get(&list, i).map_err(|e| e.to_string())?
-                    else {
-                        return Err("Invalid legacy calculation row".into());
-                    };
-                    validate_fields(
-                        doc,
-                        &row,
-                        &[
-                            ("expr", FieldType::Text),
-                            ("result", FieldType::Text),
-                            ("visible", FieldType::Boolean),
-                        ],
-                    )?;
-                }
-                let rows = crate::doc::legacy_rows(doc, key);
-                if key == crate::doc::HISTORY {
-                    model.history = rows
-                        .into_iter()
-                        .rev()
-                        .map(|(expr, result, _)| crate::model::HistoryEntry { expr, result })
-                        .collect();
-                } else {
-                    let graph = rows
-                        .into_iter()
-                        .map(|(expr, _, visible)| crate::model::PlotFn { expr, visible })
-                        .collect();
-                    if key == crate::doc::FUNCS {
-                        model.funcs = graph;
-                    } else {
-                        model.surfaces = graph;
-                    }
-                }
-            }
             _ => return Err(format!("Unsupported calculator content: {key}")),
         }
     }
@@ -154,15 +127,8 @@ fn project(doc: &AutoCommit) -> Result<crate::model::CalcModel, String> {
 fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
     let model = project(&doc)?;
-    let legacy = ["history", "funcs", "surfaces"].iter().any(|key| {
-        matches!(
-            doc.get(ROOT, *key).ok().flatten(),
-            Some((Value::Object(ObjType::List), _))
-        )
-    });
     let mut p = CalculatorPreview {
         model,
-        legacy,
         bounds: Rect::ZERO,
         view: input.initial_view,
         g2: crate::graph2d::Graph2dScreen::default(),
@@ -176,39 +142,12 @@ fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     Ok(Box::new(p))
 }
 struct CalculatorPreview {
-    legacy: bool,
     model: crate::model::CalcModel,
     bounds: Rect,
     view: PreviewView,
     g2: crate::graph2d::Graph2dScreen,
     g3: crate::graph3d::Graph3dScreen,
     formula: Option<(String, crate::mathfield::MathField)>,
-}
-impl CalculatorPreview {
-    fn draw_legacy_notice(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        (x, y): (f64, f64),
-    ) -> f64 {
-        if !self.legacy {
-            return 0.;
-        }
-        let message =
-            "Legacy list-format version: preview only. Restore requires a map-format version.";
-        let width = (self.bounds.width() - 32.).max(1.) as f32;
-        tr.draw_text(
-            scene,
-            message,
-            14.,
-            theme.tokens.colors.text_dim,
-            t * Affine::translate((x, y)),
-            Some(width),
-        );
-        f64::from(tr.measure(message, 14., Some(width)).1) + 16.
-    }
 }
 impl HistoryPreview for CalculatorPreview {
     fn layout(&mut self, bounds: Rect, _: &mut TextRenderer, _: &Theme) -> Result<(), String> {
@@ -229,7 +168,6 @@ impl HistoryPreview for CalculatorPreview {
             } else {
                 0.
             };
-        y += self.draw_legacy_notice(scene, t, tr, theme, (x, y));
         if page == "calculations" {
             if self.model.history.is_empty() {
                 tr.draw_text(
@@ -370,13 +308,6 @@ impl HistoryPreview for CalculatorPreview {
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
-        let description = if self.legacy {
-            format!(
-                "Legacy list-format version: preview only. Restore requires a map-format version.\n{description}"
-            )
-        } else {
-            description
-        };
         PreviewAccessibility { description, pages }
     }
 }
@@ -406,7 +337,6 @@ mod viewport_tests {
             live.put(ROOT, "pending_live_input", "preserve").unwrap();
             let pending = live.pending_ops();
             let mut p = CalculatorPreview {
-                legacy: false,
                 model: project(&frozen).unwrap(),
                 bounds: Rect::ZERO,
                 view: PreviewView {

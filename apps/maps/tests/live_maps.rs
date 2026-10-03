@@ -29,10 +29,12 @@
 )]
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ui::time::{Duration, UNIX_EPOCH};
 
 use maps::MapsApp;
-use maps::livetest::{Frame, Harness, pump_frames_until, render_live_to_png};
+mod livetest;
+
+use livetest::{Frame, Harness, pump_frames_until, render_live_to_png};
 use vello::kurbo::Rect;
 
 /// Live viewport. Width < 720 puts the side panel into its overlay drawer,
@@ -52,7 +54,7 @@ fn map_region() -> Rect {
 fn unique_cache() -> PathBuf {
     // Only needs to be distinct per run; a pre-epoch clock (never in practice)
     // just falls back to 0 rather than panicking the test setup.
-    let n = SystemTime::now()
+    let n = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
@@ -67,9 +69,9 @@ fn out_dir() -> PathBuf {
     p
 }
 
-/// Count `.png` files under `dir` and return the first one's bytes, so a test
-/// can prove the worker persisted REAL PNGs to the on-disk cache.
-fn cached_pngs(dir: &std::path::Path) -> (usize, Option<Vec<u8>>) {
+/// Every `.png` the worker persisted under `dir`, as bytes — exactly what the
+/// production fetch path accepted from the tile server.
+fn cached_pngs(dir: &std::path::Path) -> Vec<Vec<u8>> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
             return;
@@ -85,11 +87,44 @@ fn cached_pngs(dir: &std::path::Path) -> (usize, Option<Vec<u8>>) {
     }
     let mut files = Vec::new();
     walk(dir, &mut files);
-    let first = files.first().and_then(|p| std::fs::read(p).ok());
-    (files.len(), first)
+    files
+        .iter()
+        .map(|p| std::fs::read(p).expect("a cached tile file to read"))
+        .collect()
 }
 
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+
+/// Fail unless the tiles the worker accepted are real map imagery. A provider
+/// refusing service answers every coordinate with one placeholder image (CARTO's
+/// "API KEY REQUIRED" tile is byte-identical for every z/x/y), which decodes
+/// fine and paints plenty of colours — so decoding alone cannot tell. Distinct
+/// coordinates across a dense city centre must be distinct images.
+fn assert_real_imagery(tiles: &[Vec<u8>]) {
+    assert!(
+        tiles.len() >= 8,
+        "expected a viewport of cached tiles, found {}",
+        tiles.len()
+    );
+    for bytes in tiles {
+        assert!(bytes.starts_with(PNG_MAGIC), "a cached tile is not a PNG");
+        let tile = ui::png::decode_rgba8(bytes).expect("a cached tile decodes");
+        assert_eq!(
+            (tile.width, tile.height),
+            (256, 256),
+            "a cached tile is not a slippy-map tile"
+        );
+    }
+    let distinct: std::collections::HashSet<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
+    assert_eq!(
+        distinct.len(),
+        tiles.len(),
+        "the server answered different city-centre tiles with identical images — a \
+         placeholder, not map imagery ({} distinct of {})",
+        distinct.len(),
+        tiles.len()
+    );
+}
 
 /// (1) FULL-PLUMBING integration test — the thing that was missing.
 ///
@@ -101,14 +136,12 @@ const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 #[ignore = "requires live tile services; run the explicit maps live lane"]
 fn live_tiles_fetch_decode_and_cache() {
     let cache = unique_cache();
-    let mut app = MapsApp::new_with_cache_dir(cache.clone());
-    let mut h = Harness::new(VP);
+    let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
 
     // Pump the real frame cycle until the first tile is decoded & resident, or
     // 15s elapse. Each frame's draw issues real requests; the next frame's sync
     // drains decoded results. 150ms between frames lets the worker make headway.
     let stats = pump_frames_until(
-        &mut h,
         &mut app,
         Duration::from_secs(15),
         Duration::from_millis(150),
@@ -118,7 +151,6 @@ fn live_tiles_fetch_decode_and_cache() {
     // Give the worker a little longer to fill more of the viewport so the count
     // is representative (still bounded).
     let _ = pump_frames_until(
-        &mut h,
         &mut app,
         Duration::from_secs(6),
         Duration::from_millis(120),
@@ -126,15 +158,16 @@ fn live_tiles_fetch_decode_and_cache() {
     );
 
     let mem = app.tiles_mem_len();
-    let (png_count, first) = cached_pngs(app.tiles_cache_dir());
+    let tiles = cached_pngs(app.tiles_cache_dir());
+    let png_count = tiles.len();
     eprintln!(
-        "live plumbing: stopped={} frames={} elapsed={:?} mem_tiles={} disk_pngs={} failures={}",
+        "live plumbing: stopped={} frames={} elapsed={:?} mem_tiles={} disk_pngs={} failure={:?}",
         stats.stopped,
         stats.frames,
         stats.elapsed,
         mem,
         png_count,
-        app.tiles_has_failures()
+        app.tiles_failure()
     );
 
     assert!(
@@ -148,205 +181,207 @@ fn live_tiles_fetch_decode_and_cache() {
         mem > 0,
         "tiles.mem_len() must be > 0 after live load; got {mem}"
     );
-    assert!(
-        !app.tiles_has_failures(),
-        "the negative-cache must be empty — a real fetch failed (egress blocked / decode error)"
+    assert_eq!(
+        app.tiles_failure(),
+        None,
+        "the negative-cache must be empty — a real fetch failed (Rejected: an error status or a \
+         non-PNG answer; Unreachable: egress blocked)"
     );
     assert!(
         png_count > 0,
         "the worker must persist real PNGs to the on-disk cache; found {png_count}"
     );
-    let bytes = first.expect("a cached tile file to read");
-    assert!(
-        bytes.starts_with(PNG_MAGIC),
-        "on-disk cache entry is not a valid PNG (magic bytes wrong)"
-    );
+    assert_real_imagery(&tiles);
 
     std::fs::remove_dir_all(&cache).ok();
 }
 
-/// (2) LIVE-RENDER screenshot e2e — inspect the pixels.
-///
-/// Renders the LIVE, network-on map to PNG both BEFORE tiles load (placeholder)
-/// and AFTER, then proves the map area shows real, varied tile imagery: it is
-/// not uniform, it is far more colour-diverse than the placeholder, and it
-/// substantially CHANGED once imagery arrived. Requires a headless GPU
-/// (lavapipe is fine).
+/// Opt-in live GPU lane: real tiles render, and a mid-zoom reuses tiles without
+/// blanking.
 #[test]
 #[ignore = "requires live tile services and a GPU; run the explicit maps live lane"]
-fn live_render_shows_real_tiles() {
-    let cache = unique_cache();
-    let mut app = MapsApp::new_with_cache_dir(cache.clone());
-    let mut h = Harness::new(VP);
-    let out = out_dir();
-    let before_png = out.join("maps-live-before.png");
-    let after_png = out.join("maps-live-after.png");
-
-    // Frame 0: no tiles resident yet → the honest placeholder (grid substrate).
-    let before = render_live_to_png(&mut h, &mut app, &before_png);
-    assert_eq!(
-        app.tiles_mem_len(),
-        0,
-        "the first frame should predate any decoded tile"
-    );
-
-    // Pump until enough tiles cover the region, or 25s elapse.
-    let stats = pump_frames_until(
-        &mut h,
-        &mut app,
-        Duration::from_secs(25),
-        Duration::from_millis(150),
-        |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
-    );
-    // A few settle frames so late arrivals fold in.
-    let _ = pump_frames_until(
-        &mut h,
-        &mut app,
-        Duration::from_secs(3),
-        Duration::from_millis(120),
-        |a| !a.tiles_has_inflight() && a.tiles_mem_len() >= 8,
-    );
-
-    let after = render_live_to_png(&mut h, &mut app, &after_png);
-
-    let region = map_region();
-    let before_colors = before.distinct_colors(region, 4);
-    let after_colors = after.distinct_colors(region, 4);
-    let changed = after.changed_fraction(&before, region, 4, 16);
-    eprintln!(
-        "live render: mem_tiles={} failures={} frames={} elapsed={:?}\n  \
-         before_colors={before_colors} after_colors={after_colors} changed_fraction={:.2}\n  \
-         before={} after={}",
-        app.tiles_mem_len(),
-        app.tiles_has_failures(),
-        stats.frames,
-        stats.elapsed,
-        changed,
-        before_png.display(),
-        after_png.display(),
-    );
-
-    // The data-path outcome must be sound.
-    assert!(
-        app.tiles_mem_len() > 0,
-        "no decoded tiles resident to render"
-    );
-    assert!(
-        !app.tiles_has_failures(),
-        "tile fetch failed — imagery unreachable"
-    );
-
-    // Pixel outcome: real imagery replaced the placeholder.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
+    // Phase `live_render_shows_real_tiles`.
+    // (2) LIVE-RENDER screenshot e2e — inspect the pixels.
     //
-    // The base style is CARTO's label-free LIGHT basemap: white ground, pale
-    // parks/water, thin roads and faint building footprints. It is deliberately
-    // low-chroma, so it quantises (5 bits/channel, to ignore AA noise) to far
-    // fewer distinct colours than a labelled raster would — the diversity FLOOR
-    // here is calibrated to that basemap (a flat fill or the loading substrate
-    // would fall well below it), NOT to a dense labelled map. The decisive
-    // placeholder-vs-imagery proof is `changed_fraction`: nearly every sampled
-    // map pixel flips from the dark loading substrate to the light map once
-    // tiles arrive — a wholesale change no palette choice can fake — backed by
-    // the data-path asserts above (tiles resident, zero fetch failures).
-    assert!(
-        !after.is_uniform(region),
-        "map area is a uniform fill — no imagery rendered"
-    );
-    assert!(
-        after_colors >= 16,
-        "map area colour-diversity too low ({after_colors}); expected real, varied tile imagery \
-         (before={before_colors})"
-    );
-    assert!(
-        changed > 0.5,
-        "less than half the map area changed after tiles loaded ({changed:.2}) — \
-         imagery did not replace the placeholder"
-    );
+    // Renders the LIVE, network-on map to PNG both BEFORE tiles load (placeholder)
+    // and AFTER, then proves the map area shows real, varied tile imagery: it is
+    // not uniform, it is far more colour-diverse than the placeholder, and it
+    // substantially CHANGED once imagery arrived. Requires a headless GPU
+    // (lavapipe is fine).
+    {
+        let cache = unique_cache();
+        let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
+        let out = out_dir();
+        let before_png = out.join("maps-live-before.png");
+        let after_png = out.join("maps-live-after.png");
 
-    std::fs::remove_dir_all(&cache).ok();
-}
+        // Frame 0: no tiles resident yet → the honest placeholder (grid substrate).
+        let before = render_live_to_png(&mut app, &before_png);
+        assert_eq!(
+            app.tiles_mem_len(),
+            0,
+            "the first frame should predate any decoded tile"
+        );
 
-/// Zoom must never blank. After z14 imagery is resident, jumping to a mid-zoom
-/// where the target-level tiles are NOT fetched yet must still paint imagery —
-/// the resident tiles reused *scaled* (lower-z ancestors on a zoom-in,
-/// higher-z descendants on a zoom-out) — rather than a flat land fill. Renders
-/// one zoom-out and one zoom-in mid-frame and asserts each shows varied imagery,
-/// exercising the real fetch→decode→draw path (only the base tiles ever load).
-#[test]
-#[ignore = "requires live tile services and a GPU; run the explicit maps live lane"]
-fn live_mid_zoom_reuses_tiles_and_never_blanks() {
-    let cache = unique_cache();
-    let mut app = MapsApp::new_with_cache_dir(cache.clone());
-    let mut h = Harness::new(VP);
-    let out = out_dir();
-    let region = map_region();
-    let base_zoom = app.zoom_for_verify();
+        // Pump until enough tiles cover the region, or 25s elapse.
+        let stats = pump_frames_until(
+            &mut app,
+            Duration::from_secs(25),
+            Duration::from_millis(150),
+            |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
+        );
+        // A few settle frames so late arrivals fold in.
+        let _ = pump_frames_until(
+            &mut app,
+            Duration::from_secs(3),
+            Duration::from_millis(120),
+            |a| !a.tiles_has_inflight() && a.tiles_mem_len() >= 8,
+        );
 
-    // Load the base-zoom imagery.
-    let _ = pump_frames_until(
-        &mut h,
-        &mut app,
-        Duration::from_secs(25),
-        Duration::from_millis(150),
-        |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
-    );
-    assert!(app.tiles_mem_len() > 0, "no base imagery loaded to reuse");
-    assert!(
-        !app.tiles_has_failures(),
-        "base tile fetch failed — imagery unreachable"
-    );
+        let after = render_live_to_png(&mut app, &after_png);
 
-    // Zoom OUT one integer level: the target tiles aren't loaded, so the frame
-    // must reuse the resident tiles as scaled descendants — never blank.
-    app.set_zoom_for_verify(base_zoom - 1.0);
-    let out_png = out.join("maps-mid-zoom-out.png");
-    let f_out = render_live_to_png(&mut h, &mut app, &out_png);
-    let out_colors = f_out.distinct_colors(region, 4);
-    eprintln!(
-        "mid zoom-out: zoom={:.2} colors={out_colors} mem={} -> {}",
-        app.zoom_for_verify(),
-        app.tiles_mem_len(),
-        out_png.display()
-    );
-    assert!(
-        !f_out.is_uniform(region),
-        "zoom-out mid-frame is a uniform fill — the blank bug"
-    );
-    assert!(
-        out_colors > 12,
-        "zoom-out mid-frame shows too little imagery ({out_colors}) — tiles not reused scaled"
-    );
+        let region = map_region();
+        let before_colors = before.distinct_colors(region, 4);
+        let after_colors = after.distinct_colors(region, 4);
+        let changed = after.changed_fraction(&before, region, 4, 16);
+        eprintln!(
+            "live render: mem_tiles={} failures={} frames={} elapsed={:?}\n  \
+             before_colors={before_colors} after_colors={after_colors} changed_fraction={:.2}\n  \
+             before={} after={}",
+            app.tiles_mem_len(),
+            app.tiles_has_failures(),
+            stats.frames,
+            stats.elapsed,
+            changed,
+            before_png.display(),
+            after_png.display(),
+        );
 
-    // Re-settle at the base zoom, then zoom IN one integer level: reuse the
-    // resident tiles as scaled ancestors — again, never blank.
-    app.set_zoom_for_verify(base_zoom);
-    let _ = pump_frames_until(
-        &mut h,
-        &mut app,
-        Duration::from_secs(15),
-        Duration::from_millis(150),
-        |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
-    );
-    app.set_zoom_for_verify(base_zoom + 1.0);
-    let in_png = out.join("maps-mid-zoom-in.png");
-    let f_in = render_live_to_png(&mut h, &mut app, &in_png);
-    let in_colors = f_in.distinct_colors(region, 4);
-    eprintln!(
-        "mid zoom-in: zoom={:.2} colors={in_colors} mem={} -> {}",
-        app.zoom_for_verify(),
-        app.tiles_mem_len(),
-        in_png.display()
-    );
-    assert!(
-        !f_in.is_uniform(region),
-        "zoom-in mid-frame is a uniform fill — the blank bug"
-    );
-    assert!(
-        in_colors > 12,
-        "zoom-in mid-frame shows too little imagery ({in_colors}) — tiles not reused scaled"
-    );
+        // The data-path outcome must be sound.
+        assert!(
+            app.tiles_mem_len() > 0,
+            "no decoded tiles resident to render"
+        );
+        assert_eq!(
+            app.tiles_failure(),
+            None,
+            "tile fetch failed — imagery refused or unreachable"
+        );
+        // The painted tiles are the server's real imagery, not one placeholder
+        // repeated: pixel variety alone passed CARTO's "API KEY REQUIRED" tile.
+        assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
 
-    std::fs::remove_dir_all(&cache).ok();
+        // Pixel outcome: real imagery replaced the loading substrate.
+        //
+        // The harness renders the dark theme, so this is the OSM Standard
+        // raster re-toned dark: deep land, roads, parks, water and light labels.
+        // It quantises (5 bits/channel, to ignore AA noise) to many distinct
+        // colours; the FLOOR here stays well above what a flat fill or the
+        // loading substrate reaches. `changed_fraction` shows most sampled map
+        // pixels changing from the loading substrate to the map.
+        assert!(
+            !after.is_uniform(region),
+            "map area is a uniform fill — no imagery rendered"
+        );
+        assert!(
+            after_colors >= 16,
+            "map area colour-diversity too low ({after_colors}); expected real, varied tile imagery \
+             (before={before_colors})"
+        );
+        assert!(
+            changed > 0.5,
+            "less than half the map area changed after tiles loaded ({changed:.2}) — \
+             imagery did not replace the placeholder"
+        );
+
+        std::fs::remove_dir_all(&cache).ok();
+    }
+
+    // Phase `live_mid_zoom_reuses_tiles_and_never_blanks`.
+    // Zoom must never blank. After z14 imagery is resident, jumping to a mid-zoom
+    // where the target-level tiles are NOT fetched yet must still paint imagery —
+    // the resident tiles reused *scaled* (lower-z ancestors on a zoom-in,
+    // higher-z descendants on a zoom-out) — rather than a flat land fill. Renders
+    // one zoom-out and one zoom-in mid-frame and asserts each shows varied imagery,
+    // exercising the real fetch→decode→draw path (only the base tiles ever load).
+    {
+        let cache = unique_cache();
+        let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
+        let out = out_dir();
+        let region = map_region();
+        let base_zoom = app.zoom_for_verify();
+
+        // Load the base-zoom imagery.
+        let _ = pump_frames_until(
+            &mut app,
+            Duration::from_secs(25),
+            Duration::from_millis(150),
+            |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
+        );
+        assert!(app.tiles_mem_len() > 0, "no base imagery loaded to reuse");
+        assert_eq!(
+            app.tiles_failure(),
+            None,
+            "base tile fetch failed — imagery refused or unreachable"
+        );
+        assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
+
+        // Zoom OUT one integer level: the target tiles aren't loaded, so the frame
+        // must reuse the resident tiles as scaled descendants — never blank.
+        app.set_zoom_for_verify(base_zoom - 1.0);
+        let out_png = out.join("maps-mid-zoom-out.png");
+        let f_out = render_live_to_png(&mut app, &out_png);
+        let out_colors = f_out.distinct_colors(region, 4);
+        eprintln!(
+            "mid zoom-out: zoom={:.2} colors={out_colors} mem={} -> {}",
+            app.zoom_for_verify(),
+            app.tiles_mem_len(),
+            out_png.display()
+        );
+        assert!(
+            !f_out.is_uniform(region),
+            "zoom-out mid-frame is a uniform fill — the blank bug"
+        );
+        assert!(
+            out_colors > 12,
+            "zoom-out mid-frame shows too little imagery ({out_colors}) — tiles not reused scaled"
+        );
+
+        // Re-settle at the base zoom, then zoom IN one integer level: reuse the
+        // resident tiles as scaled ancestors — again, never blank.
+        app.set_zoom_for_verify(base_zoom);
+        let _ = pump_frames_until(
+            &mut app,
+            Duration::from_secs(15),
+            Duration::from_millis(150),
+            |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
+        );
+        app.set_zoom_for_verify(base_zoom + 1.0);
+        let in_png = out.join("maps-mid-zoom-in.png");
+        let f_in = render_live_to_png(&mut app, &in_png);
+        let in_colors = f_in.distinct_colors(region, 4);
+        eprintln!(
+            "mid zoom-in: zoom={:.2} colors={in_colors} mem={} -> {}",
+            app.zoom_for_verify(),
+            app.tiles_mem_len(),
+            in_png.display()
+        );
+        assert!(
+            !f_in.is_uniform(region),
+            "zoom-in mid-frame is a uniform fill — the blank bug"
+        );
+        assert!(
+            in_colors > 12,
+            "zoom-in mid-frame shows too little imagery ({in_colors}) — tiles not reused scaled"
+        );
+
+        std::fs::remove_dir_all(&cache).ok();
+    }
 }
 
 /// A trivially-runnable sanity assert on the pixel helpers themselves, so the

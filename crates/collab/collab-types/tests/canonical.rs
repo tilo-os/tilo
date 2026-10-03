@@ -45,16 +45,25 @@ fn t(secs: u64) -> SystemTime {
 
 // ---------- round-trips for every wire type ----------
 
-#[test]
-fn round_trip_clearance() {
-    let c = Clearance::CONFIDENTIAL;
-    let bytes = canonical_bytes(&c).unwrap();
-    let back: Clearance = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(c, back);
+/// Encodes `value`, decodes it back and asserts equality, naming the case.
+fn assert_round_trips<T>(case: &str, value: &T)
+where
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
+{
+    let bytes = canonical_bytes(value).unwrap();
+    let back: T = from_canonical_bytes(&bytes).unwrap();
+    assert_eq!(value, &back, "case {case}");
 }
 
+/// Every wire type round-trips through `canonical_bytes` /
+/// `from_canonical_bytes`, and encoding is deterministic.
 #[test]
-fn round_trip_role() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one literal fixture per wire type; splitting them apart would only scatter the list"
+)]
+fn every_wire_type_round_trips_deterministically() {
+    assert_round_trips("clearance", &Clearance::CONFIDENTIAL);
     for r in [
         Role::Owner,
         Role::Editor,
@@ -62,14 +71,8 @@ fn round_trip_role() {
         Role::Viewer,
         Role::Denied,
     ] {
-        let bytes = canonical_bytes(&r).unwrap();
-        let back: Role = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(r, back);
+        assert_round_trips(&format!("role {r:?}"), &r);
     }
-}
-
-#[test]
-fn round_trip_op_class() {
     for op in [
         OpClass::Splice,
         OpClass::Move,
@@ -79,14 +82,8 @@ fn round_trip_op_class() {
         OpClass::Restore,
         OpClass::Govern,
     ] {
-        let bytes = canonical_bytes(&op).unwrap();
-        let back: OpClass = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(op, back);
+        assert_round_trips(&format!("op class {op:?}"), &op);
     }
-}
-
-#[test]
-fn round_trip_artifact_kind() {
     for k in [
         ArtifactKind::Note,
         ArtifactKind::File,
@@ -94,134 +91,98 @@ fn round_trip_artifact_kind() {
         ArtifactKind::Kanban,
         ArtifactKind::ChatLog,
     ] {
-        let bytes = canonical_bytes(&k).unwrap();
-        let back: ArtifactKind = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(k, back);
+        assert_round_trips(&format!("artifact kind {k:?}"), &k);
     }
-}
-
-#[test]
-fn round_trip_claim_member_of() {
-    let c = Claim::MemberOf {
-        space: SpaceId::new(),
-    };
-    let bytes = canonical_bytes(&c).unwrap();
-    let back: Claim = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(c, back);
-}
-
-#[test]
-fn round_trip_claim_custom() {
-    let c = Claim::Custom {
-        kind: "com.example.badge".into(),
-        value: vec![1, 2, 3, 4, 5],
-    };
-    let bytes = canonical_bytes(&c).unwrap();
-    let back: Claim = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(c, back);
-}
-
-#[test]
-fn round_trip_attestation() {
-    let a = Attestation {
-        id: AttestationId::new(),
-        issued_by: fake_pk(1),
-        subject: fake_pk(2),
-        claims: vec![Claim::ClearedAt(Clearance::INTERNAL)],
-        valid_from: t(0),
-        valid_until: t(86_400),
-        signature: fake_sig(0xab),
-    };
-    let bytes = canonical_bytes(&a).unwrap();
-    let back: Attestation = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(a, back);
-}
-
-#[test]
-fn round_trip_identity_with_avatar() {
-    let id = Identity {
-        public_key: fake_pk(7),
-        label: "ada — Personal".into(),
-        avatar: Some(AvatarBytes(vec![0x89, b'P', b'N', b'G'])),
-        attestations: vec![],
-    };
-    let bytes = canonical_bytes(&id).unwrap();
-    let back: Identity = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(id, back);
-}
-
-#[test]
-fn round_trip_space() {
-    let s = Space {
-        id: SpaceId::new(),
-        name: "ACME".into(),
-        trust_root: fake_pk(9),
-        default_identity_label: Some("ada".into()),
-        channels: vec![],
-        member_directory: vec![],
-    };
-    let bytes = canonical_bytes(&s).unwrap();
-    let back: Space = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(s, back);
-}
-
-#[test]
-fn round_trip_channel() {
-    let ch = Channel {
-        id: ChannelId::new(),
-        space: SpaceId::new(),
-        name: "#engineering".into(),
-        owner: fake_pk(11),
-        default_role: Role::Commenter,
-        members: vec![MemberRef {
-            identity: fake_pk(12),
-            role: Role::Editor,
-            attestation: AttestationId::new(),
-        }],
-        observe_default: true,
-        min_clearance: Some(Clearance::CONFIDENTIAL),
-        artifacts: vec![],
-        presence_visible_for_viewers: true,
-    };
-    let bytes = canonical_bytes(&ch).unwrap();
-    let back: Channel = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(ch, back);
-}
-
-#[test]
-fn round_trip_artifact() {
-    let a = Artifact {
-        id: ArtifactId::new(),
-        kind: ArtifactKind::Note,
-        channel: ChannelId::new(),
-        classification: Some(Clearance::INTERNAL),
-        crdt_doc: Some(DocumentHandle(vec![9, 9, 9])),
-    };
-    let bytes = canonical_bytes(&a).unwrap();
-    let back: Artifact = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(a, back);
-}
-
-#[test]
-fn round_trip_signed_op() {
-    let op = SignedOp::new_unsigned(
-        b"automerge change blob".to_vec(),
-        ArtifactId::new(),
-        fake_pk(3),
-        AttestationId::new(),
-        OpClass::Splice,
-        t(100_000),
-        42,
+    assert_round_trips(
+        "claim member-of",
+        &Claim::MemberOf {
+            space: SpaceId::new(),
+        },
     );
-    let bytes = canonical_bytes(&op).unwrap();
-    let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
-    assert_eq!(op, back);
-}
+    assert_round_trips(
+        "claim custom",
+        &Claim::Custom {
+            kind: "com.example.badge".into(),
+            value: vec![1, 2, 3, 4, 5],
+        },
+    );
+    assert_round_trips(
+        "attestation",
+        &Attestation {
+            id: AttestationId::new(),
+            issued_by: fake_pk(1),
+            subject: fake_pk(2),
+            claims: vec![Claim::ClearedAt(Clearance::INTERNAL)],
+            valid_from: t(0),
+            valid_until: t(86_400),
+            signature: fake_sig(0xab),
+        },
+    );
+    assert_round_trips(
+        "identity with avatar",
+        &Identity {
+            public_key: fake_pk(7),
+            label: "ada — Personal".into(),
+            avatar: Some(AvatarBytes(vec![0x89, b'P', b'N', b'G'])),
+            attestations: vec![],
+        },
+    );
+    assert_round_trips(
+        "space",
+        &Space {
+            id: SpaceId::new(),
+            name: "ACME".into(),
+            trust_root: fake_pk(9),
+            default_identity_label: Some("ada".into()),
+            channels: vec![],
+            member_directory: vec![],
+        },
+    );
+    assert_round_trips(
+        "channel",
+        &Channel {
+            id: ChannelId::new(),
+            space: SpaceId::new(),
+            name: "#engineering".into(),
+            owner: fake_pk(11),
+            default_role: Role::Commenter,
+            members: vec![MemberRef {
+                identity: fake_pk(12),
+                role: Role::Editor,
+                attestation: AttestationId::new(),
+            }],
+            observe_default: true,
+            min_clearance: Some(Clearance::CONFIDENTIAL),
+            artifacts: vec![],
+            presence_visible_for_viewers: true,
+        },
+    );
+    assert_round_trips(
+        "artifact",
+        &Artifact {
+            id: ArtifactId::new(),
+            kind: ArtifactKind::Note,
+            channel: ChannelId::new(),
+            classification: Some(Clearance::INTERNAL),
+            crdt_doc: Some(DocumentHandle(vec![9, 9, 9])),
+        },
+    );
+    assert_round_trips(
+        "signed op",
+        &SignedOp::new_unsigned(
+            b"automerge change blob".to_vec(),
+            ArtifactId::new(),
+            fake_pk(3),
+            AttestationId::new(),
+            OpClass::Splice,
+            t(100_000),
+            42,
+        ),
+    );
 
-#[test]
-fn round_trip_all_channel_event_variants() {
+    // Every channel event variant.
     let pk = fake_pk(5);
-    let events = vec![
+    let events = [
         ChannelEvent::Genesis {
             channel_id: ChannelId::new(),
             space: SpaceId::new(),
@@ -264,19 +225,12 @@ fn round_trip_all_channel_event_variants() {
             signature: fake_sig(0x06),
         },
     ];
-    for e in events {
-        let bytes = canonical_bytes(&e).unwrap();
-        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(e, back);
+    for (i, e) in events.iter().enumerate() {
+        assert_round_trips(&format!("channel event #{i}"), e);
     }
-}
 
-// ---------- determinism ----------
-
-#[test]
-fn encoder_is_deterministic_across_calls() {
-    // Two encodes of an identical value must produce identical bytes.
-    // The signing protocol relies on this property.
+    // Determinism: two encodes of an identical value must produce identical
+    // bytes. The signing protocol relies on this property.
     let op = SignedOp::new_unsigned(
         b"x".to_vec(),
         ArtifactId(uuid::Uuid::from_u128(0xdead_beef)),
@@ -293,15 +247,17 @@ fn encoder_is_deterministic_across_calls() {
 
 // ---------- tamper detection: decode failure ----------
 
+/// Decoding demands exactly the encoded bytes: trailing bytes and any
+/// truncation are rejected.
 #[test]
-fn trailing_bytes_after_struct_rejected() {
-    // postcard is structural — there are no field names, so an
-    // "extra field" surfaces as trailing bytes on the wire. Our
-    // `from_canonical_bytes` enforces exact-length input precisely
-    // so trailing data can't slip past undetected. (`deny_unknown_fields`
-    // on the struct only takes effect for name-based deserialisers
-    // like JSON; the exact-length check is the postcard-equivalent
-    // protection.)
+fn decode_rejects_trailing_or_truncated_bytes() {
+    // Case: trailing bytes after a struct. postcard is structural — there
+    // are no field names, so an "extra field" surfaces as trailing bytes on
+    // the wire. Our `from_canonical_bytes` enforces exact-length input
+    // precisely so trailing data can't slip past undetected.
+    // (`deny_unknown_fields` on the struct only takes effect for name-based
+    // deserialisers like JSON; the exact-length check is the
+    // postcard-equivalent protection.)
     let s = Space {
         id: SpaceId::new(),
         name: "x".into(),
@@ -319,10 +275,8 @@ fn trailing_bytes_after_struct_rejected() {
     bytes.push(0xff);
     bytes.push(0xff);
     assert!(from_canonical_bytes::<Space>(&bytes).is_err());
-}
 
-#[test]
-fn truncated_attestation_rejected() {
+    // Case: truncated attestation.
     let a = Attestation {
         id: AttestationId::new(),
         issued_by: fake_pk(1),
@@ -345,11 +299,13 @@ fn truncated_attestation_rejected() {
     }
 }
 
+/// Tampering with signed bytes breaks decode or signature — never neither.
 #[test]
-fn one_byte_flip_in_attestation_breaks_decode_or_signature() {
-    // After we encode + sign + ship an attestation, an adversary who
-    // flips a single byte either breaks the postcard decode OR the
-    // signature check — never neither. We test both pathways.
+fn tampering_breaks_decode_or_signature() {
+    // Case: one-byte flip in an attestation. After we encode + sign + ship
+    // an attestation, an adversary who flips a single byte either breaks the
+    // postcard decode OR the signature check — never neither. We test both
+    // pathways.
     let (sk, pk) = generate_keypair();
     let mut att = Attestation {
         id: AttestationId::new(),
@@ -397,46 +353,29 @@ fn one_byte_flip_in_attestation_breaks_decode_or_signature() {
     }
     assert!(hit_decode_fail);
     assert!(hit_signature_fail);
-}
 
-#[test]
-fn tampering_signed_op_payload_breaks_verification() {
-    // Build a signed op, then flip one byte of the payload. The op's
-    // signature must reject after the tamper.
-    let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"original payload".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(1),
-        1,
-    );
-    sign_op(&mut op, &sk).unwrap();
-    // Untampered verifies.
-    assert!(verify_op(&op).is_ok());
-
-    // Tamper.
-    op.payload[0] ^= 0x80;
-    assert!(verify_op(&op).is_err());
-}
-
-#[test]
-fn tampering_signed_op_seq_breaks_verification() {
-    let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"payload".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(1),
-        7,
-    );
-    sign_op(&mut op, &sk).unwrap();
-    assert!(verify_op(&op).is_ok());
+    // Cases: tampering a signed op's payload or seq breaks verification.
+    let flip_payload: fn(&mut SignedOp) = |op| op.payload[0] ^= 0x80;
     // Bumping seq invalidates the signature.
-    op.seq = 8;
-    assert!(verify_op(&op).is_err());
+    let bump_seq: fn(&mut SignedOp) = |op| op.seq = 8;
+    for (case, payload, seq, tamper) in [
+        ("payload", &b"original payload"[..], 1, flip_payload),
+        ("seq", &b"payload"[..], 7, bump_seq),
+    ] {
+        let (sk, pk) = generate_keypair();
+        let mut op = SignedOp::new_unsigned(
+            payload.to_vec(),
+            ArtifactId::new(),
+            pk,
+            AttestationId::new(),
+            OpClass::Splice,
+            t(1),
+            seq,
+        );
+        sign_op(&mut op, &sk).unwrap();
+        // Untampered verifies.
+        assert!(verify_op(&op).is_ok(), "case {case}");
+        tamper(&mut op);
+        assert!(verify_op(&op).is_err(), "case {case}");
+    }
 }

@@ -180,11 +180,7 @@ pub fn default_user_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Some(PathBuf::from(dir));
     }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(xdg).join("tilo-apps"));
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(Path::new(&home).join(".local/share/tilo-apps"))
+    Some(xdg_paths::xdg::data_home()?.join("tilo-apps"))
 }
 
 /// Whether this session was handed an app store of its own.
@@ -244,30 +240,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_release_build_ignores_the_system_store_overrides() {
-        for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
+    fn system_store_overrides_are_gated() {
+        // phase: a_release_build_ignores_the_system_store_overrides
+        {
+            for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
+                assert_eq!(
+                    system_override_from(false, name, Some("/tmp/attacker-store".into())),
+                    None,
+                    "{name}"
+                );
+                assert_eq!(
+                    system_override_from(true, name, Some("/dev/store".into())),
+                    Some("/dev/store".into()),
+                    "{name}"
+                );
+            }
+            let gated = system_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
             assert_eq!(
-                system_override_from(false, name, Some("/tmp/attacker-store".into())),
-                None,
-                "{name}"
+                system_data_dir_from(gated, false),
+                Some(PathBuf::from(SYSTEM_DATA_DIR)),
+                "a release build reads the image's store whatever the environment says",
             );
+            assert_eq!(system_data_dir_from(None, true), None);
             assert_eq!(
-                system_override_from(true, name, Some("/dev/store".into())),
-                Some("/dev/store".into()),
-                "{name}"
+                system_data_dir_from(Some("/dev/store".into()), true),
+                Some(PathBuf::from("/dev/store"))
             );
         }
-        let gated = system_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
-        assert_eq!(
-            system_data_dir_from(gated, false),
-            Some(PathBuf::from(SYSTEM_DATA_DIR)),
-            "a release build reads the image's store whatever the environment says",
-        );
-        assert_eq!(system_data_dir_from(None, true), None);
-        assert_eq!(
-            system_data_dir_from(Some("/dev/store".into()), true),
-            Some(PathBuf::from("/dev/store"))
-        );
+        // phase: tilo_apps_data_dir_alone_suppresses_the_system_store
+        {
+            // The isolation rule the shell's fixture tests depend on: setting only
+            // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a
+            // test asserting a package count would pass on a dev box and fail
+            // inside a Tilo image where /usr/share/tilo-apps is populated.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_APPS_SYSTEM_DIR")
+                .set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
+            assert!(store_is_scoped_to_this_session());
+            assert_eq!(system_data_dir(), None);
+            assert_eq!(
+                default_user_root(),
+                Some(PathBuf::from("/tmp/tilo-apps-fixture"))
+            );
+
+            env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
+            assert!(
+                !store_is_scoped_to_this_session(),
+                "naming the system store too asks for both, which is a machine-wide \
+             reading and not a scoped session",
+            );
+            assert_eq!(
+                system_data_dir(),
+                Some(PathBuf::from("/tmp/tilo-apps-system"))
+            );
+
+            env.remove("TILO_APPS_DATA_DIR")
+                .remove("TILO_APPS_SYSTEM_DIR");
+            assert!(!store_is_scoped_to_this_session());
+            assert_eq!(
+                system_data_dir(),
+                Some(PathBuf::from(SYSTEM_DATA_DIR)),
+                "production reads the image's store",
+            );
+        }
     }
 
     #[test]
@@ -283,43 +318,6 @@ mod tests {
         assert_eq!(
             layout.manifest(id),
             layout.meta_dir(id).join("manifest.toml")
-        );
-    }
-
-    #[test]
-    fn tilo_apps_data_dir_alone_suppresses_the_system_store() {
-        // The isolation rule the shell's fixture tests depend on: setting only
-        // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a
-        // test asserting a package count would pass on a dev box and fail
-        // inside a Tilo image where /usr/share/tilo-apps is populated.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_APPS_SYSTEM_DIR")
-            .set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
-        assert!(store_is_scoped_to_this_session());
-        assert_eq!(system_data_dir(), None);
-        assert_eq!(
-            default_user_root(),
-            Some(PathBuf::from("/tmp/tilo-apps-fixture"))
-        );
-
-        env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
-        assert!(
-            !store_is_scoped_to_this_session(),
-            "naming the system store too asks for both, which is a machine-wide \
-             reading and not a scoped session",
-        );
-        assert_eq!(
-            system_data_dir(),
-            Some(PathBuf::from("/tmp/tilo-apps-system"))
-        );
-
-        env.remove("TILO_APPS_DATA_DIR")
-            .remove("TILO_APPS_SYSTEM_DIR");
-        assert!(!store_is_scoped_to_this_session());
-        assert_eq!(
-            system_data_dir(),
-            Some(PathBuf::from(SYSTEM_DATA_DIR)),
-            "production reads the image's store",
         );
     }
 }

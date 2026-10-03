@@ -27,10 +27,6 @@
 //! every sandboxed launch, always wins — without it a binary run from
 //! `target/debug` would share one document with every other app.
 //!
-//! Apps carrying state an older release wrote elsewhere call
-//! [`open_migrating`] once with that legacy path; the old document is
-//! merged in, so the migration is safe to run repeatedly.
-//!
 //! Every function here resolves storage from the native process
 //! environment (`TILO_PACKAGE_ID`, the XDG data directory) and the local
 //! filesystem. A host with an explicit profile opens records through
@@ -49,6 +45,7 @@
 use crate::time::Duration;
 use std::path::Path;
 use std::rc::Rc;
+use tilo_automerge::ApplyIncoming;
 
 use durable_store::{DurableStore, StorageKey};
 
@@ -63,6 +60,9 @@ use crate::state::State;
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
 pub fn open(manifest_id: &str) -> (State, DocWriter) {
+    if let Some(result) = open_native_initial(manifest_id, None) {
+        return native_initial_result(result);
+    }
     try_open(manifest_id).unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
@@ -70,16 +70,15 @@ pub fn open(manifest_id: &str) -> (State, DocWriter) {
 }
 
 /// Open the index for one collaboration room.  Record-aware applications use
-/// this instead of [`open()`]: their package-global document used to be the
-/// room index, which let two rooms hydrate and overwrite each other's record
-/// references after a restart.
-///
-/// On the first scoped open the legacy package document is merged, never
-/// moved or deleted.  The next autosave lands in the room directory, so a
-/// crash during migration still leaves the legacy source intact.
+/// this instead of [`open()`], so two rooms never hydrate or overwrite each
+/// other's record references.
 ///
 /// The host's package id, when set, wins over `manifest_id`.
 pub fn open_room(manifest_id: &str, room_id: &str) -> (State, DocWriter) {
+    if let Some(result) = open_native_initial(manifest_id, Some(room_id)) {
+        return native_initial_result(result);
+    }
+
     let package_id = crate::host::environment()
         .identity
         .package_id
@@ -97,67 +96,11 @@ pub fn open_room_in(
 ) -> (State, DocWriter) {
     let attempt = || -> Result<(State, DocWriter), StoreError> {
         app_state::validate_record_identity(package_id, room_id, "index")?;
-        let legacy = StorageKey::package(package_id);
-        let has_legacy = documents
-            .read(&legacy)?
-            .is_some_and(|stored| !stored.bytes.is_empty());
-        let mut store = DocStore::shared(
-            Rc::clone(&documents),
-            StorageKey::room_index(package_id, room_id),
-        )?;
-        if has_legacy && documents.claim(&legacy, room_id)? {
-            match store.import_from(&legacy) {
-                Ok(true) => tracing::info!(
-                    room = room_id,
-                    from = %legacy,
-                    to = %store.document_path().display(),
-                    "migrated package-global record index into its room"
-                ),
-                Ok(false) => {}
-                Err(error) => tracing::error!(
-                    room = room_id,
-                    error = %error,
-                    "legacy package record index could not be imported"
-                ),
-            }
-        } else if has_legacy {
-            tracing::info!(
-                room = room_id,
-                from = %legacy,
-                "legacy package record index belongs to another room; not importing"
-            );
-        }
+        let store = DocStore::shared(documents, StorageKey::room_index(package_id, room_id))?;
         Ok(finish(store))
     };
     attempt().unwrap_or_else(|error| {
         tracing::error!(room = room_id, error = %error, "room index unavailable; running without persistence");
-        in_memory_fallback()
-    })
-}
-
-/// [`open()`], plus a one-time import of a document an older release of this
-/// app left at `legacy`.
-///
-/// The legacy document is *merged*, so state written since the upgrade is
-/// preserved and running the migration twice is a no-op. The old file is
-/// left on disk; deleting it is a decision for whoever knows whether
-/// anything else still reads it.
-pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
-    let attempt = || -> Result<(State, DocWriter), StoreError> {
-        let mut store = DocStore::open_with_manifest_id(manifest_id)?;
-        match store.migrate_from(legacy) {
-            Ok(true) => tracing::info!(
-                from = %legacy.display(),
-                to = %store.document_path().display(),
-                "imported app state from its previous location"
-            ),
-            Ok(false) => {}
-            Err(e) => tracing::error!(error = %e, "legacy app state could not be imported"),
-        }
-        Ok(finish(store))
-    };
-    attempt().unwrap_or_else(|e| {
-        tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
     })
 }
@@ -170,11 +113,174 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
 pub fn try_open(manifest_id: &str) -> Result<(State, DocWriter), StoreError> {
+    if let Some(carried) = open_carried(manifest_id) {
+        return carried;
+    }
     Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
+}
+
+/// A window carried in from another workspace
+/// ([`crate::record::transfer`]) opens the record its instance's saved
+/// presentation names, rather than the app's own document in this room.
+/// `None` for every other launch, which opens the app's document as ever.
+fn open_carried(manifest_id: &str) -> Option<Result<(State, DocWriter), StoreError>> {
+    let (profile, instance) = crate::application::NativeProfile::of_launch()?;
+    let view = match profile.saved_view(instance) {
+        Ok(view) => view?,
+        Err(error) => {
+            tracing::warn!(%error, "saved presentation unreadable; opening the app document");
+            return None;
+        }
+    };
+    let package = crate::host::environment()
+        .identity
+        .package_id
+        .clone()
+        .unwrap_or_else(|| manifest_id.to_string());
+    let id = crate::record::RecordId::parse(&view.record_id)
+        .filter(|id| view.app_id == package && !id.is_package_primary())?;
+    let key = StorageKey::record(&package, profile.workspace_id(), id.storage_key());
+    let mut store = match DocStore::shared(Rc::clone(profile.store()), key) {
+        Ok(store) => store,
+        Err(error) => return Some(Err(error)),
+    };
+    match store.load() {
+        Ok(Some(mut doc)) if !crate::record::transfer::is_retired(&doc) => {
+            let mut autosave = store.writer();
+            autosave.seed(&mut doc);
+            Some(Ok((State::from_doc(doc), autosave)))
+        }
+        // Moved on again, or never arrived: this room's own document.
+        Ok(_) => None,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+/// Open an explicitly selected canonical profile through the same private
+/// native initial-read context when one is installed. The path selects local
+/// storage only; it never supplies a document authority or changes read mode.
+pub fn open_canonical_at(app: &str, directory: &Path) -> (State, DocWriter) {
+    if let Some(capture) = crate::collaboration::native_initial::primary(app, None) {
+        return native_initial_result((|| {
+            let (_, read) = capture?;
+            let store =
+                DocStore::open_canonical_at(app, directory).map_err(|error| error.to_string())?;
+            let (doc, writer) = finish_canonical_initial(store, read, |_| Ok(()))?;
+            Ok((State::from_doc(doc), writer))
+        })());
+    }
+    match DocStore::open_canonical_at(app, directory) {
+        Ok(store) => finish(store),
+        Err(error) => (State::new(), DocWriter::disabled(error.to_string())),
+    }
+}
+
+/// Merge an admitted native canonical snapshot into this local canonical
+/// cache and continue it with a background writer. Only the previously
+/// stored heads are durable; the merged graph stays a pending write.
+pub(crate) fn finish_canonical_initial(
+    mut store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+    validate: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(automerge::AutoCommit, DocWriter), String> {
+    let mut incoming = read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native canonical snapshot missing".to_string());
+        };
+        let doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+        validate(&doc)?;
+        Ok::<_, String>(doc)
+    })??;
+    let label = store.document_path().to_path_buf();
+    app_state::validate_canonical_schema_of(&incoming, &label)
+        .map_err(|error| error.to_string())?;
+    let loaded = store.load_complete().map_err(|error| error.to_string())?;
+    let mut doc = if let Some(mut existing) = loaded {
+        validate(&existing)?;
+        existing
+            .merge_incoming(&mut incoming)
+            .map_err(|error| error.to_string())?;
+        existing
+    } else {
+        // The absence is solely in this local cache. Its content comes from
+        // the already admitted remote Existing read, not a creation grant.
+        incoming.set_actor(store.actor().clone());
+        incoming
+    };
+    validate(&doc)?;
+    app_state::validate_canonical_schema_of(&doc, &label).map_err(|error| error.to_string())?;
+    if let Some(reason) = store.refusal() {
+        return Err(reason.to_string());
+    }
+    let mut writer = store.writer();
+    if !writer.is_enabled() {
+        return Err(writer
+            .last_error()
+            .unwrap_or_else(|| "canonical writer unavailable".to_string()));
+    }
+    writer.request(&mut doc);
+    read.applied();
+    Ok((doc, writer))
+}
+
+fn native_initial_result(result: Result<(State, DocWriter), String>) -> (State, DocWriter) {
+    result.unwrap_or_else(|error| {
+        crate::collaboration::native_initial::fail(&error);
+        (State::new(), DocWriter::disabled(error))
+    })
+}
+
+fn open_native_initial(
+    app: &str,
+    room: Option<&str>,
+) -> Option<Result<(State, DocWriter), String>> {
+    crate::collaboration::native_initial::primary(app, room).map(|capture| {
+        let (room, read) = capture?;
+        let store = DocStore::open_room(app, &room).map_err(|e| e.to_string())?;
+        finish_initial(store, read)
+    })
+}
+
+fn finish_initial(
+    mut store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+) -> Result<(State, DocWriter), String> {
+    let stored = store.load_complete().map_err(|e| e.to_string())?;
+    let had_stored = stored.is_some();
+    let mut doc = stored.unwrap_or_else(|| store.new_document());
+    if let Some(reason) = store.refusal() {
+        return Err(reason.to_string());
+    }
+    let mut writer = store.writer();
+    // Only the previously stored heads are durable. The captured graph must
+    // remain a pending local-cache write even without a subsequent user edit.
+    if had_stored {
+        writer.seed(&mut doc);
+    }
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native initial snapshot missing".to_string());
+        };
+        let mut actual = automerge::AutoCommit::load(bytes).map_err(|e| e.to_string())?;
+        doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })??;
+    writer.request(&mut doc);
+    let state = State::from_doc(doc);
+    read.applied();
+    Ok((state, writer))
 }
 
 fn finish(mut store: DocStore) -> (State, DocWriter) {
     let mut doc = store.load_or_new();
+    // The app's document moved to another workspace, which now holds it
+    // with its history; this room's app starts over.
+    if crate::record::transfer::is_retired(&doc) {
+        doc = store.new_document();
+        if let Err(error) = store.save(&mut doc) {
+            tracing::error!(%error, "could not start a new app document after a move");
+        }
+    }
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
     // (or the exit flush) would save it over the existing document. The store
@@ -262,122 +368,123 @@ mod tests {
         }
     }
 
-    /// Opening an app for the SECOND time must keep persistence ON. If the
-    /// store treated an already-existing state directory as an error,
-    /// [`open`] would silently fall back to a disabled, in-memory
-    /// [`in_memory_fallback`] on every run but the first — a case
-    /// fresh-XDG CI never exercises, so this test creates the directory
-    /// up front and drives two opens against it.
     #[test]
-    fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "so.tilo.persist-open-twice";
-
-        // Directory present before the first open, as on every later launch.
-        let dir = tmp.path().join(pkg);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Run 1: write and flush a value.
+    fn persistence_opens_twice() {
+        // Case `open_keeps_autosave_enabled_when_the_state_dir_already_exists`:
+        // Opening an app for the SECOND time must keep persistence ON. If the
+        // store treated an already-existing state directory as an error,
+        // [`open`] would silently fall back to a disabled, in-memory
+        // [`in_memory_fallback`] on every run but the first — a case
+        // fresh-XDG CI never exercises, so this test creates the directory
+        // up front and drives two opens against it.
         {
-            let (mut state, mut autosave) = open_in(native(tmp.path()), pkg).expect("run 1 open");
-            assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
-            state
-                .doc
-                .put(&ROOT, "note", ScalarValue::Str("survives".into()))
-                .unwrap();
-            autosave.request(&mut state.doc);
-            autosave.flush();
-            assert_eq!(autosave.last_error(), None, "no write may have failed");
-        }
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let pkg = "so.tilo.persist-open-twice";
 
-        // Run 2: the directory still exists; persistence must stay enabled
-        // and run 1's value must load.
-        let (state, autosave) = open_at(tmp.path(), pkg);
-        assert!(
-            autosave.is_enabled(),
-            "the SECOND open against an existing state dir must keep persistence \
-             enabled, not drop to the in-memory fallback"
-        );
-        assert_eq!(
-            note(&state).as_deref(),
-            Some("survives"),
-            "state written on the first run must load on the second open"
-        );
-    }
+            // Directory present before the first open, as on every later launch.
+            let dir = tmp.path().join(pkg);
+            std::fs::create_dir_all(&dir).unwrap();
 
-    #[test]
-    fn legacy_record_index_is_imported_by_one_room_only() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "so.tilo.legacy-room-index";
-        let id = crate::record::RecordId::minted();
-        let kind = crate::record::RecordKind::new("note");
-        let mut legacy = DocStore::shared(native(tmp.path()), StorageKey::package(package))
-            .expect("legacy store");
-        let mut legacy_doc = legacy.load_or_new();
-        crate::record::room::reference(&mut legacy_doc, &id, &kind);
-        legacy.save(&mut legacy_doc).expect("write legacy index");
-        let source = legacy.document_path().to_path_buf();
-        drop(legacy);
+            // Run 1: write and flush a value.
+            {
+                let (mut state, mut autosave) =
+                    open_in(native(tmp.path()), pkg).expect("run 1 open");
+                assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
+                state
+                    .doc
+                    .put(&ROOT, "note", ScalarValue::Str("survives".into()))
+                    .unwrap();
+                autosave.request(&mut state.doc);
+                autosave.flush();
+                assert_eq!(autosave.last_error(), None, "no write may have failed");
+            }
 
-        let (a, _) = open_room_in(
-            native(tmp.path()),
-            package,
-            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        );
-        assert!(crate::record::room::holds(&a.doc, &id));
-        let (b, _) = open_room_in(
-            native(tmp.path()),
-            package,
-            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        );
-        assert!(
-            !crate::record::room::holds(&b.doc, &id),
-            "a second room must not re-import a package-global index"
-        );
-        assert!(source.is_file(), "legacy source is retained for recovery");
-    }
-
-    /// An older app layout wrote the document as a zero-byte *file* at the
-    /// per-package state path. `open` must recover and come up with
-    /// persistence enabled, not swallow the `EEXIST` and fall back to the
-    /// disabled in-memory store.
-    #[test]
-    fn open_recovers_when_the_state_path_is_a_stale_file() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "so.tilo.stale-file-open";
-
-        // Old layout's leftover: a file where the new layout wants a directory.
-        let path = tmp.path().join(pkg);
-        std::fs::write(&path, b"").unwrap();
-        assert!(path.is_file(), "the leftover is a file, not a directory");
-
-        // Run 1: `open` must recover to enabled persistence.
-        {
-            let (mut state, mut autosave) = open_at(tmp.path(), pkg);
+            // Run 2: the directory still exists; persistence must stay enabled
+            // and run 1's value must load.
+            let (state, autosave) = open_at(tmp.path(), pkg);
             assert!(
                 autosave.is_enabled(),
-                "opening over a stale file must recover to enabled persistence, \
-                 not drop to the in-memory fallback"
+                "the SECOND open against an existing state dir must keep persistence \
+             enabled, not drop to the in-memory fallback"
             );
+            assert_eq!(
+                note(&state).as_deref(),
+                Some("survives"),
+                "state written on the first run must load on the second open"
+            );
+        }
+    }
+
+    #[test]
+    fn a_carried_window_opens_its_record_and_a_moved_app_document_starts_over() {
+        use crate::record::transfer::{self, Origin, Retirement};
+        const PACKAGE: &str = "so.tilo.persist-carry";
+        const HOME: &str = "3f2b1c00-0000-4000-8000-0000000000d1";
+        const ELSEWHERE: &str = "3f2b1c00-0000-4000-8000-0000000000d2";
+        const INSTANCE: u64 = 9;
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", temp.path())
+            .set("TILO_PACKAGE_ID", PACKAGE)
+            .set("TILO_WORKSPACE_ID", HOME)
+            .remove("TILO_CONTINUITY_INSTANCE");
+        {
+            let (mut state, mut autosave) = try_open(PACKAGE).unwrap();
             state
                 .doc
-                .put(&ROOT, "note", ScalarValue::Str("recovered".into()))
+                .put(&ROOT, "note", ScalarValue::Str("from home".into()))
                 .unwrap();
             autosave.request(&mut state.doc);
             autosave.flush();
-            assert_eq!(autosave.last_error(), None, "no write may have failed");
         }
 
-        // Run 2: the path is a directory now, and the value survives.
-        let (state, autosave) = open_at(tmp.path(), pkg);
-        assert!(
-            autosave.is_enabled(),
-            "persistence stays enabled after recovery"
-        );
-        assert_eq!(
-            note(&state).as_deref(),
-            Some("recovered"),
-            "state written after recovery must load on the next open"
-        );
+        // What the shell does when the window moves.
+        let store = native(temp.path());
+        let origin = Origin::AppDocument(crate::record::RecordKind::new("tilo.app-document"));
+        let snapshot = transfer::read(&store, PACKAGE, HOME, &origin).unwrap();
+        let mut arrived = transfer::rehome(
+            &snapshot,
+            &origin,
+            HOME,
+            ELSEWHERE,
+            &crate::record::RecordId::minted(),
+        )
+        .unwrap();
+        let carried = transfer::install(&store, PACKAGE, ELSEWHERE, &mut arrived).unwrap();
+        let there = crate::application::NativeProfile::open(temp.path(), Some(ELSEWHERE)).unwrap();
+        let view = crate::application_view::SavedInstanceView {
+            version: 2,
+            app_id: PACKAGE.into(),
+            device_id: there.device_id().into(),
+            workspace_id: there.workspace_id().into(),
+            instance_id: INSTANCE,
+            record_id: carried.id.as_str().into(),
+            record_kind: carried.kind.as_str().into(),
+            view: crate::view::View::default(),
+            application: None,
+        };
+        there.adopt_view(&view, INSTANCE, &carried).unwrap();
+        transfer::retire(&store, PACKAGE, HOME, &origin, &Retirement::Moved(None)).unwrap();
+
+        env.set("TILO_WORKSPACE_ID", ELSEWHERE)
+            .set("TILO_CONTINUITY_INSTANCE", INSTANCE.to_string());
+        {
+            let (state, autosave) = try_open(PACKAGE).unwrap();
+            assert!(autosave.is_enabled());
+            assert_eq!(
+                note(&state).as_deref(),
+                Some("from home"),
+                "the carried window opens what it brought"
+            );
+        }
+        env.set("TILO_CONTINUITY_INSTANCE", (INSTANCE + 1).to_string());
+        {
+            let (state, _) = try_open(PACKAGE).unwrap();
+            assert_eq!(
+                note(&state),
+                None,
+                "a moved app document is never reopened; the app starts over"
+            );
+        }
     }
 }

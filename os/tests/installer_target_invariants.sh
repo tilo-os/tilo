@@ -302,7 +302,7 @@ if [ -x "$preflight" ] \
    && containerfile_has_copy "$production_containerfile" \
         os/usr/libexec/tilo-verified-boot-install-preflight \
         /usr/libexec/tilo-verified-boot-install-preflight \
-   && grep -Fq '"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
+   && grep -Fq '"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
    && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
    && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
@@ -327,7 +327,7 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
-   && grep -Fq "github.event.inputs.publish == 'true'" "$os_image_workflow" \
+   && grep -Fq "github.event.inputs.release == 'true'" "$os_image_workflow" \
    && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
@@ -353,7 +353,8 @@ fi
 if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$production_containerfile" \
+   && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \
@@ -558,6 +559,30 @@ if [ -x "$guided_partitioner" ] \
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only Tilo partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
+fi
+
+# bootc#1929: with two ESPs, stock bootc can write the first (Windows) ESP
+# even though the installer mounted a different Tilo ESP under /target.
+if python3 - "$backend" "$repo_root/os/dev/build-custom-installer.sh" <<'PY'
+from pathlib import Path
+import sys
+
+backend = Path(sys.argv[1]).read_text()
+builder = Path(sys.argv[2]).read_text()
+guard = backend.index('ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside')
+mutation = backend.index('GUIDED_RESULT="$(', guard)
+assert guard < mutation
+assert '&& [ "$(' in backend[guard:mutation]
+assert 'alongside install requires the pinned mounted-ESP bootc helper' in backend[guard:mutation]
+assert backend.count('"${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}"') == 2
+assert '--entrypoint /run/tilo-bootc-alongside' in backend
+assert '0002-select-mounted-esp.patch' in builder
+assert 'rootfs/usr/libexec/tilo-bootc-alongside' in builder
+PY
+then
+  ok "alongside install selects a mounted-ESP bootc before any GPT mutation"
+else
+  bad "alongside install could run unpatched bootc against Windows ESP"
 fi
 
 # root=tilo-auto boots exactly one Tilo root per disk: both alongside paths

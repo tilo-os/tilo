@@ -539,180 +539,192 @@ mod tests {
         s
     }
 
+    /// The feeds document seeds, detects emptiness, round-trips settings and removes a feed with its articles.
     #[test]
-    fn seed_and_load_round_trip() {
-        let mut doc = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut doc, &store);
-
-        let loaded = FeedsDoc::load(&doc);
-        assert_eq!(loaded.folders.len(), 1);
-        assert_eq!(loaded.feeds.len(), 1);
-        assert_eq!(loaded.articles.len(), 1);
-        assert_eq!(loaded.feeds[0].kind, FeedKind::Atom);
-        assert_eq!(loaded.articles[0].blocks.len(), 2);
-        assert!(loaded.articles[0].starred);
-        assert!(!loaded.articles[0].read);
-        assert_eq!(loaded.articles[0].author, "Ada");
-    }
-
-    #[test]
-    fn is_empty_detects_unseeded() {
-        let mut doc = AutoCommit::new();
-        assert!(FeedsDoc::is_empty(&doc));
-        FeedsDoc::seed(&mut doc, &sample_store());
-        assert!(!FeedsDoc::is_empty(&doc));
-    }
-
-    #[test]
-    fn set_read_persists_and_merges() {
-        let mut doc = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut doc, &store);
-        let id = store.articles[0].id;
-        FeedsDoc::set_read(&mut doc, id, true);
-        let loaded = FeedsDoc::load(&doc);
-        assert!(loaded.articles[0].read);
-    }
-
-    #[test]
-    fn tag_edits_round_trip_and_refreshes_preserve_them() {
-        let mut doc = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut doc, &store);
-        let id = store.articles[0].id;
-        FeedsDoc::set_tags(&mut doc, id, &["design".into(), "later".into()]);
-
-        let mut refreshed = store.articles[0].clone();
-        refreshed.title = "Updated upstream title".into();
-        refreshed.tags.clear();
-        FeedsDoc::upsert_article(&mut doc, &refreshed);
-
-        let loaded = FeedsDoc::load(&doc);
-        let article = loaded.article(id).expect("article survives refresh");
-        assert_eq!(article.title, "Updated upstream title");
-        assert_eq!(article.tags, ["design", "later"]);
-    }
-
-    #[test]
-    fn concurrent_distinct_tag_additions_merge() {
-        let mut alice = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut alice, &store);
-        alice.commit();
-        alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
-        let mut bob = alice.fork();
-        bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
-        let id = store.articles[0].id;
-
-        FeedsDoc::set_tags(&mut alice, id, &["example".into(), "design".into()]);
-        FeedsDoc::set_tags(&mut bob, id, &["example".into(), "later".into()]);
-        alice.merge_incoming(&mut bob).expect("replicas merge");
-
-        assert_eq!(
-            FeedsDoc::load(&alice).article(id).expect("article").tags,
-            ["design", "example", "later"],
-            "independent tag additions survive concurrent editing"
-        );
-    }
-
-    #[test]
-    fn remove_feed_deletes_feed_and_its_articles() {
-        let mut doc = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut doc, &store);
-        let feed_id = store.feeds[0].id;
-        assert_eq!(FeedsDoc::load(&doc).feeds.len(), 1);
-        assert_eq!(FeedsDoc::load(&doc).articles.len(), 1);
-
-        FeedsDoc::remove_feed(&mut doc, feed_id);
-
-        let loaded = FeedsDoc::load(&doc);
-        assert!(
-            loaded.feeds.is_empty(),
-            "the feed is deleted from the document"
-        );
-        assert!(
-            loaded.articles.is_empty(),
-            "the feed's articles are deleted too"
-        );
-    }
-
-    #[test]
-    fn reading_settings_round_trip() {
-        use crate::model::{ReadFont, ReadTheme};
-        let mut doc = AutoCommit::new();
-        assert!(!FeedsDoc::has_settings(&doc));
-        // Defaults read back even before any write.
-        assert_eq!(FeedsDoc::read_settings(&doc), ReadSettings::default());
-
-        let s = ReadSettings {
-            font_scale: 1.3,
-            font: ReadFont::Serif,
-            theme: ReadTheme::Sepia,
-        };
-        FeedsDoc::write_settings(&mut doc, &s);
-        assert!(FeedsDoc::has_settings(&doc));
-        let loaded = FeedsDoc::read_settings(&doc);
-        assert_eq!(loaded.font, ReadFont::Serif);
-        assert_eq!(loaded.theme, ReadTheme::Sepia);
-        assert!((loaded.font_scale - 1.3).abs() < 0.001);
-    }
-
-    #[test]
-    fn two_peers_converge_on_read_flag() {
-        let mut a = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut a, &store);
-        let id = store.articles[0].id;
-
-        // Peer B joins from A's state, stars an article.
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        FeedsDoc::set_starred(&mut b, id, false);
-        FeedsDoc::set_read(&mut a, id, true);
-
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let loaded = FeedsDoc::load(&a);
-        assert!(loaded.articles[0].read, "A's read flag survived merge");
-    }
-
-    #[test]
-    fn repeated_seed_keeps_doc_bounded() {
-        // The store is mirrored into the CRDT via the upsert_* writers; with the
-        // change-guarded scalar puts, re-seeding an unchanged store is a no-op.
-        let mut doc = AutoCommit::new();
-        let store = sample_store();
-        FeedsDoc::seed(&mut doc, &store);
-        let a = doc.save().len();
-        for _ in 0..50 {
+    fn feeds_doc_round_trips_library_and_settings() {
+        // --- phase: seed_and_load_round_trip ---
+        {
+            let mut doc = AutoCommit::new();
+            let store = sample_store();
             FeedsDoc::seed(&mut doc, &store);
+
+            let loaded = FeedsDoc::load(&doc);
+            assert_eq!(loaded.folders.len(), 1);
+            assert_eq!(loaded.feeds.len(), 1);
+            assert_eq!(loaded.articles.len(), 1);
+            assert_eq!(loaded.feeds[0].kind, FeedKind::Atom);
+            assert_eq!(loaded.articles[0].blocks.len(), 2);
+            assert!(loaded.articles[0].starred);
+            assert!(!loaded.articles[0].read);
+            assert_eq!(loaded.articles[0].author, "Ada");
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-seeding the same store grew the document {a} -> {b}"
-        );
+
+        // --- phase: is_empty_detects_unseeded ---
+        {
+            let mut doc = AutoCommit::new();
+            assert!(FeedsDoc::is_empty(&doc));
+            FeedsDoc::seed(&mut doc, &sample_store());
+            assert!(!FeedsDoc::is_empty(&doc));
+        }
+
+        // --- phase: reading_settings_round_trip ---
+        {
+            use crate::model::{ReadFont, ReadTheme};
+            let mut doc = AutoCommit::new();
+            assert!(!FeedsDoc::has_settings(&doc));
+            // Defaults read back even before any write.
+            assert_eq!(FeedsDoc::read_settings(&doc), ReadSettings::default());
+
+            let s = ReadSettings {
+                font_scale: 1.3,
+                font: ReadFont::Serif,
+                theme: ReadTheme::Sepia,
+            };
+            FeedsDoc::write_settings(&mut doc, &s);
+            assert!(FeedsDoc::has_settings(&doc));
+            let loaded = FeedsDoc::read_settings(&doc);
+            assert_eq!(loaded.font, ReadFont::Serif);
+            assert_eq!(loaded.theme, ReadTheme::Sepia);
+            assert!((loaded.font_scale - 1.3).abs() < 0.001);
+        }
+
+        // --- phase: remove_feed_deletes_feed_and_its_articles ---
+        {
+            let mut doc = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut doc, &store);
+            let feed_id = store.feeds[0].id;
+            assert_eq!(FeedsDoc::load(&doc).feeds.len(), 1);
+            assert_eq!(FeedsDoc::load(&doc).articles.len(), 1);
+
+            FeedsDoc::remove_feed(&mut doc, feed_id);
+
+            let loaded = FeedsDoc::load(&doc);
+            assert!(
+                loaded.feeds.is_empty(),
+                "the feed is deleted from the document"
+            );
+            assert!(
+                loaded.articles.is_empty(),
+                "the feed's articles are deleted too"
+            );
+        }
     }
 
+    /// Read flags and tag edits persist, survive refreshes and converge across peers.
     #[test]
-    fn repeated_write_settings_keeps_doc_bounded() {
-        use crate::model::{ReadFont, ReadTheme};
-        let mut doc = AutoCommit::new();
-        let s = ReadSettings {
-            font_scale: 1.3,
-            font: ReadFont::Serif,
-            theme: ReadTheme::Sepia,
-        };
-        FeedsDoc::write_settings(&mut doc, &s);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            FeedsDoc::write_settings(&mut doc, &s);
+    fn peers_converge_on_read_flags_and_tags() {
+        // --- phase: set_read_persists_and_merges ---
+        {
+            let mut doc = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut doc, &store);
+            let id = store.articles[0].id;
+            FeedsDoc::set_read(&mut doc, id, true);
+            let loaded = FeedsDoc::load(&doc);
+            assert!(loaded.articles[0].read);
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-writing unchanged settings grew the document {a} -> {b}"
-        );
+
+        // --- phase: tag_edits_round_trip_and_refreshes_preserve_them ---
+        {
+            let mut doc = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut doc, &store);
+            let id = store.articles[0].id;
+            FeedsDoc::set_tags(&mut doc, id, &["design".into(), "later".into()]);
+
+            let mut refreshed = store.articles[0].clone();
+            refreshed.title = "Updated upstream title".into();
+            refreshed.tags.clear();
+            FeedsDoc::upsert_article(&mut doc, &refreshed);
+
+            let loaded = FeedsDoc::load(&doc);
+            let article = loaded.article(id).expect("article survives refresh");
+            assert_eq!(article.title, "Updated upstream title");
+            assert_eq!(article.tags, ["design", "later"]);
+        }
+
+        // --- phase: concurrent_distinct_tag_additions_merge ---
+        {
+            let mut alice = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut alice, &store);
+            alice.commit();
+            alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            let mut bob = alice.fork();
+            bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+            let id = store.articles[0].id;
+
+            FeedsDoc::set_tags(&mut alice, id, &["example".into(), "design".into()]);
+            FeedsDoc::set_tags(&mut bob, id, &["example".into(), "later".into()]);
+            alice.merge_incoming(&mut bob).expect("replicas merge");
+
+            assert_eq!(
+                FeedsDoc::load(&alice).article(id).expect("article").tags,
+                ["design", "example", "later"],
+                "independent tag additions survive concurrent editing"
+            );
+        }
+
+        // --- phase: two_peers_converge_on_read_flag ---
+        {
+            let mut a = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut a, &store);
+            let id = store.articles[0].id;
+
+            // Peer B joins from A's state, stars an article.
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            FeedsDoc::set_starred(&mut b, id, false);
+            FeedsDoc::set_read(&mut a, id, true);
+
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let loaded = FeedsDoc::load(&a);
+            assert!(loaded.articles[0].read, "A's read flag survived merge");
+        }
+    }
+
+    /// Repeated seeding and settings writes keep the document bounded.
+    #[test]
+    fn repeated_writes_keep_the_doc_bounded() {
+        // --- phase: repeated_seed_keeps_doc_bounded ---
+        {
+            // The store is mirrored into the CRDT via the upsert_* writers; with the
+            // change-guarded scalar puts, re-seeding an unchanged store is a no-op.
+            let mut doc = AutoCommit::new();
+            let store = sample_store();
+            FeedsDoc::seed(&mut doc, &store);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                FeedsDoc::seed(&mut doc, &store);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-seeding the same store grew the document {a} -> {b}"
+            );
+        }
+
+        // --- phase: repeated_write_settings_keeps_doc_bounded ---
+        {
+            use crate::model::{ReadFont, ReadTheme};
+            let mut doc = AutoCommit::new();
+            let s = ReadSettings {
+                font_scale: 1.3,
+                font: ReadFont::Serif,
+                theme: ReadTheme::Sepia,
+            };
+            FeedsDoc::write_settings(&mut doc, &s);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                FeedsDoc::write_settings(&mut doc, &s);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-writing unchanged settings grew the document {a} -> {b}"
+            );
+        }
     }
 }

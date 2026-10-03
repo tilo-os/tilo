@@ -24,8 +24,8 @@ use crate::record_replication::{
     RecordSnapshot,
 };
 use crate::record_repository::{
-    MAX_RECORD_BATCH_OPERATIONS, MAX_RECORD_CONFLICTS, MAX_RECORD_VERSIONS, RecordRepository,
-    RecordRepositoryError, RecordRepositoryKey,
+    MAX_RECORD_BATCH_OPERATIONS, MAX_RECORD_CONFLICTS, RecordRepository, RecordRepositoryError,
+    RecordRepositoryKey,
 };
 
 const MAX_SEQUENCE_RETRIES: usize = 8;
@@ -598,7 +598,7 @@ impl RecordPublisher {
         if metadata.latest_actor != Some(self.actor) {
             return Err(RecordPublisherError::ActorMismatch);
         }
-        if versions.len() > MAX_RECORD_VERSIONS {
+        if versions.len() > self.repository.max_record_versions() {
             return Err(RecordPublisherError::HistoryTooLarge);
         }
         if conflicts.len() > MAX_RECORD_CONFLICTS {
@@ -1056,7 +1056,6 @@ impl RecordPublisherError {
                         | RecordRepositoryError::TooManyOperations
                         | RecordRepositoryError::TooManyConflicts
                         | RecordRepositoryError::TooManyRecords
-                        | RecordRepositoryError::RecordFileTooLarge
                 )
         )
     }
@@ -1146,277 +1145,286 @@ mod tests {
     }
 
     #[test]
-    fn seeds_metadata_and_bounded_immutable_history() {
-        let fixture = Fixture::new();
-        let publisher = fixture.publisher();
-        let first = fixture.version(FileVersionId::new(), 1);
-        let mut second = fixture.version(FileVersionId::new(), 2);
-        second.parents = vec![first.id];
-        let versions = [first, second];
-        let report = publisher.publish(&fixture.metadata(2), &versions).unwrap();
-        assert_eq!(report.metadata, MetadataPublishStatus::Published);
-        assert_eq!(report.published_versions, 2);
-        assert_eq!(report.skipped_versions, 0);
-        let snapshot = fixture
-            .repository
-            .snapshot(
-                fixture.key(),
-                &fixture.actor,
-                &publisher.local_authorizer(fixture.record_id),
-            )
-            .unwrap();
-        assert_eq!(snapshot.metadata, Some(fixture.metadata(2)));
-        assert_eq!(snapshot.versions.len(), 2);
-        assert_eq!(
-            snapshot.content_revision.unwrap().version_id,
-            versions[1].id
-        );
-        assert_eq!(
-            fixture
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn publisher_seeds_and_resumes_only_deltas_for_the_certified_device() {
+        // Phase `seeds_metadata_and_bounded_immutable_history`.
+        {
+            let fixture = Fixture::new();
+            let publisher = fixture.publisher();
+            let first = fixture.version(FileVersionId::new(), 1);
+            let mut second = fixture.version(FileVersionId::new(), 2);
+            second.parents = vec![first.id];
+            let versions = [first, second];
+            let report = publisher.publish(&fixture.metadata(2), &versions).unwrap();
+            assert_eq!(report.metadata, MetadataPublishStatus::Published);
+            assert_eq!(report.published_versions, 2);
+            assert_eq!(report.skipped_versions, 0);
+            let snapshot = fixture
                 .repository
-                .highest_sequence(fixture.key(), &fixture.actor),
-            Some(4)
-        );
-    }
-
-    #[test]
-    fn unchanged_state_is_idempotent_and_updates_only_deltas() {
-        let fixture = Fixture::new();
-        let publisher = fixture.publisher();
-        let first = fixture.version(FileVersionId::new(), 1);
-        let metadata = fixture.metadata(1);
-        publisher
-            .publish(&metadata, std::slice::from_ref(&first))
-            .unwrap();
-        let sequence = fixture
-            .repository
-            .highest_sequence(fixture.key(), &fixture.actor);
-        let unchanged = publisher
-            .publish(&metadata, std::slice::from_ref(&first))
-            .unwrap();
-        assert_eq!(unchanged.metadata, MetadataPublishStatus::Unchanged);
-        assert_eq!(unchanged.published_versions, 0);
-        assert_eq!(unchanged.skipped_versions, 1);
-        assert_eq!(
-            fixture
-                .repository
-                .highest_sequence(fixture.key(), &fixture.actor),
-            sequence
-        );
-
-        let mut second = fixture.version(FileVersionId::new(), 2);
-        second.parents = vec![first.id];
-        let updated = publisher
-            .publish(&fixture.metadata(2), &[first, second])
-            .unwrap();
-        assert_eq!(updated.metadata, MetadataPublishStatus::Published);
-        assert_eq!(updated.published_versions, 1);
-        assert_eq!(updated.skipped_versions, 1);
-    }
-
-    #[test]
-    fn concurrent_dag_heads_publish_one_deterministic_open_conflict() {
-        let fixture = Fixture::new();
-        let publisher = fixture.publisher();
-        let base = fixture.version(FileVersionId::new(), 1);
-        let mut left = fixture.version(FileVersionId::new(), 2);
-        left.parents = vec![base.id];
-        publisher
-            .publish(&fixture.metadata(2), &[base.clone(), left.clone()])
-            .unwrap();
-        let mut right = fixture.version(FileVersionId::new(), 3);
-        right.parents = vec![base.id];
-        publisher.publish_structural_version(&right).unwrap();
-
-        assert!(
+                .snapshot(
+                    fixture.key(),
+                    &fixture.actor,
+                    &publisher.local_authorizer(fixture.record_id),
+                )
+                .unwrap();
+            assert_eq!(snapshot.metadata, Some(fixture.metadata(2)));
+            assert_eq!(snapshot.versions.len(), 2);
+            assert_eq!(
+                snapshot.content_revision.unwrap().version_id,
+                versions[1].id
+            );
+            assert_eq!(
+                fixture
+                    .repository
+                    .highest_sequence(fixture.key(), &fixture.actor),
+                Some(4)
+            );
+        }
+        // Phase `unchanged_state_is_idempotent_and_updates_only_deltas`.
+        {
+            let fixture = Fixture::new();
+            let publisher = fixture.publisher();
+            let first = fixture.version(FileVersionId::new(), 1);
+            let metadata = fixture.metadata(1);
             publisher
-                .publish_concurrent_head_conflict(fixture.record_id)
-                .unwrap()
-        );
-        assert!(
-            !fixture
+                .publish(&metadata, std::slice::from_ref(&first))
+                .unwrap();
+            let sequence = fixture
+                .repository
+                .highest_sequence(fixture.key(), &fixture.actor);
+            let unchanged = publisher
+                .publish(&metadata, std::slice::from_ref(&first))
+                .unwrap();
+            assert_eq!(unchanged.metadata, MetadataPublishStatus::Unchanged);
+            assert_eq!(unchanged.published_versions, 0);
+            assert_eq!(unchanged.skipped_versions, 1);
+            assert_eq!(
+                fixture
+                    .repository
+                    .highest_sequence(fixture.key(), &fixture.actor),
+                sequence
+            );
+
+            let mut second = fixture.version(FileVersionId::new(), 2);
+            second.parents = vec![first.id];
+            let updated = publisher
+                .publish(&fixture.metadata(2), &[first, second])
+                .unwrap();
+            assert_eq!(updated.metadata, MetadataPublishStatus::Published);
+            assert_eq!(updated.published_versions, 1);
+            assert_eq!(updated.skipped_versions, 1);
+        }
+        // Phase `restart_resumes_sequence_and_skips_persisted_state`.
+        {
+            let fixture = Fixture::new();
+            let first = fixture.version(FileVersionId::new(), 1);
+            fixture
                 .publisher()
-                .publish_concurrent_head_conflict(fixture.record_id)
-                .unwrap(),
-            "restart/duplicate synthesis must be idempotent"
-        );
-        let snapshot = publisher.snapshot(fixture.record_id).unwrap().unwrap();
-        assert_eq!(snapshot.conflicts.len(), 1);
-        let conflict = &snapshot.conflicts[0];
-        assert_eq!(conflict.status, ConflictStatus::Open);
-        let mut expected = vec![left.id, right.id];
-        expected.sort();
-        assert_eq!(conflict.versions, expected);
-    }
-
-    #[test]
-    fn restart_resumes_sequence_and_skips_persisted_state() {
-        let fixture = Fixture::new();
-        let first = fixture.version(FileVersionId::new(), 1);
-        fixture
-            .publisher()
-            .publish(&fixture.metadata(1), std::slice::from_ref(&first))
-            .unwrap();
-        let before = fixture
-            .repository
-            .highest_sequence(fixture.key(), &fixture.actor)
-            .unwrap();
-        drop(fixture.repository.clone());
-        let reopened = Arc::new(RecordRepository::open(&fixture.root).unwrap());
-        let publisher = RecordPublisher::new(
-            reopened.clone(),
-            fixture.workspace_id,
-            fixture.actor,
-            fixture.device_key.clone(),
-        )
-        .unwrap();
-        let skipped = publisher
-            .publish(&fixture.metadata(1), std::slice::from_ref(&first))
-            .unwrap();
-        assert_eq!(skipped.metadata, MetadataPublishStatus::Unchanged);
-        assert_eq!(skipped.skipped_versions, 1);
-        assert_eq!(
-            reopened.highest_sequence(fixture.key(), &fixture.actor),
-            Some(before)
-        );
-        let mut second = fixture.version(FileVersionId::new(), 2);
-        second.parents = vec![first.id];
-        publisher
-            .publish(&fixture.metadata(2), &[first, second])
-            .unwrap();
-        assert_eq!(
-            reopened.highest_sequence(fixture.key(), &fixture.actor),
-            Some(before + 3)
-        );
-    }
-
-    #[test]
-    fn wrong_device_key_is_rejected_before_any_state_exists() {
-        let fixture = Fixture::new();
-        let (wrong, _) = generate_keypair();
-        assert!(matches!(
-            RecordPublisher::new(
-                fixture.repository.clone(),
+                .publish(&fixture.metadata(1), std::slice::from_ref(&first))
+                .unwrap();
+            let before = fixture
+                .repository
+                .highest_sequence(fixture.key(), &fixture.actor)
+                .unwrap();
+            drop(fixture.repository.clone());
+            let reopened = Arc::new(RecordRepository::open(&fixture.root).unwrap());
+            let publisher = RecordPublisher::new(
+                reopened.clone(),
                 fixture.workspace_id,
                 fixture.actor,
-                wrong
-            ),
-            Err(RecordPublisherError::WrongDeviceKey)
-        ));
-        assert!(fixture.repository.is_empty());
+                fixture.device_key.clone(),
+            )
+            .unwrap();
+            let skipped = publisher
+                .publish(&fixture.metadata(1), std::slice::from_ref(&first))
+                .unwrap();
+            assert_eq!(skipped.metadata, MetadataPublishStatus::Unchanged);
+            assert_eq!(skipped.skipped_versions, 1);
+            assert_eq!(
+                reopened.highest_sequence(fixture.key(), &fixture.actor),
+                Some(before)
+            );
+            let mut second = fixture.version(FileVersionId::new(), 2);
+            second.parents = vec![first.id];
+            publisher
+                .publish(&fixture.metadata(2), &[first, second])
+                .unwrap();
+            assert_eq!(
+                reopened.highest_sequence(fixture.key(), &fixture.actor),
+                Some(before + 3)
+            );
+        }
+        // Phase `wrong_device_key_is_rejected_before_any_state_exists`.
+        {
+            let fixture = Fixture::new();
+            let (wrong, _) = generate_keypair();
+            assert!(matches!(
+                RecordPublisher::new(
+                    fixture.repository.clone(),
+                    fixture.workspace_id,
+                    fixture.actor,
+                    wrong
+                ),
+                Err(RecordPublisherError::WrongDeviceKey)
+            ));
+            assert!(fixture.repository.is_empty());
+        }
     }
 
     #[test]
-    fn binding_publication_is_signed_idempotent_and_rejects_stale_projection() {
-        let fixture = Fixture::new();
-        let publisher = fixture.publisher();
-        let binding = FileBindingV1 {
-            schema_version: collab_types::FILE_BINDING_VERSION,
-            record_id: fixture.record_id,
-            parent: Some(FileRecordId::new()),
-            name: "first.txt".into(),
-            kind: collab_types::FileNodeKind::File,
-            tombstoned: false,
-            actor: fixture.actor,
-            observed_at_ms: 10,
-        };
-        assert_eq!(
-            publisher.publish_binding(&binding).unwrap(),
-            BindingPublishStatus::Published
-        );
-        let sequence = fixture
-            .repository
-            .highest_sequence(fixture.key(), &fixture.actor);
-        assert_eq!(
-            publisher.publish_binding(&binding).unwrap(),
-            BindingPublishStatus::Unchanged
-        );
-        assert_eq!(
-            fixture
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn publisher_signs_bindings_and_conflicts_deterministically_and_durably() {
+        // Phase `concurrent_dag_heads_publish_one_deterministic_open_conflict`.
+        {
+            let fixture = Fixture::new();
+            let publisher = fixture.publisher();
+            let base = fixture.version(FileVersionId::new(), 1);
+            let mut left = fixture.version(FileVersionId::new(), 2);
+            left.parents = vec![base.id];
+            publisher
+                .publish(&fixture.metadata(2), &[base.clone(), left.clone()])
+                .unwrap();
+            let mut right = fixture.version(FileVersionId::new(), 3);
+            right.parents = vec![base.id];
+            publisher.publish_structural_version(&right).unwrap();
+
+            assert!(
+                publisher
+                    .publish_concurrent_head_conflict(fixture.record_id)
+                    .unwrap()
+            );
+            assert!(
+                !fixture
+                    .publisher()
+                    .publish_concurrent_head_conflict(fixture.record_id)
+                    .unwrap(),
+                "restart/duplicate synthesis must be idempotent"
+            );
+            let snapshot = publisher.snapshot(fixture.record_id).unwrap().unwrap();
+            assert_eq!(snapshot.conflicts.len(), 1);
+            let conflict = &snapshot.conflicts[0];
+            assert_eq!(conflict.status, ConflictStatus::Open);
+            let mut expected = vec![left.id, right.id];
+            expected.sort();
+            assert_eq!(conflict.versions, expected);
+        }
+        // Phase `binding_publication_is_signed_idempotent_and_rejects_stale_projection`.
+        {
+            let fixture = Fixture::new();
+            let publisher = fixture.publisher();
+            let binding = FileBindingV1 {
+                schema_version: collab_types::FILE_BINDING_VERSION,
+                record_id: fixture.record_id,
+                parent: Some(FileRecordId::new()),
+                name: "first.txt".into(),
+                kind: collab_types::FileNodeKind::File,
+                tombstoned: false,
+                actor: fixture.actor,
+                observed_at_ms: 10,
+            };
+            assert_eq!(
+                publisher.publish_binding(&binding).unwrap(),
+                BindingPublishStatus::Published
+            );
+            let sequence = fixture
                 .repository
-                .highest_sequence(fixture.key(), &fixture.actor),
-            sequence
-        );
-        let stale = FileBindingV1 {
-            name: "stale.txt".into(),
-            observed_at_ms: 9,
-            ..binding
-        };
-        assert!(matches!(
-            publisher.publish_binding(&stale),
-            Err(RecordPublisherError::StaleBinding)
-        ));
-    }
+                .highest_sequence(fixture.key(), &fixture.actor);
+            assert_eq!(
+                publisher.publish_binding(&binding).unwrap(),
+                BindingPublishStatus::Unchanged
+            );
+            assert_eq!(
+                fixture
+                    .repository
+                    .highest_sequence(fixture.key(), &fixture.actor),
+                sequence
+            );
+            let stale = FileBindingV1 {
+                name: "stale.txt".into(),
+                observed_at_ms: 9,
+                ..binding
+            };
+            assert!(matches!(
+                publisher.publish_binding(&stale),
+                Err(RecordPublisherError::StaleBinding)
+            ));
+        }
+        // Phase `resolved_conflict_is_durable_and_idempotent_across_restart`.
+        {
+            let fixture = Fixture::new();
+            let first = fixture.version(FileVersionId::new(), 1);
+            let mut second = fixture.version(FileVersionId::new(), 2);
+            second.parents = vec![first.id];
+            let result = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: first.record_id,
+                parents: vec![first.id, second.id],
+                actor: first.actor,
+                timestamp_ms: 3,
+                content_hash: Some(ContentHash([3; 32])),
+                metadata_hash: ContentHash([4; 32]),
+                provenance: FileProvenance::ConflictResolution,
+            };
+            let resolution = ConflictResolution {
+                strategy: ConflictStrategy::Merge,
+                result: result.id,
+                actor: fixture.actor,
+                timestamp_ms: result.timestamp_ms,
+            };
+            let conflict = FileConflictV1 {
+                id: Uuid::new_v4(),
+                record_id: fixture.record_id,
+                versions: vec![first.id, second.id],
+                status: ConflictStatus::Resolved,
+                resolution: Some(resolution.clone()),
+            };
+            let versions = vec![first, second, result];
+            let first_report = fixture
+                .publisher()
+                .publish_state(
+                    &fixture.metadata(3),
+                    &versions,
+                    std::slice::from_ref(&conflict),
+                )
+                .unwrap();
+            assert_eq!(first_report.published_conflicts, 2);
 
-    #[test]
-    fn resolved_conflict_is_durable_and_idempotent_across_restart() {
-        let fixture = Fixture::new();
-        let first = fixture.version(FileVersionId::new(), 1);
-        let mut second = fixture.version(FileVersionId::new(), 2);
-        second.parents = vec![first.id];
-        let result = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: first.record_id,
-            parents: vec![first.id, second.id],
-            actor: first.actor,
-            timestamp_ms: 3,
-            content_hash: Some(ContentHash([3; 32])),
-            metadata_hash: ContentHash([4; 32]),
-            provenance: FileProvenance::ConflictResolution,
-        };
-        let resolution = ConflictResolution {
-            strategy: ConflictStrategy::Merge,
-            result: result.id,
-            actor: fixture.actor,
-            timestamp_ms: result.timestamp_ms,
-        };
-        let conflict = FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id: fixture.record_id,
-            versions: vec![first.id, second.id],
-            status: ConflictStatus::Resolved,
-            resolution: Some(resolution.clone()),
-        };
-        let versions = vec![first, second, result];
-        let first_report = fixture
-            .publisher()
-            .publish_state(
-                &fixture.metadata(3),
-                &versions,
-                std::slice::from_ref(&conflict),
+            let reopened = Arc::new(RecordRepository::open(&fixture.root).unwrap());
+            let publisher = RecordPublisher::new(
+                reopened.clone(),
+                fixture.workspace_id,
+                fixture.actor,
+                fixture.device_key.clone(),
             )
             .unwrap();
-        assert_eq!(first_report.published_conflicts, 2);
+            let snapshot = reopened
+                .snapshot(
+                    fixture.key(),
+                    &fixture.actor,
+                    &publisher.local_authorizer(fixture.record_id),
+                )
+                .unwrap();
+            assert_eq!(snapshot.conflicts, vec![conflict.clone()]);
+            assert_eq!(snapshot.conflicts[0].resolution, Some(resolution));
 
-        let reopened = Arc::new(RecordRepository::open(&fixture.root).unwrap());
-        let publisher = RecordPublisher::new(
-            reopened.clone(),
-            fixture.workspace_id,
-            fixture.actor,
-            fixture.device_key.clone(),
-        )
-        .unwrap();
-        let snapshot = reopened
-            .snapshot(
-                fixture.key(),
-                &fixture.actor,
-                &publisher.local_authorizer(fixture.record_id),
-            )
-            .unwrap();
-        assert_eq!(snapshot.conflicts, vec![conflict.clone()]);
-        assert_eq!(snapshot.conflicts[0].resolution, Some(resolution));
-
-        let sequence = reopened
-            .highest_sequence(fixture.key(), &fixture.actor)
-            .unwrap();
-        let repeated = publisher
-            .publish_state(&fixture.metadata(3), &versions, &[conflict])
-            .unwrap();
-        assert_eq!(repeated.published_conflicts, 0);
-        assert_eq!(repeated.skipped_conflicts, 2);
-        assert_eq!(
-            reopened.highest_sequence(fixture.key(), &fixture.actor),
-            Some(sequence)
-        );
+            let sequence = reopened
+                .highest_sequence(fixture.key(), &fixture.actor)
+                .unwrap();
+            let repeated = publisher
+                .publish_state(&fixture.metadata(3), &versions, &[conflict])
+                .unwrap();
+            assert_eq!(repeated.published_conflicts, 0);
+            assert_eq!(repeated.skipped_conflicts, 2);
+            assert_eq!(
+                reopened.highest_sequence(fixture.key(), &fixture.actor),
+                Some(sequence)
+            );
+        }
     }
 }

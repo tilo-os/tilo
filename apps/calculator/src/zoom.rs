@@ -18,7 +18,7 @@
 //!    animation settles — mirroring how the map keeps drawing cached tiles
 //!    while new ones stream in.
 
-use std::time::Instant;
+use ui::time::Instant;
 
 use vello::kurbo::{Affine, Point};
 
@@ -32,7 +32,7 @@ const ZOOM_RATE: f64 = 20.0;
 const MAX_DT: f64 = 0.1;
 
 fn dt_since(last: &mut Option<Instant>) -> f64 {
-    let now = Instant::now();
+    let now = ui::time::now();
     let dt = last.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_DT));
     *last = Some(now);
     dt
@@ -242,173 +242,186 @@ mod tests {
         View2d { cx, cy, scale }
     }
 
+    /// 2D zoom animation: the scale eases monotonically to the target over several
+    /// frames without overshoot, the world point under the cursor stays pinned every
+    /// frame, and reduced motion snaps immediately. Fresh animator per phase.
     #[test]
-    fn tick_eases_scale_toward_target_over_frames_without_overshoot() {
-        let start = v(64.0, 0.0, 0.0);
-        let mut z = ZoomAnim2d::new(start);
-        let target = v(128.0, 0.0, 0.0);
-        // Cursor at the canvas centre with the origin under it → the derived
-        // centre stays (0,0) at every scale, isolating the scale ease.
-        let center = Point::new(400.0, 300.0);
-        z.begin(Point::ZERO, center, center);
+    fn zoom_2d_eases_to_target_anchored_at_cursor_or_snaps_under_reduced_motion() {
+        // phase tick_eases_scale_toward_target_over_frames_without_overshoot
+        {
+            let start = v(64.0, 0.0, 0.0);
+            let mut z = ZoomAnim2d::new(start);
+            let target = v(128.0, 0.0, 0.0);
+            // Cursor at the canvas centre with the origin under it → the derived
+            // centre stays (0,0) at every scale, isolating the scale ease.
+            let center = Point::new(400.0, 300.0);
+            z.begin(Point::ZERO, center, center);
 
-        // First tick establishes the clock (dt == 0): no jump.
-        assert!(z.tick(target, false));
-        assert_eq!(z.display().scale, 64.0, "first frame must not teleport");
+            // First tick establishes the clock (dt == 0): no jump.
+            assert!(z.tick(target, false));
+            assert_eq!(z.display().scale, 64.0, "first frame must not teleport");
 
-        // Successive frames strictly approach the target, never overshooting.
-        let mut prev = z.display().scale;
-        let mut frames = 0;
-        for _ in 0..600 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let animating = z.tick(target, false);
-            let s = z.display().scale;
-            assert!(
-                s >= prev - 1e-9,
-                "scale must move monotonically toward target"
-            );
-            assert!(
-                s <= target.scale + 1e-6,
-                "scale must not overshoot the target"
-            );
-            prev = s;
-            frames += 1;
-            if !animating {
-                break;
+            // Successive frames strictly approach the target, never overshooting.
+            let mut prev = z.display().scale;
+            let mut frames = 0;
+            for _ in 0..600 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let animating = z.tick(target, false);
+                let s = z.display().scale;
+                assert!(
+                    s >= prev - 1e-9,
+                    "scale must move monotonically toward target"
+                );
+                assert!(
+                    s <= target.scale + 1e-6,
+                    "scale must not overshoot the target"
+                );
+                prev = s;
+                frames += 1;
+                if !animating {
+                    break;
+                }
             }
+            assert!(
+                frames > 3,
+                "a smooth zoom must take several frames, not snap (took {frames})"
+            );
+            assert!(
+                (z.display().scale - target.scale).abs() < 1e-6,
+                "the ease converges to the target"
+            );
+            assert!(!z.active(), "the animation clears when settled");
         }
-        assert!(
-            frames > 3,
-            "a smooth zoom must take several frames, not snap (took {frames})"
-        );
-        assert!(
-            (z.display().scale - target.scale).abs() < 1e-6,
-            "the ease converges to the target"
-        );
-        assert!(!z.active(), "the animation clears when settled");
-    }
 
-    #[test]
-    fn zoom_stays_anchored_around_the_cursor() {
-        // Anchor the world point under a cursor and check it stays put as the
-        // scale eases (the model target keeps it fixed; the ease must too, at
-        // the endpoints and monotonically between).
-        let canvas_center = Point::new(400.0, 300.0);
-        let cursor = Point::new(560.0, 220.0);
-        let start = v(64.0, 0.0, 0.0);
+        // phase zoom_stays_anchored_around_the_cursor
+        {
+            // Anchor the world point under a cursor and check it stays put as the
+            // scale eases (the model target keeps it fixed; the ease must too, at
+            // the endpoints and monotonically between).
+            let canvas_center = Point::new(400.0, 300.0);
+            let cursor = Point::new(560.0, 220.0);
+            let start = v(64.0, 0.0, 0.0);
 
-        // World point under the cursor at the start view.
-        let to_world = |p: Point, view: &View2d| {
-            Point::new(
-                view.cx + (p.x - canvas_center.x) / view.scale,
-                view.cy - (p.y - canvas_center.y) / view.scale,
-            )
-        };
-        let anchor = to_world(cursor, &start);
+            // World point under the cursor at the start view.
+            let to_world = |p: Point, view: &View2d| {
+                Point::new(
+                    view.cx + (p.x - canvas_center.x) / view.scale,
+                    view.cy - (p.y - canvas_center.y) / view.scale,
+                )
+            };
+            let anchor = to_world(cursor, &start);
 
-        // Target: zoom in, re-centred so the anchor stays under the cursor.
-        let ts = 160.0;
-        let target = View2d {
-            scale: ts,
-            cx: anchor.x - (cursor.x - canvas_center.x) / ts,
-            cy: anchor.y + (cursor.y - canvas_center.y) / ts,
-        };
+            // Target: zoom in, re-centred so the anchor stays under the cursor.
+            let ts = 160.0;
+            let target = View2d {
+                scale: ts,
+                cx: anchor.x - (cursor.x - canvas_center.x) / ts,
+                cy: anchor.y + (cursor.y - canvas_center.y) / ts,
+            };
 
-        let mut z = ZoomAnim2d::new(start);
-        z.begin(anchor, cursor, canvas_center);
-        for _ in 0..600 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let animating = z.tick(target, false);
-            // Anchor-based easing pins the world point under the cursor EXACTLY,
-            // every frame — not merely at the endpoints.
+            let mut z = ZoomAnim2d::new(start);
+            z.begin(anchor, cursor, canvas_center);
+            for _ in 0..600 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let animating = z.tick(target, false);
+                // Anchor-based easing pins the world point under the cursor EXACTLY,
+                // every frame — not merely at the endpoints.
+                let w = to_world(cursor, &z.display());
+                assert!(
+                    (w.x - anchor.x).abs() < 1e-9,
+                    "cursor x-anchor drifts during zoom"
+                );
+                assert!(
+                    (w.y - anchor.y).abs() < 1e-9,
+                    "cursor y-anchor drifts during zoom"
+                );
+                if !animating {
+                    break;
+                }
+            }
             let w = to_world(cursor, &z.display());
-            assert!(
-                (w.x - anchor.x).abs() < 1e-9,
-                "cursor x-anchor drifts during zoom"
-            );
-            assert!(
-                (w.y - anchor.y).abs() < 1e-9,
-                "cursor y-anchor drifts during zoom"
-            );
-            if !animating {
-                break;
-            }
+            assert!((w.x - anchor.x).abs() < 1e-9 && (w.y - anchor.y).abs() < 1e-9);
         }
-        let w = to_world(cursor, &z.display());
-        assert!((w.x - anchor.x).abs() < 1e-9 && (w.y - anchor.y).abs() < 1e-9);
-    }
 
-    #[test]
-    fn curve_affine_is_identity_before_any_ease() {
-        let start = v(64.0, 1.0, -2.0);
-        let mut z = ZoomAnim2d::new(start);
-        z.mark_sampled(start);
-        z.begin(Point::ZERO, Point::ZERO, Point::new(400.0, 300.0));
-        // display == sampled → the cheap transform is the identity, so the very
-        // first animated frame is pixel-identical to the sampled curve.
-        let a = z.curve_affine(Point::new(400.0, 300.0));
-        let c = a.as_coeffs();
-        assert!((c[0] - 1.0).abs() < 1e-9 && (c[3] - 1.0).abs() < 1e-9);
-        assert!(c[4].abs() < 1e-9 && c[5].abs() < 1e-9);
-    }
-
-    #[test]
-    fn curve_affine_scales_about_the_cursor_anchor() {
-        // A doubled display scale (cx/cy chosen to keep a world point fixed at
-        // the canvas centre) yields k == 2 about that centre.
-        let center = Point::new(400.0, 300.0);
-        let sampled = v(64.0, 0.0, 0.0);
-        let mut z = ZoomAnim2d::new(sampled);
-        z.mark_sampled(sampled);
-        z.begin(Point::ZERO, center, center);
-        // Drive the display to a doubled scale (same centre) while leaving the
-        // sampled view at 64 — a reduced-motion tick snaps display without
-        // re-marking the cache, so the affine ratio is genuinely 128/64 == 2.
-        z.tick(v(128.0, 0.0, 0.0), true);
-        let a = z.curve_affine(center);
-        let c = a.as_coeffs();
-        assert!((c[0] - 2.0).abs() < 1e-9, "k must equal the scale ratio");
-        // The canvas centre is the fixed point: a*center == center.
-        let mapped = a * center;
-        assert!((mapped.x - center.x).abs() < 1e-6 && (mapped.y - center.y).abs() < 1e-6);
-    }
-
-    #[test]
-    fn three_d_zoom_eases_and_scale_factor_tracks_ratio() {
-        let mut z = ZoomAnim3d::new(1.0);
-        z.mark_sampled(1.0);
-        z.begin();
-        assert!(z.tick(2.0, false));
-        assert_eq!(z.display(), 1.0, "first frame establishes the clock");
-        let mut frames = 0;
-        for _ in 0..600 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let animating = z.tick(2.0, false);
-            frames += 1;
-            // scale_factor is display/sampled; sampled stays 1.0 → tracks display.
-            assert!((z.scale_factor() - z.display() / 1.0).abs() < 1e-9);
-            if !animating {
-                break;
-            }
+        // phase reduce_motion_snaps_zoom_immediately
+        {
+            let mut z = ZoomAnim2d::new(v(64.0, 0.0, 0.0));
+            z.begin(
+                Point::ZERO,
+                Point::new(400.0, 300.0),
+                Point::new(400.0, 300.0),
+            );
+            assert!(!z.tick(v(200.0, 0.0, 0.0), true));
+            assert_eq!(z.display().scale, 200.0, "reduced motion snaps the zoom");
+            assert!(!z.active());
         }
-        assert!(
-            frames > 3,
-            "3D zoom must animate over several frames (took {frames})"
-        );
-        assert!((z.display() - 2.0).abs() < 1e-6);
-        assert!(!z.active());
     }
 
+    /// The cheap transform applied to cached geometry mid-zoom: the 2D curve affine
+    /// is the identity before any ease and scales by display/sampled about the
+    /// cursor anchor; the 3D zoom eases and its scale factor tracks the same ratio.
+    /// Fresh animator per phase.
     #[test]
-    fn reduce_motion_snaps_zoom_immediately() {
-        let mut z = ZoomAnim2d::new(v(64.0, 0.0, 0.0));
-        z.begin(
-            Point::ZERO,
-            Point::new(400.0, 300.0),
-            Point::new(400.0, 300.0),
-        );
-        assert!(!z.tick(v(200.0, 0.0, 0.0), true));
-        assert_eq!(z.display().scale, 200.0, "reduced motion snaps the zoom");
-        assert!(!z.active());
+    fn sampled_geometry_transform_tracks_display_to_sampled_ratio() {
+        // phase curve_affine_is_identity_before_any_ease
+        {
+            let start = v(64.0, 1.0, -2.0);
+            let mut z = ZoomAnim2d::new(start);
+            z.mark_sampled(start);
+            z.begin(Point::ZERO, Point::ZERO, Point::new(400.0, 300.0));
+            // display == sampled → the cheap transform is the identity, so the very
+            // first animated frame is pixel-identical to the sampled curve.
+            let a = z.curve_affine(Point::new(400.0, 300.0));
+            let c = a.as_coeffs();
+            assert!((c[0] - 1.0).abs() < 1e-9 && (c[3] - 1.0).abs() < 1e-9);
+            assert!(c[4].abs() < 1e-9 && c[5].abs() < 1e-9);
+        }
+
+        // phase curve_affine_scales_about_the_cursor_anchor
+        {
+            // A doubled display scale (cx/cy chosen to keep a world point fixed at
+            // the canvas centre) yields k == 2 about that centre.
+            let center = Point::new(400.0, 300.0);
+            let sampled = v(64.0, 0.0, 0.0);
+            let mut z = ZoomAnim2d::new(sampled);
+            z.mark_sampled(sampled);
+            z.begin(Point::ZERO, center, center);
+            // Drive the display to a doubled scale (same centre) while leaving the
+            // sampled view at 64 — a reduced-motion tick snaps display without
+            // re-marking the cache, so the affine ratio is genuinely 128/64 == 2.
+            z.tick(v(128.0, 0.0, 0.0), true);
+            let a = z.curve_affine(center);
+            let c = a.as_coeffs();
+            assert!((c[0] - 2.0).abs() < 1e-9, "k must equal the scale ratio");
+            // The canvas centre is the fixed point: a*center == center.
+            let mapped = a * center;
+            assert!((mapped.x - center.x).abs() < 1e-6 && (mapped.y - center.y).abs() < 1e-6);
+        }
+
+        // phase three_d_zoom_eases_and_scale_factor_tracks_ratio
+        {
+            let mut z = ZoomAnim3d::new(1.0);
+            z.mark_sampled(1.0);
+            z.begin();
+            assert!(z.tick(2.0, false));
+            assert_eq!(z.display(), 1.0, "first frame establishes the clock");
+            let mut frames = 0;
+            for _ in 0..600 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let animating = z.tick(2.0, false);
+                frames += 1;
+                // scale_factor is display/sampled; sampled stays 1.0 → tracks display.
+                assert!((z.scale_factor() - z.display() / 1.0).abs() < 1e-9);
+                if !animating {
+                    break;
+                }
+            }
+            assert!(
+                frames > 3,
+                "3D zoom must animate over several frames (took {frames})"
+            );
+            assert!((z.display() - 2.0).abs() < 1e-6);
+            assert!(!z.active());
+        }
     }
 }

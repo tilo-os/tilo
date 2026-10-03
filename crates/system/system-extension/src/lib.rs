@@ -496,7 +496,7 @@ impl ExtensionStateStore {
         // Desired state authorises a privileged image-build boundary.  Keep it
         // owner-only before the atomic rename so a session cannot replace an
         // accepted declaration between review and activation.
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 
@@ -708,140 +708,170 @@ mod tests {
     }
 
     #[test]
-    fn signature_covers_every_pinned_manifest_field() {
-        let bytes = b"runtime artifact";
-        let (release_key, keyring) = signer_and_keyring();
-        let mut envelope =
-            SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key).unwrap();
-        envelope.verify(&keyring).unwrap();
-        envelope.manifest.target.kernel_abi = Some("other".into());
-        assert_eq!(
-            envelope.verify(&keyring),
-            Err(ExtensionError::InvalidSignature)
-        );
-    }
-
-    #[test]
-    fn preflight_is_exact_for_image_architecture_and_kernel_abi() {
-        let manifest = manifest(b"runtime artifact");
-        manifest.preflight(&host()).unwrap();
-        let mut wrong = host();
-        wrong.kernel_abi = "6.17.1-tilo.1".into();
-        assert_eq!(
-            manifest.preflight(&wrong),
-            Err(ExtensionError::KernelAbiMismatch)
-        );
-        wrong = host();
-        wrong.digest = format!("sha256:{}", digest('b'));
-        assert_eq!(
-            manifest.preflight(&wrong),
-            Err(ExtensionError::BaseImageMismatch)
-        );
-    }
-
-    #[test]
-    fn no_artifact_or_state_change_is_accepted_before_verification() {
-        let bytes = b"runtime artifact";
-        let (release_key, keyring) = signer_and_keyring();
-        let envelope =
-            SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key).unwrap();
-        let mut state = ExtensionState::default();
-        state
-            .begin("install-runtime", envelope, &keyring, &host())
-            .unwrap();
-        assert!(state.active.is_empty());
-        assert_eq!(
-            state.commit("install-runtime"),
-            Err(ExtensionError::ArtifactNotVerified)
-        );
-        assert!(state.active.is_empty());
-        assert!(
-            state.pending.is_some(),
-            "failed commit keeps the transaction inert for recovery"
-        );
-
-        assert!(
+    fn extensions_are_accepted_only_after_exact_signed_verification() {
+        // Phase `signature_covers_every_pinned_manifest_field`.
+        {
+            let bytes = b"runtime artifact";
+            let (release_key, keyring) = signer_and_keyring();
+            let mut envelope =
+                SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key)
+                    .unwrap();
+            envelope.verify(&keyring).unwrap();
+            envelope.manifest.target.kernel_abi = Some("other".into());
+            assert_eq!(
+                envelope.verify(&keyring),
+                Err(ExtensionError::InvalidSignature)
+            );
+        }
+        // Phase `preflight_is_exact_for_image_architecture_and_kernel_abi`.
+        {
+            let manifest = manifest(b"runtime artifact");
+            manifest.preflight(&host()).unwrap();
+            let mut wrong = host();
+            wrong.kernel_abi = "6.17.1-tilo.1".into();
+            assert_eq!(
+                manifest.preflight(&wrong),
+                Err(ExtensionError::KernelAbiMismatch)
+            );
+            wrong = host();
+            wrong.digest = format!("sha256:{}", digest('b'));
+            assert_eq!(
+                manifest.preflight(&wrong),
+                Err(ExtensionError::BaseImageMismatch)
+            );
+        }
+        // Phase `no_artifact_or_state_change_is_accepted_before_verification`.
+        {
+            let bytes = b"runtime artifact";
+            let (release_key, keyring) = signer_and_keyring();
+            let envelope =
+                SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key)
+                    .unwrap();
+            let mut state = ExtensionState::default();
             state
-                .verify_pending_artifact("install-runtime", b"tampered")
-                .is_err()
-        );
-        assert!(state.active.is_empty());
-        state
-            .verify_pending_artifact("install-runtime", bytes)
-            .unwrap();
-        let accepted = state.commit("install-runtime").unwrap();
-        assert_eq!(
-            accepted.artifact.size_bytes,
-            u64::try_from(bytes.len()).unwrap()
-        );
-        assert_eq!(state.active.len(), 1);
-        assert!(state.pending.is_none());
+                .begin("install-runtime", envelope, &keyring, &host())
+                .unwrap();
+            assert!(state.active.is_empty());
+            assert_eq!(
+                state.commit("install-runtime"),
+                Err(ExtensionError::ArtifactNotVerified)
+            );
+            assert!(state.active.is_empty());
+            assert!(
+                state.pending.is_some(),
+                "failed commit keeps the transaction inert for recovery"
+            );
+
+            assert!(
+                state
+                    .verify_pending_artifact("install-runtime", b"tampered")
+                    .is_err()
+            );
+            assert!(state.active.is_empty());
+            state
+                .verify_pending_artifact("install-runtime", bytes)
+                .unwrap();
+            let accepted = state.commit("install-runtime").unwrap();
+            assert_eq!(
+                accepted.artifact.size_bytes,
+                u64::try_from(bytes.len()).unwrap()
+            );
+            assert_eq!(state.active.len(), 1);
+            assert!(state.pending.is_none());
+        }
+        // Phase `accepted_state_is_revalidated_against_the_signed_image_and_keyring`.
+        {
+            let bytes = b"runtime artifact";
+            let (release_key, keyring) = signer_and_keyring();
+            let envelope =
+                SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key)
+                    .unwrap();
+            let mut state = ExtensionState::default();
+            state
+                .begin("install-runtime", envelope, &keyring, &host())
+                .unwrap();
+            state
+                .verify_pending_artifact("install-runtime", bytes)
+                .unwrap();
+            state.commit("install-runtime").unwrap();
+            assert_eq!(state.accepted_for(&keyring, &host()).unwrap().len(), 1);
+            let empty_keys = TrustedKeyring::default();
+            assert!(matches!(
+                state.accepted_for(&empty_keys, &host()),
+                Err(ExtensionError::UnknownSigningKey(_))
+            ));
+        }
     }
 
     #[test]
-    fn accepted_state_is_revalidated_against_the_signed_image_and_keyring() {
-        let bytes = b"runtime artifact";
-        let (release_key, keyring) = signer_and_keyring();
-        let envelope =
-            SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key).unwrap();
-        let mut state = ExtensionState::default();
-        state
-            .begin("install-runtime", envelope, &keyring, &host())
-            .unwrap();
-        state
-            .verify_pending_artifact("install-runtime", bytes)
-            .unwrap();
-        state.commit("install-runtime").unwrap();
-        assert_eq!(state.accepted_for(&keyring, &host()).unwrap().len(), 1);
-        let empty_keys = TrustedKeyring::default();
-        assert!(matches!(
-            state.accepted_for(&empty_keys, &host()),
-            Err(ExtensionError::UnknownSigningKey(_))
-        ));
-    }
+    fn the_state_store_persists_only_valid_transitions_and_never_defaults() {
+        // Phase `state_store_rejects_malformed_or_symlinked_state_instead_of_defaulting`.
+        {
+            use std::os::unix::fs::symlink;
 
-    #[test]
-    fn state_store_rejects_malformed_or_symlinked_state_instead_of_defaulting() {
-        use std::os::unix::fs::symlink;
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("extensions.json");
+            fs::write(&path, b"not json").unwrap();
+            assert!(matches!(
+                ExtensionStateStore::new(&path).load(),
+                Err(ExtensionStoreError::Json(_))
+            ));
 
-        let temp = tempfile::TempDir::new().unwrap();
-        let path = temp.path().join("extensions.json");
-        fs::write(&path, b"not json").unwrap();
-        assert!(matches!(
-            ExtensionStateStore::new(&path).load(),
-            Err(ExtensionStoreError::Json(_))
-        ));
-
-        let target = temp.path().join("target.json");
-        fs::write(&target, b"{}").unwrap();
-        fs::remove_file(&path).unwrap();
-        symlink(&target, &path).unwrap();
-        assert!(matches!(
-            ExtensionStateStore::new(&path).load(),
-            Err(ExtensionStoreError::UnsafeStatePath(_))
-        ));
-    }
-
-    #[test]
-    fn state_store_persists_only_after_each_valid_transition() {
-        let bytes = b"runtime artifact";
-        let (release_key, keyring) = signer_and_keyring();
-        let envelope =
-            SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key).unwrap();
-        let temp = tempfile::TempDir::new().unwrap();
-        let store = ExtensionStateStore::new(temp.path().join("state/extensions.json"));
-        store
-            .begin("install-runtime", envelope, &keyring, &host())
-            .unwrap();
-        assert!(store.load().unwrap().active.is_empty());
-        store
-            .verify_pending_artifact("install-runtime", bytes)
-            .unwrap();
-        store.commit("install-runtime").unwrap();
-        let state = store.load().unwrap();
-        assert_eq!(state.revision, 1);
-        assert!(state.pending.is_none());
-        assert!(state.active.contains_key("local-model-runtime"));
+            let target = temp.path().join("target.json");
+            fs::write(&target, b"{}").unwrap();
+            fs::remove_file(&path).unwrap();
+            symlink(&target, &path).unwrap();
+            assert!(matches!(
+                ExtensionStateStore::new(&path).load(),
+                Err(ExtensionStoreError::UnsafeStatePath(_))
+            ));
+        }
+        // Phase `state_store_persists_only_after_each_valid_transition`.
+        {
+            let bytes = b"runtime artifact";
+            let (release_key, keyring) = signer_and_keyring();
+            let envelope =
+                SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key)
+                    .unwrap();
+            let temp = tempfile::TempDir::new().unwrap();
+            let store = ExtensionStateStore::new(temp.path().join("state/extensions.json"));
+            store
+                .begin("install-runtime", envelope, &keyring, &host())
+                .unwrap();
+            assert!(store.load().unwrap().active.is_empty());
+            store
+                .verify_pending_artifact("install-runtime", bytes)
+                .unwrap();
+            store.commit("install-runtime").unwrap();
+            let state = store.load().unwrap();
+            assert_eq!(state.revision, 1);
+            assert!(state.pending.is_none());
+            assert!(state.active.contains_key("local-model-runtime"));
+        }
+        // Phase `a_failed_commit_never_drops_the_pending_transaction`.
+        {
+            let bytes = b"runtime artifact";
+            let (release_key, keyring) = signer_and_keyring();
+            let envelope =
+                SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key)
+                    .unwrap();
+            let mut state = ExtensionState {
+                revision: u64::MAX,
+                ..ExtensionState::default()
+            };
+            state
+                .begin("install-runtime", envelope, &keyring, &host())
+                .unwrap();
+            state
+                .verify_pending_artifact("install-runtime", bytes)
+                .unwrap();
+            assert_eq!(
+                state.commit("install-runtime"),
+                Err(ExtensionError::RevisionOverflow)
+            );
+            assert!(state.active.is_empty());
+            assert!(state.pending.is_some());
+        }
     }
 
     #[cfg(unix)]
@@ -858,29 +888,5 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "desired extension state must be owner-only");
-    }
-
-    #[test]
-    fn a_failed_commit_never_drops_the_pending_transaction() {
-        let bytes = b"runtime artifact";
-        let (release_key, keyring) = signer_and_keyring();
-        let envelope =
-            SignedExtensionManifest::sign(manifest(bytes), "release-2026", &release_key).unwrap();
-        let mut state = ExtensionState {
-            revision: u64::MAX,
-            ..ExtensionState::default()
-        };
-        state
-            .begin("install-runtime", envelope, &keyring, &host())
-            .unwrap();
-        state
-            .verify_pending_artifact("install-runtime", bytes)
-            .unwrap();
-        assert_eq!(
-            state.commit("install-runtime"),
-            Err(ExtensionError::RevisionOverflow)
-        );
-        assert!(state.active.is_empty());
-        assert!(state.pending.is_some());
     }
 }

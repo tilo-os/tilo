@@ -324,7 +324,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
     for task in std::fs::read_dir("/proc/self/task")? {
         let task = match task {
             Ok(task) => task,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         let raw = match std::fs::read_to_string(task.path().join("children")) {
@@ -333,7 +333,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
             // Production preparation is single-threaded, but treating that
             // procfs race as an empty, already-gone task keeps the preflight
             // reliable without weakening child ownership.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         for pid in raw.split_whitespace() {
@@ -353,7 +353,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
     for process in std::fs::read_dir("/proc")? {
         let process = match process {
             Ok(process) => process,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         let Some(pid) = process
@@ -365,12 +365,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
         };
         let status = match std::fs::read_to_string(process.path().join("status")) {
             Ok(status) => status,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                ) =>
-            {
+            Err(error) if vanished(&error) || error.kind() == io::ErrorKind::PermissionDenied => {
                 continue;
             }
             Err(error) => return Err(error),
@@ -384,6 +379,16 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
         }
     }
     Ok(children.into_iter().collect())
+}
+
+/// Whether a procfs read failed because its process or thread exited.
+///
+/// An entry that exits after `read_dir` listed it fails with `ENOENT` once
+/// its directory is gone, but with `ESRCH` while the directory is still
+/// open and its task is being released. Any process on the host can exit
+/// mid-scan, so neither may fail the scan.
+fn vanished(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
 fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
@@ -406,6 +411,32 @@ fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
         return Err(error);
     }
     Ok(true)
+}
+
+fn poll_pidfd(descriptor: &OwnedFd, timeout: Duration) {
+    let Some(deadline) = Instant::now().checked_add(timeout) else {
+        return;
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        let mut fds = [libc::pollfd {
+            fd: descriptor.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        // SAFETY: `fds` is a valid pollfd array; `descriptor` stays owned.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+        if ready > 0 {
+            return;
+        }
+        if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return;
+        }
+    }
 }
 
 fn owned_pidfd(pid: libc::pid_t) -> io::Result<OwnedFd> {
@@ -618,12 +649,11 @@ impl Drop for ManagedChild {
                 libc::SIGTERM,
             );
         }
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(2) {
-            if !matches!(self.child.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        if let Ok(pidfd) = owned_pidfd(pid) {
+            poll_pidfd(&pidfd, Duration::from_secs(2));
+        }
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return;
         }
         // SAFETY: the leader remains our live unreaped child, so its process
         // group cannot have been reused for an unrelated application.
@@ -653,11 +683,22 @@ mod tests {
         if std::env::var_os(CHILD).is_none() {
             // Subreaper state is process-wide. Isolate this test from the
             // parallel harness, whose unrelated children must never be adopted.
+            // Stdout goes to a file, not a pipe: a descendant the child
+            // preserves could otherwise hold a pipe open past the child's exit.
+            let log_dir = tempfile::tempdir().unwrap();
+            let log = log_dir.path().join("child.stdout");
             let status = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "translated::tests::exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children", "--nocapture"])
                 .env(CHILD, "1")
+                .stdout(File::create(&log).unwrap())
                 .status().unwrap();
-            assert!(status.success());
+            let stdout = std::fs::read_to_string(&log).unwrap();
+            assert!(status.success(), "{stdout}");
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                stdout.contains("test result: ok. 1 passed"),
+                "the child ran no test: {stdout}"
+            );
             return;
         }
         let mut disposition = unsafe { std::mem::zeroed::<libc::sigaction>() };
@@ -691,7 +732,10 @@ mod tests {
             advisory_lock::FileLock::try_exclusive(File::open(temporary.path()).unwrap()).unwrap();
         let competitor =
             || advisory_lock::FileLock::try_shared(File::open(temporary.path()).unwrap());
-        let mut existing = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // Killed on drop, so a failing assertion cannot leave it holding the
+        // harness's stderr open after this process exits.
+        let mut existing =
+            ManagedChild::new(Command::new("/bin/sleep").arg("30").spawn().unwrap(), false);
         // acquire bypasses only the production single-thread check: the reexec
         // harness has an idle main thread and exactly this one test worker.
         let descendants = PreparationChildren::acquire().unwrap();
@@ -714,23 +758,16 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let started = Instant::now();
-        let pids: Vec<libc::pid_t> = loop {
-            if let Ok(contents) = std::fs::read_to_string(&pid_file) {
-                let values: Vec<_> = contents
-                    .split_whitespace()
-                    .map(|value| value.parse().unwrap())
-                    .collect();
-                if values.len() == 2 {
-                    break values;
-                }
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "nested child must start"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        // Starting three processes is not what this test measures; on a
+        // loaded runner it takes arbitrarily long, so wait on the hang bound.
+        let pids: Vec<libc::pid_t> = tilo_test_env::wait_for("the nested child to start", || {
+            let contents = std::fs::read_to_string(&pid_file).ok()?;
+            let values: Vec<_> = contents
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            (values.len() == 2).then_some(values)
+        });
         let pid = pids[0];
         assert_eq!(
             unsafe { libc::getsid(pid) },
@@ -768,7 +805,7 @@ mod tests {
             "grandchild must have exited, not merely remain unowned"
         );
         assert!(
-            existing.try_wait().unwrap().is_none(),
+            existing.child.try_wait().unwrap().is_none(),
             "preexisting server must survive"
         );
         assert!(matches!(
@@ -781,89 +818,113 @@ mod tests {
             0
         );
         assert_eq!(restored, old_state);
-        existing.kill().unwrap();
-        existing.wait().unwrap();
+        drop(existing);
         drop(prefix);
         drop(competitor().unwrap());
     }
 
     #[test]
-    fn native_dxvk_overrides_apply_only_to_managed_wine_applications() {
-        for mode in [WineMode::Win32, WineMode::Win64] {
-            let mut boot = Command::new("/bin/true");
-            boot.env("WINEDLLOVERRIDES", "attacker");
-            GuestEnvironment::WineBoot(mode).apply(&mut boot);
-            assert!(boot.get_envs().any(|(key, value)| key == "WINEDLLOVERRIDES"
-                && value == Some(std::ffi::OsStr::new("wineboot.exe=b"))));
-            for key in ["WINEDLLPATH", "WINEBUILDDIR"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn translated_launches_replace_inherited_overrides_and_allow_listed_modes() {
+        // Phase `native_dxvk_overrides_apply_only_to_managed_wine_applications`.
+        {
+            for mode in [WineMode::Win32, WineMode::Win64] {
+                let mut boot = Command::new("/bin/true");
+                boot.env("WINEDLLOVERRIDES", "attacker");
+                GuestEnvironment::WineBoot(mode).apply(&mut boot);
+                assert!(boot.get_envs().any(|(key, value)| key == "WINEDLLOVERRIDES"
+                    && value == Some(std::ffi::OsStr::new("wineboot.exe=b"))));
+                for key in ["WINEDLLPATH", "WINEBUILDDIR"] {
+                    assert!(
+                        boot.get_envs()
+                            .any(|(actual, value)| actual == key && value.is_none())
+                    );
+                }
+                let mut cleanup = Command::new("/bin/true");
+                GuestEnvironment::WinePreparation(mode).apply(&mut cleanup);
                 assert!(
-                    boot.get_envs()
-                        .any(|(actual, value)| actual == key && value.is_none())
+                    cleanup
+                        .get_envs()
+                        .any(|(key, value)| key == "WINEDLLOVERRIDES" && value.is_none())
+                );
+                let mut application = Command::new("/bin/true");
+                GuestEnvironment::WineApplication(mode).apply(&mut application);
+                assert!(
+                    application
+                        .get_envs()
+                        .any(|(key, value)| key == "WINEDLLOVERRIDES"
+                            && value == Some(std::ffi::OsStr::new(crate::dxvk::NATIVE_OVERRIDES)))
+                );
+                let expected = match mode {
+                    WineMode::Win32 => "win32",
+                    WineMode::Win64 => "win64",
+                };
+                assert!(application.get_envs().any(|(key, value)| key == "WINEARCH"
+                    && value == Some(std::ffi::OsStr::new(expected))));
+            }
+            let mut proton = Command::new("/bin/true");
+            GuestEnvironment::Unchanged.apply(&mut proton);
+            assert_eq!(proton.get_envs().count(), 0);
+        }
+        // Phase `inherited_socket_and_rootfs_overrides_are_replaced`.
+        {
+            let mut child = Command::new("/usr/bin/env");
+            child
+                .env_clear()
+                .env("FEX_ROOTFS", "/attacker/rootfs")
+                .env("FEX_SERVERSOCKETPATH", "/attacker/server.sock")
+                .env("FEX_INTERPRETER_INSTALLED", "1")
+                .env("XDG_RUNTIME_DIR", "/run/user/1000");
+            configure_environment(&mut child);
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            let environment = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock")
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == format!("FEX_ROOTFS={ROOTFS}"))
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "FEX_INTERPRETER_INSTALLED=0")
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "XDG_RUNTIME_DIR=/run/user/1000")
+            );
+            assert!(!environment.contains("/attacker/"));
+        }
+        // Phase `command_mode_is_required_and_allow_listed`.
+        {
+            for arguments in [
+                vec![],
+                vec![OsString::from("wine64")],
+                vec![OsString::from("/bin/sh"), OsString::from("app.exe")],
+            ] {
+                assert_eq!(
+                    run_translated_command(&arguments).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
                 );
             }
-            let mut cleanup = Command::new("/bin/true");
-            GuestEnvironment::WinePreparation(mode).apply(&mut cleanup);
-            assert!(
-                cleanup
-                    .get_envs()
-                    .any(|(key, value)| key == "WINEDLLOVERRIDES" && value.is_none())
-            );
-            let mut application = Command::new("/bin/true");
-            GuestEnvironment::WineApplication(mode).apply(&mut application);
-            assert!(
-                application
-                    .get_envs()
-                    .any(|(key, value)| key == "WINEDLLOVERRIDES"
-                        && value == Some(std::ffi::OsStr::new(crate::dxvk::NATIVE_OVERRIDES)))
-            );
-            let expected = match mode {
-                WineMode::Win32 => "win32",
-                WineMode::Win64 => "win64",
-            };
-            assert!(
-                application.get_envs().any(|(key, value)| key == "WINEARCH"
-                    && value == Some(std::ffi::OsStr::new(expected)))
+        }
+        // Phase `guest_status_preserves_exit_codes_and_signals`.
+        {
+            assert_eq!(exit_code(ExitStatus::from_raw(23 << 8)), 23);
+            assert_eq!(
+                exit_code(ExitStatus::from_raw(libc::SIGTERM)),
+                128 + libc::SIGTERM
             );
         }
-        let mut proton = Command::new("/bin/true");
-        GuestEnvironment::Unchanged.apply(&mut proton);
-        assert_eq!(proton.get_envs().count(), 0);
-    }
-
-    #[test]
-    fn inherited_socket_and_rootfs_overrides_are_replaced() {
-        let mut child = Command::new("/usr/bin/env");
-        child
-            .env_clear()
-            .env("FEX_ROOTFS", "/attacker/rootfs")
-            .env("FEX_SERVERSOCKETPATH", "/attacker/server.sock")
-            .env("FEX_INTERPRETER_INSTALLED", "1")
-            .env("XDG_RUNTIME_DIR", "/run/user/1000");
-        configure_environment(&mut child);
-        let output = child.output().unwrap();
-        assert!(output.status.success());
-        let environment = String::from_utf8(output.stdout).unwrap();
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock")
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == format!("FEX_ROOTFS={ROOTFS}"))
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "FEX_INTERPRETER_INSTALLED=0")
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "XDG_RUNTIME_DIR=/run/user/1000")
-        );
-        assert!(!environment.contains("/attacker/"));
     }
 
     fn sleeping_server() -> ManagedChild {
@@ -871,63 +932,40 @@ mod tests {
     }
 
     #[test]
-    fn readiness_requires_eof_from_a_live_server() {
-        let (read, write) = readiness_pipe().unwrap();
-        let mut server = sleeping_server();
-        drop(write);
-        wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
-        assert!(server.child.try_wait().unwrap().is_none());
-    }
-
-    #[test]
-    fn readiness_is_bounded_when_server_keeps_pipe_open() {
-        let (read, _write) = readiness_pipe().unwrap();
-        let mut server = sleeping_server();
-        let error =
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(10)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    }
-
-    #[test]
-    fn unexpected_readiness_bytes_are_rejected() {
-        let (read, write) = readiness_pipe().unwrap();
-        File::from(write).write_all(b"unexpected").unwrap();
-        let mut server = sleeping_server();
-        let error =
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
-        assert!(error.to_string().contains("invalid FEXServer readiness"));
-    }
-
-    #[test]
-    fn server_exit_is_not_readiness() {
-        let (read, write) = readiness_pipe().unwrap();
-        drop(write);
-        let mut server = Command::new("/bin/true").spawn().unwrap();
-        server.wait().unwrap();
-        let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
-        assert!(error.to_string().contains("before readiness"));
-    }
-
-    #[test]
-    fn command_mode_is_required_and_allow_listed() {
-        for arguments in [
-            vec![],
-            vec![OsString::from("wine64")],
-            vec![OsString::from("/bin/sh"), OsString::from("app.exe")],
-        ] {
-            assert_eq!(
-                run_translated_command(&arguments).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
+    fn translated_readiness_requires_a_bounded_clean_eof_from_a_live_server() {
+        // Phase `readiness_requires_eof_from_a_live_server`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            let mut server = sleeping_server();
+            drop(write);
+            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
+            assert!(server.child.try_wait().unwrap().is_none());
         }
-    }
-
-    #[test]
-    fn guest_status_preserves_exit_codes_and_signals() {
-        assert_eq!(exit_code(ExitStatus::from_raw(23 << 8)), 23);
-        assert_eq!(
-            exit_code(ExitStatus::from_raw(libc::SIGTERM)),
-            128 + libc::SIGTERM
-        );
+        // Phase `readiness_is_bounded_when_server_keeps_pipe_open`.
+        {
+            let (read, _write) = readiness_pipe().unwrap();
+            let mut server = sleeping_server();
+            let error =
+                wait_for_ready(&read, &mut server.child, Duration::from_millis(10)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        }
+        // Phase `unexpected_readiness_bytes_are_rejected`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            File::from(write).write_all(b"unexpected").unwrap();
+            let mut server = sleeping_server();
+            let error =
+                wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("invalid FEXServer readiness"));
+        }
+        // Phase `server_exit_is_not_readiness`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            drop(write);
+            let mut server = Command::new("/bin/true").spawn().unwrap();
+            server.wait().unwrap();
+            let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("before readiness"));
+        }
     }
 }

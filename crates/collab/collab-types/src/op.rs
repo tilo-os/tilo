@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ArtifactId, ChannelId};
@@ -23,7 +23,6 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
 
-pub(crate) const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
 pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
@@ -39,6 +38,7 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
 const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
+const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -78,9 +78,6 @@ pub enum DocumentMutationError {
     /// A segment header is inconsistent with the bytes it carries.
     #[error("document segment is invalid: {0}")]
     InvalidSegment(&'static str),
-    /// The versioned payload body is malformed.
-    #[error("typed document mutation is malformed: {0}")]
-    Malformed(postcard::Error),
 }
 
 /// Failure to encode a typed document mutation.
@@ -91,6 +88,29 @@ pub enum DocumentMutationEncodeError {
 }
 
 impl DocumentMutation {
+    /// Visit the exact snapshot encoding without allocating a payload buffer.
+    /// The visitor owns any destination allocation or digest state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationEncodeError::TooLarge`] when `bytes` exceed
+    /// [`MAX_DOCUMENT_MUTATION_BYTES`].
+    pub fn visit_snapshot_encoding(
+        bytes: &[u8],
+        mut write: impl FnMut(&[u8]),
+    ) -> Result<(), DocumentMutationEncodeError> {
+        if bytes.len() > MAX_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationEncodeError::TooLarge {
+                actual: bytes.len(),
+                max: MAX_DOCUMENT_MUTATION_BYTES,
+            });
+        }
+        write(DOCUMENT_MUTATION_V2_PREFIX);
+        write(&[DOCUMENT_SNAPSHOT_TAG]);
+        write(bytes);
+        Ok(())
+    }
+
     /// Encode the kind and Automerge bytes into the payload carried by one
     /// [`SignedOp`]. Use [`Self::encode_frames`] for mutations that may
     /// exceed a single frame.
@@ -123,17 +143,17 @@ impl DocumentMutation {
     }
 
     /// Decode a complete versioned document mutation, either a single frame
-    /// or a payload reassembled from segments. Raw pre-migration payloads
-    /// fail explicitly rather than being guessed to be an incremental update.
+    /// or a payload reassembled from segments. Unprefixed payloads fail
+    /// explicitly rather than being guessed to be an incremental update.
     /// Wire frames are checked with the tighter
     /// [`crate::document_transfer::DocumentFrame::decode`].
     ///
     /// # Errors
     ///
-    /// Returns [`DocumentMutationError::MissingPrefix`] for legacy raw bytes,
+    /// Returns [`DocumentMutationError::MissingPrefix`] for unprefixed bytes,
     /// [`DocumentMutationError::Segmented`] for one segment of a larger
-    /// mutation, or [`DocumentMutationError::Malformed`] for a corrupt typed
-    /// body.
+    /// mutation, or [`DocumentMutationError::UnknownKind`] /
+    /// [`DocumentMutationError::Truncated`] for a corrupt typed body.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
         if payload.len() > MAX_ENCODED_DOCUMENT_MUTATION_BYTES {
             return Err(DocumentMutationError::TooLarge {
@@ -141,18 +161,15 @@ impl DocumentMutation {
                 max: MAX_ENCODED_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let mutation = if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V2_PREFIX) {
-            let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
-            match kind {
-                DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
-                DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
-                DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
-                other => return Err(DocumentMutationError::UnknownKind(other)),
-            }
-        } else if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX) {
-            postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)?
-        } else {
-            return Err(DocumentMutationError::MissingPrefix);
+        let body = payload
+            .strip_prefix(DOCUMENT_MUTATION_V2_PREFIX)
+            .ok_or(DocumentMutationError::MissingPrefix)?;
+        let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
+        let mutation = match kind {
+            DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
+            DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
+            DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
+            other => return Err(DocumentMutationError::UnknownKind(other)),
         };
         let actual = mutation.data().len();
         if actual > crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES {
@@ -183,6 +200,26 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, record_id: &str) -
         workspace_id,
         record_id,
     ))
+}
+
+/// Artifact a sealed live frame is bound to: its record's channel content
+/// key seals it for this kind, sequence and record only, so a frame cannot
+/// be replayed under another sequence, record or kind.
+#[must_use]
+pub fn live_artifact_id(record_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
+    let mut hash = Sha256::new();
+    hash.update(LIVE_ARTIFACT_DOMAIN);
+    hash.update(record_digest);
+    hash.update([kind]);
+    hash.update(seq.to_le_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0_u8; 16];
+    for (target, source) in bytes.iter_mut().zip(digest.iter()) {
+        *target = *source;
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
 /// Deterministic attestation slot used by certified workspace admission.
@@ -229,6 +266,14 @@ pub enum RoutedDocumentPayload {
     },
 }
 
+/// Single-frame form used by durable admission and authoring state, which
+/// never accepts a segment in place of a whole mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WholeDocumentPayload {
+    Cleartext(DocumentMutation),
+    Encrypted { channel: ChannelId, epoch: u64 },
+}
+
 /// Validate the fields a broker is allowed to inspect for a document route.
 ///
 /// Encrypted payloads are intentionally not decoded.  Their signed channel id
@@ -253,25 +298,74 @@ pub fn validate_document_payload_route(
     {
         return Err(DocumentMutationError::RouteMismatch);
     }
+    // Segments only exist in the current format; brokers route them like any
+    // other validated envelope and endpoints reassemble them.
+    if op.encryption.is_none()
+        && op
+            .payload
+            .strip_prefix(DOCUMENT_MUTATION_V2_PREFIX)
+            .and_then(<[u8]>::first)
+            == Some(&DOCUMENT_SEGMENT_TAG)
+        && let crate::document_transfer::DocumentFrame::Segment(segment) =
+            crate::document_transfer::DocumentFrame::decode(&op.payload)?
+    {
+        return Ok(RoutedDocumentPayload::CleartextSegment(segment));
+    }
+    match validate_whole_document_payload_route(app_id, workspace_id, record_id, op)? {
+        WholeDocumentPayload::Cleartext(mutation) => Ok(RoutedDocumentPayload::Cleartext(mutation)),
+        WholeDocumentPayload::Encrypted { channel, epoch } => {
+            if channel != document_channel_id(app_id, workspace_id, record_id) {
+                return Err(DocumentMutationError::RouteMismatch);
+            }
+            Ok(RoutedDocumentPayload::Encrypted { channel, epoch })
+        }
+    }
+}
+
+/// Validate the route binding of a single-frame payload; clear segments are
+/// refused.
+///
+/// # Errors
+///
+/// Returns [`DocumentMutationError::RouteMismatch`] when the signed metadata
+/// does not bind the envelope to this route, or the decode error of a
+/// malformed clear payload.
+pub fn validate_whole_document_payload_route(
+    app_id: &str,
+    workspace_id: &str,
+    record_id: &str,
+    op: &SignedOp,
+) -> Result<WholeDocumentPayload, DocumentMutationError> {
+    if op.artifact != document_artifact_id(app_id, workspace_id, record_id)
+        || op.attestation_id != document_attestation_id(app_id, workspace_id, record_id)
+    {
+        return Err(DocumentMutationError::RouteMismatch);
+    }
     match op.encryption {
-        None => match crate::document_transfer::DocumentFrame::decode(&op.payload)? {
-            crate::document_transfer::DocumentFrame::Whole(mutation) => {
-                Ok(RoutedDocumentPayload::Cleartext(mutation))
+        None => {
+            let mutation = DocumentMutation::decode(&op.payload)?;
+            // One signed frame carries at most one frame's worth of data;
+            // larger mutations travel as segments (see `document_transfer`).
+            let actual = mutation.data().len();
+            if actual > MAX_DOCUMENT_MUTATION_BYTES {
+                return Err(DocumentMutationError::TooLarge {
+                    actual,
+                    max: MAX_DOCUMENT_MUTATION_BYTES,
+                });
             }
-            crate::document_transfer::DocumentFrame::Segment(segment) => {
-                Ok(RoutedDocumentPayload::CleartextSegment(segment))
+            Ok(WholeDocumentPayload::Cleartext(mutation))
+        }
+        Some(meta) => {
+            if meta.channel != document_channel_id(app_id, workspace_id, record_id)
+                || op.payload.is_empty()
+            {
+                return Err(DocumentMutationError::RouteMismatch);
             }
-        },
-        Some(meta)
-            if meta.channel == document_channel_id(app_id, workspace_id, record_id)
-                && !op.payload.is_empty() =>
-        {
-            Ok(RoutedDocumentPayload::Encrypted {
+            Ok(WholeDocumentPayload::Encrypted {
                 channel: meta.channel,
                 epoch: meta.epoch,
             })
         }
-        Some(_) => Err(DocumentMutationError::RouteMismatch),
     }
 }
 
@@ -558,10 +652,6 @@ impl SignedOp {
     /// caller has already encrypted via `ChannelGroup::encrypt`; the
     /// ciphertext goes into `payload`, the matching `epoch`/`channel` into
     /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the operation constructor records every signed collaboration field explicitly"
-    )]
     pub fn new_unsigned_with_encryption(
         payload: Vec<u8>,
         artifact: ArtifactId,
@@ -623,233 +713,327 @@ mod tests {
     use crate::canonical::from_canonical_bytes;
     use crate::crypto::generate_keypair;
 
+    /// Signed ops round-trip with and without encryption; encryption metadata changes the signing
+    /// bytes, which exclude the signature; version-one metadata keeps the legacy wire and signing
+    /// bytes; content-key metadata round-trips and is signed.
     #[test]
-    fn signed_op_round_trip() {
-        let (_, pk) = generate_keypair();
-        let op = SignedOp::new_unsigned(
-            b"automerge-change-bytes".to_vec(),
-            ArtifactId::new(),
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            0,
-        );
-        let bytes = canonical_bytes(&op).unwrap();
-        let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(op, back);
-    }
-
-    #[test]
-    fn signed_op_with_encryption_round_trip() {
-        let (_, pk) = generate_keypair();
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            b"ciphertext-bytes".to_vec(),
-            ArtifactId::new(),
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            42,
-            EncryptionMetadata::mls_application(3, crate::channel::ChannelId::new()),
-        );
-        op.signature = crate::crypto::Signature::from_bytes([1u8; 64]);
-        let bytes = canonical_bytes(&op).unwrap();
-        let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(op, back);
-        assert!(back.encryption.is_some());
-        assert_eq!(back.encryption.unwrap().epoch, 3);
-    }
-
-    #[test]
-    fn encryption_metadata_changes_signing_bytes() {
-        // Two ops differing only in `encryption` must NOT have matching
-        // signing-bytes — otherwise a peer could strip the metadata to
-        // redirect a ciphertext with the signature unchanged.
-        let (_, pk) = generate_keypair();
-        let cid = crate::channel::ChannelId::new();
-        let a = SignedOp::new_unsigned(
-            b"x".to_vec(),
-            ArtifactId::new(),
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            0,
-        );
-        let mut b = a.clone();
-        b.encryption = Some(EncryptionMetadata::mls_application(0, cid));
-        assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
-    }
-
-    #[test]
-    fn signing_bytes_excludes_signature() {
-        // Two ops differing only in signature must have identical
-        // signing-bytes (so signing/verifying is well-defined).
-        let (_, pk) = generate_keypair();
-        let mut a = SignedOp::new_unsigned(
-            b"x".to_vec(),
-            ArtifactId::new(),
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            7,
-        );
-        let mut b = a.clone();
-        a.signature = Signature::from_bytes([0u8; 64]);
-        b.signature = Signature::from_bytes([0xff; 64]);
-        assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
-    }
-
-    #[test]
-    fn typed_document_mutations_preserve_kind_and_bytes() {
-        for mutation in [
-            DocumentMutation::Snapshot(vec![0, 1, 2]),
-            DocumentMutation::Incremental(vec![3, 4, 5]),
-        ] {
-            let encoded = mutation.encode().unwrap();
-            let decoded = DocumentMutation::decode(&encoded).unwrap();
-            assert_eq!(decoded, mutation);
-            assert_eq!(decoded.data(), mutation.data());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn signed_op_wire_and_signing_bytes_cover_exactly_the_signed_fields() {
+        // Phase: signed_op_round_trip.
+        {
+            let (_, pk) = generate_keypair();
+            let op = SignedOp::new_unsigned(
+                b"automerge-change-bytes".to_vec(),
+                ArtifactId::new(),
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                0,
+            );
+            let bytes = canonical_bytes(&op).unwrap();
+            let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(op, back);
         }
-        assert_eq!(
-            DocumentMutation::decode(b"raw legacy automerge bytes"),
-            Err(DocumentMutationError::MissingPrefix)
-        );
 
-        let encoded = DocumentMutation::Snapshot(vec![7, 8]).encode().unwrap();
-        assert_eq!(
-            &encoded[..DOCUMENT_MUTATION_V2_PREFIX.len()],
-            DOCUMENT_MUTATION_V2_PREFIX
-        );
-        assert_eq!(
-            encoded[DOCUMENT_MUTATION_V2_PREFIX.len()],
-            DOCUMENT_SNAPSHOT_TAG,
-            "the signed wire kind is explicit rather than serde enum order"
-        );
+        // Phase: signed_op_with_encryption_round_trip.
+        {
+            let (_, pk) = generate_keypair();
+            let mut op = SignedOp::new_unsigned_with_encryption(
+                b"ciphertext-bytes".to_vec(),
+                ArtifactId::new(),
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                42,
+                EncryptionMetadata::mls_application(3, crate::channel::ChannelId::new()),
+            );
+            op.signature = crate::crypto::Signature::from_bytes([1u8; 64]);
+            let bytes = canonical_bytes(&op).unwrap();
+            let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(op, back);
+            assert!(back.encryption.is_some());
+            assert_eq!(back.encryption.unwrap().epoch, 3);
+        }
 
-        let legacy = DocumentMutation::Incremental(vec![9, 10]);
-        let mut legacy_wire = DOCUMENT_MUTATION_V1_PREFIX.to_vec();
-        legacy_wire.extend(postcard::to_allocvec(&legacy).unwrap());
-        assert_eq!(DocumentMutation::decode(&legacy_wire).unwrap(), legacy);
+        // Phase: encryption_metadata_changes_signing_bytes.
+        {
+            // Two ops differing only in `encryption` must NOT have matching
+            // signing-bytes — otherwise a peer could strip the metadata to
+            // redirect a ciphertext with the signature unchanged.
+            let (_, pk) = generate_keypair();
+            let cid = crate::channel::ChannelId::new();
+            let a = SignedOp::new_unsigned(
+                b"x".to_vec(),
+                ArtifactId::new(),
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                0,
+            );
+            let mut b = a.clone();
+            b.encryption = Some(EncryptionMetadata::mls_application(0, cid));
+            assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
+        }
+
+        // Phase: signing_bytes_excludes_signature.
+        {
+            // Two ops differing only in signature must have identical
+            // signing-bytes (so signing/verifying is well-defined).
+            let (_, pk) = generate_keypair();
+            let mut a = SignedOp::new_unsigned(
+                b"x".to_vec(),
+                ArtifactId::new(),
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                7,
+            );
+            let mut b = a.clone();
+            a.signature = Signature::from_bytes([0u8; 64]);
+            b.signature = Signature::from_bytes([0xff; 64]);
+            assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
+        }
+
+        // Phase: version_one_metadata_keeps_the_legacy_wire_and_signing_bytes.
+        {
+            let channel = ChannelId::new();
+            let legacy = canonical_bytes(&Some(LegacyMetadata { epoch: 9, channel })).unwrap();
+            let current = canonical_bytes(&encryption_wire::View(&Some(
+                EncryptionMetadata::mls_application(9, channel),
+            )))
+            .unwrap();
+            assert_eq!(legacy, current);
+            let none_legacy = canonical_bytes(&Option::<LegacyMetadata>::None).unwrap();
+            let none_current = canonical_bytes(&encryption_wire::View(&None)).unwrap();
+            assert_eq!(none_legacy, none_current);
+        }
+
+        // Phase: content_key_metadata_round_trips_and_is_signed.
+        {
+            let (_, pk) = generate_keypair();
+            let channel = ChannelId::new();
+            let mut op = SignedOp::new_unsigned_with_encryption(
+                b"sealed".to_vec(),
+                ArtifactId::new(),
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                5,
+                EncryptionMetadata::content_key(2, channel, ContentRetention::Checkpoint),
+            );
+            op.signature = Signature::from_bytes([3; 64]);
+            let back: SignedOp = from_canonical_bytes(&canonical_bytes(&op).unwrap()).unwrap();
+            assert_eq!(back, op);
+            assert_eq!(
+                back.encryption.unwrap().retention(),
+                Some(ContentRetention::Checkpoint)
+            );
+            let mut downgraded = op.clone();
+            downgraded.encryption = Some(EncryptionMetadata::mls_application(2, channel));
+            assert_ne!(
+                op.signing_bytes().unwrap(),
+                downgraded.signing_bytes().unwrap()
+            );
+            let mut reclassified = op.clone();
+            reclassified.encryption = Some(EncryptionMetadata::content_key(
+                2,
+                channel,
+                ContentRetention::Delta,
+            ));
+            assert_ne!(
+                op.signing_bytes().unwrap(),
+                reclassified.signing_bytes().unwrap()
+            );
+        }
     }
 
+    /// Typed document mutations preserve kind and bytes and enforce the wire budget before decode.
     #[test]
-    fn typed_document_mutations_enforce_wire_budget_before_decode() {
-        let oversized =
-            DocumentMutation::Incremental(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
-        assert!(matches!(
-            oversized.encode(),
-            Err(DocumentMutationEncodeError::TooLarge { actual, max })
-                if actual == MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)
-                    && max == MAX_DOCUMENT_MUTATION_BYTES
-        ));
+    fn typed_document_mutations_keep_kind_and_bytes_within_the_wire_budget() {
+        // Phase: typed_document_mutations_preserve_kind_and_bytes.
+        {
+            for mutation in [
+                DocumentMutation::Snapshot(vec![0, 1, 2]),
+                DocumentMutation::Incremental(vec![3, 4, 5]),
+            ] {
+                let encoded = mutation.encode().unwrap();
+                let decoded = DocumentMutation::decode(&encoded).unwrap();
+                assert_eq!(decoded, mutation);
+                assert_eq!(decoded.data(), mutation.data());
+            }
+            assert_eq!(
+                DocumentMutation::decode(b"raw legacy automerge bytes"),
+                Err(DocumentMutationError::MissingPrefix)
+            );
 
-        let oversized_wire = vec![0; MAX_ENCODED_DOCUMENT_MUTATION_BYTES.saturating_add(1)];
-        assert!(matches!(
-            DocumentMutation::decode(&oversized_wire),
-            Err(DocumentMutationError::TooLarge { actual, max })
-                if actual == oversized_wire.len() && max == MAX_ENCODED_DOCUMENT_MUTATION_BYTES
-        ));
+            let encoded = DocumentMutation::Snapshot(vec![7, 8]).encode().unwrap();
+            assert_eq!(
+                &encoded[..DOCUMENT_MUTATION_V2_PREFIX.len()],
+                DOCUMENT_MUTATION_V2_PREFIX
+            );
+            assert_eq!(
+                encoded[DOCUMENT_MUTATION_V2_PREFIX.len()],
+                DOCUMENT_SNAPSHOT_TAG,
+                "the signed wire kind is explicit rather than serde enum order"
+            );
+        }
 
-        // A single signed frame above the frame limit is refused by the
-        // routing layer even though a reassembled payload of that size is a
-        // valid endpoint mutation.
-        let mut frame = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
-        frame.push(DOCUMENT_INCREMENTAL_TAG);
-        frame.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
-        let (app, workspace, record) = ("notes", "workspace", "record");
-        let op = SignedOp::new_unsigned(
-            frame,
-            document_artifact_id(app, workspace, record),
-            Ed25519PublicKey::from_bytes([7; 32]),
-            document_attestation_id(app, workspace, record),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            1,
-        );
-        assert!(matches!(
-            validate_document_payload_route(app, workspace, record, &op),
-            Err(DocumentMutationError::TooLarge { .. })
-        ));
-    }
+        // Phase: typed_document_mutations_enforce_wire_budget_before_decode.
+        {
+            let oversized = DocumentMutation::Incremental(vec![
+                0;
+                MAX_DOCUMENT_MUTATION_BYTES
+                    .saturating_add(1)
+            ]);
+            assert!(matches!(
+                oversized.encode(),
+                Err(DocumentMutationEncodeError::TooLarge { actual, max })
+                    if actual == MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)
+                        && max == MAX_DOCUMENT_MUTATION_BYTES
+            ));
 
-    #[test]
-    fn document_route_ids_are_stable_and_unambiguous() {
-        let first = document_artifact_id("so.tilo.notes", "room-a", "record-b");
-        assert_eq!(
-            first,
-            document_artifact_id("so.tilo.notes", "room-a", "record-b")
-        );
-        assert_ne!(
-            first,
-            document_artifact_id("so.tilo.notes", "room-ar", "ecord-b")
-        );
-        assert_ne!(
-            first.0,
-            document_attestation_id("so.tilo.notes", "room-a", "record-b").0,
-            "artifact and attestation domains must not alias"
-        );
-        assert_ne!(
-            first.0,
-            document_channel_id("so.tilo.notes", "room-a", "record-b").0,
-            "artifact and MLS channel domains must not alias"
-        );
-        assert_eq!(first.0.get_version_num(), 8);
-    }
+            let oversized_wire = vec![0; MAX_ENCODED_DOCUMENT_MUTATION_BYTES.saturating_add(1)];
+            assert!(matches!(
+                DocumentMutation::decode(&oversized_wire),
+                Err(DocumentMutationError::TooLarge { actual, max })
+                    if actual == oversized_wire.len() && max == MAX_ENCODED_DOCUMENT_MUTATION_BYTES
+            ));
 
-    #[test]
-    fn encrypted_document_route_is_bound_without_decoding_ciphertext() {
-        let (app, workspace, record) = ("notes", "workspace", "meeting");
-        let op = SignedOp::new_unsigned_with_encryption(
-            vec![0xde, 0xad, 0xbe, 0xef],
-            document_artifact_id(app, workspace, record),
-            Ed25519PublicKey::from_bytes([7; 32]),
-            document_attestation_id(app, workspace, record),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            1,
-            EncryptionMetadata::mls_application(4, document_channel_id(app, workspace, record)),
-        );
-        assert_eq!(
-            validate_document_payload_route(app, workspace, record, &op),
-            Ok(RoutedDocumentPayload::Encrypted {
-                channel: document_channel_id(app, workspace, record),
-                epoch: 4,
-            })
-        );
-        assert_eq!(
-            validate_document_payload_route(app, workspace, "other", &op),
-            Err(DocumentMutationError::RouteMismatch)
-        );
-    }
-
-    #[test]
-    fn encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext() {
-        let (app, workspace, record) = ("notes", "workspace", "record");
-        let build = |payload, channel| {
-            SignedOp::new_unsigned_with_encryption(
-                payload,
+            // A single signed frame above the frame limit is refused by the
+            // routing layer even though a reassembled payload of that size is a
+            // valid endpoint mutation.
+            let mut frame = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
+            frame.push(DOCUMENT_INCREMENTAL_TAG);
+            frame.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
+            let (app, workspace, record) = ("notes", "workspace", "record");
+            let op = SignedOp::new_unsigned(
+                frame,
                 document_artifact_id(app, workspace, record),
-                Ed25519PublicKey::from_bytes([8; 32]),
+                Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
                 OpClass::Splice,
                 SystemTime::UNIX_EPOCH,
                 1,
-                EncryptionMetadata::mls_application(0, channel),
-            )
-        };
-        let wrong = build(vec![1], ChannelId::new());
-        let empty = build(Vec::new(), document_channel_id(app, workspace, record));
-        assert_eq!(
-            validate_document_payload_route(app, workspace, record, &wrong),
-            Err(DocumentMutationError::RouteMismatch)
-        );
-        assert_eq!(
-            validate_document_payload_route(app, workspace, record, &empty),
-            Err(DocumentMutationError::RouteMismatch)
-        );
+            );
+            assert!(matches!(
+                validate_document_payload_route(app, workspace, record, &op),
+                Err(DocumentMutationError::TooLarge { .. })
+            ));
+        }
+    }
+
+    /// Document route ids are stable and unambiguous; an encrypted route is bound without decoding
+    /// ciphertext and rejects a wrong channel and empty ciphertext.
+    #[test]
+    fn document_routes_are_stable_and_bound_without_decoding() {
+        // Phase: document_route_ids_are_stable_and_unambiguous.
+        {
+            let first = document_artifact_id("so.tilo.notes", "room-a", "record-b");
+            assert_eq!(
+                first,
+                document_artifact_id("so.tilo.notes", "room-a", "record-b")
+            );
+            assert_ne!(
+                first,
+                document_artifact_id("so.tilo.notes", "room-ar", "ecord-b")
+            );
+            assert_ne!(
+                first.0,
+                document_attestation_id("so.tilo.notes", "room-a", "record-b").0,
+                "artifact and attestation domains must not alias"
+            );
+            assert_ne!(
+                first.0,
+                document_channel_id("so.tilo.notes", "room-a", "record-b").0,
+                "artifact and MLS channel domains must not alias"
+            );
+            assert_eq!(first.0.get_version_num(), 8);
+            assert_eq!(first.0.to_string(), "0231a3fb-e6d4-89fc-9fc4-160d44d242bf");
+            assert_eq!(
+                document_artifact_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07"
+            );
+            assert_eq!(
+                document_attestation_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "fe8b6b90-8390-8f45-923c-e78d2a15cb9c"
+            );
+            assert_eq!(
+                document_channel_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "f36e8478-33d6-8069-b327-1971d231a822"
+            );
+            let golden = DocumentMutation::Snapshot(vec![0, 1, 2, 0xff]);
+            assert_eq!(
+                golden.encode().unwrap(),
+                b"tilo-document-mutation-v2\0\x01\0\x01\x02\xff"
+            );
+        }
+
+        // Phase: encrypted_document_route_is_bound_without_decoding_ciphertext.
+        {
+            let (app, workspace, record) = ("notes", "workspace", "meeting");
+            let op = SignedOp::new_unsigned_with_encryption(
+                vec![0xde, 0xad, 0xbe, 0xef],
+                document_artifact_id(app, workspace, record),
+                Ed25519PublicKey::from_bytes([7; 32]),
+                document_attestation_id(app, workspace, record),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                1,
+                EncryptionMetadata::mls_application(4, document_channel_id(app, workspace, record)),
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, record, &op),
+                Ok(RoutedDocumentPayload::Encrypted {
+                    channel: document_channel_id(app, workspace, record),
+                    epoch: 4,
+                })
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, "other", &op),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+        }
+
+        // Phase: encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext.
+        {
+            let (app, workspace, record) = ("notes", "workspace", "record");
+            let build = |payload, channel| {
+                SignedOp::new_unsigned_with_encryption(
+                    payload,
+                    document_artifact_id(app, workspace, record),
+                    Ed25519PublicKey::from_bytes([8; 32]),
+                    document_attestation_id(app, workspace, record),
+                    OpClass::Splice,
+                    SystemTime::UNIX_EPOCH,
+                    1,
+                    EncryptionMetadata::mls_application(0, channel),
+                )
+            };
+            let wrong = build(vec![1], ChannelId::new());
+            let empty = build(Vec::new(), document_channel_id(app, workspace, record));
+            assert_eq!(
+                validate_document_payload_route(app, workspace, record, &wrong),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, record, &empty),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+        }
     }
 
     /// Postcard bytes of the `Option<{epoch, channel}>` tail every build
@@ -858,58 +1042,5 @@ mod tests {
     struct LegacyMetadata {
         epoch: u64,
         channel: ChannelId,
-    }
-
-    #[test]
-    fn version_one_metadata_keeps_the_legacy_wire_and_signing_bytes() {
-        let channel = ChannelId::new();
-        let legacy = canonical_bytes(&Some(LegacyMetadata { epoch: 9, channel })).unwrap();
-        let current = canonical_bytes(&encryption_wire::View(&Some(
-            EncryptionMetadata::mls_application(9, channel),
-        )))
-        .unwrap();
-        assert_eq!(legacy, current);
-        let none_legacy = canonical_bytes(&Option::<LegacyMetadata>::None).unwrap();
-        let none_current = canonical_bytes(&encryption_wire::View(&None)).unwrap();
-        assert_eq!(none_legacy, none_current);
-    }
-
-    #[test]
-    fn content_key_metadata_round_trips_and_is_signed() {
-        let (_, pk) = generate_keypair();
-        let channel = ChannelId::new();
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            b"sealed".to_vec(),
-            ArtifactId::new(),
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            5,
-            EncryptionMetadata::content_key(2, channel, ContentRetention::Checkpoint),
-        );
-        op.signature = Signature::from_bytes([3; 64]);
-        let back: SignedOp = from_canonical_bytes(&canonical_bytes(&op).unwrap()).unwrap();
-        assert_eq!(back, op);
-        assert_eq!(
-            back.encryption.unwrap().retention(),
-            Some(ContentRetention::Checkpoint)
-        );
-        let mut downgraded = op.clone();
-        downgraded.encryption = Some(EncryptionMetadata::mls_application(2, channel));
-        assert_ne!(
-            op.signing_bytes().unwrap(),
-            downgraded.signing_bytes().unwrap()
-        );
-        let mut reclassified = op.clone();
-        reclassified.encryption = Some(EncryptionMetadata::content_key(
-            2,
-            channel,
-            ContentRetention::Delta,
-        ));
-        assert_ne!(
-            op.signing_bytes().unwrap(),
-            reclassified.signing_bytes().unwrap()
-        );
     }
 }

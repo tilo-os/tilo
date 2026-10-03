@@ -21,8 +21,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
 
-use ui::ColorCompat;
-use ui::text_render::{FontChoice, TextRenderer, TextWeight};
+use ui::paint::{PaintCtx, with_alpha};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
@@ -71,7 +71,7 @@ pub fn swatch_color(theme: &Theme, s: Swatch) -> Color {
 const ACCENT_PURPLE: usize = 6; // indigo-400, reads as a violet ink
 
 pub fn alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+    with_alpha(c, a)
 }
 
 /// Per-block typographic spec, in points.
@@ -139,6 +139,75 @@ pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Re
         origin.x + page_w * scale,
         origin.y + page_h * scale,
     )
+}
+
+/// Where one page lands on screen: its top-left `origin`, the zoom `scale`
+/// (pixels per point) and its size in points.
+#[derive(Clone, Copy, Debug)]
+pub struct PageFrame {
+    pub origin: Point,
+    pub scale: f64,
+    pub page_w: f64,
+    pub page_h: f64,
+}
+
+impl PageFrame {
+    fn card_rect(&self) -> Rect {
+        page_card_rect(self.origin, self.scale, self.page_w, self.page_h)
+    }
+}
+
+/// The raster backend's pixels for one page: the whole-page bitmap and, for
+/// a zoomed page, its sharp tiles. Both absent on the vector-text path.
+#[derive(Clone, Copy)]
+pub struct PageRaster<'a> {
+    pub image: Option<&'a PenikoImage>,
+    pub tiles: Option<&'a PageTiles>,
+}
+
+/// A page's search matches: the blocks that matched, and the one holding
+/// the active match.
+#[derive(Clone, Copy)]
+pub struct SearchBands<'a> {
+    pub matched: &'a HashSet<usize>,
+    pub active: Option<usize>,
+}
+
+impl SearchBands<'_> {
+    fn band(&self, block: usize) -> Option<MatchBand> {
+        if !self.matched.contains(&block) {
+            None
+        } else if self.active == Some(block) {
+            Some(MatchBand::Active)
+        } else {
+            Some(MatchBand::Match)
+        }
+    }
+}
+
+/// How a matched block's search band is painted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchBand {
+    Match,
+    Active,
+}
+
+/// The document's markup — every annotation and signature, each drawn on
+/// the page it is anchored to — and the id of the selected annotation.
+#[derive(Clone, Copy)]
+pub struct Markup<'a> {
+    pub annotations: &'a [Annotation],
+    pub signatures: &'a [Signature],
+    pub selected: Option<&'a str>,
+}
+
+/// The running layout cursor down a page's content column, in screen space:
+/// the column's left edge and width, the zoom, and the next block's top.
+struct ColumnCursor {
+    x: f64,
+    w: f64,
+    scale: f64,
+    y: f64,
 }
 
 /// One laid-out line of body text, in **page-point** space (origin =
@@ -283,11 +352,24 @@ fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &Pen
 }
 
 /// Stroke a page card's outline. Shared by the raster and vector-text paths.
-fn draw_page_border(scene: &mut Scene, base: Affine, card_rr: &RoundedRect) {
+///
+/// The paper itself is document content (always white); the edge that seats
+/// it on the desk is chrome, so it is measured from the theme against that
+/// paper. High contrast steps a white `border_standard` out until the card
+/// still reads as a card.
+fn page_card_edge(theme: &Theme) -> Color {
+    theme.tokens.colors.ink_on(
+        paper(theme),
+        theme.tokens.colors.border_standard,
+        ui::tokens::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
+fn draw_page_border(scene: &mut Scene, theme: &Theme, base: Affine, card_rr: &RoundedRect) {
     scene.stroke(
         &Stroke::new(1.0),
         base,
-        Color::from_rgb8(203, 213, 225),
+        page_card_edge(theme),
         None,
         card_rr,
     );
@@ -295,23 +377,10 @@ fn draw_page_border(scene: &mut Scene, base: Affine, card_rr: &RoundedRect) {
 
 /// The annotations + signatures anchored to `page`, drawn on top of its
 /// content — shared by the raster and vector-text draw paths.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive overlay pass"
-)]
-fn draw_page_markup(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    base: Affine,
-    page: &Page,
-    origin: Point,
-    scale: f64,
-    annotations: &[Annotation],
-    signatures: &[Signature],
-    selected_anno: Option<&str>,
-) {
-    for a in annotations.iter().filter(|a| a.page == page.number) {
+fn draw_page_markup(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, markup: Markup<'_>) {
+    let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let (origin, scale) = (frame.origin, frame.scale);
+    for a in markup.annotations.iter().filter(|a| a.page == page.number) {
         draw_annotation(
             scene,
             tr,
@@ -320,32 +389,19 @@ fn draw_page_markup(
             a,
             origin,
             scale,
-            selected_anno == Some(a.id.as_str()),
+            markup.selected == Some(a.id.as_str()),
         );
     }
-    for s in signatures.iter().filter(|s| s.page == page.number) {
+    for s in markup.signatures.iter().filter(|s| s.page == page.number) {
         draw_signature(scene, tr, theme, base, s, origin, scale);
     }
 }
 
-/// Draw a figure placeholder block (box, glyph, caption). Returns the
-/// updated running screen-space `y`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
-)]
-fn draw_page_figure(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    base: Affine,
-    content_x: f64,
-    content_w: f64,
-    y: f64,
-    height: f64,
-    label: &str,
-    scale: f64,
-) -> f64 {
+/// Draw a figure placeholder block (box, glyph, caption) `height` points
+/// tall at the cursor, and advance the cursor past it.
+fn draw_page_figure(ctx: &mut PaintCtx<'_>, at: &mut ColumnCursor, height: f64, label: &str) {
+    let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let (content_x, content_w, y, scale) = (at.x, at.w, at.y, at.scale);
     let h = height * scale;
     let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
     scene.fill(
@@ -365,56 +421,42 @@ fn draw_page_figure(
     draw_figure_glyph(scene, theme, base, box_rect);
     let y = y + h + 4.0 * scale;
     let csize = 9.5 * scale as f32;
-    tr.draw_text_styled(
+    tr.draw_style(
         scene,
         label,
-        csize,
         ink_faint(),
         base * Affine::translate((content_x, y)),
         Some(content_w as f32),
-        TextWeight::Regular,
-        true,
-        false,
+        &TextStyle::new(csize).with_italic(true),
     );
     let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-    y + f64::from(ch) + 8.0 * scale
+    at.y = y + f64::from(ch) + 8.0 * scale;
 }
 
-/// Draw one heading/body/quote/caption block's text, plus its search-match
-/// highlight band when `bi` is in `matched_blocks`. Returns the updated
-/// running screen-space `y`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
-)]
-fn draw_page_text_block<S: std::hash::BuildHasher>(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    base: Affine,
-    content_x: f64,
-    content_w: f64,
-    y: f64,
-    scale: f64,
-    bi: usize,
+/// Draw one heading/body/quote/caption block's text at the cursor, plus its
+/// search-match `band` when it matched, and advance the cursor past it.
+fn draw_page_text_block(
+    ctx: &mut PaintCtx<'_>,
+    at: &mut ColumnCursor,
     block: &Block,
     spec: &Spec,
-    matched_blocks: &HashSet<usize, S>,
-    active_block: Option<usize>,
-) -> f64 {
+    band: Option<MatchBand>,
+) {
+    let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let (content_x, content_w, y, scale) = (at.x, at.w, at.y, at.scale);
     let text = block.search_text().unwrap_or("");
     let size = spec.size * scale as f32;
     let max_w = content_w as f32;
     let (_, th) = tr.measure(text, size, Some(max_w));
 
-    if matched_blocks.contains(&bi) {
+    if let Some(band_kind) = band {
         let band = Rect::new(
             content_x - 4.0 * scale,
             y - 1.0 * scale,
             content_x + content_w + 4.0 * scale,
             y + f64::from(th) + 1.0 * scale,
         );
-        let is_active = active_block == Some(bi);
+        let is_active = band_kind == MatchBand::Active;
         let fill = if is_active {
             alpha(theme.accent_primary, 64)
         } else {
@@ -439,78 +481,56 @@ fn draw_page_text_block<S: std::hash::BuildHasher>(
         scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
         x += 14.0 * scale;
     }
-    tr.draw_text_styled(
+    tr.draw_style(
         scene,
         text,
-        size,
         spec.color,
         base * Affine::translate((x, y)),
         Some(max_w),
-        spec.weight,
-        spec.italic,
-        false,
+        &TextStyle::new(size)
+            .with_weight(spec.weight)
+            .with_italic(spec.italic),
     );
-    y + f64::from(th) + spec.after * scale
+    at.y = y + f64::from(th) + spec.after * scale;
 }
 
 /// Lay out and draw every content block of a vector (non-raster) page —
 /// spacers, dividers, figures and styled text — updating the running
 /// screen-space `y` as it goes.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
-)]
-fn draw_page_blocks<S: std::hash::BuildHasher>(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    base: Affine,
+fn draw_page_blocks(
+    ctx: &mut PaintCtx<'_>,
     page: &Page,
-    origin: Point,
-    scale: f64,
-    page_w: f64,
-    matched_blocks: &HashSet<usize, S>,
-    active_block: Option<usize>,
+    frame: PageFrame,
+    search: SearchBands<'_>,
 ) {
-    let content_x = origin.x + MARGIN * scale;
-    let content_w = (page_w - 2.0 * MARGIN) * scale;
-    let mut y = origin.y; // running screen-space top
+    let (origin, scale) = (frame.origin, frame.scale);
+    let mut at = ColumnCursor {
+        x: origin.x + MARGIN * scale,
+        w: (frame.page_w - 2.0 * MARGIN) * scale,
+        scale,
+        y: origin.y,
+    };
 
     for (bi, block) in page.blocks.iter().enumerate() {
         match block {
             Block::Spacer(h) => {
-                y += h * scale;
+                at.y += h * scale;
             }
             Block::Divider => {
-                let dy = y + 7.0 * scale;
-                let line = Line::new((content_x, dy), (content_x + content_w, dy));
-                scene.stroke(&Stroke::new(1.0), base, ink_faint(), None, &line);
-                y += 16.0 * scale;
+                let dy = at.y + 7.0 * scale;
+                let line = Line::new((at.x, dy), (at.x + at.w, dy));
+                ctx.scene
+                    .stroke(&Stroke::new(1.0), ctx.transform, ink_faint(), None, &line);
+                at.y += 16.0 * scale;
             }
             Block::Figure { height, label } => {
-                y = draw_page_figure(
-                    scene, tr, theme, base, content_x, content_w, y, *height, label, scale,
-                );
+                draw_page_figure(ctx, &mut at, *height, label);
             }
             _ => {
-                let Some(spec) = body_spec(block, theme) else {
+                let Some(spec) = body_spec(block, ctx.theme) else {
                     continue;
                 };
-                y = draw_page_text_block(
-                    scene,
-                    tr,
-                    theme,
-                    base,
-                    content_x,
-                    content_w,
-                    y,
-                    scale,
-                    bi,
-                    block,
-                    &spec,
-                    matched_blocks,
-                    active_block,
-                );
+                draw_page_text_block(ctx, &mut at, block, &spec, search.band(bi));
             }
         }
     }
@@ -518,88 +538,43 @@ fn draw_page_blocks<S: std::hash::BuildHasher>(
 
 /// Draw one page: paper card, drop shadow, content, search bands, then
 /// the annotations + signatures that live on it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the shared page-draw context explicitly"
-)]
-pub fn draw_page<S: std::hash::BuildHasher>(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    base: Affine,
+pub fn draw_page(
+    ctx: &mut PaintCtx<'_>,
     page: &Page,
-    origin: Point,
-    scale: f64,
-    page_w: f64,
-    page_h: f64,
-    raster: Option<&PenikoImage>,
-    tiles: Option<&PageTiles>,
-    matched_blocks: &HashSet<usize, S>,
-    active_block: Option<usize>,
-    annotations: &[Annotation],
-    signatures: &[Signature],
-    selected_anno: Option<&str>,
+    frame: PageFrame,
+    raster: PageRaster<'_>,
+    search: SearchBands<'_>,
+    markup: Markup<'_>,
 ) {
-    let card = page_card_rect(origin, scale, page_w, page_h);
-    let card_rr = draw_page_backdrop(scene, theme, base, card);
+    let base = ctx.transform;
+    let card = frame.card_rect();
+    let card_rr = draw_page_backdrop(ctx.scene, ctx.theme, base, card);
 
     // Clip content to the paper.
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
+    ctx.scene
+        .push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
     // Raster backend: paint the page bitmap (engine output) scaled to fill the
     // card width — for a zoomed page, a lower-resolution placeholder under
     // its sharp tiles — then let the shared markup overlay draw on top.
-    if raster.is_some() || tiles.is_some() {
-        if let Some(img) = raster {
-            draw_page_raster_image(scene, base, card, img);
+    if raster.image.is_some() || raster.tiles.is_some() {
+        if let Some(img) = raster.image {
+            draw_page_raster_image(ctx.scene, base, card, img);
         }
-        if let Some(tiles) = tiles {
-            draw_page_tiles(scene, base, tiles);
+        if let Some(tiles) = raster.tiles {
+            draw_page_tiles(ctx.scene, base, tiles);
         }
-        draw_page_markup(
-            scene,
-            tr,
-            theme,
-            base,
-            page,
-            origin,
-            scale,
-            annotations,
-            signatures,
-            selected_anno,
-        );
-        scene.pop_layer();
-        draw_page_border(scene, base, &card_rr);
+        draw_page_markup(ctx, page, frame, markup);
+        ctx.scene.pop_layer();
+        draw_page_border(ctx.scene, ctx.theme, base, &card_rr);
         return;
     }
 
-    draw_page_blocks(
-        scene,
-        tr,
-        theme,
-        base,
-        page,
-        origin,
-        scale,
-        page_w,
-        matched_blocks,
-        active_block,
-    );
-    draw_page_markup(
-        scene,
-        tr,
-        theme,
-        base,
-        page,
-        origin,
-        scale,
-        annotations,
-        signatures,
-        selected_anno,
-    );
+    draw_page_blocks(ctx, page, frame, search);
+    draw_page_markup(ctx, page, frame, markup);
 
-    scene.pop_layer();
-    draw_page_border(scene, base, &card_rr);
+    ctx.scene.pop_layer();
+    draw_page_border(ctx.scene, ctx.theme, base, &card_rr);
 }
 
 fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
@@ -633,10 +608,6 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
     Point::new(origin.x + x * scale, origin.y + y * scale)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the shared page-draw context explicitly"
-)]
 fn draw_annotation(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -916,16 +887,16 @@ pub fn draw_signature_ink(
             }
             let tx = area.x0 + f64::from((area.width() as f32 - tw).max(0.0) / 2.0);
             let ty = area.y0 + (area.height() - f64::from(size)) / 2.0;
-            tr.draw_text_font(
+            tr.draw_style(
                 scene,
                 name,
-                size,
                 color,
                 base * Affine::translate((tx, ty)),
                 None,
-                TextWeight::Medium,
-                true,
-                &family,
+                &TextStyle::new(size)
+                    .with_weight(TextWeight::Medium)
+                    .with_italic(true)
+                    .with_family(family.clone()),
             );
         }
         SignatureInk::Drawn { strokes } => {
@@ -968,64 +939,84 @@ pub fn draw_signature_preview(
 // Thumbnails — abstract bar representation (fast, readable at small size)
 // ----------------------------------------------------------------------
 
-/// The current-page border + has-markup dot, shared by the raster and
-/// vector-bar thumbnail paths.
-fn draw_thumbnail_border_and_marker(
-    scene: &mut Scene,
-    theme: &Theme,
-    base: Affine,
-    rr: &RoundedRect,
-    rect: Rect,
-    is_current: bool,
-    has_markup: bool,
-) {
-    let border = if is_current {
-        theme.accent_primary
-    } else {
-        theme.tokens.colors.border_standard
-    };
-    let stroke_w = if is_current { 2.0 } else { 1.0 };
-    scene.stroke(&Stroke::new(stroke_w), base, border, None, rr);
-
-    if has_markup {
-        let d = 5.0;
-        let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
-        scene.fill(
-            Fill::NonZero,
-            base,
-            theme.tokens.colors.semantic.warning,
-            None,
-            &dot,
-        );
-    }
+/// One page-rail thumbnail: the page, its width in points (the block
+/// sketch's scale), the engine bitmap when the raster backend has one, and
+/// whether it is the current page and carries markup.
+pub struct Thumbnail<'a> {
+    pub page: &'a Page,
+    pub page_w: f64,
+    pub raster: Option<&'a PenikoImage>,
+    pub is_current: bool,
+    pub has_markup: bool,
 }
 
-/// Paint the real page miniature (raster backend) plus its border + marker.
-fn draw_thumbnail_raster(
-    scene: &mut Scene,
-    theme: &Theme,
-    base: Affine,
-    rect: Rect,
-    img: &PenikoImage,
-    is_current: bool,
-    has_markup: bool,
-) {
-    let rr = RoundedRect::from_rect(rect, 2.0);
-    if img.width > 0 && img.height > 0 {
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-        // Same fit as the page itself, so a rotated page's miniature keeps
-        // its aspect.
-        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
-        let s = crate::model::fit_scale(rect.width(), rect.height(), iw, ih);
-        let dx = ((rect.width() - iw * s) / 2.0).max(0.0);
-        let dy = ((rect.height() - ih * s) / 2.0).max(0.0);
-        let tf = base
-            * Affine::translate((rect.x0 + dx, rect.y0 + dy))
-            * Affine::scale_non_uniform(s, s);
-        scene.draw_image(img, tf);
-        scene.pop_layer();
+impl Thumbnail<'_> {
+    pub fn draw(&self, scene: &mut Scene, theme: &Theme, base: Affine, rect: Rect) {
+        let rr = RoundedRect::from_rect(rect, 2.0);
+        scene.fill(Fill::NonZero, base, paper(theme), None, &rr);
+
+        // Raster backend: paint the real page miniature.
+        if let Some(img) = self.raster {
+            self.draw_raster(scene, theme, base, rect, img);
+            return;
+        }
+
+        draw_thumbnail_vector_blocks(scene, base, self.page, rect, self.page_w);
+        self.draw_border_and_marker(scene, theme, base, rect);
     }
-    draw_thumbnail_border_and_marker(scene, theme, base, &rr, rect, is_current, has_markup);
+
+    /// The current-page border + has-markup dot, shared by the raster and
+    /// vector-bar thumbnail paths.
+    fn draw_border_and_marker(&self, scene: &mut Scene, theme: &Theme, base: Affine, rect: Rect) {
+        let (is_current, has_markup) = (self.is_current, self.has_markup);
+        let rr = &RoundedRect::from_rect(rect, 2.0);
+        let border = if is_current {
+            theme.accent_primary
+        } else {
+            theme.tokens.colors.border_standard
+        };
+        let stroke_w = if is_current { 2.0 } else { 1.0 };
+        scene.stroke(&Stroke::new(stroke_w), base, border, None, rr);
+
+        if has_markup {
+            let d = 5.0;
+            let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                theme.tokens.colors.semantic.warning,
+                None,
+                &dot,
+            );
+        }
+    }
+
+    /// Paint the real page miniature (raster backend) plus its border + marker.
+    fn draw_raster(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        base: Affine,
+        rect: Rect,
+        img: &PenikoImage,
+    ) {
+        let rr = RoundedRect::from_rect(rect, 2.0);
+        if img.width > 0 && img.height > 0 {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
+            // Same fit as the page itself, so a rotated page's miniature keeps
+            // its aspect.
+            let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+            let s = crate::model::fit_scale(rect.width(), rect.height(), iw, ih);
+            let dx = ((rect.width() - iw * s) / 2.0).max(0.0);
+            let dy = ((rect.height() - ih * s) / 2.0).max(0.0);
+            let tf = base
+                * Affine::translate((rect.x0 + dx, rect.y0 + dy))
+                * Affine::scale_non_uniform(s, s);
+            scene.draw_image(img, tf);
+            scene.pop_layer();
+        }
+        self.draw_border_and_marker(scene, theme, base, rect);
+    }
 }
 
 /// Abstract bar representation of a page's content blocks (vector backend):
@@ -1108,34 +1099,6 @@ fn draw_thumbnail_vector_blocks(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the shared page-draw context explicitly"
-)]
-pub fn draw_thumbnail(
-    scene: &mut Scene,
-    theme: &Theme,
-    base: Affine,
-    page: &Page,
-    rect: Rect,
-    page_w: f64,
-    raster: Option<&PenikoImage>,
-    is_current: bool,
-    has_markup: bool,
-) {
-    let rr = RoundedRect::from_rect(rect, 2.0);
-    scene.fill(Fill::NonZero, base, paper(theme), None, &rr);
-
-    // Raster backend: paint the real page miniature.
-    if let Some(img) = raster {
-        draw_thumbnail_raster(scene, theme, base, rect, img, is_current, has_markup);
-        return;
-    }
-
-    draw_thumbnail_vector_blocks(scene, base, page, rect, page_w);
-    draw_thumbnail_border_and_marker(scene, theme, base, &rr, rect, is_current, has_markup);
-}
-
 /// Crop a rectangular region (in page-point space) out of a rendered page
 /// bitmap, returning `(width_px, height_px, rgba)` ready for the clipboard.
 /// The page bitmap covers the whole page (`page_w × page_h` points) at
@@ -1183,6 +1146,23 @@ pub fn crop_page_region(
 mod tests {
     use super::*;
     use crate::model::sample_document;
+
+    /// The page card's outline is chrome: it must clear the non-text floor
+    /// on the paper under every shipped theme, including high contrast.
+    #[test]
+    fn page_card_edge_is_chrome_and_reads_on_the_paper() {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::NON_TEXT_MIN_CONTRAST;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let edge = page_card_edge(&theme);
+            assert!(
+                contrast_ratio(edge, paper(&theme)) >= NON_TEXT_MIN_CONTRAST,
+                "{name} page edge must read on the paper, got {:.2}:1",
+                contrast_ratio(edge, paper(&theme))
+            );
+        }
+    }
 
     #[test]
     fn collect_text_lines_produces_bands_inside_the_page() {

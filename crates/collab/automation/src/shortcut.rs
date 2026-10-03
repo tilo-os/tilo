@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use collab_types::PermissionProfileRule;
 use serde::{Deserialize, Serialize};
 use tilo_actions::door::ActionAddress;
-use tilo_actions::params::ActionParam;
+use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
     AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION,
@@ -295,10 +295,16 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room: Option<String>,
     },
-    /// A change under a workspace path prefix.
+    /// A file created, changed or removed inside the folder a capability of
+    /// the shortcut's workspace shares with its saver, named by the
+    /// capability's id. The trigger carries that authority, never a path:
+    /// revoking the capability, or the saver losing read access to it,
+    /// disarms the trigger.
     FileChanged {
-        path: String,
+        capability: String,
     },
+    /// Do Not Disturb ([`FOCUS_DO_NOT_DISTURB`]) or the focus schedule
+    /// ([`FOCUS_SCHEDULE`]) switching on or off.
     FocusMode {
         mode: String,
         transition: FocusTransition,
@@ -327,7 +333,60 @@ pub enum TriggerSpec {
     },
 }
 
+/// [`TriggerSpec::FocusMode`] mode: the person's Do Not Disturb switch.
+pub const FOCUS_DO_NOT_DISTURB: &str = "do_not_disturb";
+/// [`TriggerSpec::FocusMode`] mode: the person's recurring focus schedule.
+pub const FOCUS_SCHEDULE: &str = "focus";
+
+static APP_PAYLOAD: [ActionParam; 1] = [ActionParam::required(
+    "app_id",
+    ParamType::Text,
+    "The application that opened",
+)];
+static WORKSPACE_PAYLOAD: [ActionParam; 2] = [
+    ActionParam::required(
+        "workspace",
+        ParamType::Text,
+        "The id of the workspace joined",
+    ),
+    ActionParam::required(
+        "workspace_name",
+        ParamType::Text,
+        "The name of the workspace joined",
+    ),
+];
+static FILE_PAYLOAD: [ActionParam; 2] = [
+    ActionParam::required(
+        "file",
+        ParamType::Text,
+        "The path of the file, inside the watched folder",
+    ),
+    ActionParam::required(
+        "change",
+        ParamType::Text,
+        "`created`, `modified` or `removed`",
+    ),
+];
+static FOCUS_PAYLOAD: [ActionParam; 2] = [
+    ActionParam::required("mode", ParamType::Text, "`do_not_disturb` or `focus`"),
+    ActionParam::required("active", ParamType::Boolean, "Whether the mode switched on"),
+];
+
 impl TriggerSpec {
+    /// What a firing of this trigger tells the run it starts. Each value is
+    /// bound to the shortcut's input of the same name, when it declares one
+    /// of the same type.
+    #[must_use]
+    pub fn payload(&self) -> &'static [ActionParam] {
+        match self {
+            Self::AppOpened { .. } => &APP_PAYLOAD,
+            Self::WorkspaceJoined { .. } => &WORKSPACE_PAYLOAD,
+            Self::FileChanged { .. } => &FILE_PAYLOAD,
+            Self::FocusMode { .. } => &FOCUS_PAYLOAD,
+            _ => &[],
+        }
+    }
+
     /// Stable name of the trigger's kind, recorded with every run it starts.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -350,7 +409,8 @@ impl TriggerSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "every", rename_all = "snake_case")]
 pub enum Schedule {
-    /// A fixed period from the moment the shortcut was saved.
+    /// A fixed period, counted from the Unix epoch so every device the
+    /// shortcut reaches agrees on its fire times.
     Interval { seconds: u64 },
     /// A local wall-clock time on the listed weekdays (every day when empty).
     Calendar {
@@ -387,6 +447,34 @@ pub enum CatchUp {
     Skip,
     /// Run once for however many were missed.
     RunOnce,
+}
+
+/// One of the saver's devices taking one fire time of a schedule, so the
+/// saver's other devices leave it. Kept with the workspace's shortcuts, one
+/// per schedule: a claim on a later fire time replaces an earlier one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleClaim {
+    pub shortcut: String,
+    /// Index of the schedule among the shortcut's triggers.
+    pub trigger: usize,
+    /// The fire time taken, in milliseconds since the Unix epoch.
+    pub due_ms: i64,
+    /// The device that runs it.
+    pub device: String,
+}
+
+impl ScheduleClaim {
+    /// The schedule this claims a fire time of: `shortcut/trigger`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.shortcut, self.trigger)
+    }
+
+    /// Whether this claim supersedes `other` for the same schedule.
+    #[must_use]
+    pub fn supersedes(&self, other: &Self) -> bool {
+        (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

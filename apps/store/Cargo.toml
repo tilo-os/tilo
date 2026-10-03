@@ -6,9 +6,6 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo app store — surfaces Tilo registry entries and legacy Flatpak apps in one list."
 
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
 
 [lib]
 name = "store"
@@ -22,9 +19,10 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
@@ -53,7 +51,8 @@ thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

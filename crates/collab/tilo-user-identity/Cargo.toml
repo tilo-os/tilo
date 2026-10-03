@@ -2,8 +2,15 @@
 name = "tilo-user-identity"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The human-facing identity layer for Tilo."
+
+[package.metadata.cargo-machete]
+# This feature-only edge selects JS entropy for transitive WASM cryptography.
+ignored = ["getrandom"]
 
 [lib]
 name = "tilo_user_identity"
@@ -38,9 +45,9 @@ path = "src/bin/tilo-device-key-init.rs"
 # may change without a version bump.
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file" }
+
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`, `threshold-identity`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.
@@ -88,10 +95,24 @@ zeroize.workspace = true
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
 # out loud without garble; the alphabet is declared at compile time.
 data-encoding.workspace = true
+# The browser-computed wrap of a root envelope.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 data-encoding-macro.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-private-fs = { path = "../../system/private-fs" }
+private-fs = { version = "0.1.0", path = "../../system/private-fs" }
+
+# The login Keychain keeps a Tilo runtime's device key on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
 # Isolated on-disk fixtures for the persistence-round-trip tests

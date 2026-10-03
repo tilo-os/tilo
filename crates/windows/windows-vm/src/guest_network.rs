@@ -419,52 +419,53 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
-    fn rejects_empty_or_unsafe_canonical_nethosts() {
-        assert!(matches!(
-            GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), Vec::new(), false),
-            Err(GuestNetworkError::EmptyAllowlist)
-        ));
-        assert!(matches!(
-            GuestNetworkProxy::start_at(
+    fn guest_network_leases_parse_strictly_and_hide_their_tokens() {
+        // Phase `rejects_empty_or_unsafe_canonical_nethosts`.
+        {
+            assert!(matches!(
+                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), Vec::new(), false),
+                Err(GuestNetworkError::EmptyAllowlist)
+            ));
+            assert!(matches!(
+                GuestNetworkProxy::start_at(
+                    "127.0.0.1:0".parse().unwrap(),
+                    vec!["bad host".into()],
+                    false
+                ),
+                Err(GuestNetworkError::InvalidHost(_))
+            ));
+        }
+        // Phase `binding_never_exposes_its_bearer_token_through_debug`.
+        {
+            let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["bad host".into()],
-                false
-            ),
-            Err(GuestNetworkError::InvalidHost(_))
-        ));
-    }
-
-    #[test]
-    fn binding_never_exposes_its_bearer_token_through_debug() {
-        let proxy = GuestNetworkProxy::start_at(
-            "127.0.0.1:0".parse().unwrap(),
-            vec!["example.test".into()],
-            false,
-        )
-        .unwrap();
-        assert!(!format!("{:?}", proxy.binding()).contains(&proxy.binding().token));
-        assert_eq!(
-            proxy.binding().endpoint.ip(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST)
-        );
-    }
-
-    #[test]
-    fn parser_requires_connect_and_a_full_lease_token() {
-        assert!(
-            parse_connect(
-                "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer aaaa\r\n\r\n"
+                vec!["example.test".into()],
+                false,
             )
-            .is_none()
-        );
-        assert_eq!(
-            parse_connect(&format!(
-                "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer {}\r\n\r\n",
-                "a".repeat(64)
-            ))
-            .map(|value| value.0),
-            Some("example.test".into())
-        );
+            .unwrap();
+            assert!(!format!("{:?}", proxy.binding()).contains(&proxy.binding().token));
+            assert_eq!(
+                proxy.binding().endpoint.ip(),
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            );
+        }
+        // Phase `parser_requires_connect_and_a_full_lease_token`.
+        {
+            assert!(
+                parse_connect(
+                    "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer aaaa\r\n\r\n"
+                )
+                .is_none()
+            );
+            assert_eq!(
+                parse_connect(&format!(
+                    "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer {}\r\n\r\n",
+                    "a".repeat(64)
+                ))
+                .map(|value| value.0),
+                Some("example.test".into())
+            );
+        }
     }
 
     fn connected_pair() -> (TcpStream, TcpStream) {
@@ -475,51 +476,93 @@ mod tests {
     }
 
     #[test]
-    fn active_tunnel_registration_is_removed_when_the_copy_finishes() {
-        let tunnels = ActiveTunnels::default();
-        let (client, server) = connected_pair();
-        let shutdown = AtomicBool::new(false);
-        let registration = tunnels.register(client, server, &shutdown).unwrap();
-        assert_eq!(tunnels.len(), 1);
-        drop(registration);
-        assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
-    }
-
-    #[test]
-    fn revocation_interrupts_an_active_tunnel_immediately() {
-        let proxy = GuestNetworkProxy::start_at(
-            "127.0.0.1:0".parse().unwrap(),
-            vec!["example.test".into()],
-            false,
-        )
-        .unwrap();
-        let (client, mut peer) = connected_pair();
-        let _registration = proxy
-            .active_connections
-            .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
-            .unwrap();
-        proxy.revoke();
-        peer.set_read_timeout(Some(Duration::from_millis(250)))
-            .unwrap();
-        let mut byte = [0_u8; 1];
-        match peer.read(&mut byte) {
-            Ok(0) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
-                ) => {}
-            result => panic!("active tunnel survived revoke: {result:?}"),
+    fn tunnels_register_carry_bytes_and_close_on_revocation() {
+        // Phase `active_tunnel_registration_is_removed_when_the_copy_finishes`.
+        {
+            let tunnels = ActiveTunnels::default();
+            let (client, server) = connected_pair();
+            let shutdown = AtomicBool::new(false);
+            let registration = tunnels.register(client, server, &shutdown).unwrap();
+            assert_eq!(tunnels.len(), 1);
+            drop(registration);
+            assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
         }
-    }
+        // Phase `revoked_lease_rejects_late_tunnel_registration`.
+        {
+            let tunnels = ActiveTunnels::default();
+            let shutdown = AtomicBool::new(true);
+            let (client, server) = connected_pair();
+            assert!(tunnels.register(client, server, &shutdown).is_err());
+            assert_eq!(tunnels.len(), 0);
+        }
+        // Phase `a_tunnel_carries_bytes_both_ways_and_revocation_closes_it`.
+        {
+            let service = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = service.local_addr().unwrap().port();
+            let proxy = GuestNetworkProxy::start_at(
+                "127.0.0.1:0".parse().unwrap(),
+                vec!["localhost".into()],
+                false,
+            )
+            .unwrap();
+            let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            send_connect(&mut client, port, &proxy.binding().token);
+            assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
+            let (mut upstream, _) = service.accept().unwrap();
+            upstream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
 
-    #[test]
-    fn revoked_lease_rejects_late_tunnel_registration() {
-        let tunnels = ActiveTunnels::default();
-        let shutdown = AtomicBool::new(true);
-        let (client, server) = connected_pair();
-        assert!(tunnels.register(client, server, &shutdown).is_err());
-        assert_eq!(tunnels.len(), 0);
+            client.write_all(b"ping").unwrap();
+            let mut buf = [0_u8; 4];
+            upstream.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"ping");
+            upstream.write_all(b"pong").unwrap();
+            client.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"pong");
+
+            proxy.revoke();
+            let mut byte = [0_u8; 1];
+            match client.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                    ) => {}
+                result => panic!("active tunnel survived revoke: {result:?}"),
+            }
+        }
+        // Phase `revocation_interrupts_an_active_tunnel_immediately`.
+        {
+            let proxy = GuestNetworkProxy::start_at(
+                "127.0.0.1:0".parse().unwrap(),
+                vec!["example.test".into()],
+                false,
+            )
+            .unwrap();
+            let (client, mut peer) = connected_pair();
+            let _registration = proxy
+                .active_connections
+                .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
+                .unwrap();
+            proxy.revoke();
+            peer.set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            match peer.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                    ) => {}
+                result => panic!("active tunnel survived revoke: {result:?}"),
+            }
+        }
     }
 
     /// Send a CONNECT for `localhost:port` carrying the lease token.
@@ -544,48 +587,6 @@ mod tests {
             head.push(byte[0]);
         }
         String::from_utf8(head).unwrap()
-    }
-
-    #[test]
-    fn a_tunnel_carries_bytes_both_ways_and_revocation_closes_it() {
-        let service = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = service.local_addr().unwrap().port();
-        let proxy = GuestNetworkProxy::start_at(
-            "127.0.0.1:0".parse().unwrap(),
-            vec!["localhost".into()],
-            false,
-        )
-        .unwrap();
-        let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        send_connect(&mut client, port, &proxy.binding().token);
-        assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
-        let (mut upstream, _) = service.accept().unwrap();
-        upstream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-
-        client.write_all(b"ping").unwrap();
-        let mut buf = [0_u8; 4];
-        upstream.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, b"ping");
-        upstream.write_all(b"pong").unwrap();
-        client.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, b"pong");
-
-        proxy.revoke();
-        let mut byte = [0_u8; 1];
-        match client.read(&mut byte) {
-            Ok(0) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
-                ) => {}
-            result => panic!("active tunnel survived revoke: {result:?}"),
-        }
     }
 
     #[test]

@@ -151,21 +151,21 @@ pub trait Referent {
 mod tests {
     use super::*;
 
+    /// A span normalises its direction, counts in its declared unit, may end
+    /// just past the last character, and reports rather than guesses when it
+    /// no longer fits.
     #[test]
-    fn a_span_normalises_a_backwards_selection() {
+    fn a_span_slices_exactly_the_run_it_names_or_nothing() {
+        // Case: a span normalises a backwards selection.
         assert_eq!(Span::chars(11, 6), Span::chars(6, 11));
         assert_eq!(Span::chars(11, 6).len(), 5);
-    }
 
-    #[test]
-    fn a_span_that_no_longer_fits_reports_rather_than_guesses() {
+        // Case: a span that no longer fits reports rather than guesses.
         assert_eq!(Span::bytes(6, 11).slice("Hello world"), Some("world"));
         assert_eq!(Span::bytes(6, 99).slice("Hello world"), None);
         assert_eq!(Span::chars(6, 99).slice("Hello world"), None);
-    }
 
-    #[test]
-    fn a_char_span_and_a_byte_span_address_different_runs() {
+        // Case: a char span and a byte span address different runs.
         // "é" is two bytes, so every offset after it disagrees.
         let text = "café notes";
         assert_eq!(Span::chars(5, 10).slice(text), Some("notes"));
@@ -175,10 +175,8 @@ mod tests {
             Span::bytes(5, 10).slice(text),
             "if these ever agree the test has lost its point"
         );
-    }
 
-    #[test]
-    fn a_char_span_may_end_just_past_the_last_character() {
+        // Case: a char span may end just past the last character.
         assert_eq!(Span::chars(0, 4).slice("café"), Some("café"));
         assert_eq!(Span::chars(3, 4).slice("café"), Some("é"));
     }

@@ -19,13 +19,50 @@ use serde_json::Value;
 
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
-use crate::remote;
 use crate::vmbuild::sh_quote;
 
+/// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
+/// so builds from different checkouts on one host can keep their images apart.
+///
+/// # Errors
+/// A value that is not an image tag.
+pub fn local_tag() -> Result<String, CliError> {
+    parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
+}
+
+fn parse_local_tag(value: Option<&str>) -> Result<String, CliError> {
+    let tag = match value {
+        None | Some("") => return Ok("latest".to_owned()),
+        Some(tag) => tag,
+    };
+    let mut chars = tag.chars();
+    let first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    if first && tag.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+        Ok(tag.to_owned())
+    } else {
+        Err(CliError::InvalidInput(format!(
+            "TILO_LOCAL_TAG={tag} is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)"
+        )))
+    }
+}
+
 /// What `--from local` builds and moves the VM onto.
-pub const LOCAL_DEV_IMAGE: &str = "localhost/tilo-vm:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_dev_image() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo-vm:{}", local_tag()?))
+}
+
 /// The production image the local dev image is built FROM.
-pub const LOCAL_BASE: &str = "localhost/tilo:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_base() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo:{}", local_tag()?))
+}
 /// The script `--from local` runs (relative to the worktree).
 pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
@@ -66,7 +103,7 @@ pub fn parse_from(
     };
     match from.split_once(':') {
         None if from == "local" => Ok(UpgradeFrom::Local {
-            image: LOCAL_DEV_IMAGE.to_owned(),
+            image: local_dev_image()?,
             build: true,
         }),
         Some(("local", image)) if !image.is_empty() => Ok(UpgradeFrom::Local {
@@ -106,6 +143,54 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
             format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
         ],
     }
+}
+
+/// The seven-hex commit a `sha:` tag (`main-<sha7>`) names.
+pub fn ci_commit(tag: &str) -> Option<&str> {
+    tag.strip_prefix("main-")
+        .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A dev build of a branch or pull request is tagged `<ref>-<sha7>`, so a
+/// commit that is not on main is found by listing the repositories' tags:
+/// `tilo-vm:<ref>-<sha7>-ci` is the published dev image,
+/// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
+/// `skopeo list-tags` output in, candidates out; several refs sort by name so
+/// the choice is stable.
+pub fn ci_ref_candidates(sha: &str, arch: &str, vm_tags: &str, ci_tags: &str) -> CiCandidates {
+    fn tags(listing: &str) -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(listing)
+            .ok()
+            .and_then(|value| value.get("Tags").cloned())
+            .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
+            .unwrap_or_default()
+    }
+    fn named_ref(tag: &str, suffix: &str) -> bool {
+        tag.strip_suffix(suffix).is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+    }
+    let mut dev_images: Vec<String> = tags(vm_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-ci")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
+        .collect();
+    let mut bases: Vec<String> = tags(ci_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-{arch}")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
+        .collect();
+    dev_images.sort();
+    bases.sort();
+    CiCandidates { dev_images, bases }
+}
+
+/// `skopeo list-tags` for one repository.
+pub fn list_tags_command(repository: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
 }
 
 /// The local tag of a dev image built FROM a CI base.
@@ -181,6 +266,72 @@ pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
         .and_then(Value::as_str)
         .map(str::to_owned);
     Ok((id, flavour))
+}
+
+/// Where `tilo-vm image build` writes, under its output directory.
+pub const BUILT_LAYOUT: &str = "image";
+/// The dev disk `tilo-vm image build --disk` writes there.
+pub const BUILT_DISK: &str = "disk.qcow2";
+
+/// The script `image disk` runs (relative to the worktree): the build's disk
+/// step, with `TILO_SKIP_BUILD=1`.
+pub const DISK_SCRIPT: &str = "os/dev/build-image.sh";
+
+/// Copy a layout [`BUILT_LAYOUT`]-style (tag [`LAYOUT_TAG`]) into podman's
+/// storage as `image`.
+pub fn import_layout_command(layout: &Path, image: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["copy", "--quiet"])
+        .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
+        .arg(format!("containers-storage:{image}"))
+}
+
+/// Did bootc refuse a switch because the VM already boots that image? The
+/// same image can carry another manifest digest (compressed or not), which
+/// only bootc's composefs digest sees through.
+pub fn is_already_booted(bootc_stderr: &str) -> bool {
+    bootc_stderr.contains("same fs-verity digest as the existing Some(Booted) deployment")
+}
+
+pub fn is_already_rollback(bootc_stderr: &str) -> bool {
+    bootc_stderr.contains("same fs-verity digest as the existing Some(Rollback) deployment")
+}
+
+/// Is `path` an OCI image layout directory (what `--image <dir>` takes)?
+pub fn is_layout(path: &Path) -> bool {
+    path.join("oci-layout").is_file() && path.join("index.json").is_file()
+}
+
+/// What `vm upgrade --image <layout>` checks, saved beside the layout as
+/// `<layout>.facts`: [`inspect_command`]'s output, a `@@probe` line and
+/// [`probe_command`]'s, as they were where the image was built.
+pub fn layout_facts_text(inspect: &str, probe: &str) -> String {
+    format!("{}\n@@probe\n{probe}", inspect.trim_end())
+}
+
+/// The image's name and facts from [`layout_facts_text`].
+///
+/// # Errors
+/// Text without the marker, or inspect output that does not parse.
+pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
+    let (inspect, probe) = text
+        .split_once("\n@@probe\n")
+        .ok_or("no @@probe section in the layout's facts")?;
+    let (id, flavour) = parse_inspect(inspect)?;
+    let name = serde_json::from_str::<Value>(inspect)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/0/RepoTags/0")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .map_or_else(|| local_dev_image().map_err(|e| e.to_string()), Ok)?;
+    let mut facts = ImageFacts {
+        id,
+        flavour,
+        ..ImageFacts::default()
+    };
+    parse_probe(probe, &mut facts);
+    Ok((name, facts))
 }
 
 /// Apply [`probe_command`]'s output to `facts`.
@@ -505,28 +656,32 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
 
 /// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
 /// longer referenced go, so the VM keeps one image's worth.
-pub fn rsync_command(layout: &Path, endpoint: &SshEndpoint, key: Option<&str>) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![sh_quote(&ssh.program)];
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
+///
+/// # Errors
+/// Returns an error when the rsync SSH transport is unavailable.
+pub fn rsync_command(
+    layout: &Path,
+    endpoint: &SshEndpoint,
+    key: Option<&str>,
+) -> Result<CommandLine, CliError> {
+    let rsh = crate::vmbuild::rsync_rsh(endpoint, key)?;
     let mut source = crate::vmbuild::rsync_source(layout);
     if !source.ends_with('/') {
         source.push('/');
     }
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--whole-file", "--stats"],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(format!(
         "mkdir -p {LOCKS} {VM_LAYOUT} && flock --nonblock --conflict-exit-code 75 {LOCKS}/image.lock rsync"
     ))
     .arg(source)
     .arg(format!("{}@{}:{VM_LAYOUT}/", endpoint.user, endpoint.host))
-    .env("LC_ALL", "C")
+    .env("LC_ALL", "C"))
 }
 
 /// Bytes rsync sent, from its `--stats`.
@@ -666,99 +821,248 @@ mod tests {
 
     use super::*;
 
+    /// `TILO_LOCAL_TAG` names the local images' tag, `latest` when unset; anything else is refused.
     #[test]
-    fn from_local_builds_and_from_local_image_does_not() {
+    fn local_tag_is_latest_unless_named() {
+        assert_eq!(parse_local_tag(None).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
         assert_eq!(
-            parse_from("local", None).unwrap(),
-            UpgradeFrom::Local {
-                image: LOCAL_DEV_IMAGE.to_owned(),
-                build: true
-            }
+            parse_local_tag(Some(&"a".repeat(128))).unwrap(),
+            "a".repeat(128)
         );
-        assert_eq!(
-            parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
-            UpgradeFrom::Local {
-                image: "localhost/tilo-vm:mine".to_owned(),
-                build: false
+        for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
+            assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    /// from-local builds and from-local-image does not; only dev names pass; production-named, unlabelled
+    /// and sealed images are refused with the fix; an older base is refused and an unknown age is a note.
+    #[test]
+    fn image_upgrades_accept_only_fresh_labelled_dev_images() {
+        // Phase: from_local_builds_and_from_local_image_does_not.
+        {
+            assert_eq!(
+                parse_from("local", None).unwrap(),
+                UpgradeFrom::Local {
+                    image: local_dev_image().unwrap(),
+                    build: true
+                }
+            );
+            assert_eq!(
+                parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
+                UpgradeFrom::Local {
+                    image: "localhost/tilo-vm:mine".to_owned(),
+                    build: false
+                }
+            );
+            for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
+                let error = parse_from(bad, None).unwrap_err();
+                assert!(
+                    error
+                        .hint()
+                        .contains("--from local:localhost/tilo-vm:<tag>")
+                        && error.hint().contains("--from ci:main-<sha7>"),
+                    "{bad}: {error}"
+                );
             }
-        );
-        for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
-            let error = parse_from(bad, None).unwrap_err();
+        }
+
+        // Phase: only_dev_names_pass.
+        {
+            for good in [
+                "localhost/tilo-vm:latest",
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
+                "localhost/tilo-vm@sha256:0123",
+            ] {
+                assert!(is_dev_name(good), "{good}");
+            }
+            for bad in [
+                "localhost/tilo:latest",
+                "registry.tilo.so/tilo/tilo:main",
+                "localhost/tilo-vm",
+                "localhost/tilo-vmx:latest",
+                "tilo-vm:latest",
+            ] {
+                assert!(!is_dev_name(bad), "{bad}");
+            }
+        }
+
+        // Phase: production_named_unlabelled_and_sealed_images_are_refused_with_the_fix.
+        {
+            let error = check_image("localhost/tilo:latest", &dev_facts()).unwrap_err();
             assert!(
-                error
-                    .hint()
-                    .contains("--from local:localhost/tilo-vm:<tag>")
-                    && error.hint().contains("--from ci:main-<sha7>"),
-                "{bad}: {error}"
+                error.to_string().contains("not named as a dev image"),
+                "{error}"
+            );
+            assert!(error.hint().contains("--from local"), "{}", error.hint());
+            assert_eq!(error.see().as_deref(), Some("tilo-vm guide images"));
+
+            let mut facts = dev_facts();
+            facts.flavour = None;
+            let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
+            assert!(error.to_string().contains("label is missing"), "{error}");
+
+            let mut facts = dev_facts();
+            facts.sealed = true;
+            let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
+            assert!(error.to_string().contains("sealed"), "{error}");
+
+            check_image("localhost/tilo-vm:x", &dev_facts()).unwrap();
+        }
+
+        // Phase: an_older_base_is_refused_and_an_unknown_age_is_a_note.
+        {
+            let base = |digest: &str, created: &str| json!({ "image_digest": digest, "base_created": created, "base_image": "localhost/tilo:latest" });
+            let running = base("sha256:aa", "2026-09-20T10:00:00Z");
+            let older = base("sha256:bb", "2026-09-01T10:00:00Z");
+            let newer = base("sha256:cc", "2026-09-21T10:00:00Z");
+            let error = check_base_age("localhost/tilo-vm:latest", Some(&running), Some(&older))
+                .unwrap_err();
+            assert!(matches!(error, CliError::BaseOlder { .. }), "{error}");
+            assert!(
+                error.hint().contains("--allow-older-base"),
+                "{}",
+                error.hint()
+            );
+            assert_eq!(
+                check_base_age("i", Some(&running), Some(&newer)).unwrap(),
+                None
+            );
+            assert_eq!(
+                check_base_age("i", Some(&running), Some(&running)).unwrap(),
+                None
+            );
+            let note = check_base_age(
+                "i",
+                Some(&json!({"image_digest": "sha256:aa"})),
+                Some(&newer),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(note.contains("the VM's image"), "{note}");
+        }
+    }
+
+    /// A built layout's facts read back as the image's own would, and a layout directory is told
+    /// apart from a registry reference.
+    #[test]
+    fn built_layout_facts_read_as_the_images_own() {
+        let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
+        let written = layout_facts_text(
+            inspect,
+            "{\"base_created\": \"2026-09-20T10:00:00Z\"}\n@@uki\n",
+        );
+        let (name, facts) = parse_layout_facts(&written).unwrap();
+        assert_eq!(name, "localhost/tilo-vm:latest");
+        assert_eq!(facts.id, "abc");
+        assert_eq!(facts.flavour.as_deref(), Some("dev"));
+        assert!(!facts.sealed);
+        assert_eq!(
+            text(facts.base.as_ref(), "base_created"),
+            Some("2026-09-20T10:00:00Z")
+        );
+        check_image(&name, &facts).unwrap();
+        let (_, sealed) =
+            parse_layout_facts(&layout_facts_text(inspect, "{}\n@@uki\ntilo.efi\n")).unwrap();
+        assert!(sealed.sealed);
+        assert!(parse_layout_facts(inspect).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_layout(dir.path()));
+        std::fs::write(dir.path().join("oci-layout"), "{}").unwrap();
+        std::fs::write(dir.path().join("index.json"), "{}").unwrap();
+        assert!(is_layout(dir.path()));
+        assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
+
+        // The VM already boots this image under another manifest digest.
+        assert!(is_already_booted(
+            "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
+        ));
+        assert!(!is_already_booted(
+            "error: Switching: pulling: connection refused"
+        ));
+    }
+
+    /// A commit off main is found by its `<ref>-<sha7>` tags.
+    #[test]
+    fn a_pull_request_commit_resolves_through_its_ref_tags() {
+        assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
+        assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
+        assert_eq!(ci_commit("v1.2.3"), None);
+        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
+        let ci =
+            r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
+        let found = ci_ref_candidates("1a2b3c4", "x86_64", vm, ci);
+        assert_eq!(
+            found.dev_images,
+            vec![
+                "registry.tilo.so/tilo/tilo-vm:fix-x-1a2b3c4-ci".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm:pr-12-1a2b3c4-ci".to_owned(),
+            ]
+        );
+        assert_eq!(
+            found.bases,
+            vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
+        );
+        let none = ci_ref_candidates("1a2b3c4", "aarch64", "not json", "{}");
+        assert!(none.dev_images.is_empty() && none.bases.is_empty());
+        assert_eq!(
+            list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
+            "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
+        );
+    }
+
+    /// `--from ci:` and `--from sha:` name a CI tag, which resolves to published dev images, then
+    /// bases; a dev image built here from a CI base is a local dev name.
+    #[test]
+    fn ci_upgrade_sources_resolve_to_published_or_locally_built_dev_images() {
+        // Phase: from_ci_and_sha_name_a_ci_tag.
+        {
+            assert_eq!(
+                parse_from("ci:main-1a2b3c4", None).unwrap(),
+                UpgradeFrom::Ci {
+                    tag: "main-1a2b3c4".into()
+                }
+            );
+            assert_eq!(
+                parse_from("sha:1A2B3C4D", None).unwrap(),
+                UpgradeFrom::Ci {
+                    tag: "main-1a2b3c4".into()
+                }
             );
         }
-    }
 
-    #[test]
-    fn from_ci_and_sha_name_a_ci_tag() {
-        assert_eq!(
-            parse_from("ci:main-1a2b3c4", None).unwrap(),
-            UpgradeFrom::Ci {
-                tag: "main-1a2b3c4".into()
+        // Phase: ci_candidates_try_published_dev_images_then_bases.
+        {
+            let expected = CiCandidates {
+                dev_images: vec![
+                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci".into(),
+                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into(),
+                ],
+                bases: vec![
+                    "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
+                    "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
+                ],
+            };
+            assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
+            // The integration image's own tag and the dev disk's -ci tag name the same build.
+            assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
+            assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
+            for image in expected.dev_images {
+                assert!(is_dev_name(&image), "{image}");
             }
-        );
-        assert_eq!(
-            parse_from("sha:1A2B3C4D", None).unwrap(),
-            UpgradeFrom::Ci {
-                tag: "main-1a2b3c4".into()
-            }
-        );
-    }
-
-    #[test]
-    fn ci_candidates_try_published_dev_images_then_bases() {
-        let expected = CiCandidates {
-            dev_images: vec![
-                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci".into(),
-                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into(),
-            ],
-            bases: vec![
-                "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
-                "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
-            ],
-        };
-        assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
-        // The integration image's own tag and the dev disk's -ci tag name the same build.
-        assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
-        assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
-        for image in expected.dev_images {
-            assert!(is_dev_name(&image), "{image}");
         }
-    }
 
-    #[test]
-    fn a_dev_image_built_from_a_ci_base_is_a_local_dev_name() {
-        let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
-        assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
-        assert!(is_dev_name(&image));
-        assert_eq!(
-            exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
-            "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
-        );
-    }
-
-    #[test]
-    fn only_dev_names_pass() {
-        for good in [
-            "localhost/tilo-vm:latest",
-            "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
-            "localhost/tilo-vm@sha256:0123",
-        ] {
-            assert!(is_dev_name(good), "{good}");
-        }
-        for bad in [
-            "localhost/tilo:latest",
-            "registry.tilo.so/tilo/tilo:main",
-            "localhost/tilo-vm",
-            "localhost/tilo-vmx:latest",
-            "tilo-vm:latest",
-        ] {
-            assert!(!is_dev_name(bad), "{bad}");
+        // Phase: a_dev_image_built_from_a_ci_base_is_a_local_dev_name.
+        {
+            let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
+            assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
+            assert!(is_dev_name(&image));
+            assert_eq!(
+                exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
+                "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
+            );
         }
     }
 
@@ -771,83 +1075,80 @@ mod tests {
         }
     }
 
+    /// Inspect and probe output become facts; bootc status reduces to spec and deployments; VM facts parse
+    /// in one round trip; the bootc probe answers yes, no or nothing.
     #[test]
-    fn production_named_unlabelled_and_sealed_images_are_refused_with_the_fix() {
-        let error = check_image("localhost/tilo:latest", &dev_facts()).unwrap_err();
-        assert!(
-            error.to_string().contains("not named as a dev image"),
-            "{error}"
-        );
-        assert!(error.hint().contains("--from local"), "{}", error.hint());
-        assert_eq!(error.see().as_deref(), Some("tilo-vm guide images"));
+    fn guest_facts_are_probed_in_one_round_trip() {
+        // Phase: inspect_and_probe_output_become_facts.
+        {
+            let (id, flavour) = parse_inspect(
+                r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#,
+            )
+            .unwrap();
+            assert_eq!((id.as_str(), flavour.as_deref()), ("4bd2", Some("dev")));
+            let (_, none) = parse_inspect(r#"[{"Id":"4bd2","Labels":null}]"#).unwrap();
+            assert_eq!(none, None);
 
-        let mut facts = dev_facts();
-        facts.flavour = None;
-        let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
-        assert!(error.to_string().contains("label is missing"), "{error}");
+            let mut facts = ImageFacts::default();
+            parse_probe(
+                "{\"base_created\":\"2026-09-01T00:00:00Z\"}\n\n@@uki\n",
+                &mut facts,
+            );
+            assert!(!facts.sealed);
+            assert_eq!(
+                text(facts.base.as_ref(), "base_created"),
+                Some("2026-09-01T00:00:00Z")
+            );
+            parse_probe("\n@@uki\ntilo-1.efi\n", &mut facts);
+            assert!(facts.sealed);
+            assert!(facts.base.is_none());
+        }
 
-        let mut facts = dev_facts();
-        facts.sealed = true;
-        let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
-        assert!(error.to_string().contains("sealed"), "{error}");
+        // Phase: bootc_status_reduces_to_spec_and_deployments.
+        {
+            let status = parse_bootc_status(STATUS).unwrap();
+            assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
+            assert_eq!(
+                status.booted.as_ref().unwrap().digest,
+                "sha256:1111111111111111111111"
+            );
+            assert_eq!(status.staged, None);
+            let rollback = status.rollback.unwrap();
+            assert_eq!(
+                rollback.describe(),
+                "localhost/tilo-vm:standin-a (sha256:222222222222)"
+            );
+            assert!(parse_bootc_status("not json").is_err());
+        }
 
-        check_image("localhost/tilo-vm:x", &dev_facts()).unwrap();
-    }
+        // Phase: vm_facts_parse_in_one_round_trip.
+        {
+            let output = format!(
+                "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\"}}\n\n@@free\n1024\n@@bootc\n{STATUS}\n"
+            );
+            let facts = parse_vm_facts(&output).unwrap();
+            assert_eq!(facts.boot_id, "b00t");
+            assert_eq!(facts.free_bytes, Some(1 << 20));
+            assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
+            assert!(facts.bootc.booted.is_some());
+            assert!(matches!(
+                parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@bootc\n"),
+                Err(FactsError::Unreadable(_))
+            ));
+            // No bootc at all is its own answer, not a JSON parse error.
+            assert_eq!(
+                parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@bootc\n@@nobootc\n").unwrap_err(),
+                FactsError::NoBootc
+            );
+        }
 
-    #[test]
-    fn inspect_and_probe_output_become_facts() {
-        let (id, flavour) =
-            parse_inspect(r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#)
-                .unwrap();
-        assert_eq!((id.as_str(), flavour.as_deref()), ("4bd2", Some("dev")));
-        let (_, none) = parse_inspect(r#"[{"Id":"4bd2","Labels":null}]"#).unwrap();
-        assert_eq!(none, None);
-
-        let mut facts = ImageFacts::default();
-        parse_probe(
-            "{\"base_created\":\"2026-09-01T00:00:00Z\"}\n\n@@uki\n",
-            &mut facts,
-        );
-        assert!(!facts.sealed);
-        assert_eq!(
-            text(facts.base.as_ref(), "base_created"),
-            Some("2026-09-01T00:00:00Z")
-        );
-        parse_probe("\n@@uki\ntilo-1.efi\n", &mut facts);
-        assert!(facts.sealed);
-        assert!(facts.base.is_none());
-    }
-
-    #[test]
-    fn an_older_base_is_refused_and_an_unknown_age_is_a_note() {
-        let base = |digest: &str, created: &str| json!({ "image_digest": digest, "base_created": created, "base_image": "localhost/tilo:latest" });
-        let running = base("sha256:aa", "2026-09-20T10:00:00Z");
-        let older = base("sha256:bb", "2026-09-01T10:00:00Z");
-        let newer = base("sha256:cc", "2026-09-21T10:00:00Z");
-        let error =
-            check_base_age("localhost/tilo-vm:latest", Some(&running), Some(&older)).unwrap_err();
-        assert!(matches!(error, CliError::BaseOlder { .. }), "{error}");
-        assert!(
-            error.hint().contains("--allow-older-base"),
-            "{}",
-            error.hint()
-        );
-        assert_eq!(
-            check_base_age("i", Some(&running), Some(&newer)).unwrap(),
-            None
-        );
-        assert_eq!(
-            check_base_age("i", Some(&running), Some(&running)).unwrap(),
-            None
-        );
-        let note = check_base_age(
-            "i",
-            Some(&json!({"image_digest": "sha256:aa"})),
-            Some(&newer),
-        )
-        .unwrap()
-        .unwrap();
-        assert!(note.contains("the VM's image"), "{note}");
+        // Phase: the_bootc_probe_answers_yes_no_or_nothing.
+        {
+            assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
+            assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
+            assert_eq!(parse_bootc_probe(""), None);
+            assert!(BOOTC_PROBE.contains("command -v bootc"));
+        }
     }
 
     const STATUS: &str = r#"{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost",
@@ -856,171 +1157,137 @@ mod tests {
         "booted":{"image":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"imageDigest":"sha256:1111111111111111111111"},"pinned":false},
         "rollback":{"image":{"image":{"image":"localhost/tilo-vm:standin-a","transport":"registry"},"imageDigest":"sha256:2222222222222222222222"}}}}"#;
 
+    /// Staging switches once then upgrades; transfer commands reuse blobs and hold the image lock; the
+    /// Windows image layout is a local MSYS2 rsync operand; pruning keeps what the tag reaches.
     #[test]
-    fn bootc_status_reduces_to_spec_and_deployments() {
-        let status = parse_bootc_status(STATUS).unwrap();
-        assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
-        assert_eq!(
-            status.booted.as_ref().unwrap().digest,
-            "sha256:1111111111111111111111"
-        );
-        assert_eq!(status.staged, None);
-        let rollback = status.rollback.unwrap();
-        assert_eq!(
-            rollback.describe(),
-            "localhost/tilo-vm:standin-a (sha256:222222222222)"
-        );
-        assert!(parse_bootc_status("not json").is_err());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn image_transfer_stages_once_and_prunes_only_unreachable_blobs() {
+        // Phase: staging_switches_once_then_upgrades.
+        {
+            let fresh = BootcStatus {
+                spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
+                ..BootcStatus::default()
+            };
+            assert_eq!(
+                stage_command(&fresh, "oci", &layout_imgref()).join(" "),
+                "bootc switch --transport oci /var/lib/tilo-vm/image:tilo-vm"
+            );
+            let following = parse_bootc_status(STATUS).unwrap();
+            assert_eq!(
+                stage_command(&following, "oci", &layout_imgref()).join(" "),
+                "bootc upgrade"
+            );
+            assert_eq!(
+                stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
+                "bootc switch registry.tilo.so/tilo/tilo-vm:x"
+            );
+            let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
+            assert!(
+                locked.contains(
+                    "flock --nonblock --conflict-exit-code 75 /var/lib/tilo-vm/locks/vm.lock sh -c"
+                ),
+                "{locked}"
+            );
+            assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
+            // bootc gets a writable ESP for the one command, and it is read-only again after.
+            let line = bootc_line(&["status", "--json"]);
+            assert!(line.contains("mount -o remount,rw /boot"), "{line}");
+            assert!(
+                line.contains("mount -o remount,ro /boot; exit $rc)"),
+                "{line}"
+            );
+            assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
+        }
 
-    #[test]
-    fn staging_switches_once_then_upgrades() {
-        let fresh = BootcStatus {
-            spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
-            ..BootcStatus::default()
-        };
-        assert_eq!(
-            stage_command(&fresh, "oci", &layout_imgref()).join(" "),
-            "bootc switch --transport oci /var/lib/tilo-vm/image:tilo-vm"
-        );
-        let following = parse_bootc_status(STATUS).unwrap();
-        assert_eq!(
-            stage_command(&following, "oci", &layout_imgref()).join(" "),
-            "bootc upgrade"
-        );
-        assert_eq!(
-            stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
-            "bootc switch registry.tilo.so/tilo/tilo-vm:x"
-        );
-        let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
-        assert!(
-            locked.contains(
-                "flock --nonblock --conflict-exit-code 75 /var/lib/tilo-vm/locks/vm.lock sh -c"
-            ),
-            "{locked}"
-        );
-        assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
-        // bootc gets a writable ESP for the one command, and it is read-only again after.
-        let line = bootc_line(&["status", "--json"]);
-        assert!(line.contains("mount -o remount,rw /boot"), "{line}");
-        assert!(
-            line.contains("mount -o remount,ro /boot; exit $rc)"),
-            "{line}"
-        );
-        assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
-    }
+        // Phase: transfer_commands_reuse_blobs_and_hold_the_image_lock.
+        {
+            let export = export_command(
+                "localhost/tilo-vm:latest",
+                Path::new("/c/dev"),
+                Path::new("/c/dev.digest"),
+            );
+            assert_eq!(
+                export.display(),
+                "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --digestfile /c/dev.digest containers-storage:localhost/tilo-vm:latest oci:/c/dev:tilo-vm"
+            );
+            let endpoint = SshEndpoint {
+                user: "root".into(),
+                host: "127.0.0.1".into(),
+                port: 2223,
+            };
+            let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id")).unwrap();
+            let text = rsync.display();
+            assert!(text.contains("--delete"), "{text}");
+            assert!(
+                text.contains("/var/lib/tilo-vm/locks/image.lock rsync"),
+                "{text}"
+            );
+            assert!(
+                text.ends_with("/c/dev/ root@127.0.0.1:/var/lib/tilo-vm/image/"),
+                "{text}"
+            );
+            assert_eq!(
+                rsync_sent_bytes(
+                    "Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"
+                ),
+                Some(12_345_678)
+            );
+        }
 
-    #[test]
-    fn vm_facts_parse_in_one_round_trip() {
-        let output = format!(
-            "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\"}}\n\n@@free\n1024\n@@bootc\n{STATUS}\n"
-        );
-        let facts = parse_vm_facts(&output).unwrap();
-        assert_eq!(facts.boot_id, "b00t");
-        assert_eq!(facts.free_bytes, Some(1 << 20));
-        assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
-        assert!(facts.bootc.booted.is_some());
-        assert!(matches!(
-            parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@bootc\n"),
-            Err(FactsError::Unreadable(_))
-        ));
-        // No bootc at all is its own answer, not a JSON parse error.
-        assert_eq!(
-            parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@bootc\n@@nobootc\n").unwrap_err(),
-            FactsError::NoBootc
-        );
-    }
+        // Phase: windows_image_layout_is_a_local_msys2_rsync_operand.
+        #[cfg(windows)]
+        {
+            let endpoint = SshEndpoint {
+                user: "root".into(),
+                host: "127.0.0.1".into(),
+                port: 2223,
+            };
+            let line =
+                rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None).unwrap();
+            assert_eq!(
+                line.args[line.args.len() - 2],
+                "/c/tilo-build/image-layout/"
+            );
+        }
 
-    #[test]
-    fn the_bootc_probe_answers_yes_no_or_nothing() {
-        assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
-        assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
-        assert_eq!(parse_bootc_probe(""), None);
-        assert!(BOOTC_PROBE.contains("command -v bootc"));
-    }
-
-    #[test]
-    fn transfer_commands_reuse_blobs_and_hold_the_image_lock() {
-        let export = export_command(
-            "localhost/tilo-vm:latest",
-            Path::new("/c/dev"),
-            Path::new("/c/dev.digest"),
-        );
-        assert_eq!(
-            export.display(),
-            "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --digestfile /c/dev.digest containers-storage:localhost/tilo-vm:latest oci:/c/dev:tilo-vm"
-        );
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "127.0.0.1".into(),
-            port: 2223,
-        };
-        let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id"));
-        let text = rsync.display();
-        assert!(text.contains("--delete"), "{text}");
-        assert!(
-            text.contains("/var/lib/tilo-vm/locks/image.lock rsync"),
-            "{text}"
-        );
-        assert!(
-            text.ends_with("/c/dev/ root@127.0.0.1:/var/lib/tilo-vm/image/"),
-            "{text}"
-        );
-        assert_eq!(
-            rsync_sent_bytes("Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"),
-            Some(12_345_678)
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_image_layout_is_a_local_msys2_rsync_operand() {
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "127.0.0.1".into(),
-            port: 2223,
-        };
-        let line = rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None);
-        assert_eq!(
-            line.args[line.args.len() - 2],
-            "/c/tilo-build/image-layout/"
-        );
-    }
-
-    #[test]
-    fn pruning_keeps_what_the_tag_reaches() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = dir.path();
-        let blobs = layout.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        let write = |hex: &str, body: &str| std::fs::write(blobs.join(hex), body).unwrap();
-        write("aa", "layer");
-        write("bb", "config");
-        write("cc", "stale layer");
-        write(
-            "dd",
-            &json!({"config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:bb"},
-                    "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:aa"}]})
-            .to_string(),
-        );
-        let stale = json!({"layers": [{"mediaType": "x", "digest": "sha256:cc"}]}).to_string();
-        write("ee", &stale);
-        let manifest = |hex: &str, tag: &str| json!({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": format!("sha256:{hex}"), "annotations": {"org.opencontainers.image.ref.name": tag}});
-        std::fs::write(
-            layout.join("index.json"),
-            json!({"schemaVersion": 2, "manifests": [manifest("dd", LAYOUT_TAG), manifest("ee", "old")]}).to_string(),
-        )
-        .unwrap();
-        let freed = prune_layout(layout).unwrap();
-        assert_eq!(freed, ("stale layer".len() + stale.len()) as u64);
-        let left: BTreeSet<String> = std::fs::read_dir(&blobs)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(left, ["aa", "bb", "dd"].map(str::to_owned).into());
-        assert_eq!(
-            layout_bytes(layout),
-            (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
-        );
+        // Phase: pruning_keeps_what_the_tag_reaches.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let layout = dir.path();
+            let blobs = layout.join("blobs/sha256");
+            std::fs::create_dir_all(&blobs).unwrap();
+            let write = |hex: &str, body: &str| std::fs::write(blobs.join(hex), body).unwrap();
+            write("aa", "layer");
+            write("bb", "config");
+            write("cc", "stale layer");
+            write(
+                "dd",
+                &json!({"config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:bb"},
+                        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:aa"}]})
+                .to_string(),
+            );
+            let stale = json!({"layers": [{"mediaType": "x", "digest": "sha256:cc"}]}).to_string();
+            write("ee", &stale);
+            let manifest = |hex: &str, tag: &str| json!({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": format!("sha256:{hex}"), "annotations": {"org.opencontainers.image.ref.name": tag}});
+            std::fs::write(
+                layout.join("index.json"),
+                json!({"schemaVersion": 2, "manifests": [manifest("dd", LAYOUT_TAG), manifest("ee", "old")]}).to_string(),
+            )
+            .unwrap();
+            let freed = prune_layout(layout).unwrap();
+            assert_eq!(freed, ("stale layer".len() + stale.len()) as u64);
+            let left: BTreeSet<String> = std::fs::read_dir(&blobs)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(left, ["aa", "bb", "dd"].map(str::to_owned).into());
+            assert_eq!(
+                layout_bytes(layout),
+                (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
+            );
+        }
     }
 }

@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_clock::unix_now_i64;
 use ui::doc::{read_bool, read_str};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -28,12 +29,14 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::i18n::t;
 use crate::prefs::{NotificationPrefs, SystemPrefs};
 use crate::widgets::{
-    El, caption, card, choice_row, rows, setting_row_described, status_pill, value_row,
+    El, StatusTone, caption, card, choice_row, rows, semantic_status_pill, setting_row_described,
+    value_row,
 };
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
@@ -152,8 +155,21 @@ fn app_key(id: &str, field: &str) -> String {
     format!("notifications.app.{id}.{field}")
 }
 
-fn mute_label(deadline: Option<i64>, now: i64) -> &'static str {
-    match deadline.filter(|deadline| *deadline > now) {
+fn mute_ftl(english: &str) -> &'static str {
+    match english {
+        "For 1 hour" => "notif-mute-1h",
+        "For 8 hours" => "notif-mute-8h",
+        "For 24 hours" => "notif-mute-24h",
+        _ => "notif-mute-off",
+    }
+}
+
+fn mute_shown(english: &str) -> String {
+    t(mute_ftl(english))
+}
+
+fn mute_label(deadline: Option<i64>, now: i64) -> String {
+    let english = match deadline.filter(|deadline| *deadline > now) {
         None => "Not muted",
         Some(deadline) => {
             let remaining = deadline - now;
@@ -165,13 +181,21 @@ fn mute_label(deadline: Option<i64>, now: i64) -> &'static str {
                 "For 24 hours"
             }
         }
-    }
+    };
+    mute_shown(english)
 }
 
 fn mute_seconds(label: &str) -> Option<i64> {
+    MUTE_OPTIONS.iter().find_map(|(english, seconds)| {
+        (*english == label || mute_shown(english) == label).then_some(*seconds)
+    })
+}
+
+fn mute_options() -> Vec<String> {
     MUTE_OPTIONS
         .iter()
-        .find_map(|(candidate, seconds)| (*candidate == label).then_some(*seconds))
+        .map(|(english, _)| mute_shown(english))
+        .collect()
 }
 
 const FOCUS_TIMES: &[(&str, u16)] = &[
@@ -199,11 +223,37 @@ fn focus_time_minutes(label: &str) -> Option<u16> {
         .find_map(|(candidate, value)| (*candidate == label).then_some(*value))
 }
 
-fn focus_days_label(days: u8) -> &'static str {
-    FOCUS_DAYS
+fn focus_days_ftl(english: &str) -> &'static str {
+    match english {
+        "Weekdays" => "notif-days-weekdays",
+        "Weekends" => "notif-days-weekends",
+        _ => "notif-days-every",
+    }
+}
+
+fn focus_days_shown(english: &str) -> String {
+    t(focus_days_ftl(english))
+}
+
+fn focus_days_label(days: u8) -> String {
+    let english = FOCUS_DAYS
         .iter()
         .find_map(|(label, value)| (*value == days).then_some(*label))
-        .unwrap_or("Every day")
+        .unwrap_or("Every day");
+    focus_days_shown(english)
+}
+
+fn focus_days_from_label(label: &str) -> Option<u8> {
+    FOCUS_DAYS.iter().find_map(|(english, days)| {
+        (*english == label || focus_days_shown(english) == label).then_some(*days)
+    })
+}
+
+fn focus_days_options() -> Vec<String> {
+    FOCUS_DAYS
+        .iter()
+        .map(|(english, _)| focus_days_shown(english))
+        .collect()
 }
 
 pub struct NotificationsPane {
@@ -218,11 +268,11 @@ pub struct NotificationsPane {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// Framework-owned action dispatch: brackets the undo boundary (bubbled up by
-    /// `SettingsApp` via [`Widget::take_committed_action`], so the host records
+    /// `SettingsApp` via [`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action), so the host records
     /// exactly one boundary per event), encodes and dispatches each settings
     /// action, and remembers the last one so a test can prove an on-screen toggle
     /// builds the same [`EncodedAction`] the palette does.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for NotificationsPane {
@@ -236,16 +286,38 @@ impl NotificationsPane {
         Self::with_prefs(SystemPrefs::load().notifications)
     }
 
-    /// Construct from explicit preferences — used by tests and the
-    /// deterministic `--shots` render.
+    /// Construct from explicit preferences over the machine's installed
+    /// apps.
     pub fn with_prefs(prefs: NotificationPrefs) -> Self {
         let apps = installed_notification_apps(&prefs.per_app);
+        Self::with_prefs_and_apps(prefs, apps)
+    }
+
+    /// The `--shots` pane: default policy over a fixed app list, so a capture
+    /// shows the same per-app cards on every machine rather than one per
+    /// desktop entry the host happens to have.
+    pub fn for_shot() -> Self {
+        let apps = [
+            ("so.tilo.calendar", "Calendar"),
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.mail", "Mail"),
+        ]
+        .into_iter()
+        .map(|(id, name)| InstalledNotificationApp {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+        .collect();
+        Self::with_prefs_and_apps(NotificationPrefs::default(), apps)
+    }
+
+    fn with_prefs_and_apps(prefs: NotificationPrefs, apps: Vec<InstalledNotificationApp>) -> Self {
         let now = unix_now_i64();
         let mute_labels = apps
             .iter()
             .map(|app| {
                 let deadline = prefs.per_app.get(&app.id).and_then(|rule| rule.muted_until);
-                (app.id.clone(), mute_label(deadline, now).to_string())
+                (app.id.clone(), mute_label(deadline, now))
             })
             .collect();
         Self {
@@ -256,11 +328,12 @@ impl NotificationsPane {
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
     /// The most recently dispatched settings action's wire form (test hook).
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -288,8 +361,15 @@ impl NotificationsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Reconcile one boolean setting between its widget scratch key and its
@@ -347,14 +427,13 @@ impl NotificationsPane {
 
     /// A one-word delivery status, so the effect of the toggles reads at a
     /// glance without re-parsing every row.
-    fn status(&self) -> (&'static str, vello::peniko::Color) {
-        let t = Theme::dark();
+    fn status(&self) -> (String, StatusTone) {
         if self.prefs.do_not_disturb {
-            ("Silenced", t.text_dim)
+            (t("notif-status-silenced"), StatusTone::Neutral)
         } else if !self.prefs.show_banners {
-            ("Banners off", t.tokens.colors.semantic.warning)
+            (t("notif-status-banners-off"), StatusTone::Warning)
         } else {
-            ("Active", t.status_success)
+            (t("notif-status-active"), StatusTone::Success)
         }
     }
 
@@ -381,25 +460,27 @@ impl NotificationsPane {
     }
 
     fn build_dnd_card(&self) -> Box<dyn Widget> {
-        let (status_label, status_tint) = self.status();
+        let (status_label, status_tone) = self.status();
 
         // A label-left / status-pill-right row, so the combined effect of the
         // toggles is legible at the top of the pane.
         let status_row: El = Box::new(
             ui::widget::Row::new()
-                .push(Box::new(ui::widget::Text::new("Delivery").with_size(13.0)))
+                .push(Box::new(
+                    ui::widget::Text::new(&t("notif-delivery")).with_size(13.0),
+                ))
                 .push(Box::new(ui::widget::Spacer::new()))
-                .push(status_pill(status_label, status_tint)),
+                .push(semantic_status_pill(&status_label, status_tone)),
         );
 
         // Master Do Not Disturb, with the visible delivery-status pill.
         card(
-            "Do Not Disturb",
+            &t("notif-dnd-title"),
             rows(vec![
                 status_row,
                 setting_row_described(
-                    "Do Not Disturb",
-                    "Silence all banners and sounds until you turn it off",
+                    &t("notif-dnd"),
+                    &t("notif-dnd-desc"),
                     Self::toggle("notifications.dnd", DND_KEY),
                 ),
             ]),
@@ -408,16 +489,16 @@ impl NotificationsPane {
 
     fn build_banners_card() -> Box<dyn Widget> {
         card(
-            "Banners",
+            &t("notif-banners-title"),
             rows(vec![
                 setting_row_described(
-                    "Show banners",
-                    "Pop up a banner when a notification arrives",
+                    &t("notif-show-banners"),
+                    &t("notif-show-banners-desc"),
                     Self::toggle("notifications.banners", BANNERS_KEY),
                 ),
                 setting_row_described(
-                    "Show message previews",
-                    "Reveal the message body in the banner, not just the app",
+                    &t("notif-previews"),
+                    &t("notif-previews-desc"),
                     Self::toggle("notifications.previews", PREVIEWS_KEY),
                 ),
             ]),
@@ -425,36 +506,27 @@ impl NotificationsPane {
     }
 
     fn build_delivery_card() -> Box<dyn Widget> {
+        let sounds_value = match media::event_sound::sound_backend() {
+            media::event_sound::SoundBackend::PipeWire => t("notif-sounds-pipewire"),
+            media::event_sound::SoundBackend::Unavailable => t("notif-sounds-missing"),
+        };
         card(
-            "Lock screen & shell integration",
+            &t("notif-delivery-title"),
             rows(vec![
                 setting_row_described(
-                    "Show on lock screen",
-                    "Show only a redacted count while the session is locked",
+                    &t("notif-lock-screen"),
+                    &t("notif-lock-screen-desc"),
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
                 ),
-                value_row(
-                    "Notification sounds",
-                    match media::notification_sound::sound_backend() {
-                        media::notification_sound::SoundBackend::Libcanberra => {
-                            "Available through the session sound theme"
-                        }
-                        media::notification_sound::SoundBackend::PipeWire => {
-                            "Available through the PipeWire session route"
-                        }
-                        media::notification_sound::SoundBackend::Unavailable => {
-                            "Unavailable: install libcanberra or PipeWire sound tools"
-                        }
-                    },
-                ),
+                value_row(&t("notif-sounds"), &sounds_value),
                 setting_row_described(
-                    "Play sounds",
-                    "Use the current desktop sound theme and audio route",
+                    &t("notif-play-sounds"),
+                    &t("notif-play-sounds-desc"),
                     Self::toggle("notifications.sounds", SOUNDS_KEY),
                 ),
                 setting_row_described(
-                    "Show notification badges",
-                    "Show verified application counts in shell surfaces that support badges",
+                    &t("notif-badges"),
+                    &t("notif-badges-desc"),
                     Self::toggle("notifications.badges", BADGES_KEY),
                 ),
             ]),
@@ -467,44 +539,35 @@ impl NotificationsPane {
             .map(|(label, _)| (*label).to_string())
             .collect();
         card(
-            "Focus schedule",
+            &t("notif-focus-title"),
             rows(vec![
                 setting_row_described(
-                    "Scheduled quiet hours",
-                    "Hold banners and sounds automatically",
+                    &t("notif-focus-enabled"),
+                    &t("notif-focus-enabled-desc"),
                     Self::toggle("notifications.focus.enabled", FOCUS_ENABLED_KEY),
                 ),
                 crate::widgets::choice_row(
-                    "From",
+                    &t("notif-focus-from"),
                     Box::new(
                         Dropdown::new(focus_options.clone(), &Self::scratch_key(FOCUS_START_KEY))
                             .with_placeholder(focus_time_label(self.prefs.focus.start_minute)),
                     ),
                 ),
                 choice_row(
-                    "Days",
+                    &t("notif-focus-days"),
                     Box::new(
-                        Dropdown::new(
-                            FOCUS_DAYS
-                                .iter()
-                                .map(|(label, _)| (*label).to_string())
-                                .collect(),
-                            &Self::scratch_key(FOCUS_DAYS_KEY),
-                        )
-                        .with_placeholder(focus_days_label(self.prefs.focus.weekdays)),
+                        Dropdown::new(focus_days_options(), &Self::scratch_key(FOCUS_DAYS_KEY))
+                            .with_placeholder(&focus_days_label(self.prefs.focus.weekdays)),
                     ),
                 ),
                 crate::widgets::choice_row(
-                    "Until",
+                    &t("notif-focus-until"),
                     Box::new(
                         Dropdown::new(focus_options, &Self::scratch_key(FOCUS_END_KEY))
                             .with_placeholder(focus_time_label(self.prefs.focus.end_minute)),
                     ),
                 ),
-                caption(
-                    "The schedule follows local time. User-approved priority apps may \
-                     still notify; an app cannot mark itself as priority.",
-                ),
+                caption(&t("notif-focus-caption")),
             ]),
         )
     }
@@ -516,17 +579,21 @@ impl NotificationsPane {
             let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
             let banners = rule.banners.unwrap_or(self.prefs.show_banners);
             let previews = rule.previews.unwrap_or(self.prefs.show_previews);
-            let mute_options = MUTE_OPTIONS
-                .iter()
-                .map(|(label, _)| (*label).to_string())
-                .collect();
+            let mute_options = mute_options();
+            let app_caption = if banners && previews {
+                t("notif-app-allowed")
+            } else if banners {
+                t("notif-app-hidden")
+            } else {
+                t("notif-app-history")
+            };
             app_cards.push(card(
                 &app.name,
                 rows(vec![
-                    value_row("Verified application", &app.id),
+                    value_row(&t("notif-app-verified"), &app.id),
                     setting_row_described(
-                        "Allow banners",
-                        "Override the global banner choice for this application",
+                        &t("notif-app-banners"),
+                        &t("notif-app-banners-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.banners", app.id),
@@ -536,8 +603,8 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
-                        "Show previews",
-                        "Allow message contents from this application",
+                        &t("notif-app-previews"),
+                        &t("notif-app-previews-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.previews", app.id),
@@ -547,8 +614,8 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
-                        "Play sounds",
-                        "Override the global sound choice for this application",
+                        &t("notif-app-sounds"),
+                        &t("notif-app-sounds-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.sounds", app.id),
@@ -558,8 +625,8 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
-                        "Show badges",
-                        "Allow verified unread counts in supported shell surfaces",
+                        &t("notif-app-badges"),
+                        &t("notif-app-badges-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.badges", app.id),
@@ -569,8 +636,8 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
-                        "Priority during focus",
-                        "Let this verified application pierce scheduled focus",
+                        &t("notif-app-priority"),
+                        &t("notif-app-priority-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.priority", app.id),
@@ -580,8 +647,8 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
-                        "Priority contacts",
-                        "Allow this verified communications app to identify senders; only Contacts favourites can pierce focus",
+                        &t("notif-app-contacts"),
+                        &t("notif-app-contacts-desc"),
                         Box::new(
                             Toggle::new(
                                 &format!("notifications.app.{}.priority_contacts", app.id),
@@ -591,21 +658,15 @@ impl NotificationsPane {
                         ),
                     ),
                     choice_row(
-                        "Mute temporarily",
+                        &t("notif-app-mute"),
                         Box::new(
                             Dropdown::new(mute_options, &app_key(&app.id, "mute"))
-                                .with_placeholder(mute_label(rule.muted_until, now)),
+                                .with_placeholder(&mute_label(rule.muted_until, now)),
                         ),
                     ),
                     // These are seeded below; keeping the local values here
                     // makes the intended inheritance visible in code and tests.
-                    caption(if banners && previews {
-                        "Banners and their contents are currently allowed."
-                    } else if banners {
-                        "Banners are allowed with their contents hidden."
-                    } else {
-                        "Notifications go to history without a banner."
-                    }),
+                    caption(&app_caption),
                 ]),
             ));
         }
@@ -615,40 +676,33 @@ impl NotificationsPane {
     fn build_apps_card(is_empty: bool) -> Box<dyn Widget> {
         if is_empty {
             card(
-                "Applications",
-                rows(vec![caption(
-                    "Per-application controls appear after a packaged application is installed.",
-                )]),
+                &t("notif-apps-title"),
+                rows(vec![caption(&t("notif-apps-empty"))]),
             )
         } else {
             card(
-                "Applications",
-                rows(vec![caption(
-                    "Rules use verified Tilo, system, or Flatpak identities — never the name an application writes into a notification.",
-                )]),
+                &t("notif-apps-title"),
+                rows(vec![caption(&t("notif-apps-caption"))]),
             )
         }
     }
 
     fn build_explainer_card() -> Box<dyn Widget> {
         card(
-            "How this applies",
-            rows(vec![caption(
-                "These choices are read by the compositor's notification layer, \
-                 so every verified app follows the same delivery policy. Do Not \
-                 Disturb overrides the individual banner and sound toggles.",
-            )]),
+            &t("notif-how-title"),
+            rows(vec![caption(&t("notif-how-caption"))]),
         )
     }
 
     fn build_priority_contacts_card() -> Box<dyn Widget> {
         card(
-            "Priority contacts",
+            &t("notif-priority-title"),
             rows(vec![
-                value_row("Source", "Favourites in Contacts"),
-                caption(
-                    "Contacts publishes a redacted, salted priority registry to the shell. Raw addresses are not stored there. Only communication apps you authorize above may assert a sender; the shell verifies the sender against that registry.",
+                value_row(
+                    &t("notif-priority-source"),
+                    &t("notif-priority-source-value"),
                 ),
+                caption(&t("notif-priority-caption")),
             ]),
         )
     }
@@ -699,11 +753,8 @@ impl NotificationsPane {
             FOCUS_END_KEY,
             focus_time_label(self.prefs.focus.end_minute),
         );
-        seed_text(
-            state,
-            FOCUS_DAYS_KEY,
-            focus_days_label(self.prefs.focus.weekdays),
-        );
+        let days_shown = focus_days_label(self.prefs.focus.weekdays);
+        seed_text(state, FOCUS_DAYS_KEY, &days_shown);
         let now = unix_now_i64();
         for app in &self.apps {
             let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
@@ -726,11 +777,8 @@ impl NotificationsPane {
                 &app_key(&app.id, "priority_contacts"),
                 rule.priority_contacts,
             );
-            let _ = state.put(
-                root,
-                app_key(&app.id, "mute"),
-                mute_label(rule.muted_until, now),
-            );
+            let mute_shown = mute_label(rule.muted_until, now);
+            let _ = state.put(root, app_key(&app.id, "mute"), mute_shown.as_str());
         }
         self.needs_seed = false;
     }
@@ -744,9 +792,9 @@ impl NotificationsPane {
         self.prefs.do_not_disturb = v;
         changed |= c;
         let current = focus_days_label(self.prefs.focus.weekdays);
-        let (value, c) = self.reconcile_text(state, root, FOCUS_DAYS_KEY, current);
-        if let Some((_, days)) = FOCUS_DAYS.iter().find(|(label, _)| *label == value) {
-            self.prefs.focus.weekdays = *days;
+        let (value, c) = self.reconcile_text(state, root, FOCUS_DAYS_KEY, &current);
+        if let Some(days) = focus_days_from_label(&value) {
+            self.prefs.focus.weekdays = days;
         }
         changed |= c;
         changed
@@ -857,7 +905,10 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NotificationsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
 
         let mut changed = self.reconcile_dnd_and_focus_days(state, root);
@@ -927,33 +978,12 @@ impl Widget for NotificationsPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -980,7 +1010,9 @@ impl Widget for NotificationsPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
 
+impl ui::undo::CommittedActions for NotificationsPane {
     /// Hand the host the heads captured before an on-screen toggle dispatched its
     /// settings action, so it records one undo boundary for it (bubbled up to the
     /// root by `SettingsApp`). Rising-edge: cleared on read.
@@ -993,288 +1025,299 @@ impl Widget for NotificationsPane {
 mod tests {
     use super::*;
 
+    /// Rule enumeration, inherited per-app rules, seeding, DND persistence, status text and layout.
     #[test]
-    fn notification_rules_enumerate_system_and_flatpak_desktop_identities() {
-        let tmp = tempfile::tempdir().unwrap();
-        let apps_dir = tmp.path().join("applications");
-        std::fs::create_dir_all(&apps_dir).unwrap();
-        std::fs::write(
-            apps_dir.join("org.example.Writer.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Writer\nExec=/bin/true\n",
-        )
-        .unwrap();
-        std::fs::write(
-            apps_dir.join("org.example.Chat.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
-        )
-        .unwrap();
-        let entries = desktop_entry::scan_dirs(
-            &[apps_dir],
-            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
-        )
-        .entries;
-
-        let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
-        assert_eq!(
-            apps.iter()
-                .find(|app| app.id == "org.example.Chat")
-                .map(|app| app.name.as_str()),
-            Some("Chat"),
-            "Flatpak rules use X-Flatpak rather than the desktop-file id"
-        );
-        assert_eq!(
-            apps.iter()
-                .find(|app| app.id == "org.example.Writer")
-                .map(|app| app.name.as_str()),
-            Some("Writer"),
-            "system rules use the desktop-file id"
-        );
-    }
-
-    #[test]
-    fn opening_the_pane_keeps_per_app_rules_inherited_and_writes_nothing() {
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let id = "org.example.Inherits";
-        let mut per_app = BTreeMap::new();
-        per_app.insert(
-            id.to_string(),
-            settings_store::notification_policy::AppNotificationRule::default(),
-        );
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
-            show_banners: false,
-            per_app,
-            ..NotificationPrefs::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_bool(&doc, &root, app_key(id, "banners")),
-            Some(false),
-            "the toggle shows the inherited global value"
-        );
-        assert_eq!(
-            pane.prefs().per_app[id].banners,
-            None,
-            "showing the inherited value is not an override"
-        );
-        assert!(
-            !config.config_root().join("settings.json").exists(),
-            "opening the pane persists nothing"
-        );
-
-        let _ = doc.put(
-            &root,
-            app_key(id, "banners").as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        let rule = pane.prefs().per_app[id];
-        assert_eq!(rule.banners, Some(true), "a flip is an override");
-        assert_eq!(rule.sounds, None, "and only for the flipped field");
-        assert_eq!(
-            SystemPrefs::load().notifications.per_app[id].banners,
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn seed_writes_current_prefs_into_crdt() {
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
-            do_not_disturb: true,
-            show_banners: false,
-            show_previews: true,
-            play_sounds: false,
-            show_on_lock_screen: true,
-            ..NotificationPrefs::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
-        assert_eq!(read_bool(&doc, &root, BANNERS_KEY), Some(false));
-        assert_eq!(read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
-    }
-
-    #[test]
-    fn toggling_dnd_updates_and_persists_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(!pane.prefs().do_not_disturb);
-        // User flips DND on.
-        let _ = doc.put(&root, DND_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
-        // And it persisted to the shared store (loaded back through the store).
-        assert!(
-            SystemPrefs::load().notifications.do_not_disturb,
-            "persisted"
-        );
-    }
-
-    /// Single source of truth: an on-screen toggle flip dispatches the exact
-    /// same [`EncodedAction`] the Ctrl+K palette's flip spec builds — proven at
-    /// the same pre-flip document state so both target the same value.
-    #[test]
-    fn on_screen_toggle_dispatches_same_action_as_palette() {
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
-        assert!(
-            pane.last_dispatched().is_none(),
-            "seeding dispatches no action"
-        );
-
-        // The palette's DND flip spec, read at the pre-flip state (DND off).
-        let app = config.app();
-        let res = Widget::resources(&app, &doc);
-        let notif = res[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "settings.section:notifications")
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn notification_pane_seeds_rules_and_status_without_writing() {
+        // Case `notification_rules_enumerate_system_and_flatpak_desktop_identities`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let apps_dir = tmp.path().join("applications");
+            std::fs::create_dir_all(&apps_dir).unwrap();
+            std::fs::write(
+                apps_dir.join("org.example.Writer.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Writer\nExec=/bin/true\n",
+            )
             .unwrap();
-        let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
-        let from_spec = match &dnd_spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
-                panic!("the DND flip is an immediate action")
-            }
-        };
+            std::fs::write(
+                apps_dir.join("org.example.Chat.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
+            )
+            .unwrap();
+            let entries = desktop_entry::scan_dirs(
+                &[apps_dir],
+                &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+            )
+            .entries;
 
-        // Simulate the Toggle writing its scratch key on a flip, then sync.
-        let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = doc.put(
-            &root,
-            scratch.as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
+            let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
+            assert_eq!(
+                apps.iter()
+                    .find(|app| app.id == "org.example.Chat")
+                    .map(|app| app.name.as_str()),
+                Some("Chat"),
+                "Flatpak rules use X-Flatpak rather than the desktop-file id"
+            );
+            assert_eq!(
+                apps.iter()
+                    .find(|app| app.id == "org.example.Writer")
+                    .map(|app| app.name.as_str()),
+                Some("Writer"),
+                "system rules use the desktop-file id"
+            );
+        }
 
-        let dispatched = pane
-            .last_dispatched()
-            .expect("the flip dispatched an action")
-            .clone();
-        let from_builder = crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
-        assert_eq!(
-            dispatched, from_builder,
-            "on-screen flip == the shared builder"
-        );
-        assert_eq!(
-            dispatched, from_spec,
-            "on-screen flip == the palette ActionSpec"
-        );
+        // Case `opening_the_pane_keeps_per_app_rules_inherited_and_writes_nothing`.
+        {
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let id = "org.example.Inherits";
+            let mut per_app = BTreeMap::new();
+            per_app.insert(
+                id.to_string(),
+                settings_store::notification_policy::AppNotificationRule::default(),
+            );
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
+                show_banners: false,
+                per_app,
+                ..NotificationPrefs::default()
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                read_bool(&doc, &root, app_key(id, "banners")),
+                Some(false),
+                "the toggle shows the inherited global value"
+            );
+            assert_eq!(
+                pane.prefs().per_app[id].banners,
+                None,
+                "showing the inherited value is not an override"
+            );
+            assert!(
+                !config.config_root().join("settings.json").exists(),
+                "opening the pane persists nothing"
+            );
 
-        // The action landed on the canonical key and the pane adopted + persisted it.
-        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
-        assert!(pane.prefs().do_not_disturb);
+            let _ = doc.put(
+                &root,
+                app_key(id, "banners").as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            let rule = pane.prefs().per_app[id];
+            assert_eq!(rule.banners, Some(true), "a flip is an override");
+            assert_eq!(rule.sounds, None, "and only for the flipped field");
+            assert_eq!(
+                SystemPrefs::load().notifications.per_app[id].banners,
+                Some(true)
+            );
+        }
+
+        // Case `seed_writes_current_prefs_into_crdt`.
+        {
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
+                do_not_disturb: true,
+                show_banners: false,
+                show_previews: true,
+                play_sounds: false,
+                show_on_lock_screen: true,
+                ..NotificationPrefs::default()
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
+            assert_eq!(read_bool(&doc, &root, BANNERS_KEY), Some(false));
+            assert_eq!(read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
+        }
+
+        // Case `toggling_dnd_updates_and_persists_prefs`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(!pane.prefs().do_not_disturb);
+            // User flips DND on.
+            let _ = doc.put(&root, DND_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
+            // And it persisted to the shared store (loaded back through the store).
+            assert!(
+                SystemPrefs::load().notifications.do_not_disturb,
+                "persisted"
+            );
+        }
+
+        // Case `status_reflects_the_toggle_combination`.
+        {
+            let active = NotificationsPane::with_prefs(NotificationPrefs::default());
+            assert_eq!(active.status().0, "Active");
+            let silenced = NotificationsPane::with_prefs(NotificationPrefs {
+                do_not_disturb: true,
+                ..NotificationPrefs::default()
+            });
+            assert_eq!(silenced.status().0, "Silenced");
+            let banners_off = NotificationsPane::with_prefs(NotificationPrefs {
+                show_banners: false,
+                ..NotificationPrefs::default()
+            });
+            assert_eq!(banners_off.status().0, "Banners off");
+        }
+
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
     }
 
-    /// The full undo covenant on the on-screen path: a toggle flip dispatched
-    /// through the executor records exactly one undo boundary, and Ctrl+Z reverts
-    /// precisely that setting — after which the pane mirrors the reverted value
-    /// back into the toggle.
+    /// On-screen toggles dispatch the palette action and record one undo boundary.
     #[test]
-    fn on_screen_toggle_records_one_undo_boundary_and_reverts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
-        let mut state = ui::State::new();
-        pane.sync(&mut state.doc, &state.root); // seed
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn notification_toggles_dispatch_palette_actions_with_one_undo() {
+        // Case `on_screen_toggle_dispatches_same_action_as_palette`.
+        {
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
+            assert!(
+                pane.last_dispatched().is_none(),
+                "seeding dispatches no action"
+            );
 
-        // Flip the toggle's scratch key, then sync → the pane dispatches.
-        let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = state.doc.put(
-            &state.root,
-            scratch.as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut state.doc, &state.root);
+            // The palette's DND flip spec, read at the pre-flip state (DND off).
+            let app = config.app();
+            let res = ui::resources::resources(&app, &doc);
+            let notif = res[0]
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "settings.section:notifications")
+                .unwrap();
+            let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
+            let from_spec = match &dnd_spec.input {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("the DND flip is an immediate action")
+                }
+            };
 
-        // The host's own recorder drains the pane's captured bracket and records
-        // the boundary. Going through it rather than pushing an entry by hand is
-        // the point: attribution happens in there, and undo is author-scoped.
-        // The node map is empty because the pane is the root widget here.
-        let local_author = ui::collaboration::local_user_id();
-        let root: *mut dyn ui::widget::Widget = &mut pane;
-        assert!(
-            ui::undo::record_dispatched_action(
-                &mut state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ),
-            "the host recorded an undo boundary for the dispatched flip"
-        );
-        assert_eq!(
-            read_bool(&state.doc, &state.root, DND_KEY),
-            Some(true),
-            "the action set DND on"
-        );
-        assert!(pane.prefs().do_not_disturb);
-        let entry = state
-            .peek_last_undo()
-            .expect("exactly one undo boundary recorded");
-        assert_eq!(
-            entry.author.as_ref(),
-            Some(&local_author),
-            "attributed to the local user, so their Ctrl+Z can reach it"
-        );
-        assert!(
-            pane.take_committed_action().is_none(),
-            "the bracket is rising-edge"
-        );
+            // Simulate the Toggle writing its scratch key on a flip, then sync.
+            let scratch = NotificationsPane::scratch_key(DND_KEY);
+            let _ = doc.put(
+                &root,
+                scratch.as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
 
-        // Ctrl+Z reverts precisely the setting.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert_eq!(
-            read_bool(&state.doc, &state.root, DND_KEY),
-            Some(false),
-            "undo reverted the setting"
-        );
-        // Next frame the pane mirrors the reverted canonical back into the scratch
-        // and adopts it, so the toggle follows — and it does not re-dispatch.
-        pane.sync(&mut state.doc, &state.root);
-        assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
-        assert_eq!(
-            read_bool(&state.doc, &state.root, scratch.as_str()),
-            Some(false),
-            "the toggle's scratch mirrors the reverted value"
-        );
-        assert!(
-            pane.take_committed_action().is_none(),
-            "mirroring the revert dispatches nothing"
-        );
-    }
+            let dispatched = pane
+                .last_dispatched()
+                .expect("the flip dispatched an action")
+                .clone();
+            let from_builder =
+                crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
+            assert_eq!(
+                dispatched, from_builder,
+                "on-screen flip == the shared builder"
+            );
+            assert_eq!(
+                dispatched, from_spec,
+                "on-screen flip == the palette ActionSpec"
+            );
 
-    #[test]
-    fn status_reflects_the_toggle_combination() {
-        let active = NotificationsPane::with_prefs(NotificationPrefs::default());
-        assert_eq!(active.status().0, "Active");
-        let silenced = NotificationsPane::with_prefs(NotificationPrefs {
-            do_not_disturb: true,
-            ..NotificationPrefs::default()
-        });
-        assert_eq!(silenced.status().0, "Silenced");
-        let banners_off = NotificationsPane::with_prefs(NotificationPrefs {
-            show_banners: false,
-            ..NotificationPrefs::default()
-        });
-        assert_eq!(banners_off.status().0, "Banners off");
-    }
+            // The action landed on the canonical key and the pane adopted + persisted it.
+            assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
+            assert!(pane.prefs().do_not_disturb);
+        }
 
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        // Case `on_screen_toggle_records_one_undo_boundary_and_reverts`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
+            let mut state = ui::State::new();
+            pane.sync(&mut state.doc, &state.root); // seed
+
+            // Flip the toggle's scratch key, then sync → the pane dispatches.
+            let scratch = NotificationsPane::scratch_key(DND_KEY);
+            let _ = state.doc.put(
+                &state.root,
+                scratch.as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut state.doc, &state.root);
+
+            // The host's own recorder drains the pane's captured bracket and records
+            // the boundary. Going through it rather than pushing an entry by hand is
+            // the point: attribution happens in there, and undo is author-scoped.
+            // The node map is empty because the pane is the root widget here.
+            let local_author = ui::collaboration::local_user_id();
+            let root: *mut dyn ui::widget::Widget = &mut pane;
+            assert!(
+                ui::undo::record_dispatched_action(
+                    &mut state,
+                    root,
+                    &std::collections::HashMap::new(),
+                    &local_author,
+                ),
+                "the host recorded an undo boundary for the dispatched flip"
+            );
+            assert_eq!(
+                read_bool(&state.doc, &state.root, DND_KEY),
+                Some(true),
+                "the action set DND on"
+            );
+            assert!(pane.prefs().do_not_disturb);
+            let entry = state
+                .peek_last_undo()
+                .expect("exactly one undo boundary recorded");
+            assert_eq!(
+                entry.author.as_ref(),
+                Some(&local_author),
+                "attributed to the local user, so their Ctrl+Z can reach it"
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut pane).is_none(),
+                "the bracket is rising-edge"
+            );
+
+            // Ctrl+Z reverts precisely the setting.
+            state
+                .undo_as(Some(&local_author), None, None)
+                .expect("an undo entry to pop");
+            assert_eq!(
+                read_bool(&state.doc, &state.root, DND_KEY),
+                Some(false),
+                "undo reverted the setting"
+            );
+            // Next frame the pane mirrors the reverted canonical back into the scratch
+            // and adopts it, so the toggle follows — and it does not re-dispatch.
+            pane.sync(&mut state.doc, &state.root);
+            assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
+            assert_eq!(
+                read_bool(&state.doc, &state.root, scratch.as_str()),
+                Some(false),
+                "the toggle's scratch mirrors the reverted value"
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut pane).is_none(),
+                "mirroring the revert dispatches nothing"
+            );
+        }
     }
 }

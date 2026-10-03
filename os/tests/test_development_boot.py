@@ -41,42 +41,52 @@ def synthetic_uki(architecture='x86_64', cmdline=None):
 
 
 class StructureTests(unittest.TestCase):
-    def test_both_native_formats_and_exact_command_lines(self):
-        for architecture in boot.loader.MACHINES:
-            sections = boot.uki_sections(synthetic_uki(architecture), architecture)
-            boot.validate_cmdline(sections['.cmdline'], 7, SEAL)
+    def test_uki_structure_parsing(self):
+        with self.subTest(phase="both_native_formats_and_exact_command_lines"):
+            for architecture in boot.loader.MACHINES:
+                sections = boot.uki_sections(synthetic_uki(architecture), architecture)
+                boot.validate_cmdline(sections['.cmdline'], 7, SEAL)
+        with self.subTest(phase="generation_and_seal_boundaries"):
+            for generation in (0, -1, True, '07', '+7', '7\n', 2**64):
+                with self.subTest(generation=generation), self.assertRaises(ValueError):
+                    boot.expected_inputs('x86_64', generation, SEAL)
+            for seal in ('0' * 128, 'A' * 128, 'a' * 127, 'sha512:' + SEAL):
+                with self.subTest(seal=seal), self.assertRaises(ValueError):
+                    boot.expected_inputs('aarch64', 7, seal)
+        with self.subTest(phase="ambiguous_or_incorrect_command_lines_rejected"):
+            valid = f'tilo.generation=7 composefs={SEAL}'
+            for value in (valid + ' tilo.generation=7', valid + ' composefs=' + SEAL,
+                          valid.replace('=7', '=8'), valid.replace('=7', '=07'),
+                          valid.replace(SEAL, 'b' * 128), valid + '\0hidden',
+                          valid + '\n', '"' + valid + '"', 'quiet'):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    boot.validate_cmdline(value.encode(), 7, SEAL)
+        with self.subTest(phase="malformed_geometry_and_payloads_rejected"):
+            alterations = [(0, b'XX'), (68, struct.pack('<H', 0xaa64)),
+                           (88, struct.pack('<H', 0x10b)), (156, struct.pack('<H', 3)),
+                           (368, b'.linux\0\0'), (336, struct.pack('<I', 0)),
+                           (348, struct.pack('<I', 511)), (388, struct.pack('<I', 512)),
+                           (384, struct.pack('<I', 100000)), (380, struct.pack('<I', 4096))]
+            for offset, value in alterations:
+                data = bytearray(synthetic_uki())
+                data[offset:offset + len(value)] = value
+                with self.subTest(offset=offset), self.assertRaises(ValueError):
+                    boot.uki_sections(data, 'x86_64')
+            for length in (0, 63, 100, 450, 1500):
+                with self.subTest(length=length), self.assertRaises(ValueError):
+                    boot.uki_sections(synthetic_uki()[:length], 'x86_64')
 
-    def test_generation_and_seal_boundaries(self):
-        for generation in (0, -1, True, '07', '+7', '7\n', 2**64):
-            with self.subTest(generation=generation), self.assertRaises(ValueError):
-                boot.expected_inputs('x86_64', generation, SEAL)
-        for seal in ('0' * 128, 'A' * 128, 'a' * 127, 'sha512:' + SEAL):
-            with self.subTest(seal=seal), self.assertRaises(ValueError):
-                boot.expected_inputs('aarch64', 7, seal)
 
-    def test_ambiguous_or_incorrect_command_lines_rejected(self):
-        valid = f'tilo.generation=7 composefs={SEAL}'
-        for value in (valid + ' tilo.generation=7', valid + ' composefs=' + SEAL,
-                      valid.replace('=7', '=8'), valid.replace('=7', '=07'),
-                      valid.replace(SEAL, 'b' * 128), valid + '\0hidden',
-                      valid + '\n', '"' + valid + '"', 'quiet'):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                boot.validate_cmdline(value.encode(), 7, SEAL)
-
-    def test_malformed_geometry_and_payloads_rejected(self):
-        alterations = [(0, b'XX'), (68, struct.pack('<H', 0xaa64)),
-                       (88, struct.pack('<H', 0x10b)), (156, struct.pack('<H', 3)),
-                       (368, b'.linux\0\0'), (336, struct.pack('<I', 0)),
-                       (348, struct.pack('<I', 511)), (388, struct.pack('<I', 512)),
-                       (384, struct.pack('<I', 100000)), (380, struct.pack('<I', 4096))]
-        for offset, value in alterations:
-            data = bytearray(synthetic_uki())
-            data[offset:offset + len(value)] = value
-            with self.subTest(offset=offset), self.assertRaises(ValueError):
-                boot.uki_sections(data, 'x86_64')
-        for length in (0, 63, 100, 450, 1500):
-            with self.subTest(length=length), self.assertRaises(ValueError):
-                boot.uki_sections(synthetic_uki()[:length], 'x86_64')
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
 
 
 @unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0, 'mounted ownership tests require root')
@@ -89,29 +99,30 @@ class MountedInventoryTests(unittest.TestCase):
         self.live.mkdir(parents=True)
         (self.live / 'one.efi').write_bytes(b'one')
 
-    def test_all_live_and_explicit_target_are_enumerated(self):
-        (self.live / 'two.EFI').write_bytes(b'two')
-        target = self.root / 'boot/tilo-target/tilo-target.efi'
-        target.parent.mkdir()
-        target.write_bytes(b'target')
-        self.assertEqual(len(boot._uki_paths(self.root)), 3)
-
-    def test_redirected_directory_and_target_are_rejected(self):
-        link = self.live / 'redirect'
-        link.symlink_to(self.root, target_is_directory=True)
-        with self.assertRaises(ValueError):
-            boot._uki_paths(self.root)
-        link.unlink()
-        target = self.root / 'boot/tilo-target'
-        target.symlink_to(self.live, target_is_directory=True)
-        with self.assertRaises(ValueError):
-            boot._uki_paths(self.root)
-
-    def test_excessive_inventory_is_rejected(self):
-        for index in range(boot.UKI_COUNT_LIMIT):
-            (self.live / f'{index}.efi').write_bytes(b'uki')
-        with self.assertRaises(ValueError):
-            boot._uki_paths(self.root)
+    def test_mounted_inventory_enumeration(self):
+        with self.subTest(phase="all_live_and_explicit_target_are_enumerated"):
+            (self.live / 'two.EFI').write_bytes(b'two')
+            target = self.root / 'boot/tilo-target/tilo-target.efi'
+            target.parent.mkdir()
+            target.write_bytes(b'target')
+            self.assertEqual(len(boot._uki_paths(self.root)), 3)
+        restart_fixture(self)
+        with self.subTest(phase="redirected_directory_and_target_are_rejected"):
+            link = self.live / 'redirect'
+            link.symlink_to(self.root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                boot._uki_paths(self.root)
+            link.unlink()
+            target = self.root / 'boot/tilo-target'
+            target.symlink_to(self.live, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                boot._uki_paths(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="excessive_inventory_is_rejected"):
+            for index in range(boot.UKI_COUNT_LIMIT):
+                (self.live / f'{index}.efi').write_bytes(b'uki')
+            with self.assertRaises(ValueError):
+                boot._uki_paths(self.root)
 
 
 class SignedFixtureTests(unittest.TestCase):
@@ -165,53 +176,54 @@ class SignedFixtureTests(unittest.TestCase):
     def validate(self):
         return boot.validate_mounted_boot(self.root, self.bundle, self.manifest, self.architecture, 7, SEAL)
 
-    def test_real_signed_synthetic_ukis_are_checked_but_never_called_bootable(self):
-        second = self.live.with_name('second.efi')
-        shutil.copyfile(self.live, second)
-        target = self.root / 'boot/tilo-target/tilo-target.efi'
-        target.parent.mkdir()
-        shutil.copyfile(self.live, target)
-        result = self.validate()
-        self.assertEqual(len(result['ukis']), 3)
-        self.assertFalse(result['installable'])
-        self.assertFalse(result['proof']['pcr_recomputed'])
-        self.assertFalse(result['proof']['composefs_installation'])
-        self.assertFalse(result['proof']['vm_boot'])
-
-    def test_unsigned_and_tampered_payloads_are_rejected(self):
-        signed = self.live.read_bytes()
-        for data in (synthetic_uki(self.architecture), signed[:512] + b'X' + signed[513:]):
-            self.live.write_bytes(data)
+    def test_signed_uki_verification(self):
+        with self.subTest(phase="real_signed_synthetic_ukis_are_checked_but_never_called_bootable"):
+            second = self.live.with_name('second.efi')
+            shutil.copyfile(self.live, second)
+            target = self.root / 'boot/tilo-target/tilo-target.efi'
+            target.parent.mkdir()
+            shutil.copyfile(self.live, target)
+            result = self.validate()
+            self.assertEqual(len(result['ukis']), 3)
+            self.assertFalse(result['installable'])
+            self.assertFalse(result['proof']['pcr_recomputed'])
+            self.assertFalse(result['proof']['composefs_installation'])
+            self.assertFalse(result['proof']['vm_boot'])
+        restart_fixture(self)
+        with self.subTest(phase="unsigned_and_tampered_payloads_are_rejected"):
+            signed = self.live.read_bytes()
+            for data in (synthetic_uki(self.architecture), signed[:512] + b'X' + signed[513:]):
+                self.live.write_bytes(data)
+                with self.assertRaises(ValueError):
+                    self.validate()
+        restart_fixture(self)
+        with self.subTest(phase="wrong_certificate_is_rejected"):
+            wrong_key, wrong_cert = self.work / 'wrong.key', self.work / 'wrong.crt'
+            self.command('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
+                         'Wrong Fixture', str(wrong_key), str(wrong_cert))
+            unsigned = self.work / 'unsigned.efi'
+            self.live.unlink()
+            self.command('/usr/local/bin/tilo-crypto', 'sign-efi', str(wrong_key), str(wrong_cert),
+                         str(unsigned), str(self.live))
             with self.assertRaises(ValueError):
                 self.validate()
-
-    def test_wrong_certificate_is_rejected(self):
-        wrong_key, wrong_cert = self.work / 'wrong.key', self.work / 'wrong.crt'
-        self.command('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
-                     'Wrong Fixture', str(wrong_key), str(wrong_cert))
-        unsigned = self.work / 'unsigned.efi'
-        self.live.unlink()
-        self.command('/usr/local/bin/tilo-crypto', 'sign-efi', str(wrong_key), str(wrong_cert),
-                     str(unsigned), str(self.live))
-        with self.assertRaises(ValueError):
-            self.validate()
-
-    def test_redirects_wrong_generation_and_size_fail_closed(self):
-        generation = self.root / 'usr/lib/tilo/generation'
-        generation.write_text('8\n')
-        with self.assertRaises(ValueError):
-            self.validate()
-        generation.write_text('7\n')
-        original = self.work / 'saved.efi'
-        self.live.rename(original)
-        self.live.symlink_to(original)
-        with self.assertRaises(ValueError):
-            self.validate()
-        self.live.unlink()
-        with self.live.open('wb') as stream:
-            stream.truncate(boot.UKI_LIMIT + 1)
-        with self.assertRaises(ValueError):
-            self.validate()
+        restart_fixture(self)
+        with self.subTest(phase="redirects_wrong_generation_and_size_fail_closed"):
+            generation = self.root / 'usr/lib/tilo/generation'
+            generation.write_text('8\n')
+            with self.assertRaises(ValueError):
+                self.validate()
+            generation.write_text('7\n')
+            original = self.work / 'saved.efi'
+            self.live.rename(original)
+            self.live.symlink_to(original)
+            with self.assertRaises(ValueError):
+                self.validate()
+            self.live.unlink()
+            with self.live.open('wb') as stream:
+                stream.truncate(boot.UKI_LIMIT + 1)
+            with self.assertRaises(ValueError):
+                self.validate()
 
 
 if __name__ == '__main__':

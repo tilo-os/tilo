@@ -9,7 +9,7 @@
 //!   cargo run -p browser --example startup_flicker_capture --features wpe --release -- https://duckduckgo.com
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
@@ -119,7 +119,7 @@ fn main() {
         .unwrap_or(900);
 
     let engine: SharedEngine = WpeEngine::new().expect("engine");
-    let start = Instant::now();
+    let start = ui::time::now();
     engine.send(WebViewCommand::Resize {
         width,
         height: 600,
@@ -133,7 +133,7 @@ fn main() {
     let mut saved = 0u32;
     let mut seen = 0u32;
     let deadline = start + Duration::from_secs(5);
-    while Instant::now() < deadline && saved < 60 {
+    while ui::time::now() < deadline && saved < 60 {
         if let Some((rgba, w, h)) = latest(&*engine) {
             let sig = signature(&rgba, w, h);
             // Save the first 8 distinct engine frames unconditionally (fast

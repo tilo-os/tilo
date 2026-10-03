@@ -213,7 +213,7 @@ def main(app_kind='scratchpad'):
                    TILO_PROFILE_OUT=str(out/'frames.jsonl'),TILO_PROFILE_WINDOW_FRONT='1',
                    TILO_PROFILE_WINDOW_NO_ACTIVATE='1' if args.no_activate else '0',
                    TILO_PROFILE_WINDOW_POSITION='20,60',
-                   TILO_PROFILE_POINTER_PASSTHROUGH='1' if args.pointer_passthrough else '0',QUICK_UI_PRESENT='1',
+                   TILO_PROFILE_POINTER_PASSTHROUGH='1' if args.pointer_passthrough else '0',TILO_UI_PRESENT='1',
                    QUICK_APP_ID=app_id,XDG_DATA_HOME=str(out/'xdg'),
                    XDG_CONFIG_HOME=str(out/'config'),XDG_CACHE_HOME=str(out/'cache'),
                    TILO_WORKSPACE_ID=str(uuid.uuid4()))

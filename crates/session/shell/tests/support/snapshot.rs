@@ -229,104 +229,132 @@ mod tests {
         ui::png::write_rgba8(path, width, height, rgba).unwrap();
     }
 
-    #[test]
-    fn identical_pngs_pass() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("golden.png");
-        write_png(&rendered, 4, 4, [10, 20, 30, 255]);
-        write_png(&golden, 4, 4, [10, 20, 30, 255]);
-
-        SnapshotAssertion::new(rendered, golden).assert_with(false);
+    /// The panic message of `f`, which must panic; `#[should_panic(expected)]`
+    /// matched this message by substring, and so do the callers here.
+    fn panic_message(f: impl FnOnce()) -> String {
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .expect_err("the snapshot assertion must panic");
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
     }
 
     #[test]
-    #[should_panic(expected = "dimension mismatch")]
-    fn dimension_mismatch_panics() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("golden.png");
-        write_png(&rendered, 4, 4, [0, 0, 0, 255]);
-        write_png(&golden, 8, 8, [0, 0, 0, 255]);
+    fn matching_or_updated_snapshots_pass_and_missing_goldens_are_seeded() {
+        // Phase `identical_pngs_pass`.
+        {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("golden.png");
+            write_png(&rendered, 4, 4, [10, 20, 30, 255]);
+            write_png(&golden, 4, 4, [10, 20, 30, 255]);
 
-        SnapshotAssertion::new(rendered, golden).assert_with(false);
+            SnapshotAssertion::new(rendered, golden).assert_with(false);
+        }
+
+        // Phase `diff_within_tolerance_passes`.
+        {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("golden.png");
+            // Delta = 3, below the default tolerance of 4.
+            let mut rendered_px = vec![
+                10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
+            ];
+            let golden_px = rendered_px.clone();
+            rendered_px[0] = 13;
+            write_png_bytes(&rendered, 2, 2, &rendered_px);
+            write_png_bytes(&golden, 2, 2, &golden_px);
+
+            SnapshotAssertion::new(rendered, golden).assert_with(false);
+        }
+
+        // Phase `update_snapshots_overwrites_golden`.
+        {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("golden.png");
+            // Render is red, golden is blue — would fail without the flag.
+            write_png(&rendered, 4, 4, [255, 0, 0, 255]);
+            write_png(&golden, 4, 4, [0, 0, 255, 255]);
+
+            SnapshotAssertion::new(&rendered, &golden).assert_with(true);
+
+            let g = decode_png(&golden);
+            assert_eq!(&g.rgba[..4], &[255, 0, 0, 255]);
+        }
+
+        // Phase `missing_golden_writes_it_and_passes`.
+        {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            // Deliberately NOT creating the golden ahead of time.
+            let golden = dir.join("subdir/golden.png");
+            write_png(&rendered, 4, 4, [100, 120, 140, 255]);
+
+            SnapshotAssertion::new(&rendered, &golden).assert_with(false);
+
+            assert!(
+                golden.exists(),
+                "golden should have been seeded on first run"
+            );
+        }
     }
 
     #[test]
-    #[should_panic(expected = "pixels differ")]
-    fn diff_above_tolerance_panics() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("golden.png");
-        // 2×2 image, one pixel differs by 20 > tolerance (4 default).
-        let mut rendered_px = vec![
-            10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
-        ];
-        let mut golden_px = rendered_px.clone();
-        rendered_px[0] = 30; // red channel of pixel 0: 30 vs 10 → delta 20
-        let _ = &mut golden_px;
-        write_png_bytes(&rendered, 2, 2, &rendered_px);
-        write_png_bytes(&golden, 2, 2, &golden_px);
+    fn mismatched_or_missing_snapshots_fail_naming_the_reason() {
+        // Case `dimension_mismatch_panics` (was `#[should_panic(expected = "dimension mismatch")]`).
+        let message = panic_message(|| {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("golden.png");
+            write_png(&rendered, 4, 4, [0, 0, 0, 255]);
+            write_png(&golden, 8, 8, [0, 0, 0, 255]);
 
-        SnapshotAssertion::new(rendered, golden).assert_with(false);
-    }
-
-    #[test]
-    fn diff_within_tolerance_passes() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("golden.png");
-        // Delta = 3, below the default tolerance of 4.
-        let mut rendered_px = vec![
-            10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
-        ];
-        let golden_px = rendered_px.clone();
-        rendered_px[0] = 13;
-        write_png_bytes(&rendered, 2, 2, &rendered_px);
-        write_png_bytes(&golden, 2, 2, &golden_px);
-
-        SnapshotAssertion::new(rendered, golden).assert_with(false);
-    }
-
-    #[test]
-    fn update_snapshots_overwrites_golden() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("golden.png");
-        // Render is red, golden is blue — would fail without the flag.
-        write_png(&rendered, 4, 4, [255, 0, 0, 255]);
-        write_png(&golden, 4, 4, [0, 0, 255, 255]);
-
-        SnapshotAssertion::new(&rendered, &golden).assert_with(true);
-
-        let g = decode_png(&golden);
-        assert_eq!(&g.rgba[..4], &[255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn missing_golden_writes_it_and_passes() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        // Deliberately NOT creating the golden ahead of time.
-        let golden = dir.join("subdir/golden.png");
-        write_png(&rendered, 4, 4, [100, 120, 140, 255]);
-
-        SnapshotAssertion::new(&rendered, &golden).assert_with(false);
-
+            SnapshotAssertion::new(rendered, golden).assert_with(false);
+        });
         assert!(
-            golden.exists(),
-            "golden should have been seeded on first run"
+            message.contains("dimension mismatch"),
+            "case dimension_mismatch_panics: {message}"
         );
-    }
 
-    #[test]
-    #[should_panic(expected = "snapshot golden missing")]
-    fn ci_policy_rejects_a_missing_golden() {
-        let dir = scratch_dir();
-        let rendered = dir.join("rendered.png");
-        let golden = dir.join("subdir/golden.png");
-        write_png(&rendered, 4, 4, [100, 120, 140, 255]);
+        // Case `diff_above_tolerance_panics` (was `#[should_panic(expected = "pixels differ")]`).
+        let message = panic_message(|| {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("golden.png");
+            // 2×2 image, one pixel differs by 20 > tolerance (4 default).
+            let mut rendered_px = vec![
+                10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
+            ];
+            let mut golden_px = rendered_px.clone();
+            rendered_px[0] = 30; // red channel of pixel 0: 30 vs 10 → delta 20
+            let _ = &mut golden_px;
+            write_png_bytes(&rendered, 2, 2, &rendered_px);
+            write_png_bytes(&golden, 2, 2, &golden_px);
 
-        SnapshotAssertion::new(&rendered, &golden).assert_with_policy(false, true);
+            SnapshotAssertion::new(rendered, golden).assert_with(false);
+        });
+        assert!(
+            message.contains("pixels differ"),
+            "case diff_above_tolerance_panics: {message}"
+        );
+
+        // Case `ci_policy_rejects_a_missing_golden` (was
+        // `#[should_panic(expected = "snapshot golden missing")]`).
+        let message = panic_message(|| {
+            let dir = scratch_dir();
+            let rendered = dir.join("rendered.png");
+            let golden = dir.join("subdir/golden.png");
+            write_png(&rendered, 4, 4, [100, 120, 140, 255]);
+
+            SnapshotAssertion::new(&rendered, &golden).assert_with_policy(false, true);
+        });
+        assert!(
+            message.contains("snapshot golden missing"),
+            "case ci_policy_rejects_a_missing_golden: {message}"
+        );
     }
 }

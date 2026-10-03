@@ -16,7 +16,9 @@ path = "src/bin/tilo-desktop-scan.rs"
 
 [dependencies]
 thiserror = { workspace = true }
-xdg-paths = { path = "../xdg-paths" }
+url.workspace = true
+tilo-xdg-paths = { path = "../xdg-paths" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

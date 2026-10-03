@@ -511,40 +511,140 @@ mod tests {
     use media::dmabuf::YuvMatrix;
 
     #[test]
-    fn limited_range_constants_expand_video_black_and_white_to_the_full_scale() {
-        let u = ConvertUniform::for_colorimetry(
-            Colorimetry {
+    fn yuv_conversion_constants_map_range_and_chroma_like_the_cpu_path() {
+        // Case `limited_range_constants_expand_video_black_and_white_to_the_full_scale`.
+        {
+            let u = ConvertUniform::for_colorimetry(
+                Colorimetry {
+                    matrix: YuvMatrix::Bt709,
+                    range: ColorRange::Limited,
+                },
+                PlaneLayout::BiPlanarYuv,
+            );
+            let [y_scale, y_offset, ..] = u.range;
+            // The shader computes (y - offset) * scale.
+            let black = (16.0 / 255.0 - y_offset) * y_scale;
+            let white = (235.0 / 255.0 - y_offset) * y_scale;
+            assert!(
+                black.abs() < 1e-4,
+                "limited-range 16 must map to 0.0, got {black}"
+            );
+            assert!(
+                (white - 1.0).abs() < 1e-4,
+                "limited-range 235 must map to 1.0, got {white}"
+            );
+        }
+
+        // Case `full_range_constants_are_the_identity`.
+        {
+            let u = ConvertUniform::for_colorimetry(
+                Colorimetry {
+                    matrix: YuvMatrix::Bt709,
+                    range: ColorRange::Full,
+                },
+                PlaneLayout::BiPlanarYuv,
+            );
+            assert_eq!(u.range[0], 1.0, "no scaling");
+            assert_eq!(u.range[1], 0.0, "no offset");
+            assert_eq!(u.range[2], 1.0, "no chroma scaling");
+        }
+
+        // Case `neutral_chroma_stays_grey_under_every_matrix`.
+        {
+            // A sign error or a swapped coefficient shows up here immediately.
+            for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+                let u = ConvertUniform::for_colorimetry(
+                    Colorimetry {
+                        matrix,
+                        range: ColorRange::Full,
+                    },
+                    PlaneLayout::BiPlanarYuv,
+                );
+                let [r, g, b] = convert_one(&u, 0.5, 0.5, 0.5);
+                assert!((r - 0.5).abs() < 1e-5, "{matrix:?}: r drifted to {r}");
+                assert!((g - 0.5).abs() < 1e-5, "{matrix:?}: g drifted to {g}");
+                assert!((b - 0.5).abs() < 1e-5, "{matrix:?}: b drifted to {b}");
+            }
+        }
+
+        // Case `pure_chroma_pushes_the_expected_channel`.
+        {
+            let u = ConvertUniform::for_colorimetry(
+                Colorimetry {
+                    matrix: YuvMatrix::Bt709,
+                    range: ColorRange::Full,
+                },
+                PlaneLayout::BiPlanarYuv,
+            );
+            // Cr above neutral is red; Cb above neutral is blue. Swapping the two
+            // is the classic YUV bug and this is what catches it.
+            let [r, _, b] = convert_one(&u, 0.5, 0.5, 1.0);
+            assert!(r > b, "high Cr must raise red above blue, got r={r} b={b}");
+            let [r2, _, b2] = convert_one(&u, 0.5, 1.0, 0.5);
+            assert!(
+                b2 > r2,
+                "high Cb must raise blue above red, got r={r2} b={b2}"
+            );
+        }
+
+        // Case `the_gpu_matrix_agrees_with_the_cpu_fallback`.
+        {
+            // `media::frame::planar_to_rgba` is the CPU path for consumers that
+            // cannot use a GPU. The two must not diverge, or a frame would change
+            // colour depending on which path served it.
+            use media::frame::{PlanarImage, PlaneData};
+            use std::sync::Arc;
+
+            let colorimetry = Colorimetry {
                 matrix: YuvMatrix::Bt709,
                 range: ColorRange::Limited,
-            },
-            PlaneLayout::BiPlanarYuv,
-        );
-        let [y_scale, y_offset, ..] = u.range;
-        // The shader computes (y - offset) * scale.
-        let black = (16.0 / 255.0 - y_offset) * y_scale;
-        let white = (235.0 / 255.0 - y_offset) * y_scale;
-        assert!(
-            black.abs() < 1e-4,
-            "limited-range 16 must map to 0.0, got {black}"
-        );
-        assert!(
-            (white - 1.0).abs() < 1e-4,
-            "limited-range 235 must map to 1.0, got {white}"
-        );
-    }
+            };
+            for (y, cb, cr) in [
+                (128u8, 128u8, 128u8),
+                (200, 90, 160),
+                (60, 170, 100),
+                (235, 128, 128),
+            ] {
+                let img = PlanarImage {
+                    format: PlanarFormat::Nv12,
+                    planes: vec![
+                        PlaneData {
+                            bytes: Arc::new(vec![y; 4]),
+                            stride: 2,
+                            width: 2,
+                            height: 2,
+                        },
+                        PlaneData {
+                            bytes: Arc::new(vec![cb, cr]),
+                            stride: 2,
+                            width: 1,
+                            height: 1,
+                        },
+                    ],
+                    colorimetry,
+                };
+                let cpu = media::frame::planar_to_rgba(&img, 2, 2);
 
-    #[test]
-    fn full_range_constants_are_the_identity() {
-        let u = ConvertUniform::for_colorimetry(
-            Colorimetry {
-                matrix: YuvMatrix::Bt709,
-                range: ColorRange::Full,
-            },
-            PlaneLayout::BiPlanarYuv,
-        );
-        assert_eq!(u.range[0], 1.0, "no scaling");
-        assert_eq!(u.range[1], 0.0, "no offset");
-        assert_eq!(u.range[2], 1.0, "no chroma scaling");
+                let u = ConvertUniform::for_colorimetry(colorimetry, PlaneLayout::BiPlanarYuv);
+                let gpu = convert_one(
+                    &u,
+                    f32::from(y) / 255.0,
+                    f32::from(cb) / 255.0,
+                    f32::from(cr) / 255.0,
+                );
+
+                for (i, name) in ["r", "g", "b"].iter().enumerate() {
+                    let gpu_u8 = (gpu[i].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    let delta = i32::from(gpu_u8) - i32::from(cpu[i]);
+                    assert!(
+                        delta.abs() <= 1,
+                        "YUV({y},{cb},{cr}) {name}: GPU {gpu_u8} vs CPU {} — the two \
+                     conversion paths disagree",
+                        cpu[i]
+                    );
+                }
+            }
+        }
     }
 
     /// Run the shader's arithmetic on the CPU so the constants can be checked
@@ -561,125 +661,37 @@ mod tests {
     }
 
     #[test]
-    fn neutral_chroma_stays_grey_under_every_matrix() {
-        // A sign error or a swapped coefficient shows up here immediately.
-        for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+    fn video_uniform_is_packed_as_the_shader_declares() {
+        // Case `the_uniform_is_packed_as_the_shader_declares_it`.
+        {
+            // Two vec4s, 32 bytes; a mismatch here reads garbage constants in the
+            // shader and produces a plausible-but-wrong picture.
+            assert_eq!(std::mem::size_of::<ConvertUniform>(), 32);
             let u = ConvertUniform::for_colorimetry(
-                Colorimetry {
-                    matrix,
-                    range: ColorRange::Full,
-                },
+                Colorimetry::BT709_LIMITED,
                 PlaneLayout::BiPlanarYuv,
             );
-            let [r, g, b] = convert_one(&u, 0.5, 0.5, 0.5);
-            assert!((r - 0.5).abs() < 1e-5, "{matrix:?}: r drifted to {r}");
-            assert!((g - 0.5).abs() < 1e-5, "{matrix:?}: g drifted to {g}");
-            assert!((b - 0.5).abs() < 1e-5, "{matrix:?}: b drifted to {b}");
-        }
-    }
-
-    #[test]
-    fn pure_chroma_pushes_the_expected_channel() {
-        let u = ConvertUniform::for_colorimetry(
-            Colorimetry {
-                matrix: YuvMatrix::Bt709,
-                range: ColorRange::Full,
-            },
-            PlaneLayout::BiPlanarYuv,
-        );
-        // Cr above neutral is red; Cb above neutral is blue. Swapping the two
-        // is the classic YUV bug and this is what catches it.
-        let [r, _, b] = convert_one(&u, 0.5, 0.5, 1.0);
-        assert!(r > b, "high Cr must raise red above blue, got r={r} b={b}");
-        let [r2, _, b2] = convert_one(&u, 0.5, 1.0, 0.5);
-        assert!(
-            b2 > r2,
-            "high Cb must raise blue above red, got r={r2} b={b2}"
-        );
-    }
-
-    #[test]
-    fn the_gpu_matrix_agrees_with_the_cpu_fallback() {
-        // `media::frame::planar_to_rgba` is the CPU path for consumers that
-        // cannot use a GPU. The two must not diverge, or a frame would change
-        // colour depending on which path served it.
-        use media::frame::{PlanarImage, PlaneData};
-        use std::sync::Arc;
-
-        let colorimetry = Colorimetry {
-            matrix: YuvMatrix::Bt709,
-            range: ColorRange::Limited,
-        };
-        for (y, cb, cr) in [
-            (128u8, 128u8, 128u8),
-            (200, 90, 160),
-            (60, 170, 100),
-            (235, 128, 128),
-        ] {
-            let img = PlanarImage {
-                format: PlanarFormat::Nv12,
-                planes: vec![
-                    PlaneData {
-                        bytes: Arc::new(vec![y; 4]),
-                        stride: 2,
-                        width: 2,
-                        height: 2,
-                    },
-                    PlaneData {
-                        bytes: Arc::new(vec![cb, cr]),
-                        stride: 2,
-                        width: 1,
-                        height: 1,
-                    },
-                ],
-                colorimetry,
-            };
-            let cpu = media::frame::planar_to_rgba(&img, 2, 2);
-
-            let u = ConvertUniform::for_colorimetry(colorimetry, PlaneLayout::BiPlanarYuv);
-            let gpu = convert_one(
-                &u,
-                f32::from(y) / 255.0,
-                f32::from(cb) / 255.0,
-                f32::from(cr) / 255.0,
+            let bytes = u.as_bytes();
+            assert_eq!(&bytes[0..4], &u.coeffs[0].to_ne_bytes(), "coeffs lead");
+            assert_eq!(
+                &bytes[16..20],
+                &u.range[0].to_ne_bytes(),
+                "range starts at the second vec4"
             );
-
-            for (i, name) in ["r", "g", "b"].iter().enumerate() {
-                let gpu_u8 = (gpu[i].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                let delta = i32::from(gpu_u8) - i32::from(cpu[i]);
-                assert!(
-                    delta.abs() <= 1,
-                    "YUV({y},{cb},{cr}) {name}: GPU {gpu_u8} vs CPU {} — the two \
-                     conversion paths disagree",
-                    cpu[i]
-                );
-            }
         }
-    }
 
-    #[test]
-    fn the_uniform_is_packed_as_the_shader_declares_it() {
-        // Two vec4s, 32 bytes; a mismatch here reads garbage constants in the
-        // shader and produces a plausible-but-wrong picture.
-        assert_eq!(std::mem::size_of::<ConvertUniform>(), 32);
-        let u =
-            ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
-        let bytes = u.as_bytes();
-        assert_eq!(&bytes[0..4], &u.coeffs[0].to_ne_bytes(), "coeffs lead");
-        assert_eq!(
-            &bytes[16..20],
-            &u.range[0].to_ne_bytes(),
-            "range starts at the second vec4"
-        );
-    }
-
-    #[test]
-    fn the_packed_422_flag_is_set_only_for_that_layout() {
-        let bi =
-            ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
-        assert_eq!(bi.range[3], 0.0);
-        let packed =
-            ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::PackedYuv422);
-        assert_eq!(packed.range[3], 1.0, "the shader branches on this");
+        // Case `the_packed_422_flag_is_set_only_for_that_layout`.
+        {
+            let bi = ConvertUniform::for_colorimetry(
+                Colorimetry::BT709_LIMITED,
+                PlaneLayout::BiPlanarYuv,
+            );
+            assert_eq!(bi.range[3], 0.0);
+            let packed = ConvertUniform::for_colorimetry(
+                Colorimetry::BT709_LIMITED,
+                PlaneLayout::PackedYuv422,
+            );
+            assert_eq!(packed.range[3], 1.0, "the shader branches on this");
+        }
     }
 }

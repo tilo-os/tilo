@@ -161,7 +161,8 @@ pub fn write_baseline(path: &Path, header: &[&str], counts: &Counts) {
 
 /// `(grew, stale)`: files whose count exceeds the baseline (with
 /// `message_for(pattern)` appended), and baseline entries higher than the
-/// tree — the ratchet only moves down.
+/// tree. Growth fails; a stale entry is progress and only noted
+/// ([`note_stale`]).
 pub fn ratchet_failures(
     found: &Counts,
     baseline: &Counts,
@@ -198,47 +199,47 @@ pub fn ratchet_failures(
 /// module or a whole test-gated file.
 
 #[test]
-fn test_module_spans_cover_only_the_test_module() {
-    let source = "const REAL: f64 = 12.0;\n#[cfg(test)]\nmod tests {\n    const FIXTURE: f64 = 99.0;\n}\nconst AFTER: f64 = 8.0;\n";
-    let spans = test_module_spans(source);
-    assert_eq!(spans, vec![(1, 5)]);
-    let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
-    assert!(!in_span(0), "the constant before the module is audited");
-    assert!(in_span(3), "the fixture inside the module is skipped");
-    assert!(!in_span(5), "the constant after the module is audited");
-}
-
-#[test]
-fn test_module_spans_do_not_exempt_the_item_after_a_bodyless_test_item() {
-    let source = "#[cfg(test)]\nconst MAX_HISTORY: usize = 120;\nimpl Widget for Terminal {\n    const PAD: f64 = 12.0;\n}\n#[cfg(test)]\nmod tests;\nconst AFTER: f64 = 8.0;\n";
-    let spans = test_module_spans(source);
-    assert_eq!(spans, vec![(0, 2), (5, 7)]);
-    let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
-    assert!(in_span(1), "the test-only const is exempt");
-    assert!(
-        !in_span(3),
-        "the impl after it is production code and is audited"
-    );
-    assert!(in_span(6), "`mod tests;` is exempt");
-    assert!(!in_span(7), "the constant after `mod tests;` is audited");
-}
-
-#[test]
-fn test_module_spans_follow_attributes_signatures_and_same_line_modules() {
-    let source = "#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    const F: f64 = 1.0;\n}\nconst A: f64 = 8.0;\n#[cfg(test)]\npub(crate) fn helper(\n    px: f32,\n) -> f32 {\n    px\n}\nconst B: f64 = 9.0;\n#[cfg(test)] mod inline { const G: f64 = 2.0; }\nconst C: f64 = 10.0;\n";
-    let spans = test_module_spans(source);
-    assert_eq!(spans, vec![(0, 5), (6, 12), (13, 14)]);
-    let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
-    assert!(in_span(3) && !in_span(5));
-    assert!(in_span(10) && !in_span(12));
-    assert!(in_span(13) && !in_span(14));
-}
-
-#[test]
-fn a_file_gated_to_tests_has_no_production_lines() {
-    let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
-    assert_eq!(test_module_spans(source), vec![(0, 3)]);
-    assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+fn test_module_spans_cover_exactly_the_test_code() {
+    // Phase `test_module_spans_cover_only_the_test_module`.
+    {
+        let source = "const REAL: f64 = 12.0;\n#[cfg(test)]\nmod tests {\n    const FIXTURE: f64 = 99.0;\n}\nconst AFTER: f64 = 8.0;\n";
+        let spans = test_module_spans(source);
+        assert_eq!(spans, vec![(1, 5)]);
+        let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
+        assert!(!in_span(0), "the constant before the module is audited");
+        assert!(in_span(3), "the fixture inside the module is skipped");
+        assert!(!in_span(5), "the constant after the module is audited");
+    }
+    // Phase `test_module_spans_do_not_exempt_the_item_after_a_bodyless_test_item`.
+    {
+        let source = "#[cfg(test)]\nconst MAX_HISTORY: usize = 120;\nimpl Widget for Terminal {\n    const PAD: f64 = 12.0;\n}\n#[cfg(test)]\nmod tests;\nconst AFTER: f64 = 8.0;\n";
+        let spans = test_module_spans(source);
+        assert_eq!(spans, vec![(0, 2), (5, 7)]);
+        let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
+        assert!(in_span(1), "the test-only const is exempt");
+        assert!(
+            !in_span(3),
+            "the impl after it is production code and is audited"
+        );
+        assert!(in_span(6), "`mod tests;` is exempt");
+        assert!(!in_span(7), "the constant after `mod tests;` is audited");
+    }
+    // Phase `test_module_spans_follow_attributes_signatures_and_same_line_modules`.
+    {
+        let source = "#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    const F: f64 = 1.0;\n}\nconst A: f64 = 8.0;\n#[cfg(test)]\npub(crate) fn helper(\n    px: f32,\n) -> f32 {\n    px\n}\nconst B: f64 = 9.0;\n#[cfg(test)] mod inline { const G: f64 = 2.0; }\nconst C: f64 = 10.0;\n";
+        let spans = test_module_spans(source);
+        assert_eq!(spans, vec![(0, 5), (6, 12), (13, 14)]);
+        let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);
+        assert!(in_span(3) && !in_span(5));
+        assert!(in_span(10) && !in_span(12));
+        assert!(in_span(13) && !in_span(14));
+    }
+    // Phase `a_file_gated_to_tests_has_no_production_lines`.
+    {
+        let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
+        assert_eq!(test_module_spans(source), vec![(0, 3)]);
+        assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+    }
 }
 
 #[test]
@@ -258,4 +259,26 @@ fn ratchet_reports_growth_and_stale_entries_separately() {
         stale,
         vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]
     );
+}
+
+/// Reports baseline entries the tree has dropped below. An improvement never
+/// fails a change; the record is lowered by regenerating it with
+/// `update_var=1`, in that change or a later one.
+pub fn note_stale(baseline: &str, update_var: &str, stale: &[String]) {
+    if stale.is_empty() {
+        return;
+    }
+    let note = format!(
+        "{} entr(ies) in {baseline} are above the tree; lower them (or regenerate with \
+         {update_var}=1) to lock the progress in:\n{}\n",
+        stale.len(),
+        stale.join("\n"),
+    );
+    eprintln!("notice: {note}");
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write as _;
+        if let Ok(mut file) = fs::OpenOptions::new().append(true).open(summary) {
+            let _ = writeln!(file, "### Ratchet progress\n\n```\n{note}```");
+        }
+    }
 }

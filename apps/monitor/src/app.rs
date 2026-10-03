@@ -2,9 +2,10 @@
 //! Resources). The system stats are treated as **content**, not navigation —
 //! there is no sidebar. The Processes tab is a full-width process table under
 //! a compact horizontal summary strip; the Resources tab is a reflowing
-//! dashboard of gauges and charts. View-level state (sort, filter, selection,
-//! active tab, scroll) and device-observation preferences live locally in the
-//! widget; no monitoring view or safety preference enters the shared CRDT.
+//! dashboard of gauges and charts. Shared view preferences (tab, sort, tree
+//! mode, filter, selection) live on [`crate::resource::Monitor`] via
+//! [`tilo_resource::publish`]; the live process snapshot and device-observation
+//! prefs ([`crate::prefs::Prefs`]) stay host-local.
 //!
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
@@ -14,13 +15,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -29,6 +31,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -51,8 +54,8 @@ use crate::prefs::Prefs;
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use ui::charts::{
-    BarGauge, Chart, ChartLabels, ChartStyle, GaugeStyle, RingGauge, RollingSeries, Series,
-    Sparkline, TrendRange,
+    BarGauge, Chart, ChartLabels, ChartStyle, GaugeReading, GaugeStyle, RingGauge, RollingSeries,
+    Series, Sparkline, TrendRange,
 };
 use ui::widget::{PushNav, PushPane};
 
@@ -75,7 +78,7 @@ enum ProcAction {
 /// or agent inventing positional string arguments that disagree with the
 /// visible Stop/Kill affordances.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum MonitorOperation {
+pub(crate) enum MonitorOperation {
     /// Select one exact process lifetime in the Monitor view. This is a safe
     /// view operation used by global search; it never sends an OS signal.
     Inspect {
@@ -104,7 +107,7 @@ enum MonitorOperation {
 /// from [`StopKind`], which is the sampler's platform-facing representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum MonitorSignal {
+pub(crate) enum MonitorSignal {
     Stop,
     Kill,
 }
@@ -118,7 +121,7 @@ impl MonitorSignal {
     }
 }
 
-const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
+pub(crate) const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
 
 /// A process is only the same action resource for the lifetime identified by
 /// its kernel start-time tick.  In particular, do not use a bare PID here:
@@ -157,6 +160,36 @@ pub enum Tab {
     Resources,
 }
 
+impl Tab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Processes => "Processes",
+            Self::Resources => "Resources",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Processes => Icon::Layers,
+            Self::Resources => Icon::BarChart,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Processes => "processes",
+            Self::Resources => "resources",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Self {
+        match s {
+            "resources" => Self::Resources,
+            _ => Self::Processes,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Pid,
@@ -172,6 +205,28 @@ impl SortKey {
     /// columns default to ascending.
     fn default_desc(self) -> bool {
         !matches!(self, SortKey::Name | SortKey::User)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pid => "pid",
+            Self::Name => "name",
+            Self::User => "user",
+            Self::Cpu => "cpu",
+            Self::Mem => "mem",
+            Self::Threads => "threads",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Self {
+        match s {
+            "pid" => Self::Pid,
+            "name" => Self::Name,
+            "user" => Self::User,
+            "mem" => Self::Mem,
+            "threads" => Self::Threads,
+            _ => Self::Cpu,
+        }
     }
 }
 
@@ -372,23 +427,24 @@ fn process_resource_label(process: &ProcessInfo) -> String {
     format!("{} ({})", label, process.pid)
 }
 
-/// The always-addressable root of Monitor's live process catalogue.
-fn monitor_process_root_resource() -> Resource {
-    let mut root = Resource::new("processes", "monitor.processes", "Processes");
-    if let Ok(refresh) = ActionSpec::operation(
+/// Refresh is a palette Effect with no document delta. It rides
+/// [`tilo_resource::publish`] through [`crate::resource::Monitor::local_operations`].
+pub(crate) fn refresh_effect() -> Option<ActionSpec> {
+    ActionSpec::operation(
         "refresh",
         "Refresh processes",
         OperationKind::Effect,
         MONITOR_OPERATION_TYPE,
         &MonitorOperation::Refresh,
-    ) {
-        root.actions.push(refresh.with_contract(ActionContract {
+    )
+    .ok()
+    .map(|refresh| {
+        refresh.with_contract(ActionContract {
             permission: PermissionRequirement::Read,
             retry: RetryPolicy::Idempotent,
             ..ActionContract::default()
-        }));
-    }
-    root
+        })
+    })
 }
 
 /// One exact, PID-generation-bound process resource. This is shared by the
@@ -563,8 +619,10 @@ struct ScrollBarHit {
 /// Process table layout geometry, computed once per frame so the header,
 /// rows and scrollbar passes each take one struct instead of a long, mostly
 /// duplicated parameter list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct TableGeom {
+    /// The visible columns, in content space and scaled by the text scale.
+    columns: Vec<layout::Column>,
     /// The card's full inner rect (post-panel padding).
     ti: Rect,
     /// The padded column band — header text and row cells clip to this so an
@@ -827,6 +885,9 @@ pub struct MonitorApp {
     /// 200% text reflows into additional rows instead of overlapping gauges.
     layout_text_scale: f64,
     hit: Hit,
+    /// Document actions: local host for standalone / `--shots` / unit tests;
+    /// framework dispatcher when [`crate::resource::Monitor`] hosts the surface.
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for MonitorApp {
@@ -844,7 +905,7 @@ impl MonitorApp {
         let model = MonitorModel::sample();
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, None, Instant::now(), Sampler::inert());
+        let mut app = Self::build(model, None, ui::time::now(), Sampler::inert());
         // The default tree starts collapsed. Select a row from that *visible*
         // projection rather than the globally busiest process, which may be a
         // hidden descendant. A detail pane with destructive controls must
@@ -866,7 +927,7 @@ impl MonitorApp {
     pub fn new_live() -> Self {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
-        let stale = Instant::now()
+        let stale = ui::time::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale, Sampler::new())
@@ -929,6 +990,7 @@ impl MonitorApp {
             table_cols_w: 0.0,
             layout_text_scale: 1.0,
             hit: Hit::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -939,7 +1001,7 @@ impl MonitorApp {
         let mut app = Self::build(
             MonitorModel::sample(),
             None,
-            Instant::now(),
+            ui::time::now(),
             Sampler::controlled(signal_probe),
         );
         app.prefs.auto_refresh = false;
@@ -978,7 +1040,7 @@ impl MonitorApp {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
         self.process_search.refresh(&self.model.processes);
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
         self.clear_selection_if_filtered_out();
@@ -1164,19 +1226,133 @@ impl MonitorApp {
         })
     }
 
-    fn set_sort(&mut self, key: SortKey) {
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Monitor>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local process catalogue.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::MonitorState) {
+        self.tab = Tab::parse(&state.tab);
+        self.sort_key = SortKey::parse(&state.sort_key);
+        self.sort_desc = state.sort_desc;
+        self.tree_mode = state.tree_mode;
+        if self.search_input.value() != state.search {
+            self.search_input.set_text(&state.search);
+        }
+        self.selected_pid = state.selected_pid;
+    }
+
+    pub(crate) fn commit_view(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::MonitorAction,
+    ) {
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_process_count(&self) -> usize {
+        self.model.processes.len()
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live process children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Monitor::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Monitor>(
+            "processes",
+            "Processes",
+            &state,
+        );
+        root.children = self.live_process_extras();
+        vec![root]
+    }
+
+    /// Live process rows without a `monitor.processes` root.
+    pub(crate) fn live_process_extras(&self) -> Vec<Resource> {
+        self.model
+            .processes
+            .iter()
+            .take(MAX_CONTEXT_PROCESS_RESOURCES)
+            .map(monitor_process_resource)
+            .collect()
+    }
+
+    fn commit_tab(&mut self, doc: &mut AutoCommit, tab: Tab) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetTab {
+                tab: tab.as_str().into(),
+            },
+        );
+    }
+
+    fn commit_tree_mode(&mut self, doc: &mut AutoCommit, tree: bool) {
+        if self.tree_mode == tree {
+            return;
+        }
+        self.tree_mode = tree;
+        self.scroll_off = 0.0;
+        self.commit_view(doc, &crate::resource::MonitorAction::SetTreeMode { tree });
+        self.clamp_scroll();
+    }
+
+    fn commit_selected(&mut self, doc: &mut AutoCommit, pid: Option<u32>) {
+        if self.selected_pid == pid {
+            return;
+        }
+        self.selected_pid = pid;
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetSelected {
+                pid: pid.map(u64::from),
+            },
+        );
+    }
+
+    fn set_sort(&mut self, doc: &mut AutoCommit, key: SortKey) {
         if self.sort_key == key {
             self.sort_desc = !self.sort_desc;
         } else {
             self.sort_key = key;
             self.sort_desc = key.default_desc();
         }
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetSort {
+                key: key.as_str().into(),
+                desc: self.sort_desc,
+            },
+        );
     }
 
     /// Queue the exact resource address every visible process control uses.
     /// The host re-resolves it against a fresh catalogue and enforces the
     /// published permission, confirmation, and retry contract before calling
-    /// [`Self::invoke_resource_operation`].
+    /// [`Self::answer_resource_operation`].
     fn request_process_control(&mut self, pid: u32, action: &'static str) {
         if let Some(process) = self
             .model
@@ -1312,7 +1488,7 @@ impl MonitorApp {
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
         self.copied_pid = Some(pid);
-        self.copied_at = Some(Instant::now());
+        self.copied_at = Some(ui::time::now());
         self.selected_pid = Some(pid);
     }
 
@@ -1370,6 +1546,7 @@ impl MonitorApp {
         menu.open_anchored(Rect::from_origin_size(pos, (0.0, 0.0)), self.rect);
         self.context = menu;
         self.context_pid = Some(pid);
+        // Selection is committed by the right-click caller that has the doc.
         self.selected_pid = Some(pid);
     }
 
@@ -1478,13 +1655,13 @@ impl MonitorApp {
     /// writes the pid to the real OS clipboard via [`ui::clipboard_copy`] (a
     /// silent no-op in a headless/locked-down session) and records it so the
     /// transient toast and tests can observe the action.
-    fn apply_action(&mut self, action: ProcAction, _doc: &mut AutoCommit, _path: &ObjId) {
+    fn apply_action(&mut self, action: ProcAction, doc: &mut AutoCommit, _path: &ObjId) {
         match action {
             ProcAction::Stop(pid) => self.request_process_control(pid, "stop"),
             ProcAction::Kill(pid) => self.request_process_control(pid, "kill"),
             ProcAction::CopyPid(pid) => self.request_process_control(pid, "copy-pid"),
             ProcAction::ShowDetails(pid) => {
-                self.selected_pid = Some(pid);
+                self.commit_selected(doc, Some(pid));
                 if self.is_narrow() {
                     self.proc_push.show_detail();
                 }
@@ -1525,7 +1702,7 @@ impl MonitorApp {
     }
 
     fn clock() -> String {
-        let secs = SystemTime::now()
+        let secs = ui::time::wall()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         format!(
@@ -1863,8 +2040,8 @@ impl MonitorApp {
         // 96 px pair. Both grow by exactly the labels' measured growth over
         // their 1× width, so the 1× thresholds are untouched and a 200 % bar
         // still seats `Processes` / `Resources` before it folds.
-        let (pw, _) = tr.measure_weighted("Processes", sm, None, TextWeight::Semibold);
-        let (rw, _) = tr.measure_weighted("Resources", sm, None, TextWeight::Semibold);
+        let (pw, _) = tr.measure_weighted(Tab::Processes.label(), sm, None, TextWeight::Semibold);
+        let (rw, _) = tr.measure_weighted(Tab::Resources.label(), sm, None, TextWeight::Semibold);
         let label_w = f64::from(pw.max(rw));
         let label_growth = (label_w - label_w / self.density.text_k).max(0.0);
         let want_seg_w = 124.0 + label_growth;
@@ -1880,28 +2057,9 @@ impl MonitorApp {
         let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            proc_r,
-            Icon::Layers,
-            "Processes",
-            self.tab == Tab::Processes,
-            compact,
-        );
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            res_r,
-            Icon::BarChart,
-            "Resources",
-            self.tab == Tab::Resources,
-            compact,
-        );
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        self.draw_tab_pill(&mut ctx, proc_r, Tab::Processes, compact);
+        self.draw_tab_pill(&mut ctx, res_r, Tab::Resources, compact);
         self.hit.tab_proc = proc_r;
         self.hit.tab_res = res_r;
 
@@ -2019,23 +2177,17 @@ impl MonitorApp {
         self.hit.auto_refresh = auto_refresh_r;
     }
 
-    /// Draw a tab pill. `compact` draws an icon-only pill (the label is
-    /// dropped) so the tab control still fits when the header is narrow.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "tab pills combine paint context and bounds with icon, label, active state and compact layout"
-    )]
-    fn draw_tab_pill_ex(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        icon: Icon,
-        label: &str,
-        active: bool,
-        compact: bool,
-    ) {
+    /// Draw `tab`'s pill in `r`, filled when it is the open tab. `compact`
+    /// draws an icon-only pill (the label is dropped) so the tab control still
+    /// fits when the header is narrow.
+    fn draw_tab_pill(&self, ctx: &mut PaintCtx<'_>, r: Rect, tab: Tab, compact: bool) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (icon, label, active) = (tab.icon(), tab.label(), self.tab == tab);
         let c = &theme.tokens.colors;
         let radius = r.height() / 2.0;
         if active {
@@ -2238,17 +2390,15 @@ impl MonitorApp {
         overall: f32,
     ) {
         RingGauge::draw_styled(
-            scene,
-            t,
-            tr,
-            center,
-            44.0 * scale,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Circle::new(center, 44.0 * scale),
             9.0 * scale,
-            overall / 100.0,
-            paint::load_color(theme, overall / 100.0),
-            theme,
-            &format!("{overall:.0}%"),
-            "CPU LOAD",
+            &GaugeReading {
+                frac: overall / 100.0,
+                color: paint::load_color(theme, overall / 100.0),
+                label: "CPU LOAD",
+                value: &format!("{overall:.0}%"),
+            },
             &GAUGE,
         );
     }
@@ -2379,15 +2529,14 @@ impl MonitorApp {
             format_bytes(m.mem_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(mi.x0, ram_y, mi.x1, ram_y + gauge_h),
-            theme,
-            m.mem_frac(),
-            paint::load_color(theme, m.mem_frac()),
-            "RAM",
-            &ram_label,
+            &GaugeReading {
+                frac: m.mem_frac(),
+                color: paint::load_color(theme, m.mem_frac()),
+                label: "RAM",
+                value: &ram_label,
+            },
             &GAUGE,
         );
         let swap_label = format!(
@@ -2396,20 +2545,19 @@ impl MonitorApp {
             format_bytes(m.swap_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(
                 mi.x0,
                 ram_y + gauge_h + 10.0 * scale,
                 mi.x1,
                 ram_y + 2.0 * gauge_h + 10.0 * scale,
             ),
-            theme,
-            m.swap_frac(),
-            c.accent[5],
-            "Swap",
-            &swap_label,
+            &GaugeReading {
+                frac: m.swap_frac(),
+                color: c.accent[5],
+                label: "Swap",
+                value: &swap_label,
+            },
             &GAUGE,
         );
         // A memory sparkline fills the remaining height on the taller (abreast
@@ -2517,15 +2665,14 @@ impl MonitorApp {
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
             let y0 = grid_top + rowi as f64 * (layout::CORE_ROW_STRIDE + self.density.core_extra);
             BarGauge::draw_styled(
-                scene,
-                t,
-                tr,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(x0, y0, x0 + cell_w, y0 + 22.0 * scale),
-                theme,
-                usage / 100.0,
-                paint::load_color(theme, usage / 100.0),
-                &format!("C{i}"),
-                &format!("{usage:.0}%"),
+                &GaugeReading {
+                    frac: usage / 100.0,
+                    color: paint::load_color(theme, usage / 100.0),
+                    label: &format!("C{i}"),
+                    value: &format!("{usage:.0}%"),
+                },
                 &GAUGE,
             );
         }
@@ -2665,6 +2812,7 @@ impl MonitorApp {
         // Rows region (above any horizontal scrollbar).
         let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         let geom = TableGeom {
+            columns,
             ti,
             band,
             hdr,
@@ -2677,8 +2825,8 @@ impl MonitorApp {
             h_overflow,
         };
 
-        self.draw_table_header(scene, t, tr, theme, &columns, &geom);
-        let rows_len = self.draw_table_rows(scene, t, tr, theme, &columns, &geom);
+        self.draw_table_header(scene, t, tr, theme, &geom);
+        let rows_len = self.draw_table_rows(scene, t, tr, theme, &geom);
         self.draw_table_scrollbars(scene, t, theme, &geom, rows_len);
     }
 
@@ -2688,7 +2836,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) {
         let c = &theme.tokens.colors;
@@ -2705,7 +2852,7 @@ impl MonitorApp {
         self.hit.sort_headers.clear();
         let hdr_clip = Rect::new(geom.band.x0, hdr.y0, geom.band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
-        for col in columns {
+        for col in &geom.columns {
             let x0 = geom.cols_left + col.x0 - geom.sx;
             let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -2766,7 +2913,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) -> usize {
         self.rows_per_page = (geom.view.height() / self.density.row_h).floor().max(1.0) as usize;
@@ -2897,7 +3043,13 @@ impl MonitorApp {
                 geom.view.x1,
                 y0 + self.density.row_h - inset,
             );
-            self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
+            self.draw_table_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                geom,
+                p,
+                row,
+                idx % 2 == 1,
+            );
         }
         scene.pop_layer();
         rows.len()
@@ -2914,22 +3066,23 @@ impl MonitorApp {
     /// Draw one process row: selection/zebra background, the NAME column's
     /// tree indent + twisty, and every other visible column's cell.
     #[allow(
-        clippy::too_many_arguments,
         clippy::many_single_char_names,
-        reason = "threads the render context (scene/transform/text/theme) plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives; t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
+        reason = "t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
     )]
     fn draw_table_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
         alt: bool,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let c = &theme.tokens.colors;
         let selected = self.selected_pid == Some(p.pid);
         if selected {
@@ -2980,7 +3133,7 @@ impl MonitorApp {
         // Look a column up by key — the set is now width-dependent (USER is
         // dropped at narrow widths), so cells are addressed by identity, not
         // a fixed index.
-        let column = |k: SortKey| columns.iter().find(|col| col.key == k);
+        let column = |k: SortKey| geom.columns.iter().find(|col| col.key == k);
         // CPU% coloured by load. A collapsed parent's summed total can exceed
         // 100% (multi-core); colour against a single core's scale but clamp
         // the hue so a hot subtree reads as fully loaded.
@@ -3019,7 +3172,7 @@ impl MonitorApp {
         }
 
         // NAME column: tree indent + twisty + name, all in the NAME band.
-        self.draw_table_row_name(scene, t, tr, theme, columns, geom, p, row, selected);
+        self.draw_table_row_name(ctx, geom, p, row);
 
         self.hit.rows.push((p.pid, row));
     }
@@ -3028,25 +3181,23 @@ impl MonitorApp {
     /// `layout::process_columns` always includes NAME; if a future layout
     /// change ever dropped it, this is a no-op rather than a panic — the
     /// row's other cells and hit rect still render regardless.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives"
-    )]
     fn draw_table_row_name(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
-        selected: bool,
     ) {
-        let Some(name_col) = columns.iter().find(|col| col.key == SortKey::Name) else {
+        let Some(name_col) = geom.columns.iter().find(|col| col.key == SortKey::Name) else {
             return;
         };
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let selected = self.selected_pid == Some(p.pid);
         let c = &theme.tokens.colors;
         let fs = ts(tr, theme.tokens.typography.scale.sm);
         let ty = Self::row_text_top(tr, row, fs);
@@ -3552,10 +3703,6 @@ impl MonitorApp {
     /// at a comfortable preferred width), so the box and the pills can never
     /// overlap however narrow the window. Returns its rect, for the count
     /// label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_search_box(
         &mut self,
         scene: &mut Scene,
@@ -3613,10 +3760,6 @@ impl MonitorApp {
     /// Count label centred in the slack between the search box and the pill
     /// cluster — only drawn when it genuinely fits, so it never overlaps a
     /// pill (the caller only calls this on a single, unstacked row).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_count_label(
         &self,
         scene: &mut Scene,
@@ -3862,10 +4005,6 @@ impl MonitorApp {
     /// whatever vertical slack remains above the stat grid so a tall pane
     /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
     /// position for the stat grid.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "process sparklines combine paint context, content bounds and vertical position with the selected process sample"
-    )]
     fn draw_detail_sparkline(
         &self,
         scene: &mut Scene,
@@ -3941,10 +4080,6 @@ impl MonitorApp {
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
-    )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the stat grid combines paint context and content rect with the process, its origin and the measured row height"
     )]
     fn draw_detail_stat_grid(
         scene: &mut Scene,
@@ -4265,39 +4400,24 @@ impl MonitorApp {
 
     /// One rolling chart on a raised card: a semibold title, and a faint grid
     /// that stays inside the card instead of competing with its edge.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a chart card combines paint context and bounds with title, series, numeric ceiling and formatted axis labels"
-    )]
     fn area_chart(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
-        title: &str,
         series: &[Series],
         max: f32,
-        axis_hi: &str,
-        axis_lo: &str,
+        labels: ChartLabels<'_>,
     ) {
-        let inner = paint::panel(scene, t, rect, theme, 12.0);
+        let theme = ctx.theme;
+        let inner = paint::panel(ctx.scene, ctx.transform, rect, theme, 12.0);
         let style = ChartStyle::default()
             .with_grid(4, Some(paint::inner_rule(theme, 26)))
             .with_title_weight(TextWeight::Semibold);
         Chart::draw_styled(
-            scene,
-            t,
-            tr,
+            ctx,
             inner,
-            theme,
             series,
             TrendRange::up_to(f64::from(max)),
-            ChartLabels {
-                title,
-                axis_hi,
-                axis_lo,
-            },
+            labels,
             &style,
         );
     }
@@ -4332,35 +4452,33 @@ impl MonitorApp {
         let metrics = &self.model.metrics;
         // CPU%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(0),
-            theme,
-            "CPU",
             &[
                 Series::new(metrics.cpu_hist.as_slice().to_vec(), c.accent[5])
                     .with_legend(format!("{:.0}%", metrics.cpu_overall())),
             ],
             100.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "CPU",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         // Memory%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(1),
-            theme,
-            "Memory",
             &[
                 Series::new(metrics.mem_hist.as_slice().to_vec(), c.semantic.success)
                     .with_legend(format_bytes(metrics.mem_used)),
             ],
             1.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "Memory",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         self.draw_resources_net_disk_charts(scene, t, tr, theme, cell(2), cell(3));
     }
@@ -4384,12 +4502,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             net_cell,
-            theme,
-            "Network",
             &[
                 Series::new(metrics.net_rx_hist.as_slice().to_vec(), c.semantic.info)
                     .with_legend(format!("↓ {}", fmt_rate(metrics.net_rx))),
@@ -4397,8 +4511,11 @@ impl MonitorApp {
                     .with_legend(format!("↑ {}", fmt_rate(metrics.net_tx))),
             ],
             net_max,
-            &fmt_rate(net_max),
-            "0",
+            ChartLabels {
+                title: "Network",
+                axis_hi: &fmt_rate(net_max),
+                axis_lo: "0",
+            },
         );
         let disk_max = metrics
             .disk_read_hist
@@ -4407,12 +4524,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             disk_cell,
-            theme,
-            "Disk I/O",
             &[
                 Series::new(
                     metrics.disk_read_hist.as_slice().to_vec(),
@@ -4426,8 +4539,11 @@ impl MonitorApp {
                 .with_legend(format!("W {}", fmt_rate(metrics.disk_write))),
             ],
             disk_max,
-            &fmt_rate(disk_max),
-            "0",
+            ChartLabels {
+                title: "Disk I/O",
+                axis_hi: &fmt_rate(disk_max),
+                axis_lo: "0",
+            },
         );
     }
 
@@ -4761,7 +4877,7 @@ impl MonitorApp {
     /// Non-tab-specific chrome: the detail-pane Back affordance, a
     /// summary-strip cell jump, the tab pills, and starting the interval
     /// pill's press-and-hold timer. Returns whether the click was consumed.
-    fn click_nav_chrome(&mut self, p: Point, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn click_nav_chrome(&mut self, p: Point, doc: &mut AutoCommit, _path: &ObjId) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
             self.proc_push.show_master();
@@ -4774,7 +4890,7 @@ impl MonitorApp {
         // at the top.
         for (i, cell) in self.hit.summary_cells.clone().into_iter().enumerate() {
             if cell.contains(p) {
-                self.tab = Tab::Resources;
+                self.commit_tab(doc, Tab::Resources);
                 let (body_w, viewport_h) = self.body_metrics();
                 self.view_scroll_y = self.resources_scroll_for_stat(i, body_w, viewport_h);
                 return true;
@@ -4785,14 +4901,14 @@ impl MonitorApp {
             if self.tab != Tab::Processes {
                 self.view_scroll_y = 0.0;
             }
-            self.tab = Tab::Processes;
+            self.commit_tab(doc, Tab::Processes);
             return true;
         }
         if self.hit.tab_res.contains(p) {
             if self.tab != Tab::Resources {
                 self.view_scroll_y = 0.0;
             }
-            self.tab = Tab::Resources;
+            self.commit_tab(doc, Tab::Resources);
             return true;
         }
         if self.hit.refresh.contains(p) {
@@ -4804,7 +4920,7 @@ impl MonitorApp {
             // Resuming starts a fresh cadence window. That avoids an immediate
             // surprise sample after the user intentionally paused inspection.
             if self.prefs.auto_refresh {
-                self.last_refresh = Instant::now();
+                self.last_refresh = ui::time::now();
             }
             return true;
         }
@@ -4813,7 +4929,7 @@ impl MonitorApp {
             // press-and-hold (open the option popover). Start the hold timer on
             // press; `draw` opens the popover once it crosses the threshold, and
             // `release_interval_press` cycles on an early release.
-            self.interval_press = Some(Instant::now());
+            self.interval_press = Some(ui::time::now());
             self.interval_hold_opened = false;
             return true;
         }
@@ -4832,7 +4948,7 @@ impl MonitorApp {
         &mut self,
         p: Point,
         clicked_search: bool,
-        _doc: &mut AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         if clicked_search {
@@ -4851,9 +4967,7 @@ impl MonitorApp {
         }
         // Tree/Flat view toggle.
         if self.hit.tree_toggle.contains(p) {
-            self.tree_mode = !self.tree_mode;
-            self.scroll_off = 0.0;
-            self.clamp_scroll();
+            self.commit_tree_mode(doc, !self.tree_mode);
             return true;
         }
         // Sum subtree / Per-process toggle (tree mode only).
@@ -4863,7 +4977,7 @@ impl MonitorApp {
         }
         for (key, rect) in self.hit.sort_headers.clone() {
             if rect.contains(p) {
-                self.set_sort(key);
+                self.set_sort(doc, key);
                 return true;
             }
         }
@@ -4889,7 +5003,7 @@ impl MonitorApp {
         }
         for (pid, rect) in self.hit.rows.clone() {
             if rect.contains(p) {
-                self.selected_pid = Some(pid);
+                self.commit_selected(doc, Some(pid));
                 // On narrow windows the detail is its own pushed pane;
                 // selecting a row slides it in.
                 if self.is_narrow() {
@@ -4907,7 +5021,7 @@ impl MonitorApp {
     fn on_right_click(
         &mut self,
         p: Point,
-        _doc: &mut AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
     ) {
@@ -4920,6 +5034,7 @@ impl MonitorApp {
         }
         for (pid, rect) in self.hit.rows.clone() {
             if rect.contains(p) {
+                self.commit_selected(doc, Some(pid));
                 self.open_context_menu(pid, p);
                 *handled = true;
                 return;
@@ -4927,7 +5042,7 @@ impl MonitorApp {
         }
     }
 
-    fn move_selection(&mut self, delta: i32) {
+    fn move_selection(&mut self, doc: &mut AutoCommit, delta: i32) {
         let procs = self.visible_rows();
         if procs.is_empty() {
             return;
@@ -4948,7 +5063,7 @@ impl MonitorApp {
         let Some(next_row) = procs.get(next) else {
             return;
         };
-        self.selected_pid = Some(next_row.pid);
+        self.commit_selected(doc, Some(next_row.pid));
         // Keep the selection in view.
         let next_f = next as f32;
         if next_f < self.scroll_off {
@@ -5041,11 +5156,11 @@ impl MonitorApp {
                 }
             }
             Key::Named(NamedKey::ArrowUp) if self.tab == Tab::Processes => {
-                self.move_selection(-1);
+                self.move_selection(doc, -1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) if self.tab == Tab::Processes => {
-                self.move_selection(1);
+                self.move_selection(doc, 1);
                 *handled = true;
             }
             // Right/Left expand/collapse the selected tree node (when it has
@@ -5084,23 +5199,23 @@ impl MonitorApp {
     /// Single-character keyboard shortcuts: tab switch, search focus, sort
     /// keys, Stop, and the tree/sum toggles. Returns whether the character
     /// was recognised.
-    fn key_character_shortcut(&mut self, s: &str, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit, _path: &ObjId) -> bool {
         match s {
-            "1" => self.tab = Tab::Processes,
-            "2" => self.tab = Tab::Resources,
+            "1" => self.commit_tab(doc, Tab::Processes),
+            "2" => self.commit_tab(doc, Tab::Resources),
             "/" => {
-                self.tab = Tab::Processes;
+                self.commit_tab(doc, Tab::Processes);
                 self.search_input.set_focus(true);
             }
-            "c" | "C" => self.set_sort(SortKey::Cpu),
-            "m" | "M" => self.set_sort(SortKey::Mem),
-            "p" | "P" => self.set_sort(SortKey::Pid),
-            "n" | "N" => self.set_sort(SortKey::Name),
+            "c" | "C" => self.set_sort(doc, SortKey::Cpu),
+            "m" | "M" => self.set_sort(doc, SortKey::Mem),
+            "p" | "P" => self.set_sort(doc, SortKey::Pid),
+            "n" | "N" => self.set_sort(doc, SortKey::Name),
             "r" | "R" => self.request_monitor_control("refresh"),
             "a" | "A" => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             // "s" sends SIGTERM (Stop) to the selection; "g" toggles the
@@ -5117,11 +5232,7 @@ impl MonitorApp {
                     self.sum_mode = self.sum_mode.toggled();
                 }
             }
-            "t" | "T" => {
-                self.tree_mode = !self.tree_mode;
-                self.scroll_off = 0.0;
-                self.clamp_scroll();
-            }
+            "t" | "T" => self.commit_tree_mode(doc, !self.tree_mode),
             _ => return false,
         }
         true
@@ -5431,66 +5542,13 @@ impl MonitorApp {
     }
 }
 
-impl Widget for MonitorApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[MONITOR_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = monitor_process_root_resource();
-        root.children.extend(
-            self.model
-                .processes
-                .iter()
-                .take(MAX_CONTEXT_PROCESS_RESOURCES)
-                .map(monitor_process_resource),
-        );
-        vec![root]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // One compact root exposes the safe contextual sample. Individual
-        // process ids are resolved lazily below, avoiding an all-process
-        // materialization in the broker's cursor-based directory.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "processes" {
-            return Some(monitor_process_root_resource());
-        }
-        let (pid, started_at) = parse_process_resource_id(id)?;
-        self.model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid && process.started_at == started_at)
-            .map(monitor_process_resource)
-    }
-
-    fn invoke_resource_operation(
+impl MonitorApp {
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if type_id != MONITOR_OPERATION_TYPE {
@@ -5508,18 +5566,60 @@ impl Widget for MonitorApp {
             return Err("Monitor operation kind does not match its payload".into());
         }
         self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
+        if let MonitorOperation::Inspect { pid, .. } | MonitorOperation::CopyPid { pid, .. } =
+            &operation
+        {
+            // perform_operation already updated the local selection; publish it.
+            let selected = Some(*pid);
+            if self.selected_pid != selected {
+                self.selected_pid = selected;
+            }
+            self.commit_view(
+                doc,
+                &crate::resource::MonitorAction::SetSelected {
+                    pid: Some(u64::from(*pid)),
+                },
+            );
+        }
         Ok(true)
     }
+}
 
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        vec![Box::new(self.process_search.clone())]
+impl Widget for MonitorApp {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[MONITOR_OPERATION_TYPE]
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take()
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Monitor's observation and safety preferences are device-local, so a
         // shared document sync must never overwrite this window's state.
         self.clear_selection_if_filtered_out();
@@ -5620,39 +5720,32 @@ impl Widget for MonitorApp {
         self.draw_overlays(scene, t, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A pending stop confirmation is modal: while it's up the shared
         // dialog captures every event (typing, clicks, Esc) and nothing leaks
         // to the process table behind the scrim.
         if self.confirm_stop.is_some() {
-            self.route_confirm_event(event, scale_factor, *modifiers, doc, path, handled);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
-        if self.route_search(
+        if self.route_search(event, ctx) {
+            return;
+        }
+        self.dispatch_event(
             event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        self.dispatch_event(event, scale_factor, *modifiers, doc, path, handled);
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -5712,16 +5805,17 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {
             "monitor.search" => return self.search_input.perform_action(action, state, path),
-            "monitor.tab.processes" if activated => self.tab = Tab::Processes,
-            "monitor.tab.resources" if activated => self.tab = Tab::Resources,
+            "monitor.tab.processes" if activated => self.commit_tab(state, Tab::Processes),
+            "monitor.tab.resources" if activated => self.commit_tab(state, Tab::Resources),
             "monitor.detail-back" if activated => self.proc_push.show_master(),
             "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
                 self.open_interval_popover();
@@ -5733,7 +5827,7 @@ impl Widget for MonitorApp {
             "monitor.auto-refresh" if activated => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             "monitor.kernel-threads" if activated => {
@@ -5742,9 +5836,7 @@ impl Widget for MonitorApp {
                 self.clamp_scroll();
             }
             "monitor.tree-mode" if activated => {
-                self.tree_mode = !self.tree_mode;
-                self.scroll_off = 0.0;
-                self.clamp_scroll();
+                self.commit_tree_mode(state, !self.tree_mode);
             }
             "monitor.sum-mode" if activated && self.tree_mode => {
                 self.sum_mode = self.sum_mode.toggled();
@@ -5758,7 +5850,7 @@ impl Widget for MonitorApp {
                         return false;
                     };
                     if activated && index < 4 {
-                        self.tab = Tab::Resources;
+                        self.commit_tab(state, Tab::Resources);
                         let (body_w, viewport_h) = self.body_metrics();
                         self.view_scroll_y =
                             self.resources_scroll_for_stat(index, body_w, viewport_h);
@@ -5825,7 +5917,7 @@ impl Widget for MonitorApp {
                         _ => return false,
                     };
                     if activated {
-                        self.set_sort(sort);
+                        self.set_sort(state, sort);
                         return true;
                     }
                     return false;
@@ -5863,11 +5955,11 @@ impl Widget for MonitorApp {
                 }
                 match (command, action) {
                     (None, Action::Focus | Action::ScrollIntoView) => {
-                        self.selected_pid = Some(pid);
+                        self.commit_selected(state, Some(pid));
                         return true;
                     }
                     (None, Action::Activate) => {
-                        self.selected_pid = Some(pid);
+                        self.commit_selected(state, Some(pid));
                         if self.is_narrow() {
                             self.proc_push.show_detail();
                         }
@@ -5886,14 +5978,6 @@ impl Widget for MonitorApp {
             }
         }
         true
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
     }
 
     /// Ask for a 60 Hz frame only for a short-lived visual need. Periodic
@@ -5943,6 +6027,93 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::undo::UndoPoints for MonitorApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+}
+
+impl ui::search::capability::SearchSource for MonitorApp {
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        vec![Box::new(self.process_search.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for MonitorApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the processes door — keep only live process rows.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // One compact root exposes the safe contextual sample. Individual
+        // process ids are resolved lazily below, avoiding an all-process
+        // materialization in the broker's cursor-based directory.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if id == "processes" {
+            if self.is_hosted() {
+                return None;
+            }
+            return self.publish_resources(doc).into_iter().next();
+        }
+        if let Some(found) = find(&self.resources(doc), id) {
+            return Some(found);
+        }
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(monitor_process_resource)
+    }
+}
+
+impl ui::widget::controls::ActionControls for MonitorApp {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for MonitorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -6019,10 +6190,6 @@ impl MonitorApp {
 
     /// Page scrollbar down the right edge of the body viewport — a
     /// draggable thumb over a page-able track.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
-    )]
     fn draw_page_scrollbar(
         &mut self,
         scene: &mut Scene,
@@ -6079,7 +6246,7 @@ impl MonitorApp {
 
         // `needs_animation_frame` holds the host long enough to reach the
         // dwell deadline; this tick makes the tooltip visible when due.
-        let _ = self.tooltips.tick(Instant::now());
+        let _ = self.tooltips.tick(ui::time::now());
         if let Some((label, anchor)) = self.tooltips.visible() {
             draw_hover_tooltip(scene, t, text_renderer, theme, anchor, label, self.rect);
         }
@@ -6158,22 +6325,7 @@ impl MonitorApp {
     /// should return immediately — either because the search box consumed
     /// the event, or because a reserved global chord is deliberately left
     /// unhandled so it bubbles to the host.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
-    )]
-    fn route_search(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_search(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let search_rect = self.hit.search;
         self.search_input.apply_layout_external(Rect::new(
             search_rect.x0 + 34.0,
@@ -6197,7 +6349,7 @@ impl MonitorApp {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
-            let ctrl = modifiers.state().control_key();
+            let ctrl = ctx.modifiers.state().control_key();
             if ctrl
                 && matches!(&key.logical_key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
             {
@@ -6213,7 +6365,7 @@ impl MonitorApp {
                 )
             {
                 self.search_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -6227,22 +6379,28 @@ impl MonitorApp {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut input_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if self.search_input.take_dirty().is_some() {
             self.scroll_off = 0.0;
             self.clear_selection_if_filtered_out();
+            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+            let query = self.search_input.value().to_string();
+            self.commit_view(doc, &crate::resource::MonitorAction::SetSearch { query });
+            // Keep the shared selection aligned when the filter drops the row.
+            self.commit_view(
+                doc,
+                &crate::resource::MonitorAction::SetSelected {
+                    pid: self.selected_pid.map(u64::from),
+                },
+            );
             input_handled = true;
         }
         if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -6279,7 +6437,7 @@ impl MonitorApp {
                 .into_iter()
                 .find(|(rect, _)| rect.contains(self.last_cursor))
                 .map(|(rect, label)| (rect, label.to_string()));
-                let _ = self.tooltips.on_pointer(tooltip, Instant::now());
+                let _ = self.tooltips.on_pointer(tooltip, ui::time::now());
                 // A live scrollbar thumb drag follows the cursor.
                 if self.scroll_drag.is_some() {
                     self.apply_scroll_drag(self.last_cursor);
@@ -6437,78 +6595,100 @@ mod tests {
         a.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    /// The 1× design is exact: at text scale 1 the measured density is the
-    /// constant set, so nothing about the 1× frame moved when the bands
-    /// started following the measured line boxes.
+    /// Density is the design constants at 1x, grows with measured lines at 2x, and
+    /// table rows and sort headers keep an s1 gap under every scale.
     #[test]
-    fn density_at_1x_is_the_design_constants() {
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let d = Density::measure(&mut tr, &theme);
-        assert_eq!(
-            d,
-            Density::ONE,
-            "1× density must equal the design constants"
-        );
-    }
-
-    /// At 200 % every text-bearing band grows by at least the extra height of
-    /// the lines it stacks, and the row pitch the table pages by is the same
-    /// pitch the rows were painted at — layout, paint and the wheel-to-rows
-    /// hit math read one number.
-    #[test]
-    fn density_at_2x_grows_rows_by_their_measured_lines_and_rows_stay_seated() {
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let d = Density::measure(&mut tr, &theme);
-        let sm = ts(&tr, theme.tokens.typography.scale.sm);
-        let sm_line = paint::line_box(&mut tr, sm);
-        assert!(
-            (sm - theme.tokens.typography.scale.sm / 2.0).abs() < 1e-4,
-            "the token is fed to the renderer at half size so it paints once at 2×: {sm}"
-        );
-        assert!(
-            d.row_h >= sm_line + 2.0,
-            "a 2× row ({}) must seat its 2× line ({sm_line}) with padding",
-            d.row_h
-        );
-        assert!(d.row_h > ROW_H && d.table_header_h > TABLE_HEADER_H);
-        assert!(d.toolbar_row_h > TOOLBAR_ROW_H && d.header_h > HEADER_H);
-        assert!(d.detail_h > DETAIL_H && d.strip_cell_h > layout::STRIP_CELL_H);
-        assert!((d.text_k - 2.0).abs() < 1e-6);
-
-        // The production frame: rows_per_page and every recorded row rect use
-        // the measured pitch, and no two row hit rects overlap.
-        let mut a = MonitorApp::new();
-        a.seed_shot_scenario("detail");
-        draw_at_scaled(&mut a, 800.0, 900.0, 2.0);
-        assert_eq!(a.density, d, "draw caches the density it painted with");
-        let rows: Vec<Rect> = a.hit.rows.iter().map(|(_, r)| *r).collect();
-        assert!(
-            rows.len() >= 2,
-            "the seeded table paints rows: {}",
-            rows.len()
-        );
-        let gap = d.row_gap;
-        assert!((gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-6);
-        for pair in rows.windows(2) {
-            let (top, next) = (pair[0], pair[1]);
-            assert!(
-                (top.height() - (d.row_h - gap)).abs() < 1e-6,
-                "row band {} must be the measured pitch {} less the row gap {gap}",
-                top.height(),
-                d.row_h
-            );
-            assert!(
-                next.y0 - top.y1 >= gap - 1e-6,
-                "adjacent rows keep an s1 gap and never touch: {top:?} vs {next:?}"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn density_and_table_rows_follow_measured_metrics_and_keep_s1_gaps() {
+        // Phase `density_at_1x_is_the_design_constants`.
+        // The 1× design is exact: at text scale 1 the measured density is the
+        // constant set, so nothing about the 1× frame moved when the bands
+        // started following the measured line boxes.
+        {
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let d = Density::measure(&mut tr, &theme);
+            assert_eq!(
+                d,
+                Density::ONE,
+                "1× density must equal the design constants"
             );
         }
-        assert!(
-            a.rows_per_page as f64 * d.row_h <= a.table_viewport.height() + 1e-6,
-            "the page count is derived from the same pitch the rows are painted at"
-        );
+
+        // Phase `density_at_2x_grows_rows_by_their_measured_lines_and_rows_stay_seated`.
+        // At 200 % every text-bearing band grows by at least the extra height of
+        // the lines it stacks, and the row pitch the table pages by is the same
+        // pitch the rows were painted at — layout, paint and the wheel-to-rows
+        // hit math read one number.
+        {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let d = Density::measure(&mut tr, &theme);
+            let sm = ts(&tr, theme.tokens.typography.scale.sm);
+            let sm_line = paint::line_box(&mut tr, sm);
+            assert!(
+                (sm - theme.tokens.typography.scale.sm / 2.0).abs() < 1e-4,
+                "the token is fed to the renderer at half size so it paints once at 2×: {sm}"
+            );
+            assert!(
+                d.row_h >= sm_line + 2.0,
+                "a 2× row ({}) must seat its 2× line ({sm_line}) with padding",
+                d.row_h
+            );
+            assert!(d.row_h > ROW_H && d.table_header_h > TABLE_HEADER_H);
+            assert!(d.toolbar_row_h > TOOLBAR_ROW_H && d.header_h > HEADER_H);
+            assert!(d.detail_h > DETAIL_H && d.strip_cell_h > layout::STRIP_CELL_H);
+            assert!((d.text_k - 2.0).abs() < 1e-6);
+
+            // The production frame: rows_per_page and every recorded row rect use
+            // the measured pitch, and no two row hit rects overlap.
+            let mut a = MonitorApp::new();
+            a.seed_shot_scenario("detail");
+            draw_at_scaled(&mut a, 800.0, 900.0, 2.0);
+            assert_eq!(a.density, d, "draw caches the density it painted with");
+            let rows: Vec<Rect> = a.hit.rows.iter().map(|(_, r)| *r).collect();
+            assert!(
+                rows.len() >= 2,
+                "the seeded table paints rows: {}",
+                rows.len()
+            );
+            let gap = d.row_gap;
+            assert!((gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-6);
+            for pair in rows.windows(2) {
+                let (top, next) = (pair[0], pair[1]);
+                assert!(
+                    (top.height() - (d.row_h - gap)).abs() < 1e-6,
+                    "row band {} must be the measured pitch {} less the row gap {gap}",
+                    top.height(),
+                    d.row_h
+                );
+                assert!(
+                    next.y0 - top.y1 >= gap - 1e-6,
+                    "adjacent rows keep an s1 gap and never touch: {top:?} vs {next:?}"
+                );
+            }
+            assert!(
+                a.rows_per_page as f64 * d.row_h <= a.table_viewport.height() + 1e-6,
+                "the page count is derived from the same pitch the rows are painted at"
+            );
+        }
+
+        // Phase `table_rows_and_sort_headers_keep_an_s1_gap_at_1x`.
+        // Rule 1 of the 1× bar on the process table: every row band is at least
+        // the 24 px touch floor, consecutive rows keep exactly one `s1` between
+        // them, and the sort headers clear each other and the first row by a
+        // token step — so nothing in the table touches at 100 %. The same holds
+        // under `ui_scale` 2 (s1 = 8): the pitch grows with the gap, so the band
+        // never drops below its floor.
+        {
+            for theme in [Theme::dark(), Theme::dark().with_ui_scale(2.0)] {
+                table_rows_keep_an_s1_gap_under(&theme);
+            }
+        }
     }
 
     /// `draw_at` under an arbitrary theme (a ui-scaled or custom-spacing one).
@@ -6518,19 +6698,6 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         a.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    }
-
-    /// Rule 1 of the 1× bar on the process table: every row band is at least
-    /// the 24 px touch floor, consecutive rows keep exactly one `s1` between
-    /// them, and the sort headers clear each other and the first row by a
-    /// token step — so nothing in the table touches at 100 %. The same holds
-    /// under `ui_scale` 2 (s1 = 8): the pitch grows with the gap, so the band
-    /// never drops below its floor.
-    #[test]
-    fn table_rows_and_sort_headers_keep_an_s1_gap_at_1x() {
-        for theme in [Theme::dark(), Theme::dark().with_ui_scale(2.0)] {
-            table_rows_keep_an_s1_gap_under(&theme);
-        }
     }
 
     fn table_rows_keep_an_s1_gap_under(theme: &Theme) {
@@ -6592,598 +6759,1175 @@ mod tests {
         }
     }
 
+    /// The process list starts CPU-sorted, re-sorts and filters (flat and tree), and
+    /// hides kernel threads by default.
     #[test]
-    fn starts_on_processes_with_cpu_sort_and_a_selection() {
-        let a = app();
-        assert!(matches!(a.tab, Tab::Processes));
-        assert!(matches!(a.sort_key, SortKey::Cpu));
-        assert!(a.sort_desc);
-        assert!(a.selected_pid.is_some());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn process_list_sorts_and_filters_visible_rows() {
+        // Phase `starts_on_processes_with_cpu_sort_and_a_selection`.
+        {
+            let a = app();
+            assert!(matches!(a.tab, Tab::Processes));
+            assert!(matches!(a.sort_key, SortKey::Cpu));
+            assert!(a.sort_desc);
+            assert!(a.selected_pid.is_some());
+        }
+
+        // Phase `cpu_sort_descending_orders_busiest_first`.
+        {
+            let a = app();
+            let v = a.visible_processes();
+            assert!(v.len() >= 2);
+            assert!(v[0].cpu >= v[1].cpu, "first row must be the busiest");
+        }
+
+        // Phase `toggling_sort_key_flips_direction_on_repeat`.
+        {
+            let mut a = app();
+            a.set_sort(&mut AutoCommit::new(), SortKey::Name); // text → ascending
+            assert!(!a.sort_desc);
+            a.set_sort(&mut AutoCommit::new(), SortKey::Name); // repeat → flip
+            assert!(a.sort_desc);
+        }
+
+        // Phase `filter_narrows_the_list`.
+        {
+            let mut a = app();
+            let all = a.visible_processes().len();
+            a.search_input.set_text("browser");
+            let some = a.visible_processes().len();
+            assert!(some >= 1 && some < all);
+            assert!(a.visible_processes().iter().all(|p| {
+                p.name.to_lowercase().contains("browser")
+                    || p.user.to_lowercase().contains("browser")
+                    || p.pid.to_string().contains("browser")
+            }));
+        }
+
+        // Phase `kernel_threads_hidden_by_default`.
+        {
+            let mut a = app();
+            assert!(a.visible_processes().iter().all(|p| !p.kernel));
+            a.prefs.show_kernel_threads = true;
+            assert!(a.visible_processes().iter().any(|p| p.kernel));
+        }
+
+        // Phase `filter_works_over_the_tree`.
+        // Search/filter still works over the tree: filtering to a deep child
+        // keeps its ancestors visible (so the match is reachable) and prunes
+        // unrelated branches.
+        {
+            let mut a = app();
+            a.search_input.set_text("rustc");
+            let rows = a.visible_rows();
+            let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+            assert!(names.contains(&"rustc"), "match present: {names:?}");
+            // rustc's ancestor chain (cargo → code → shell) is force-shown.
+            assert!(names.contains(&"cargo"), "ancestor cargo kept: {names:?}");
+            assert!(names.contains(&"code"), "ancestor code kept: {names:?}");
+            assert!(names.contains(&"shell"), "ancestor shell kept: {names:?}");
+            // An unrelated branch (systemd's services) is pruned.
+            assert!(
+                !names.contains(&"chronyd"),
+                "unrelated branch pruned: {names:?}"
+            );
+        }
     }
 
+    /// Selection follows the visible process generation: filtering or PID reuse clears it,
+    /// arrows move it, and the detail always names a visible tree row.
     #[test]
-    fn cpu_sort_descending_orders_busiest_first() {
-        let a = app();
-        let v = a.visible_processes();
-        assert!(v.len() >= 2);
-        assert!(v[0].cpu >= v[1].cpu, "first row must be the busiest");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn selection_tracks_visible_process_identity() {
+        // Phase `filtering_away_selected_process_clears_its_actionable_detail`.
+        {
+            let mut a = app();
+            assert!(a.selected_pid.is_some(), "sample starts with a selection");
+            a.search_input.set_text("__no_process_matches__");
+            a.clear_selection_if_filtered_out();
+            assert!(a.selected_pid.is_none());
+        }
 
-    #[test]
-    fn toggling_sort_key_flips_direction_on_repeat() {
-        let mut a = app();
-        a.set_sort(SortKey::Name); // text → ascending
-        assert!(!a.sort_desc);
-        a.set_sort(SortKey::Name); // repeat → flip
-        assert!(a.sort_desc);
-    }
+        // Phase `recycled_pid_clears_selection_and_does_not_inherit_cpu_history`.
+        {
+            let mut a = app();
+            let selected = a.selected_process().expect("sample has a selection");
+            let old_identity = (selected.pid, selected.started_at);
+            a.record_proc_cpu();
+            assert!(a.proc_cpu_hist.contains_key(&old_identity));
 
-    #[test]
-    fn filter_narrows_the_list() {
-        let mut a = app();
-        let all = a.visible_processes().len();
-        a.search_input.set_text("browser");
-        let some = a.visible_processes().len();
-        assert!(some >= 1 && some < all);
-        assert!(a.visible_processes().iter().all(|p| {
-            p.name.to_lowercase().contains("browser")
-                || p.user.to_lowercase().contains("browser")
-                || p.pid.to_string().contains("browser")
-        }));
-    }
+            // Model the next OS sample containing a different process that reused
+            // the same numeric PID. Neither the detail selection nor a sparkline
+            // is allowed to cross that generation boundary.
+            let replacement = a
+                .model
+                .processes
+                .iter_mut()
+                .find(|p| p.pid == selected.pid)
+                .expect("selected process is in the sample");
+            replacement.started_at = replacement.started_at.saturating_add(1);
+            let new_identity = (replacement.pid, replacement.started_at);
+            a.clear_recycled_selection(Some(old_identity));
+            a.record_proc_cpu();
 
-    #[test]
-    fn filtering_away_selected_process_clears_its_actionable_detail() {
-        let mut a = app();
-        assert!(a.selected_pid.is_some(), "sample starts with a selection");
-        a.search_input.set_text("__no_process_matches__");
-        a.clear_selection_if_filtered_out();
-        assert!(a.selected_pid.is_none());
-    }
+            assert_eq!(
+                a.selected_pid, None,
+                "selection does not jump to a PID reuse"
+            );
+            assert!(
+                !a.proc_cpu_hist.contains_key(&old_identity),
+                "old process history is pruned"
+            );
+            assert!(
+                a.proc_cpu_hist.contains_key(&new_identity),
+                "replacement process begins its own history"
+            );
+        }
 
-    #[test]
-    fn recycled_pid_clears_selection_and_does_not_inherit_cpu_history() {
-        let mut a = app();
-        let selected = a.selected_process().expect("sample has a selection");
-        let old_identity = (selected.pid, selected.started_at);
-        a.record_proc_cpu();
-        assert!(a.proc_cpu_hist.contains_key(&old_identity));
+        // Phase `arrow_navigation_moves_selection`.
+        {
+            let mut a = app();
+            a.tree_mode = false; // flat list so visible_rows order == sorted list
+            a.rows_per_page = 10;
+            let v = a.visible_rows();
+            a.selected_pid = Some(v[0].pid);
+            a.move_selection(&mut AutoCommit::new(), 1);
+            assert_eq!(a.selected_pid, Some(v[1].pid));
+            a.move_selection(&mut AutoCommit::new(), -1);
+            assert_eq!(a.selected_pid, Some(v[0].pid));
+        }
 
-        // Model the next OS sample containing a different process that reused
-        // the same numeric PID. Neither the detail selection nor a sparkline
-        // is allowed to cross that generation boundary.
-        let replacement = a
-            .model
-            .processes
-            .iter_mut()
-            .find(|p| p.pid == selected.pid)
-            .expect("selected process is in the sample");
-        replacement.started_at = replacement.started_at.saturating_add(1);
-        let new_identity = (replacement.pid, replacement.started_at);
-        a.clear_recycled_selection(Some(old_identity));
-        a.record_proc_cpu();
+        // Phase `selected_detail_always_refers_to_a_visible_tree_row`.
+        {
+            let mut a = app();
+            draw_at(&mut a, 1_280.0, 720.0);
+            let selected = a.selected_pid.expect("sample selects a visible row");
+            assert!(
+                a.hit.rows.iter().any(|(pid, _)| *pid == selected),
+                "a selected detail must not expose actions for a collapsed descendant"
+            );
 
-        assert_eq!(
-            a.selected_pid, None,
-            "selection does not jump to a PID reuse"
-        );
-        assert!(
-            !a.proc_cpu_hist.contains_key(&old_identity),
-            "old process history is pruned"
-        );
-        assert!(
-            a.proc_cpu_hist.contains_key(&new_identity),
-            "replacement process begins its own history"
-        );
-    }
-
-    #[test]
-    fn kernel_threads_hidden_by_default() {
-        let mut a = app();
-        assert!(a.visible_processes().iter().all(|p| !p.kernel));
-        a.prefs.show_kernel_threads = true;
-        assert!(a.visible_processes().iter().any(|p| p.kernel));
-    }
-
-    #[test]
-    fn kill_removes_the_row_and_clears_selection() {
-        let mut a = app();
-        let pid = a.selected_pid.unwrap();
-        let started_at = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid)
-            .unwrap()
-            .started_at;
-        let before = a.model.processes.len();
-        assert!(a.do_stop(pid, started_at, StopKind::Kill));
-        assert_eq!(a.model.processes.len(), before - 1);
-        assert!(a.selected_pid.is_none());
-        assert!(a.model.processes.iter().all(|p| p.pid != pid));
-    }
-
-    /// Stop and Kill controls queue the same canonical resource addresses the
-    /// host resolves for palette and agent execution.
-    #[test]
-    fn stop_and_kill_controls_queue_canonical_addresses() {
-        let mut a = app();
-        let pid = a.visible_rows()[0].pid;
-        a.request_process_control(pid, "stop");
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
-        );
-        a.request_process_control(pid, "kill");
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
-        );
-    }
-
-    #[test]
-    fn force_kill_contract_does_not_follow_local_dialog_preference() {
-        let mut a = app();
-        let pid = a.selected_pid.unwrap();
-        a.prefs.confirm_kill = true;
-        a.prefs.confirm_kill = false;
-        let resources = Widget::resources(&a, &AutoCommit::new());
-        let process = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
-            .expect("process resource");
-        assert_eq!(
-            process
-                .actions
+            // Collapsing a parent that contains the selection clears that stale
+            // detail rather than leaving hidden Stop/Kill controls behind.
+            let parent = a
+                .model
+                .processes
                 .iter()
-                .find(|action| action.id == "kill")
-                .expect("kill action")
-                .contract
-                .confirmation,
-            ConfirmationPolicy::Confirm
-        );
+                .find(|process| process.ppid.is_none() && a.row_has_children(process.pid))
+                .expect("sample has a tree parent")
+                .pid;
+            a.toggle_expand(parent);
+            let child = a
+                .model
+                .processes
+                .iter()
+                .find(|process| process.ppid == Some(parent))
+                .expect("parent has a child")
+                .pid;
+            a.selected_pid = Some(child);
+            a.toggle_expand(parent);
+            assert_eq!(a.selected_pid, None);
+        }
     }
 
+    /// Stop/Kill controls (detail bar, buttons, confirm modal) queue canonical
+    /// resource addresses under the typed confirmed contract.
     #[test]
-    fn arrow_navigation_moves_selection() {
-        let mut a = app();
-        a.tree_mode = false; // flat list so visible_rows order == sorted list
-        a.rows_per_page = 10;
-        let v = a.visible_rows();
-        a.selected_pid = Some(v[0].pid);
-        a.move_selection(1);
-        assert_eq!(a.selected_pid, Some(v[1].pid));
-        a.move_selection(-1);
-        assert_eq!(a.selected_pid, Some(v[0].pid));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn stop_and_kill_controls_queue_canonical_confirmed_invocations() {
+        // Phase `kill_removes_the_row_and_clears_selection`.
+        {
+            let mut a = app();
+            let pid = a.selected_pid.unwrap();
+            let started_at = a
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .unwrap()
+                .started_at;
+            let before = a.model.processes.len();
+            assert!(a.do_stop(pid, started_at, StopKind::Kill));
+            assert_eq!(a.model.processes.len(), before - 1);
+            assert!(a.selected_pid.is_none());
+            assert!(a.model.processes.iter().all(|p| p.pid != pid));
+        }
+
+        // Phase `stop_and_kill_controls_queue_canonical_addresses`.
+        // Stop and Kill controls queue the same canonical resource addresses the
+        // host resolves for palette and agent execution.
+        {
+            let mut a = app();
+            let pid = a.visible_rows()[0].pid;
+            a.request_process_control(pid, "stop");
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
+            );
+            a.request_process_control(pid, "kill");
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+            );
+        }
+
+        // Phase `force_kill_contract_does_not_follow_local_dialog_preference`.
+        {
+            let mut a = app();
+            let pid = a.selected_pid.unwrap();
+            a.prefs.confirm_kill = true;
+            a.prefs.confirm_kill = false;
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
+            let process = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == resource_id_for(&a, pid))
+                .expect("process resource");
+            assert_eq!(
+                process
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "kill")
+                    .expect("kill action")
+                    .contract
+                    .confirmation,
+                ConfirmationPolicy::Confirm
+            );
+        }
+
+        // Phase `detail_kill_button_sits_in_reserved_action_bar`.
+        // The narrow detail pane reserves a bottom action bar so the Kill button
+        // can never overlap the stat content — the exact collision the rework
+        // fixes. Asserted against the real drawn hit rects at a narrow, tall
+        // viewport with the detail pane pushed in: the buttons sit inside the
+        // reserved band pinned to the pane bottom, and don't overlap each other.
+        {
+            let mut a = app();
+            a.proc_push.snap(PushPane::Detail);
+            draw_at(&mut a, 480.0, 820.0);
+            let kill = a.hit.kill_btn;
+            let stop = a.hit.stop_btn;
+            assert!(
+                kill.area() > 0.0,
+                "the Kill button is drawn in the pushed detail pane"
+            );
+            assert!(stop.area() > 0.0, "the Stop button is drawn too");
+            // The two action buttons don't overlap each other.
+            assert!(!rects_overlap(stop, kill), "Stop and Kill must not overlap");
+            assert!(
+                stop.x1 <= kill.x0 + 0.5,
+                "Stop ({stop:?}) must sit left of Kill ({kill:?})"
+            );
+            // The pane's inner bottom = window − outer pad − panel pad. The buttons
+            // live entirely inside the reserved `DETAIL_ACTION_H` band pinned there,
+            // so all stat content laid out above the band is clear of them.
+            let pane_bottom = 820.0 - OUTER_PAD - 12.0;
+            assert!(
+                kill.y1 <= pane_bottom + 1.0,
+                "Kill bottom ({}) stays inside the pane ({pane_bottom})",
+                kill.y1
+            );
+            assert!(
+                kill.y0 >= pane_bottom - DETAIL_ACTION_H - 1.0,
+                "Kill top ({}) stays within the reserved action band (>= {})",
+                kill.y0,
+                pane_bottom - DETAIL_ACTION_H
+            );
+        }
+
+        // Phase `kill_button_click_queues_canonical_control`.
+        // Clicking the detail-strip Kill button queues the canonical resource
+        // action rather than sending a process signal from the paint surface.
+        {
+            let mut a = app();
+            a.prefs.confirm_kill = true;
+            let pid = a.selected_pid.unwrap();
+            a.hit.kill_btn = Rect::new(0.0, 0.0, 96.0, 32.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+            );
+        }
+
+        // Phase `confirm_modal_buttons_confirm_and_cancel`.
+        // The shared confirm dialog's destructive primary dispatches the signal;
+        // its secondary (Cancel) dismisses without killing — both driven through
+        // the real `handle_event` → `ModalDialog` path (footer button rects
+        // resolved by a live layout pass, then a click at their centre).
+        {
+            let mut a = app();
+            let pid = a.visible_rows()[0].pid;
+            a.selected_pid = Some(pid);
+            let started_at = a
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .unwrap()
+                .started_at;
+            a.confirm_stop = Some((pid, started_at, StopKind::Kill));
+            // A real frame builds + lays out the shared dialog so its footer button
+            // rects resolve exactly as the live renderer would.
+            draw_at(&mut a, 900.0, 600.0);
+            let primary = a.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+            dispatch_ev(
+                &mut a,
+                &synth_cursor(primary.center().x, primary.center().y),
+            );
+            let h = dispatch_ev(&mut a, &synth_press());
+            assert!(h);
+            assert!(a.confirm_stop.is_none(), "modal dismissed after confirm");
+            assert!(
+                a.model.processes.iter().all(|p| p.pid != pid),
+                "process killed on confirm"
+            );
+
+            let mut b = app();
+            let pid2 = b.visible_rows()[0].pid;
+            let started_at2 = b
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid2)
+                .unwrap()
+                .started_at;
+            b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
+            draw_at(&mut b, 900.0, 600.0);
+            let secondary = b.confirm_dialog.as_ref().unwrap().dialog.secondary_rect();
+            dispatch_ev(
+                &mut b,
+                &synth_cursor(secondary.center().x, secondary.center().y),
+            );
+            let h2 = dispatch_ev(&mut b, &synth_press());
+            assert!(h2);
+            assert!(b.confirm_stop.is_none(), "Cancel dismissed the modal");
+            assert!(
+                b.model.processes.iter().any(|p| p.pid == pid2),
+                "Cancel did not kill"
+            );
+        }
+
+        // Phase `confirm_modal_keyboard_enter_confirms_escape_cancels`.
+        // The confirm dialog's keyboard: Enter confirms the kill, Escape cancels —
+        // both through the real `handle_event` → `ModalDialog` routing.
+        {
+            let mut a = app();
+            let pid = a.visible_rows()[0].pid;
+            let started_at = a
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .unwrap()
+                .started_at;
+            a.confirm_stop = Some((pid, started_at, StopKind::Kill));
+            let h = dispatch_ev(&mut a, &synth_key(NamedKey::Enter));
+            assert!(h);
+            assert!(a.confirm_stop.is_none());
+            assert!(
+                a.model.processes.iter().all(|p| p.pid != pid),
+                "Enter confirmed the kill"
+            );
+
+            let mut b = app();
+            let pid2 = b.visible_rows()[0].pid;
+            let started_at2 = b
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid2)
+                .unwrap()
+                .started_at;
+            b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
+            let h2 = dispatch_ev(&mut b, &synth_key(NamedKey::Escape));
+            assert!(h2);
+            assert!(b.confirm_stop.is_none());
+            assert!(
+                b.model.processes.iter().any(|p| p.pid == pid2),
+                "Escape cancelled the kill"
+            );
+        }
     }
 
     // ---- responsive layout fixes (issues 1-5) ---------------------------
 
-    /// Issue 4: the per-core card the renderer sizes (`resources_natural_h`
-    /// uses `per_core_card_h`) must hold a cell for *every* core in the
-    /// model, for a range of core counts — not just the default 8. Assert on
-    /// the production grid the draw path computes, so the last cores can
-    /// never land below the card background.
+    /// Responsive layout fixes (issues 1-5): the resources page fits every core at
+    /// every count and text scale, grows and scrolls, and page scroll clamps/resets.
     #[test]
-    fn per_core_grid_fits_every_core_for_varied_counts() {
-        for n in [1usize, 4, 8, 16, 32, 48] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn resources_page_fits_every_core_and_scrolls_within_its_overflow() {
+        // Phase `per_core_grid_fits_every_core_for_varied_counts`.
+        // Issue 4: the per-core card the renderer sizes (`resources_natural_h`
+        // uses `per_core_card_h`) must hold a cell for *every* core in the
+        // model, for a range of core counts — not just the default 8. Assert on
+        // the production grid the draw path computes, so the last cores can
+        // never land below the card background.
+        {
+            for n in [1usize, 4, 8, 16, 32, 48] {
+                let mut a = app();
+                a.model.metrics.cores = (0..n).map(|i| (i as f32 * 3.0) % 100.0).collect();
+                // The grid the renderer lays out (same width math as draw_resources).
+                let w = 900.0;
+                let grid = layout::per_core_grid(
+                    a.model.metrics.cores.len(),
+                    w - 2.0 * layout::RAIL_CARD_PAD,
+                );
+                assert!(
+                    grid.cells() >= n,
+                    "grid must hold every core: n={n} cells={}",
+                    grid.cells()
+                );
+                // The card the renderer sizes holds the last grid row inside it.
+                let card_h = layout::per_core_card_h(grid);
+                let last_row_bottom =
+                    layout::CORE_TITLE_H + grid.rows as f64 * layout::CORE_ROW_STRIDE;
+                assert!(
+                    last_row_bottom <= card_h + 0.001,
+                    "n={n}: last core row {last_row_bottom} spills past card {card_h}"
+                );
+            }
+        }
+
+        // Phase `large_text_reflows_per_core_gauges_and_expands_page_height`.
+        {
             let mut a = app();
-            a.model.metrics.cores = (0..n).map(|i| (i as f32 * 3.0) % 100.0).collect();
-            // The grid the renderer lays out (same width math as draw_resources).
-            let w = 900.0;
-            let grid =
-                layout::per_core_grid(a.model.metrics.cores.len(), w - 2.0 * layout::RAIL_CARD_PAD);
-            assert!(
-                grid.cells() >= n,
-                "grid must hold every core: n={n} cells={}",
-                grid.cells()
+            a.model.metrics.cores = vec![10.0; 8];
+            let width = 1_252.0;
+            let normal_h = a.resources_natural_h(width);
+            a.layout_text_scale = 2.0;
+            let large_grid = layout::per_core_grid(
+                a.model.metrics.cores.len(),
+                (width - 2.0 * layout::RAIL_CARD_PAD) / a.layout_text_scale,
             );
-            // The card the renderer sizes holds the last grid row inside it.
-            let card_h = layout::per_core_card_h(grid);
-            let last_row_bottom = layout::CORE_TITLE_H + grid.rows as f64 * layout::CORE_ROW_STRIDE;
+
             assert!(
-                last_row_bottom <= card_h + 0.001,
-                "n={n}: last core row {last_row_bottom} spills past card {card_h}"
+                large_grid.rows > 1,
+                "200% text must reflow gauges instead of overlapping one wide row"
+            );
+            assert!(
+                a.resources_natural_h(width) > normal_h,
+                "the page must grow and scroll to contain enlarged gauge rows"
+            );
+        }
+
+        // Phase `resources_height_grows_with_core_count`.
+        // Issue 4 + 5: more cores ⇒ a taller Resources body. The natural height
+        // the page-scroll clamps against must grow with the core count, proving
+        // the grid drives the page height rather than being clipped.
+        {
+            let mut a8 = app();
+            a8.model.metrics.cores = vec![10.0; 8];
+            let mut a64 = app();
+            a64.model.metrics.cores = vec![10.0; 64];
+            assert!(
+                a64.resources_natural_h(900.0) > a8.resources_natural_h(900.0),
+                "64-core Resources body must be taller than 8-core"
+            );
+        }
+
+        // Phase `short_viewport_makes_resources_page_scrollable`.
+        // Issue 5: on a short viewport the Resources content exceeds the body,
+        // so `content_natural_h` reports more than the viewport height — the
+        // signal the page scrollbar + wheel routing key off.
+        {
+            let mut a = app();
+            a.tab = Tab::Resources;
+            a.model.metrics.cores = vec![10.0; 32];
+            let main_w = 900.0;
+            let natural = a.content_natural_h(main_w);
+            let short_viewport = 300.0;
+            assert!(
+                natural > short_viewport,
+                "32-core Resources ({natural}px) must overflow a {short_viewport}px viewport"
+            );
+        }
+
+        // Phase `page_scroll_clamps_to_overflow`.
+        // Issue 5: page-scroll offset clamps to the overflow — it can't scroll
+        // past the content or above the top. Drives the same clamp the wheel
+        // handler uses.
+        {
+            let mut a = app();
+            a.content_h = 1000.0;
+            a.viewport_h = 400.0;
+            let max_y = (a.content_h - a.viewport_h) as f32; // 600
+            // Over-scroll down is clamped to max.
+            a.view_scroll_y = (a.view_scroll_y + 5000.0).clamp(0.0, max_y);
+            assert_eq!(a.view_scroll_y, 600.0);
+            // Over-scroll up is clamped to 0.
+            a.view_scroll_y = (a.view_scroll_y - 5000.0).clamp(0.0, max_y);
+            assert_eq!(a.view_scroll_y, 0.0);
+        }
+
+        // Phase `clicking_a_tab_resets_page_scroll`.
+        // Switching tabs via the production click path resets the page scroll so
+        // the new tab opens at the top rather than inheriting a stale offset.
+        {
+            let mut a = app();
+            a.tab = Tab::Resources;
+            a.view_scroll_y = 250.0;
+            // Seat the Processes tab hit rect and click inside it via on_click.
+            a.hit.tab_proc = Rect::new(0.0, 0.0, 100.0, 30.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut handled = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
+            assert!(handled);
+            assert_eq!(a.tab, Tab::Processes);
+            assert_eq!(
+                a.view_scroll_y, 0.0,
+                "tab switch must reset the page scroll"
+            );
+        }
+    }
+
+    /// Toolbar, summary strip and table keep every control visible and
+    /// non-overlapping from wide to very narrow widths.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn table_columns_and_toolbar_search_fit_down_to_very_narrow_widths() {
+        // Phase `narrow_table_keeps_primary_columns_in_view`.
+        // Narrow process windows switch to a compact table rather than asking the
+        // user to scroll sideways to identify the busy process.
+        {
+            let mut a = app();
+            draw_at(&mut a, 360.0, 700.0);
+            assert!(
+                a.table_content_w <= a.table_cols_w + 0.5,
+                "compact table must fit its visible band ({} vs {})",
+                a.table_content_w,
+                a.table_cols_w
+            );
+            assert!(
+                a.hit.h_scrollbar.is_none(),
+                "primary data needs no h-scroll"
+            );
+        }
+
+        // Phase `toolbar_search_never_overlaps_pills`.
+        // Defect 1: at no width — down to well below the narrow breakpoint — may
+        // the search box overlap any filter pill. Overlapping hit rects would make
+        // a pill unclickable (a click in the shared area is consumed as search),
+        // so this asserts the real hit rectangles the click path uses are
+        // pairwise disjoint across a width sweep, on the production draw path.
+        {
+            for w in [
+                1280.0, 1024.0, 900.0, 760.0, 700.0, 640.0, 560.0, 480.0, 420.0,
+            ] {
+                let mut a = app();
+                draw_at(&mut a, w, 720.0);
+                let search = a.hit.search;
+                for (name, pill) in [
+                    ("tree", a.hit.tree_toggle),
+                    ("sum", a.hit.sum_toggle),
+                    ("kernel", a.hit.kernel_toggle),
+                    ("confirm", a.hit.confirm_toggle),
+                ] {
+                    if pill == Rect::ZERO {
+                        continue; // sum pill is absent in flat mode; confirm is dropped at extreme narrow
+                    }
+                    assert!(
+                        !overlaps(search, pill),
+                        "w={w}: search {search:?} overlaps {name} pill {pill:?}"
+                    );
+                }
+            }
+        }
+
+        // Phase `toolbar_stacks_on_very_narrow_widths`.
+        // Defect 1: once the search box can no longer sit beside the pills, the
+        // toolbar stacks — the search box moves to its own row *above* the pills,
+        // and the toolbar grows to two rows. Proven on the real draw path.
+        {
+            let mut a = app();
+            draw_at(&mut a, 440.0, 720.0);
+            // The pills and the search box are on different rows (search above).
+            assert!(
+                a.hit.search.y1 <= a.hit.tree_toggle.y0 + 0.5,
+                "stacked toolbar puts search above the pills: search {:?} tree {:?}",
+                a.hit.search,
+                a.hit.tree_toggle
+            );
+            // And the toolbar reports a two-row height.
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let content_w = 440.0 - 2.0 * OUTER_PAD;
+            assert!(
+                a.toolbar_height(&mut tr, &theme, content_w) > TOOLBAR_ROW_H + 1.0,
+                "narrow toolbar must be two rows tall"
+            );
+            // A wide toolbar stays a single row.
+            assert_eq!(
+                a.toolbar_height(&mut tr, &theme, 1252.0),
+                TOOLBAR_ROW_H,
+                "wide toolbar is a single row"
             );
         }
     }
 
     #[test]
-    fn large_text_reflows_per_core_gauges_and_expands_page_height() {
-        let mut a = app();
-        a.model.metrics.cores = vec![10.0; 8];
-        let width = 1_252.0;
-        let normal_h = a.resources_natural_h(width);
-        a.layout_text_scale = 2.0;
-        let large_grid = layout::per_core_grid(
-            a.model.metrics.cores.len(),
-            (width - 2.0 * layout::RAIL_CARD_PAD) / a.layout_text_scale,
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn compact_toolbar_summary_strip_and_confirm_pill_stay_laid_out() {
+        // Phase `compact_toolbar_keeps_every_visible_control_on_screen`.
+        // Below the width where all labelled filters fit on one line, controls
+        // get their own structural rows. Their real hit rectangles must remain
+        // visible and disjoint; a clipped or overlapping filter is functionally
+        // unavailable even if its pixels happen to be painted.
+        {
+            for w in [320.0, 360.0, 400.0] {
+                let mut a = app();
+                draw_at(&mut a, w, 720.0);
+                let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
+                assert!(
+                    a.hit.confirm_toggle != Rect::ZERO,
+                    "w={w}: the persisted Confirm kills preference must stay reachable"
+                );
+                let controls = [
+                    ("search", a.hit.search),
+                    ("tree", a.hit.tree_toggle),
+                    ("sum", a.hit.sum_toggle),
+                    ("kernel", a.hit.kernel_toggle),
+                    ("confirm", a.hit.confirm_toggle),
+                ];
+                for (name, r) in controls {
+                    if r == Rect::ZERO {
+                        continue;
+                    }
+                    assert!(
+                        r.x0 >= content.x0 - 0.5 && r.x1 <= content.x1 + 0.5,
+                        "w={w}: {name} is outside the content band: {r:?}"
+                    );
+                }
+                for (i, (left_name, left)) in controls.iter().enumerate() {
+                    if *left == Rect::ZERO {
+                        continue;
+                    }
+                    for (right_name, right) in controls.iter().skip(i + 1) {
+                        if *right == Rect::ZERO {
+                            continue;
+                        }
+                        assert!(
+                            !overlaps(*left, *right),
+                            "w={w}: {left_name} overlaps {right_name}"
+                        );
+                    }
+                }
+            }
+        }
 
-        assert!(
-            large_grid.rows > 1,
-            "200% text must reflow gauges instead of overlapping one wide row"
-        );
-        assert!(
-            a.resources_natural_h(width) > normal_h,
-            "the page must grow and scroll to contain enlarged gauge rows"
-        );
+        // Phase `summary_strip_stays_one_row_and_table_keeps_height`.
+        // The summary strip's cards grow with the window width but stay on a
+        // **single row** at every width — so narrowing the window can never steal
+        // vertical height from the process table below. Critically the width must
+        // keep re-deriving on resize of the SAME instance (not freeze at the first
+        // frame). Drives the real draw path, reading back the card hit rects it
+        // records, and asserts the table keeps its height across the narrowing.
+        {
+            let mut a = app();
+
+            // Wide: four cards abreast on one row.
+            draw_at(&mut a, 1280.0, 720.0);
+            let wide = a.hit.summary_cells.clone();
+            assert_eq!(wide.len(), 4, "four summary cards");
+            assert_eq!(distinct_rows(&wide), 1, "four abreast when wide");
+            let wide_card_w = wide[0].width();
+            let wide_table_h = a.table_viewport.height();
+            // The four cards fill the content width (within one gap of it).
+            let content_w = 1280.0 - 2.0 * OUTER_PAD;
+            let filled = wide.iter().map(vello::kurbo::Rect::width).sum::<f64>() + 3.0 * GAP;
+            assert!(
+                (filled - content_w).abs() < 2.0,
+                "cards fill the width: {filled} vs {content_w}"
+            );
+
+            // Same instance, narrower (800px): the cards must re-derive a SMALLER
+            // width from the new allocation — the "grows with width" property. A
+            // frozen-at-first-frame layout would keep the wide card width and fail.
+            draw_at(&mut a, 800.0, 720.0);
+            let mid = a.hit.summary_cells.clone();
+            assert_eq!(mid.len(), 4);
+            assert_eq!(distinct_rows(&mid), 1, "still four abreast at 800px");
+            assert!(
+                mid[0].width() < wide_card_w - 1.0,
+                "cards shrank with the window (grow-with-width): {} !< {}",
+                mid[0].width(),
+                wide_card_w
+            );
+
+            // Phone-narrow (480px): the strip STAYS one row (the fix — it must not
+            // wrap to a second row and steal the table's height), and the process
+            // table must not collapse vertically — at the same window height it is
+            // at least as tall as in the wide layout (the wide layout even reserves
+            // a detail strip, so the narrow table has more, not less, room).
+            draw_at(&mut a, 480.0, 720.0);
+            let narrow = a.hit.summary_cells.clone();
+            assert_eq!(narrow.len(), 4);
+            assert_eq!(
+                distinct_rows(&narrow),
+                1,
+                "strip stays a single row when narrow"
+            );
+            assert!(
+                a.table_viewport.height() >= wide_table_h - 1.0,
+                "the table must keep its height at narrow widths (narrow {} vs wide {})",
+                a.table_viewport.height(),
+                wide_table_h
+            );
+
+            // Widening straight back keeps one row — no frozen mode — and the card
+            // width returns to its wide value.
+            draw_at(&mut a, 1280.0, 720.0);
+            assert_eq!(
+                distinct_rows(&a.hit.summary_cells),
+                1,
+                "one row at every width"
+            );
+            assert!(
+                (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
+                "card width returns to its wide value after resize round-trip"
+            );
+        }
+
+        // Phase `confirm_pill_is_laid_out_on_wide_toolbar`.
+        // The confirm pill is actually laid out on the real draw path at a normal
+        // width (not just a hand-seated rect).
+        {
+            let mut a = app();
+            draw_at(&mut a, 1280.0, 720.0);
+            assert_ne!(
+                a.hit.confirm_toggle,
+                Rect::ZERO,
+                "confirm pill drawn at a normal width"
+            );
+            assert!(
+                !overlaps(a.hit.confirm_toggle, a.hit.search),
+                "confirm pill clears the search box"
+            );
+            assert!(
+                !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
+                "confirm pill clears the tree pill"
+            );
+        }
     }
 
-    /// Issue 4 + 5: more cores ⇒ a taller Resources body. The natural height
-    /// the page-scroll clamps against must grow with the core count, proving
-    /// the grid drives the page height rather than being clipped.
     #[test]
-    fn resources_height_grows_with_core_count() {
-        let mut a8 = app();
-        a8.model.metrics.cores = vec![10.0; 8];
-        let mut a64 = app();
-        a64.model.metrics.cores = vec![10.0; 64];
-        assert!(
-            a64.resources_natural_h(900.0) > a8.resources_natural_h(900.0),
-            "64-core Resources body must be taller than 8-core"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn keyboard_routes_search_editing_and_leaves_global_keys_to_the_toolkit() {
+        // Phase `ctrl_k_is_left_unhandled_for_global_search`.
+        // Issue 6: Ctrl+K is left for the global-search framework — `on_key`
+        // must NOT consume it (so it bubbles up), while a bare "/" still focuses
+        // the local process filter.
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let key = Key::Character("k".into());
+            let mut handled = false;
+            a.on_key(&key, Some("k"), true, &mut doc, &root, &mut handled);
+            assert!(!handled, "Ctrl+K must bubble up to the global-search seam");
+            // A bare "/" (no ctrl) still drives the local filter focus.
+            let slash = Key::Character("/".into());
+            let mut handled2 = false;
+            a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
+            assert!(
+                handled2 && a.search_input.is_focused(),
+                "bare / still focuses local search"
+            );
+        }
 
-    /// Issue 5: on a short viewport the Resources content exceeds the body,
-    /// so `content_natural_h` reports more than the viewport height — the
-    /// signal the page scrollbar + wheel routing key off.
-    #[test]
-    fn short_viewport_makes_resources_page_scrollable() {
-        let mut a = app();
-        a.tab = Tab::Resources;
-        a.model.metrics.cores = vec![10.0; 32];
-        let main_w = 900.0;
-        let natural = a.content_natural_h(main_w);
-        let short_viewport = 300.0;
-        assert!(
-            natural > short_viewport,
-            "32-core Resources ({natural}px) must overflow a {short_viewport}px viewport"
-        );
-    }
+        // Phase `tab_key_is_left_for_toolkit_focus_navigation`.
+        {
+            let mut a = app();
+            let original = a.tab;
+            let mut handled = false;
+            a.on_key(
+                &Key::Named(NamedKey::Tab),
+                None,
+                false,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+                &mut handled,
+            );
+            assert_eq!(a.tab, original, "Tab must not silently switch dashboards");
+            assert!(!handled, "the toolkit owns Tab focus traversal");
+        }
 
-    /// Narrow process windows switch to a compact table rather than asking the
-    /// user to scroll sideways to identify the busy process.
-    #[test]
-    fn narrow_table_keeps_primary_columns_in_view() {
-        let mut a = app();
-        draw_at(&mut a, 360.0, 700.0);
-        assert!(
-            a.table_content_w <= a.table_cols_w + 0.5,
-            "compact table must fit its visible band ({} vs {})",
-            a.table_content_w,
-            a.table_cols_w
-        );
-        assert!(
-            a.hit.h_scrollbar.is_none(),
-            "primary data needs no h-scroll"
-        );
-    }
-
-    /// Issue 5: page-scroll offset clamps to the overflow — it can't scroll
-    /// past the content or above the top. Drives the same clamp the wheel
-    /// handler uses.
-    #[test]
-    fn page_scroll_clamps_to_overflow() {
-        let mut a = app();
-        a.content_h = 1000.0;
-        a.viewport_h = 400.0;
-        let max_y = (a.content_h - a.viewport_h) as f32; // 600
-        // Over-scroll down is clamped to max.
-        a.view_scroll_y = (a.view_scroll_y + 5000.0).clamp(0.0, max_y);
-        assert_eq!(a.view_scroll_y, 600.0);
-        // Over-scroll up is clamped to 0.
-        a.view_scroll_y = (a.view_scroll_y - 5000.0).clamp(0.0, max_y);
-        assert_eq!(a.view_scroll_y, 0.0);
-    }
-
-    /// Issue 6: Ctrl+K is left for the global-search framework — `on_key`
-    /// must NOT consume it (so it bubbles up), while a bare "/" still focuses
-    /// the local process filter.
-    #[test]
-    fn ctrl_k_is_left_unhandled_for_global_search() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let key = Key::Character("k".into());
-        let mut handled = false;
-        a.on_key(&key, Some("k"), true, &mut doc, &root, &mut handled);
-        assert!(!handled, "Ctrl+K must bubble up to the global-search seam");
-        // A bare "/" (no ctrl) still drives the local filter focus.
-        let slash = Key::Character("/".into());
-        let mut handled2 = false;
-        a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
-        assert!(
-            handled2 && a.search_input.is_focused(),
-            "bare / still focuses local search"
-        );
-    }
-
-    /// Switching tabs via the production click path resets the page scroll so
-    /// the new tab opens at the top rather than inheriting a stale offset.
-    #[test]
-    fn clicking_a_tab_resets_page_scroll() {
-        let mut a = app();
-        a.tab = Tab::Resources;
-        a.view_scroll_y = 250.0;
-        // Seat the Processes tab hit rect and click inside it via on_click.
-        a.hit.tab_proc = Rect::new(0.0, 0.0, 100.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
-        assert!(handled);
-        assert_eq!(a.tab, Tab::Processes);
-        assert_eq!(
-            a.view_scroll_y, 0.0,
-            "tab switch must reset the page scroll"
-        );
+        // Phase `search_click_focus_and_keyboard_editing_filters`.
+        // Clicking the search box focuses it, and the keyboard editing path
+        // (chars, Space, Backspace, Escape) drives the real filter.
+        {
+            let mut a = app();
+            a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
+            dispatch_ev(&mut a, &synth_cursor(50.0, 15.0));
+            let h = dispatch_ev(&mut a, &synth_press());
+            assert!(
+                h && a.search_input.is_focused(),
+                "clicking the search box focuses its shared editor"
+            );
+            for ch in "brow".chars() {
+                let s = ch.to_string();
+                let hk = dispatch_ev(&mut a, &synth_text(&s));
+                assert!(hk, "typed char handled");
+            }
+            assert_eq!(a.search_input.value(), "brow");
+            assert!(dispatch_ev(&mut a, &synth_text(" ")));
+            assert_eq!(a.search_input.value(), "brow ");
+            assert!(dispatch_ev(&mut a, &synth_key(NamedKey::Backspace)));
+            assert_eq!(a.search_input.value(), "brow");
+            assert!(
+                a.visible_processes()
+                    .iter()
+                    .all(|p| p.name.to_lowercase().contains("brow")
+                        || p.user.to_lowercase().contains("brow")
+                        || p.pid.to_string().contains("brow")),
+                "typed filter actually narrows the list"
+            );
+            let hesc = dispatch_ev(&mut a, &synth_key(NamedKey::Escape));
+            assert!(
+                hesc && !a.search_input.is_focused(),
+                "Escape leaves the search box"
+            );
+        }
     }
 
     // ---- tree, sum, context menu -----------------------------------------
 
-    /// The tree defaults on, Sum subtree by default, and collapsed — so the
-    /// first frame shows parents carrying their full subtree totals.
     #[test]
-    fn tree_defaults_collapsed_summed() {
-        let a = app();
-        assert!(a.tree_mode, "tree on by default");
-        assert_eq!(a.sum_mode, SumMode::SumSubtree, "Sum is the default");
-        assert!(a.expanded.is_empty(), "collapsed by default");
-        // A collapsed parent (shell) shows MORE than its own CPU because it
-        // sums its subtree.
-        let rows = a.visible_rows();
-        let shell = rows.iter().find(|r| r.name == "shell").unwrap();
-        let own = a
-            .model
-            .processes
-            .iter()
-            .find(|p| p.name == "shell")
-            .unwrap()
-            .cpu;
-        assert!(
-            shell.cpu > own + 1.0,
-            "collapsed shell {} sums subtree (own {own})",
-            shell.cpu
-        );
-        assert!(shell.has_children && !shell.expanded);
-    }
-
-    /// Clicking a twisty (via the production `on_click` path) expands the node
-    /// and its children appear in the next `visible_rows`.
-    #[test]
-    fn clicking_twisty_expands_and_children_appear() {
-        let mut a = app();
-        let shell_pid = a
-            .model
-            .processes
-            .iter()
-            .find(|p| p.name == "shell")
-            .unwrap()
-            .pid;
-        // Seat the twisty hit rect the renderer would record and click it.
-        a.hit.twisties = vec![(shell_pid, Rect::new(0.0, 0.0, 16.0, 22.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let before = a.visible_rows().len();
-        a.on_click(Point::new(8.0, 11.0), &mut doc, &root, &mut handled);
-        assert!(handled, "twisty click consumed");
-        assert!(a.expanded.contains(&shell_pid), "shell expanded");
-        let rows = a.visible_rows();
-        assert!(rows.len() > before, "expanding reveals children");
-        // A direct child of shell (e.g. browser) now appears at depth 1.
-        let browser = rows.iter().find(|r| r.name == "browser");
-        assert!(browser.is_some(), "browser child visible after expand");
-        assert_eq!(browser.unwrap().depth, 1, "child indented one level");
-    }
-
-    /// Toggling Sum→Per-process changes a collapsed parent's displayed total
-    /// (its summed subtree usage drops to its own usage). Drives the exact
-    /// production toggle path `on_click` runs for the sum pill.
-    #[test]
-    fn toggling_sum_changes_parent_total() {
-        let mut a = app();
-        let shell_summed = {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn process_tree_collapses_expands_sums_and_toggles_mode() {
+        // Phase `tree_defaults_collapsed_summed`.
+        // The tree defaults on, Sum subtree by default, and collapsed — so the
+        // first frame shows parents carrying their full subtree totals.
+        {
+            let a = app();
+            assert!(a.tree_mode, "tree on by default");
+            assert_eq!(a.sum_mode, SumMode::SumSubtree, "Sum is the default");
+            assert!(a.expanded.is_empty(), "collapsed by default");
+            // A collapsed parent (shell) shows MORE than its own CPU because it
+            // sums its subtree.
             let rows = a.visible_rows();
-            rows.iter().find(|r| r.name == "shell").unwrap().cpu
-        };
-        // Click the sum-toggle pill via on_click.
-        a.hit.sum_toggle = Rect::new(0.0, 0.0, 120.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
-        assert!(handled);
-        assert_eq!(a.sum_mode, SumMode::PerProcess);
-        let shell_own = a
-            .visible_rows()
-            .iter()
-            .find(|r| r.name == "shell")
-            .unwrap()
-            .cpu;
-        assert!(
-            shell_summed > shell_own + 1.0,
-            "summed total {shell_summed} must exceed per-process {shell_own}"
-        );
-        let real_own = a
-            .model
-            .processes
-            .iter()
-            .find(|p| p.name == "shell")
-            .unwrap()
-            .cpu;
-        assert!(
-            (shell_own - real_own).abs() < 1e-3,
-            "per-process == own usage"
-        );
+            let shell = rows.iter().find(|r| r.name == "shell").unwrap();
+            let own = a
+                .model
+                .processes
+                .iter()
+                .find(|p| p.name == "shell")
+                .unwrap()
+                .cpu;
+            assert!(
+                shell.cpu > own + 1.0,
+                "collapsed shell {} sums subtree (own {own})",
+                shell.cpu
+            );
+            assert!(shell.has_children && !shell.expanded);
+        }
+
+        // Phase `clicking_twisty_expands_and_children_appear`.
+        // Clicking a twisty (via the production `on_click` path) expands the node
+        // and its children appear in the next `visible_rows`.
+        {
+            let mut a = app();
+            let shell_pid = a
+                .model
+                .processes
+                .iter()
+                .find(|p| p.name == "shell")
+                .unwrap()
+                .pid;
+            // Seat the twisty hit rect the renderer would record and click it.
+            a.hit.twisties = vec![(shell_pid, Rect::new(0.0, 0.0, 16.0, 22.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut handled = false;
+            let before = a.visible_rows().len();
+            a.on_click(Point::new(8.0, 11.0), &mut doc, &root, &mut handled);
+            assert!(handled, "twisty click consumed");
+            assert!(a.expanded.contains(&shell_pid), "shell expanded");
+            let rows = a.visible_rows();
+            assert!(rows.len() > before, "expanding reveals children");
+            // A direct child of shell (e.g. browser) now appears at depth 1.
+            let browser = rows.iter().find(|r| r.name == "browser");
+            assert!(browser.is_some(), "browser child visible after expand");
+            assert_eq!(browser.unwrap().depth, 1, "child indented one level");
+        }
+
+        // Phase `toggling_sum_changes_parent_total`.
+        // Toggling Sum→Per-process changes a collapsed parent's displayed total
+        // (its summed subtree usage drops to its own usage). Drives the exact
+        // production toggle path `on_click` runs for the sum pill.
+        {
+            let mut a = app();
+            let shell_summed = {
+                let rows = a.visible_rows();
+                rows.iter().find(|r| r.name == "shell").unwrap().cpu
+            };
+            // Click the sum-toggle pill via on_click.
+            a.hit.sum_toggle = Rect::new(0.0, 0.0, 120.0, 30.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut handled = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
+            assert!(handled);
+            assert_eq!(a.sum_mode, SumMode::PerProcess);
+            let shell_own = a
+                .visible_rows()
+                .iter()
+                .find(|r| r.name == "shell")
+                .unwrap()
+                .cpu;
+            assert!(
+                shell_summed > shell_own + 1.0,
+                "summed total {shell_summed} must exceed per-process {shell_own}"
+            );
+            let real_own = a
+                .model
+                .processes
+                .iter()
+                .find(|p| p.name == "shell")
+                .unwrap()
+                .cpu;
+            assert!(
+                (shell_own - real_own).abs() < 1e-3,
+                "per-process == own usage"
+            );
+        }
+
+        // Phase `tree_flat_pill_click_toggles_mode`.
+        // Clicking the Tree/Flat pill toggles the view; flat rows are all depth 0.
+        {
+            let mut a = app();
+            assert!(a.tree_mode);
+            a.hit.tree_toggle = Rect::new(0.0, 0.0, 80.0, 30.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert!(!a.tree_mode, "toggled to flat");
+            assert!(
+                a.visible_rows().iter().all(|r| r.depth == 0),
+                "flat rows carry no tree depth"
+            );
+        }
     }
 
-    /// A right-click over a process row opens the action context menu anchored
-    /// at the cursor, targeting that row's pid.
     #[test]
-    fn right_click_opens_context_menu_for_row() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let pid = a.model.processes[5].pid;
-        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut handled);
-        assert!(handled, "right-click on a row consumed");
-        assert!(a.context.is_open(), "menu opened");
-        assert_eq!(a.context_pid, Some(pid), "menu targets the right pid");
-        // The menu has the expected actions (5 items incl. a separator).
-        let labels: Vec<String> = a
-            .context
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(std::string::ToString::to_string))
-            .collect();
-        assert!(
-            labels.iter().any(|l| l.starts_with("Stop")),
-            "has Stop: {labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.starts_with("Kill")),
-            "has Kill: {labels:?}"
-        );
-        assert!(labels.iter().any(|l| l == "Copy PID"), "has Copy PID");
-        // On a WIDE window the detail strip is always visible and the
-        // right-click already selected the row, so "Show details" is a no-op
-        // and is deliberately omitted (it would otherwise be a dead action).
-        assert!(
-            !labels.iter().any(|l| l == "Show details"),
-            "Show details is omitted on wide (it would be a no-op): {labels:?}"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn context_menu_opens_per_row_and_queues_canonical_actions() {
+        // Phase `right_click_opens_context_menu_for_row`.
+        // A right-click over a process row opens the action context menu anchored
+        // at the cursor, targeting that row's pid.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let pid = a.model.processes[5].pid;
+            a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut handled = false;
+            a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut handled);
+            assert!(handled, "right-click on a row consumed");
+            assert!(a.context.is_open(), "menu opened");
+            assert_eq!(a.context_pid, Some(pid), "menu targets the right pid");
+            // The menu has the expected actions (5 items incl. a separator).
+            let labels: Vec<String> = a
+                .context
+                .items()
+                .iter()
+                .filter_map(|i| i.label().map(std::string::ToString::to_string))
+                .collect();
+            assert!(
+                labels.iter().any(|l| l.starts_with("Stop")),
+                "has Stop: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|l| l.starts_with("Kill")),
+                "has Kill: {labels:?}"
+            );
+            assert!(labels.iter().any(|l| l == "Copy PID"), "has Copy PID");
+            // On a WIDE window the detail strip is always visible and the
+            // right-click already selected the row, so "Show details" is a no-op
+            // and is deliberately omitted (it would otherwise be a dead action).
+            assert!(
+                !labels.iter().any(|l| l == "Show details"),
+                "Show details is omitted on wide (it would be a no-op): {labels:?}"
+            );
+        }
 
-    /// Clicking the "Stop" item in the open menu queues the canonical action
-    /// address; the host owns the actual system effect.
-    #[test]
-    fn context_menu_stop_queues_canonical_control() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let pid = a.model.processes[5].pid;
-        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
-        // Find the "Stop" item's rect from the production geometry and click it.
-        let stop_idx = a
-            .context
-            .items()
-            .iter()
-            .position(|i| i.label().is_some_and(|l| l.starts_with("Stop")))
-            .unwrap();
-        let rect = a
-            .context_menu_item_rects()
-            .into_iter()
-            .find(|(idx, _)| *idx == stop_idx)
-            .map(|(_, r)| r)
-            .unwrap();
-        let mut h2 = false;
-        a.on_click(rect.center(), &mut doc, &root, &mut h2);
-        assert!(h2, "menu item click consumed");
-        assert!(!a.context.is_open(), "menu closed after action");
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
-        );
-    }
+        // Phase `context_menu_stop_queues_canonical_control`.
+        // Clicking the "Stop" item in the open menu queues the canonical action
+        // address; the host owns the actual system effect.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let pid = a.model.processes[5].pid;
+            a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+            // Find the "Stop" item's rect from the production geometry and click it.
+            let stop_idx = a
+                .context
+                .items()
+                .iter()
+                .position(|i| i.label().is_some_and(|l| l.starts_with("Stop")))
+                .unwrap();
+            let rect = a
+                .context_menu_item_rects()
+                .into_iter()
+                .find(|(idx, _)| *idx == stop_idx)
+                .map(|(_, r)| r)
+                .unwrap();
+            let mut h2 = false;
+            a.on_click(rect.center(), &mut doc, &root, &mut h2);
+            assert!(h2, "menu item click consumed");
+            assert!(!a.context.is_open(), "menu closed after action");
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
+            );
+        }
 
-    /// Clicking "Kill" in the menu queues the same force-kill action whose
-    /// resource contract requires host-owned confirmation.
-    #[test]
-    fn context_menu_kill_queues_confirmed_contract() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        a.prefs.confirm_kill = true;
-        let pid = a.model.processes[5].pid;
-        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
-        let kill_idx = a
-            .context
-            .items()
-            .iter()
-            .position(|i| i.label().is_some_and(|l| l.starts_with("Kill")))
-            .unwrap();
-        let rect = a
-            .context_menu_item_rects()
-            .into_iter()
-            .find(|(idx, _)| *idx == kill_idx)
-            .map(|(_, r)| r)
-            .unwrap();
-        let mut h2 = false;
-        a.on_click(rect.center(), &mut doc, &root, &mut h2);
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
-        );
-    }
+        // Phase `context_menu_kill_queues_confirmed_contract`.
+        // Clicking "Kill" in the menu queues the same force-kill action whose
+        // resource contract requires host-owned confirmation.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            a.prefs.confirm_kill = true;
+            let pid = a.model.processes[5].pid;
+            a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+            let kill_idx = a
+                .context
+                .items()
+                .iter()
+                .position(|i| i.label().is_some_and(|l| l.starts_with("Kill")))
+                .unwrap();
+            let rect = a
+                .context_menu_item_rects()
+                .into_iter()
+                .find(|(idx, _)| *idx == kill_idx)
+                .map(|(_, r)| r)
+                .unwrap();
+            let mut h2 = false;
+            a.on_click(rect.center(), &mut doc, &root, &mut h2);
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+            );
+        }
 
-    /// Copy PID queues the stable resource action; the broker then performs
-    /// the clipboard effect after resolving the current process generation.
-    #[test]
-    fn context_menu_copy_pid_queues_canonical_resource_action() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let pid = a.model.processes[3].pid;
-        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
-        let idx = a
-            .context
-            .items()
-            .iter()
-            .position(|i| i.label() == Some("Copy PID"))
-            .unwrap();
-        let rect = a
-            .context_menu_item_rects()
-            .into_iter()
-            .find(|(i, _)| *i == idx)
-            .map(|(_, r)| r)
-            .unwrap();
-        let mut h2 = false;
-        a.on_click(rect.center(), &mut doc, &root, &mut h2);
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
-        );
-    }
+        // Phase `context_menu_copy_pid_queues_canonical_resource_action`.
+        // Copy PID queues the stable resource action; the broker then performs
+        // the clipboard effect after resolving the current process generation.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let pid = a.model.processes[3].pid;
+            a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+            let idx = a
+                .context
+                .items()
+                .iter()
+                .position(|i| i.label() == Some("Copy PID"))
+                .unwrap();
+            let rect = a
+                .context_menu_item_rects()
+                .into_iter()
+                .find(|(i, _)| *i == idx)
+                .map(|(_, r)| r)
+                .unwrap();
+            let mut h2 = false;
+            a.on_click(rect.center(), &mut doc, &root, &mut h2);
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
+            );
+        }
 
-    /// Search/filter still works over the tree: filtering to a deep child
-    /// keeps its ancestors visible (so the match is reachable) and prunes
-    /// unrelated branches.
-    #[test]
-    fn filter_works_over_the_tree() {
-        let mut a = app();
-        a.search_input.set_text("rustc");
-        let rows = a.visible_rows();
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert!(names.contains(&"rustc"), "match present: {names:?}");
-        // rustc's ancestor chain (cargo → code → shell) is force-shown.
-        assert!(names.contains(&"cargo"), "ancestor cargo kept: {names:?}");
-        assert!(names.contains(&"code"), "ancestor code kept: {names:?}");
-        assert!(names.contains(&"shell"), "ancestor shell kept: {names:?}");
-        // An unrelated branch (systemd's services) is pruned.
-        assert!(
-            !names.contains(&"chronyd"),
-            "unrelated branch pruned: {names:?}"
-        );
+        // Phase `context_menu_show_details_pushes_detail_on_narrow`.
+        // On a narrow window the context menu offers "Show details", and clicking
+        // it pushes the detail pane for the target row.
+        {
+            let mut a = app();
+            a.tree_mode = false;
+            draw_at(&mut a, 520.0, 900.0);
+            assert!(a.is_narrow());
+            let (pid, rect) = a.hit.rows.first().copied().expect("rows");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut hr = false;
+            a.on_right_click(rect.center(), &mut doc, &root, &mut hr);
+            assert!(a.context.is_open());
+            let idx = a
+                .context
+                .items()
+                .iter()
+                .position(|i| i.label() == Some("Show details"))
+                .expect("Show details present on narrow");
+            let mrect = a
+                .context_menu_item_rects()
+                .into_iter()
+                .find(|(i, _)| *i == idx)
+                .map(|(_, r)| r)
+                .unwrap();
+            let mut hc = false;
+            a.on_click(mrect.center(), &mut doc, &root, &mut hc);
+            assert!(hc);
+            assert_eq!(a.selected_pid, Some(pid));
+            assert_eq!(
+                a.proc_push.pane(),
+                PushPane::Detail,
+                "Show details pushes the detail pane"
+            );
+        }
     }
 
     // ---- responsive toolbar + summary strip (the reproduced defects) -----
@@ -7201,215 +7945,62 @@ mod tests {
         ys.len()
     }
 
-    /// Defect 1: at no width — down to well below the narrow breakpoint — may
-    /// the search box overlap any filter pill. Overlapping hit rects would make
-    /// a pill unclickable (a click in the shared area is consumed as search),
-    /// so this asserts the real hit rectangles the click path uses are
-    /// pairwise disjoint across a width sweep, on the production draw path.
     #[test]
-    fn toolbar_search_never_overlaps_pills() {
-        for w in [
-            1280.0, 1024.0, 900.0, 760.0, 700.0, 640.0, 560.0, 480.0, 420.0,
-        ] {
-            let mut a = app();
-            draw_at(&mut a, w, 720.0);
-            let search = a.hit.search;
-            for (name, pill) in [
-                ("tree", a.hit.tree_toggle),
-                ("sum", a.hit.sum_toggle),
-                ("kernel", a.hit.kernel_toggle),
-                ("confirm", a.hit.confirm_toggle),
-            ] {
-                if pill == Rect::ZERO {
-                    continue; // sum pill is absent in flat mode; confirm is dropped at extreme narrow
-                }
-                assert!(
-                    !overlaps(search, pill),
-                    "w={w}: search {search:?} overlaps {name} pill {pill:?}"
-                );
-            }
-        }
-    }
-
-    /// Defect 1: once the search box can no longer sit beside the pills, the
-    /// toolbar stacks — the search box moves to its own row *above* the pills,
-    /// and the toolbar grows to two rows. Proven on the real draw path.
-    #[test]
-    fn toolbar_stacks_on_very_narrow_widths() {
-        let mut a = app();
-        draw_at(&mut a, 440.0, 720.0);
-        // The pills and the search box are on different rows (search above).
-        assert!(
-            a.hit.search.y1 <= a.hit.tree_toggle.y0 + 0.5,
-            "stacked toolbar puts search above the pills: search {:?} tree {:?}",
-            a.hit.search,
-            a.hit.tree_toggle
-        );
-        // And the toolbar reports a two-row height.
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let content_w = 440.0 - 2.0 * OUTER_PAD;
-        assert!(
-            a.toolbar_height(&mut tr, &theme, content_w) > TOOLBAR_ROW_H + 1.0,
-            "narrow toolbar must be two rows tall"
-        );
-        // A wide toolbar stays a single row.
-        assert_eq!(
-            a.toolbar_height(&mut tr, &theme, 1252.0),
-            TOOLBAR_ROW_H,
-            "wide toolbar is a single row"
-        );
-    }
-
-    /// Below the width where all labelled filters fit on one line, controls
-    /// get their own structural rows. Their real hit rectangles must remain
-    /// visible and disjoint; a clipped or overlapping filter is functionally
-    /// unavailable even if its pixels happen to be painted.
-    #[test]
-    fn compact_toolbar_keeps_every_visible_control_on_screen() {
-        for w in [320.0, 360.0, 400.0] {
-            let mut a = app();
-            draw_at(&mut a, w, 720.0);
-            let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn live_sampling_reads_real_processes_on_a_deadline() {
+        // Phase `live_constructor_samples_real_processes`.
+        // The live window must show REAL data, not the fabricated sample. The live
+        // constructor starts empty and its first refresh pulls actual `sysinfo`
+        // readings — proven by the running test process appearing in the table.
+        {
+            let mut a = MonitorApp::new_live();
+            // Nothing fabricated before the first frame.
             assert!(
-                a.hit.confirm_toggle != Rect::ZERO,
-                "w={w}: the persisted Confirm kills preference must stay reachable"
+                a.model.processes.is_empty(),
+                "live app starts empty, not seeded with sample rows"
             );
-            let controls = [
-                ("search", a.hit.search),
-                ("tree", a.hit.tree_toggle),
-                ("sum", a.hit.sum_toggle),
-                ("kernel", a.hit.kernel_toggle),
-                ("confirm", a.hit.confirm_toggle),
-            ];
-            for (name, r) in controls {
-                if r == Rect::ZERO {
-                    continue;
-                }
-                assert!(
-                    r.x0 >= content.x0 - 0.5 && r.x1 <= content.x1 + 0.5,
-                    "w={w}: {name} is outside the content band: {r:?}"
-                );
-            }
-            for (i, (left_name, left)) in controls.iter().enumerate() {
-                if *left == Rect::ZERO {
-                    continue;
-                }
-                for (right_name, right) in controls.iter().skip(i + 1) {
-                    if *right == Rect::ZERO {
-                        continue;
-                    }
-                    assert!(
-                        !overlaps(*left, *right),
-                        "w={w}: {left_name} overlaps {right_name}"
-                    );
-                }
-            }
+            assert!(a.selected_pid.is_none(), "no pre-selected fake process");
+            // The first refresh samples the real system.
+            a.maybe_refresh();
+            assert!(
+                !a.model.processes.is_empty(),
+                "first refresh populated real processes"
+            );
+            assert!(
+                a.model
+                    .processes
+                    .iter()
+                    .any(|p| p.pid == std::process::id()),
+                "the running process appears in the real table (data is live, not mock)"
+            );
+            assert!(
+                !a.model.metrics.cores.is_empty(),
+                "real per-core readings sampled"
+            );
         }
-    }
 
-    /// The summary strip's cards grow with the window width but stay on a
-    /// **single row** at every width — so narrowing the window can never steal
-    /// vertical height from the process table below. Critically the width must
-    /// keep re-deriving on resize of the SAME instance (not freeze at the first
-    /// frame). Drives the real draw path, reading back the card hit rects it
-    /// records, and asserts the table keeps its height across the narrowing.
-    #[test]
-    fn summary_strip_stays_one_row_and_table_keeps_height() {
-        let mut a = app();
-
-        // Wide: four cards abreast on one row.
-        draw_at(&mut a, 1280.0, 720.0);
-        let wide = a.hit.summary_cells.clone();
-        assert_eq!(wide.len(), 4, "four summary cards");
-        assert_eq!(distinct_rows(&wide), 1, "four abreast when wide");
-        let wide_card_w = wide[0].width();
-        let wide_table_h = a.table_viewport.height();
-        // The four cards fill the content width (within one gap of it).
-        let content_w = 1280.0 - 2.0 * OUTER_PAD;
-        let filled = wide.iter().map(vello::kurbo::Rect::width).sum::<f64>() + 3.0 * GAP;
-        assert!(
-            (filled - content_w).abs() < 2.0,
-            "cards fill the width: {filled} vs {content_w}"
-        );
-
-        // Same instance, narrower (800px): the cards must re-derive a SMALLER
-        // width from the new allocation — the "grows with width" property. A
-        // frozen-at-first-frame layout would keep the wide card width and fail.
-        draw_at(&mut a, 800.0, 720.0);
-        let mid = a.hit.summary_cells.clone();
-        assert_eq!(mid.len(), 4);
-        assert_eq!(distinct_rows(&mid), 1, "still four abreast at 800px");
-        assert!(
-            mid[0].width() < wide_card_w - 1.0,
-            "cards shrank with the window (grow-with-width): {} !< {}",
-            mid[0].width(),
-            wide_card_w
-        );
-
-        // Phone-narrow (480px): the strip STAYS one row (the fix — it must not
-        // wrap to a second row and steal the table's height), and the process
-        // table must not collapse vertically — at the same window height it is
-        // at least as tall as in the wide layout (the wide layout even reserves
-        // a detail strip, so the narrow table has more, not less, room).
-        draw_at(&mut a, 480.0, 720.0);
-        let narrow = a.hit.summary_cells.clone();
-        assert_eq!(narrow.len(), 4);
-        assert_eq!(
-            distinct_rows(&narrow),
-            1,
-            "strip stays a single row when narrow"
-        );
-        assert!(
-            a.table_viewport.height() >= wide_table_h - 1.0,
-            "the table must keep its height at narrow widths (narrow {} vs wide {})",
-            a.table_viewport.height(),
-            wide_table_h
-        );
-
-        // Widening straight back keeps one row — no frozen mode — and the card
-        // width returns to its wide value.
-        draw_at(&mut a, 1280.0, 720.0);
-        assert_eq!(
-            distinct_rows(&a.hit.summary_cells),
-            1,
-            "one row at every width"
-        );
-        assert!(
-            (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
-            "card width returns to its wide value after resize round-trip"
-        );
-    }
-
-    /// The live window must show REAL data, not the fabricated sample. The live
-    /// constructor starts empty and its first refresh pulls actual `sysinfo`
-    /// readings — proven by the running test process appearing in the table.
-    #[test]
-    fn live_constructor_samples_real_processes() {
-        let mut a = MonitorApp::new_live();
-        // Nothing fabricated before the first frame.
-        assert!(
-            a.model.processes.is_empty(),
-            "live app starts empty, not seeded with sample rows"
-        );
-        assert!(a.selected_pid.is_none(), "no pre-selected fake process");
-        // The first refresh samples the real system.
-        a.maybe_refresh();
-        assert!(
-            !a.model.processes.is_empty(),
-            "first refresh populated real processes"
-        );
-        assert!(
-            a.model
-                .processes
-                .iter()
-                .any(|p| p.pid == std::process::id()),
-            "the running process appears in the real table (data is live, not mock)"
-        );
-        assert!(
-            !a.model.metrics.cores.is_empty(),
-            "real per-core readings sampled"
-        );
+        // Phase `idle_sampling_uses_a_deadline_not_continuous_frames`.
+        // A live monitor asks the host for one cadence-aligned wake rather than
+        // pinning the app to a 60 Hz animation loop while it is otherwise idle.
+        {
+            let a = MonitorApp::new_live();
+            assert!(
+                !a.needs_animation_frame(),
+                "a static monitor is not animated"
+            );
+            assert!(
+                a.next_wake_deadline().is_some(),
+                "the first real sample is scheduled as a bounded wake"
+            );
+            let sample = app();
+            assert!(
+                sample.next_wake_deadline().is_none(),
+                "deterministic screenshots never schedule live sampling"
+            );
+        }
     }
 
     // ---- input-path coverage: click / key / wheel through the real handlers --
@@ -7426,14 +8017,16 @@ mod tests {
         let mut focus = None;
         a.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7501,1321 +8094,1046 @@ mod tests {
         }
     }
 
-    /// A quick click (press + prompt release) on the interval pill cycles this
-    /// window's cadence without changing the shared document.
+    /// The sampling-interval pill and its popover (pointer, long press, semantic rows,
+    /// keyboard) set the cadence locally without touching the shared doc.
     #[test]
-    fn interval_pill_click_cycles_without_touching_the_shared_doc() {
-        let mut a = app();
-        a.hit.interval = Rect::new(0.0, 0.0, 80.0, 30.0);
-        a.prefs.interval_ms = 1000; // land on the cycle grid
-        let before = a.prefs.interval_ms;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let heads_before = doc.get_heads();
-        let mut h = false;
-        // Press: starts the hold timer, does NOT cycle yet.
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h, "interval pill consumed the press");
-        assert_eq!(a.prefs.interval_ms, before, "a bare press does not cycle");
-        // Release before the long-press threshold cycles locally.
-        let cycled = a.release_interval_press(&mut doc, &root);
-        assert!(cycled, "the pending press was resolved on release");
-        assert_ne!(
-            a.prefs.interval_ms, before,
-            "a quick release cycled the cadence"
-        );
-        assert_eq!(
-            doc.get_heads(),
-            heads_before,
-            "device cadence is not history"
-        );
-        assert!(
-            !a.interval_popover.is_open(),
-            "a quick click never opens the popover"
-        );
-    }
-
-    /// Holding the interval pill past the long-press threshold opens the option
-    /// popover (instead of cycling), seeded with every cadence and the current
-    /// one pre-selected — the real `release_interval_press` long-press path.
-    #[test]
-    fn interval_long_press_opens_the_option_popover() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
-        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
-        a.prefs.interval_ms = 2000;
-        let before = a.prefs.interval_ms;
-        // Simulate a press that started well past the long-press threshold.
-        a.interval_press = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(LONG_PRESS_MS as u64 + 200))
-                .unwrap(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let handled = a.release_interval_press(&mut doc, &root);
-        assert!(handled, "the held press was consumed");
-        assert!(
-            a.interval_popover.is_open(),
-            "a long-press opens the popover"
-        );
-        assert_eq!(
-            a.prefs.interval_ms, before,
-            "opening the popover does not cycle"
-        );
-        assert_eq!(
-            a.interval_popover.items().len(),
-            INTERVAL_OPTIONS.len(),
-            "every cadence is offered"
-        );
-        assert_eq!(
-            a.interval_popover.selected(),
-            Some(2),
-            "the current cadence (2s) is pre-selected"
-        );
-    }
-
-    /// Clicking an option in the open popover applies + persists that cadence
-    /// and closes the menu — the production `on_click` popover-routing path.
-    #[test]
-    fn interval_popover_click_sets_and_persists_the_cadence() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
-        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
-        a.prefs.interval_ms = 1000;
-        a.open_interval_popover();
-        assert!(a.interval_popover.is_open());
-        // Resolve the body geometry, then click the "3s" row (index 3).
-        // Ask the owning primitive for its actual item rect: its private
-        // padding/row metrics are intentionally free to evolve without
-        // silently retargeting this integration test to a neighbouring value.
-        let mut tr = TextRenderer::new();
-        a.interval_popover.place(&mut tr, &Theme::dark());
-        let click = a
-            .interval_popover
-            .item_rect(3)
-            .expect("the advertised 3s option has a hit rect")
-            .center();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(click, &mut doc, &root, &mut h);
-        assert!(h, "the popover consumed the click");
-        assert!(
-            !a.interval_popover.is_open(),
-            "picking an option closes the popover"
-        );
-        assert_eq!(
-            a.prefs.interval_ms, INTERVAL_OPTIONS[3],
-            "the picked cadence applied"
-        );
-        assert!(
-            doc.get_heads().is_empty(),
-            "interval choice is device-local"
-        );
-    }
-
-    /// Screen-reader option bounds must be the Popover's real hit geometry,
-    /// not a duplicate of its private padding/row constants. This catches the
-    /// same kind of visual primitive change that previously retargeted the
-    /// pointer regression from 3s to 2s.
-    #[test]
-    fn interval_popover_semantic_rows_match_primitive_geometry() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
-        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
-        a.open_interval_popover();
-        let mut tr = TextRenderer::new();
-        a.interval_popover.place(&mut tr, &Theme::dark());
-        let targets = a.accessibility_targets();
-        for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
-            let target = format!("monitor.interval:{ms}");
-            let semantic_row = targets
-                .iter()
-                .find(|(candidate, _, _)| candidate == &target)
-                .map(|(_, rect, _)| *rect)
-                .expect("an open interval menu publishes every option");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn interval_control_cycles_opens_selects_and_persists_the_cadence() {
+        // Phase `interval_pill_click_cycles_without_touching_the_shared_doc`.
+        // A quick click (press + prompt release) on the interval pill cycles this
+        // window's cadence without changing the shared document.
+        {
+            let mut a = app();
+            a.hit.interval = Rect::new(0.0, 0.0, 80.0, 30.0);
+            a.prefs.interval_ms = 1000; // land on the cycle grid
+            let before = a.prefs.interval_ms;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let heads_before = doc.get_heads();
+            let mut h = false;
+            // Press: starts the hold timer, does NOT cycle yet.
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h, "interval pill consumed the press");
+            assert_eq!(a.prefs.interval_ms, before, "a bare press does not cycle");
+            // Release before the long-press threshold cycles locally.
+            let cycled = a.release_interval_press(&mut doc, &root);
+            assert!(cycled, "the pending press was resolved on release");
+            assert_ne!(
+                a.prefs.interval_ms, before,
+                "a quick release cycled the cadence"
+            );
             assert_eq!(
-                semantic_row,
-                a.interval_popover
-                    .item_rect(index)
-                    .expect("the item has painted geometry"),
-                "semantic row {index} is exactly the pointer row"
+                doc.get_heads(),
+                heads_before,
+                "device cadence is not history"
+            );
+            assert!(
+                !a.interval_popover.is_open(),
+                "a quick click never opens the popover"
             );
         }
-    }
 
-    /// Keyboard nav in the open popover: ↓ moves the highlight, Enter applies
-    /// the highlighted device cadence, and every key is consumed so nothing
-    /// leaks to the table behind it.
-    #[test]
-    fn interval_popover_keyboard_selects_and_captures_input() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
-        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
-        a.prefs.interval_ms = 1000; // selected index 0
-        a.open_interval_popover();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-
-        // A stray letter must be swallowed, not fall through to a sort shortcut.
-        let sort_before = a.sort_key;
-        let mut h = false;
-        a.on_key(
-            &Key::Character("c".into()),
-            Some("c"),
-            false,
-            &mut doc,
-            &root,
-            &mut h,
-        );
-        assert!(h, "keys are captured while the popover is open");
-        assert_eq!(
-            a.sort_key, sort_before,
-            "the 'c' sort shortcut did not leak through"
-        );
-
-        // ↓ ↓ moves the highlight to index 2, Enter applies it.
-        let mut h = false;
-        a.on_key(
-            &Key::Named(NamedKey::ArrowDown),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut h,
-        );
-        a.on_key(
-            &Key::Named(NamedKey::ArrowDown),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut h,
-        );
-        assert_eq!(a.interval_popover.highlighted(), 2);
-        let mut h = false;
-        a.on_key(
-            &Key::Named(NamedKey::Enter),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut h,
-        );
-        assert!(h);
-        assert!(!a.interval_popover.is_open(), "Enter applies + closes");
-        assert_eq!(
-            a.prefs.interval_ms, INTERVAL_OPTIONS[2],
-            "the highlighted cadence applied"
-        );
-        assert!(
-            doc.get_heads().is_empty(),
-            "keyboard view action is not history"
-        );
-    }
-
-    /// The narrow detail pane reserves a bottom action bar so the Kill button
-    /// can never overlap the stat content — the exact collision the rework
-    /// fixes. Asserted against the real drawn hit rects at a narrow, tall
-    /// viewport with the detail pane pushed in: the buttons sit inside the
-    /// reserved band pinned to the pane bottom, and don't overlap each other.
-    #[test]
-    fn detail_kill_button_sits_in_reserved_action_bar() {
-        let mut a = app();
-        a.proc_push.snap(PushPane::Detail);
-        draw_at(&mut a, 480.0, 820.0);
-        let kill = a.hit.kill_btn;
-        let stop = a.hit.stop_btn;
-        assert!(
-            kill.area() > 0.0,
-            "the Kill button is drawn in the pushed detail pane"
-        );
-        assert!(stop.area() > 0.0, "the Stop button is drawn too");
-        // The two action buttons don't overlap each other.
-        assert!(!rects_overlap(stop, kill), "Stop and Kill must not overlap");
-        assert!(
-            stop.x1 <= kill.x0 + 0.5,
-            "Stop ({stop:?}) must sit left of Kill ({kill:?})"
-        );
-        // The pane's inner bottom = window − outer pad − panel pad. The buttons
-        // live entirely inside the reserved `DETAIL_ACTION_H` band pinned there,
-        // so all stat content laid out above the band is clear of them.
-        let pane_bottom = 820.0 - OUTER_PAD - 12.0;
-        assert!(
-            kill.y1 <= pane_bottom + 1.0,
-            "Kill bottom ({}) stays inside the pane ({pane_bottom})",
-            kill.y1
-        );
-        assert!(
-            kill.y0 >= pane_bottom - DETAIL_ACTION_H - 1.0,
-            "Kill top ({}) stays within the reserved action band (>= {})",
-            kill.y0,
-            pane_bottom - DETAIL_ACTION_H
-        );
-    }
-
-    /// Clicking the kernel-threads pill flips the local device pref, and the
-    /// table now lists kernel threads — the whole `on_click` path, not a direct
-    /// field poke.
-    #[test]
-    fn kernel_toggle_click_is_local_and_reveals_threads() {
-        let mut a = app();
-        assert!(a.visible_processes().iter().all(|p| !p.kernel));
-        a.hit.kernel_toggle = Rect::new(0.0, 0.0, 160.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert!(a.prefs.show_kernel_threads, "toggled on");
-        assert!(
-            doc.get_heads().is_empty(),
-            "kernel filter is not shared state"
-        );
-        assert!(
-            a.visible_processes().iter().any(|p| p.kernel),
-            "kernel threads now visible"
-        );
-    }
-
-    /// Clicking the Tree/Flat pill toggles the view; flat rows are all depth 0.
-    #[test]
-    fn tree_flat_pill_click_toggles_mode() {
-        let mut a = app();
-        assert!(a.tree_mode);
-        a.hit.tree_toggle = Rect::new(0.0, 0.0, 80.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert!(!a.tree_mode, "toggled to flat");
-        assert!(
-            a.visible_rows().iter().all(|r| r.depth == 0),
-            "flat rows carry no tree depth"
-        );
-    }
-
-    /// Clicking a sort-header sets that column as the sort key (numeric columns
-    /// default descending) — the `on_click` → `set_sort` path.
-    #[test]
-    fn sort_header_click_sets_sort_key() {
-        let mut a = app();
-        a.hit.sort_headers = vec![(SortKey::Mem, Rect::new(0.0, 0.0, 60.0, 26.0))];
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert!(matches!(a.sort_key, SortKey::Mem));
-        assert!(a.sort_desc, "MEM is numeric → defaults descending");
-    }
-
-    /// Clicking the detail-strip Kill button queues the canonical resource
-    /// action rather than sending a process signal from the paint surface.
-    #[test]
-    fn kill_button_click_queues_canonical_control() {
-        let mut a = app();
-        a.prefs.confirm_kill = true;
-        let pid = a.selected_pid.unwrap();
-        a.hit.kill_btn = Rect::new(0.0, 0.0, 96.0, 32.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
-        );
-    }
-
-    /// The shared confirm dialog's destructive primary dispatches the signal;
-    /// its secondary (Cancel) dismisses without killing — both driven through
-    /// the real `handle_event` → `ModalDialog` path (footer button rects
-    /// resolved by a live layout pass, then a click at their centre).
-    #[test]
-    fn confirm_modal_buttons_confirm_and_cancel() {
-        let mut a = app();
-        let pid = a.visible_rows()[0].pid;
-        a.selected_pid = Some(pid);
-        let started_at = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid)
-            .unwrap()
-            .started_at;
-        a.confirm_stop = Some((pid, started_at, StopKind::Kill));
-        // A real frame builds + lays out the shared dialog so its footer button
-        // rects resolve exactly as the live renderer would.
-        draw_at(&mut a, 900.0, 600.0);
-        let primary = a.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(primary.center().x, primary.center().y),
-        );
-        let h = dispatch_ev(&mut a, &synth_press());
-        assert!(h);
-        assert!(a.confirm_stop.is_none(), "modal dismissed after confirm");
-        assert!(
-            a.model.processes.iter().all(|p| p.pid != pid),
-            "process killed on confirm"
-        );
-
-        let mut b = app();
-        let pid2 = b.visible_rows()[0].pid;
-        let started_at2 = b
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid2)
-            .unwrap()
-            .started_at;
-        b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
-        draw_at(&mut b, 900.0, 600.0);
-        let secondary = b.confirm_dialog.as_ref().unwrap().dialog.secondary_rect();
-        dispatch_ev(
-            &mut b,
-            &synth_cursor(secondary.center().x, secondary.center().y),
-        );
-        let h2 = dispatch_ev(&mut b, &synth_press());
-        assert!(h2);
-        assert!(b.confirm_stop.is_none(), "Cancel dismissed the modal");
-        assert!(
-            b.model.processes.iter().any(|p| p.pid == pid2),
-            "Cancel did not kill"
-        );
-    }
-
-    /// The confirm dialog's keyboard: Enter confirms the kill, Escape cancels —
-    /// both through the real `handle_event` → `ModalDialog` routing.
-    #[test]
-    fn confirm_modal_keyboard_enter_confirms_escape_cancels() {
-        let mut a = app();
-        let pid = a.visible_rows()[0].pid;
-        let started_at = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid)
-            .unwrap()
-            .started_at;
-        a.confirm_stop = Some((pid, started_at, StopKind::Kill));
-        let h = dispatch_ev(&mut a, &synth_key(NamedKey::Enter));
-        assert!(h);
-        assert!(a.confirm_stop.is_none());
-        assert!(
-            a.model.processes.iter().all(|p| p.pid != pid),
-            "Enter confirmed the kill"
-        );
-
-        let mut b = app();
-        let pid2 = b.visible_rows()[0].pid;
-        let started_at2 = b
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid2)
-            .unwrap()
-            .started_at;
-        b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
-        let h2 = dispatch_ev(&mut b, &synth_key(NamedKey::Escape));
-        assert!(h2);
-        assert!(b.confirm_stop.is_none());
-        assert!(
-            b.model.processes.iter().any(|p| p.pid == pid2),
-            "Escape cancelled the kill"
-        );
-    }
-
-    /// Clicking the search box focuses it, and the keyboard editing path
-    /// (chars, Space, Backspace, Escape) drives the real filter.
-    #[test]
-    fn search_click_focus_and_keyboard_editing_filters() {
-        let mut a = app();
-        a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
-        dispatch_ev(&mut a, &synth_cursor(50.0, 15.0));
-        let h = dispatch_ev(&mut a, &synth_press());
-        assert!(
-            h && a.search_input.is_focused(),
-            "clicking the search box focuses its shared editor"
-        );
-        for ch in "brow".chars() {
-            let s = ch.to_string();
-            let hk = dispatch_ev(&mut a, &synth_text(&s));
-            assert!(hk, "typed char handled");
-        }
-        assert_eq!(a.search_input.value(), "brow");
-        assert!(dispatch_ev(&mut a, &synth_text(" ")));
-        assert_eq!(a.search_input.value(), "brow ");
-        assert!(dispatch_ev(&mut a, &synth_key(NamedKey::Backspace)));
-        assert_eq!(a.search_input.value(), "brow");
-        assert!(
-            a.visible_processes()
-                .iter()
-                .all(|p| p.name.to_lowercase().contains("brow")
-                    || p.user.to_lowercase().contains("brow")
-                    || p.pid.to_string().contains("brow")),
-            "typed filter actually narrows the list"
-        );
-        let hesc = dispatch_ev(&mut a, &synth_key(NamedKey::Escape));
-        assert!(
-            hesc && !a.search_input.is_focused(),
-            "Escape leaves the search box"
-        );
-    }
-
-    /// On a narrow window, selecting a row through the real click path pushes
-    /// the detail pane (the app-level wiring of `PushNav`, not the unit).
-    #[test]
-    fn narrow_selecting_row_pushes_detail_pane() {
-        let mut a = app();
-        a.tree_mode = false;
-        draw_at(&mut a, 520.0, 900.0);
-        assert!(a.is_narrow());
-        let (pid, rect) = a.hit.rows.first().copied().expect("rows laid out");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(rect.center(), &mut doc, &root, &mut h);
-        assert!(h);
-        assert_eq!(a.selected_pid, Some(pid));
-        assert_eq!(
-            a.proc_push.pane(),
-            PushPane::Detail,
-            "selecting a row pushes the detail pane"
-        );
-    }
-
-    /// On a narrow window the Back chip click and Esc both pop the pushed
-    /// detail back to the table — through the real `on_click`/`on_key` paths.
-    #[test]
-    fn narrow_back_chip_and_escape_return_to_table() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 520.0, 900.0);
-        assert!(a.is_narrow());
-        a.proc_push.snap(PushPane::Detail);
-        a.hit.detail_back = Rect::new(0.0, 0.0, 120.0, 32.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert_eq!(
-            a.proc_push.pane(),
-            PushPane::Master,
-            "Back chip returns to the table"
-        );
-
-        a.proc_push.snap(PushPane::Detail);
-        let mut he = false;
-        a.on_key(
-            &Key::Named(NamedKey::Escape),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut he,
-        );
-        assert!(he);
-        assert_eq!(
-            a.proc_push.pane(),
-            PushPane::Master,
-            "Esc pops the pushed detail"
-        );
-    }
-
-    /// A vertical wheel over the process table scrolls its rows, and a wheel on
-    /// the Resources tab scrolls the whole page — both through `handle_event`.
-    #[test]
-    fn wheel_scrolls_rows_and_resources_page() {
-        // Rows: many flat rows in a modest table so they overflow.
-        let mut a = app();
-        a.tree_mode = false;
-        draw_at(&mut a, 1280.0, 520.0);
-        assert!(
-            a.hit.v_scrollbar.is_some(),
-            "many rows overflow → vertical scrollbar"
-        );
-        a.last_cursor = a.table_viewport.center();
-        let before = a.scroll_off;
-        dispatch_ev(&mut a, &synth_wheel(0.0, -3.0));
-        assert!(
-            a.scroll_off > before,
-            "vertical wheel over the table scrolls the rows"
-        );
-
-        // Page: Resources dashboard taller than a short viewport.
-        let mut b = app();
-        b.tab = Tab::Resources;
-        b.model.metrics.cores = vec![20.0; 24];
-        draw_at(&mut b, 900.0, 360.0);
-        assert!(
-            b.hit.page_scrollbar.is_some(),
-            "Resources overflows → page scrollbar"
-        );
-        b.last_cursor = Point::new(450.0, 200.0);
-        let pbefore = b.view_scroll_y;
-        dispatch_ev(&mut b, &synth_wheel(0.0, -3.0));
-        assert!(
-            b.view_scroll_y > pbefore,
-            "wheel scrolls the Resources page"
-        );
-    }
-
-    /// On a narrow window the context menu offers "Show details", and clicking
-    /// it pushes the detail pane for the target row.
-    #[test]
-    fn context_menu_show_details_pushes_detail_on_narrow() {
-        let mut a = app();
-        a.tree_mode = false;
-        draw_at(&mut a, 520.0, 900.0);
-        assert!(a.is_narrow());
-        let (pid, rect) = a.hit.rows.first().copied().expect("rows");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut hr = false;
-        a.on_right_click(rect.center(), &mut doc, &root, &mut hr);
-        assert!(a.context.is_open());
-        let idx = a
-            .context
-            .items()
-            .iter()
-            .position(|i| i.label() == Some("Show details"))
-            .expect("Show details present on narrow");
-        let mrect = a
-            .context_menu_item_rects()
-            .into_iter()
-            .find(|(i, _)| *i == idx)
-            .map(|(_, r)| r)
-            .unwrap();
-        let mut hc = false;
-        a.on_click(mrect.center(), &mut doc, &root, &mut hc);
-        assert!(hc);
-        assert_eq!(a.selected_pid, Some(pid));
-        assert_eq!(
-            a.proc_push.pane(),
-            PushPane::Detail,
-            "Show details pushes the detail pane"
-        );
-    }
-
-    /// Clicking a summary-strip cell switches to Resources AND scrolls that
-    /// stat's own chart into view — each of the four cells lands on a different
-    /// scroll offset (not the identical "top of Resources" stub).
-    #[test]
-    fn summary_cell_click_switches_and_scrolls_to_that_stat() {
-        let mut a = app();
-        // Narrow + short → the Resources dashboard page-scrolls, so the target
-        // offsets are distinct and non-zero.
-        draw_at(&mut a, 480.0, 520.0);
-        let cells = a.hit.summary_cells.clone();
-        assert_eq!(cells.len(), 4, "four summary cells");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h0 = false;
-        a.on_click(cells[0].center(), &mut doc, &root, &mut h0); // CPU
-        assert!(h0);
-        assert_eq!(a.tab, Tab::Resources);
-        let cpu_scroll = a.view_scroll_y;
-
-        // Back to Processes, re-lay, then click the Disk cell.
-        a.tab = Tab::Processes;
-        a.view_scroll_y = 0.0;
-        draw_at(&mut a, 480.0, 520.0);
-        let cells = a.hit.summary_cells.clone();
-        let mut h3 = false;
-        a.on_click(cells[3].center(), &mut doc, &root, &mut h3); // Disk
-        assert!(h3);
-        assert_eq!(a.tab, Tab::Resources);
-        let disk_scroll = a.view_scroll_y;
-        assert!(
-            disk_scroll > cpu_scroll,
-            "Disk cell scrolls lower than CPU: disk={disk_scroll} cpu={cpu_scroll}"
-        );
-        // The offset matches the production stat-scroll math for this body.
-        let (bw, vh) = a.body_metrics();
-        assert_eq!(disk_scroll, a.resources_scroll_for_stat(3, bw, vh));
-    }
-
-    /// Clicking the vertical row scrollbar pages the rows and — critically —
-    /// does NOT select the row beneath it (the old dead-scrollbar bug).
-    #[test]
-    fn clicking_row_scrollbar_pages_and_does_not_select() {
-        let mut a = app();
-        a.tree_mode = false;
-        draw_at(&mut a, 1280.0, 520.0);
-        let sb = a.hit.v_scrollbar.expect("vertical scrollbar present");
-        let before_sel = a.selected_pid;
-        let before_off = a.scroll_off;
-        let click = Point::new(
-            sb.track.center().x,
-            (sb.thumb.y1 + 4.0).min(sb.track.y1 - 1.0),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(click, &mut doc, &root, &mut h);
-        assert!(h, "scrollbar consumed the click");
-        assert!(
-            a.scroll_off > before_off,
-            "clicking below the thumb pages down"
-        );
-        assert_eq!(
-            a.selected_pid, before_sel,
-            "the row beneath the scrollbar is NOT selected"
-        );
-    }
-
-    /// Dragging the vertical row scrollbar thumb scrolls the rows; release ends
-    /// the drag — the full press → move → release path through `handle_event`.
-    #[test]
-    fn dragging_row_scrollbar_thumb_scrolls_rows() {
-        let mut a = app();
-        a.tree_mode = false;
-        draw_at(&mut a, 1280.0, 520.0);
-        let sb = a.hit.v_scrollbar.expect("vertical scrollbar");
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
-        );
-        dispatch_ev(&mut a, &synth_press());
-        assert!(
-            matches!(a.scroll_drag, Some(ScrollDrag::Rows { .. })),
-            "press on thumb starts a row drag"
-        );
-        let before = a.scroll_off;
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0),
-        );
-        assert!(
-            a.scroll_off > before,
-            "dragging the thumb down scrolls rows"
-        );
-        dispatch_ev(&mut a, &synth_release());
-        assert!(a.scroll_drag.is_none(), "release ends the drag");
-    }
-
-    /// A narrow table remains a directly scannable process list instead of
-    /// exposing a horizontal scrollbar for its primary columns.
-    #[test]
-    fn narrow_table_does_not_expose_column_scrollbar() {
-        let mut a = app();
-        draw_at(&mut a, 430.0, 700.0);
-        assert!(
-            a.hit.h_scrollbar.is_none(),
-            "compact process columns must fit without horizontal scrolling"
-        );
-    }
-
-    /// Dragging the whole-view page scrollbar thumb scrolls the Resources page.
-    #[test]
-    fn dragging_page_scrollbar_thumb_scrolls_view() {
-        let mut a = app();
-        a.tab = Tab::Resources;
-        a.model.metrics.cores = vec![20.0; 24];
-        draw_at(&mut a, 900.0, 360.0);
-        let sb = a.hit.page_scrollbar.expect("page scrollbar");
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
-        );
-        dispatch_ev(&mut a, &synth_press());
-        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Page { .. })));
-        let before = a.view_scroll_y;
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0),
-        );
-        assert!(
-            a.view_scroll_y > before,
-            "dragging the page thumb down scrolls the view"
-        );
-        dispatch_ev(&mut a, &synth_release());
-        assert!(a.scroll_drag.is_none());
-    }
-
-    /// The canonical resource operation performs the copy and raises a
-    /// transient toast that expires on its own rather than sticking forever.
-    #[test]
-    fn copy_pid_resource_operation_is_safe_and_shows_expiring_toast() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let process = a.model.processes[3].clone();
-        let pid = process.pid;
-        let resources = Widget::resources(&a, &AutoCommit::new());
-        let process_resource = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
-            .expect("process resource");
-        let copy = process_resource
-            .actions
-            .iter()
-            .find(|action| action.id == "copy-pid")
-            .expect("copy action");
-        assert_eq!(copy.kind, OperationKind::Effect);
-        assert_eq!(copy.contract.permission, PermissionRequirement::Read);
-        assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
-        let operation = MonitorOperation::CopyPid {
-            pid,
-            started_at: process.started_at,
-        };
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut a,
-                OperationKind::Effect,
-                MONITOR_OPERATION_TYPE,
-                &serde_json::to_vec(&operation).unwrap(),
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .expect("copy invocation accepted")
-        );
-        assert_eq!(a.copied_pid, Some(pid), "copy recorded");
-        assert!(a.copied_at.is_some());
-        let stale = MonitorOperation::CopyPid {
-            pid,
-            started_at: process.started_at.saturating_add(1),
-        };
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut a,
-                OperationKind::Effect,
-                MONITOR_OPERATION_TYPE,
-                &serde_json::to_vec(&stale).unwrap(),
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .is_err(),
-            "a recycled PID cannot receive a stale copy action"
-        );
-        assert!(
-            a.copy_toast_active(),
-            "toast active immediately after copying"
-        );
-        // The toast is time-limited: an old timestamp is no longer active.
-        a.copied_at = Instant::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
-        assert!(
-            !a.copy_toast_active(),
-            "toast expires after its window (not a permanent caption)"
-        );
-    }
-
-    /// The Confirm-kills pill changes only this window's preference; the
-    /// published force-kill action remains host-confirmed regardless.
-    #[test]
-    fn confirm_kills_pill_is_local_and_does_not_ungate_resource_kill() {
-        let mut a = app();
-        assert!(a.prefs.confirm_kill, "confirm defaults on");
-        a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h);
-        assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
-        assert!(
-            doc.get_heads().is_empty(),
-            "local safety preference is not shared"
-        );
-        // All visible force-kill routes still enter the host-owned contract.
-        let pid = a.visible_rows()[0].pid;
-        a.request_process_control(pid, "kill");
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
-        );
-    }
-
-    #[test]
-    fn local_monitor_views_and_device_prefs_do_not_cross_window_or_doc_heads() {
-        let mut first = app();
-        let mut second = app();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let heads_before = doc.get_heads();
-
-        // Device preferences: cadence, sampler state, kernel visibility, and
-        // local kill confirmation. These must remain first-window-only.
-        assert!(Widget::perform_semantic_action(
-            &mut first,
-            "monitor.interval:3000",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &root,
-        ));
-        assert!(Widget::perform_semantic_action(
-            &mut first,
-            "monitor.auto-refresh",
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &root,
-        ));
-        assert!(Widget::perform_semantic_action(
-            &mut first,
-            "monitor.kernel-threads",
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &root,
-        ));
-        assert!(Widget::perform_semantic_action(
-            &mut first,
-            "monitor.confirm-kills",
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &root,
-        ));
-        // Presentation state: filter, sort, tree, and selection.
-        first.search_input.set_text("shell");
-        first.set_sort(SortKey::Name);
-        first.tree_mode = false;
-        first.selected_pid = first.model.processes.last().map(|process| process.pid);
-
-        // A shared-document sync must not import first's local settings.
-        second.sync(&mut doc, &root);
-        assert_eq!(second.prefs, Prefs::default());
-        assert!(second.search_input.value().is_empty());
-        assert_eq!(second.sort_key, SortKey::Cpu);
-        assert!(second.tree_mode);
-        assert_ne!(second.selected_pid, first.selected_pid);
-        assert_eq!(
-            doc.get_heads(),
-            heads_before,
-            "no local state enters history"
-        );
-    }
-
-    /// The confirm pill is actually laid out on the real draw path at a normal
-    /// width (not just a hand-seated rect).
-    #[test]
-    fn confirm_pill_is_laid_out_on_wide_toolbar() {
-        let mut a = app();
-        draw_at(&mut a, 1280.0, 720.0);
-        assert_ne!(
-            a.hit.confirm_toggle,
-            Rect::ZERO,
-            "confirm pill drawn at a normal width"
-        );
-        assert!(
-            !overlaps(a.hit.confirm_toggle, a.hit.search),
-            "confirm pill clears the search box"
-        );
-        assert!(
-            !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
-            "confirm pill clears the tree pill"
-        );
-    }
-
-    #[test]
-    fn tab_key_is_left_for_toolkit_focus_navigation() {
-        let mut a = app();
-        let original = a.tab;
-        let mut handled = false;
-        a.on_key(
-            &Key::Named(NamedKey::Tab),
-            None,
-            false,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-        );
-        assert_eq!(a.tab, original, "Tab must not silently switch dashboards");
-        assert!(!handled, "the toolkit owns Tab focus traversal");
-    }
-
-    #[test]
-    fn monitor_semantic_controls_are_operable_at_their_drawn_rects() {
-        let mut a = app();
-        draw_at(&mut a, 1_280.0, 720.0);
-        let node = Widget::accessibility(&a).expect("monitor is semantic");
-        assert!(!node.children.is_empty());
-        for (index, child) in node.children.iter().enumerate() {
-            assert!(child.action_target.is_some(), "control {index} is operable");
+        // Phase `interval_long_press_opens_the_option_popover`.
+        // Holding the interval pill past the long-press threshold opens the option
+        // popover (instead of cycling), seeded with every cadence and the current
+        // one pre-selected — the real `release_interval_press` long-press path.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+            a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+            a.prefs.interval_ms = 2000;
+            let before = a.prefs.interval_ms;
+            // Simulate a press that started well past the long-press threshold.
+            a.interval_press = Some(
+                ui::time::now()
+                    .checked_sub(Duration::from_millis(LONG_PRESS_MS as u64 + 200))
+                    .unwrap(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let handled = a.release_interval_press(&mut doc, &root);
+            assert!(handled, "the held press was consumed");
+            assert!(
+                a.interval_popover.is_open(),
+                "a long-press opens the popover"
+            );
             assert_eq!(
-                Widget::synthetic_accessibility_rect(&a, &[index]),
-                child.bounds.map(ui::a11y::AccessBounds::to_rect),
-                "semantic control {index} must activate at its drawn rect"
+                a.prefs.interval_ms, before,
+                "opening the popover does not cycle"
+            );
+            assert_eq!(
+                a.interval_popover.items().len(),
+                INTERVAL_OPTIONS.len(),
+                "every cadence is offered"
+            );
+            assert_eq!(
+                a.interval_popover.selected(),
+                Some(2),
+                "the current cadence (2s) is pre-selected"
+            );
+        }
+
+        // Phase `interval_popover_click_sets_and_persists_the_cadence`.
+        // Clicking an option in the open popover applies + persists that cadence
+        // and closes the menu — the production `on_click` popover-routing path.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+            a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+            a.prefs.interval_ms = 1000;
+            a.open_interval_popover();
+            assert!(a.interval_popover.is_open());
+            // Resolve the body geometry, then click the "3s" row (index 3).
+            // Ask the owning primitive for its actual item rect: its private
+            // padding/row metrics are intentionally free to evolve without
+            // silently retargeting this integration test to a neighbouring value.
+            let mut tr = TextRenderer::new();
+            a.interval_popover.place(&mut tr, &Theme::dark());
+            let click = a
+                .interval_popover
+                .item_rect(3)
+                .expect("the advertised 3s option has a hit rect")
+                .center();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(click, &mut doc, &root, &mut h);
+            assert!(h, "the popover consumed the click");
+            assert!(
+                !a.interval_popover.is_open(),
+                "picking an option closes the popover"
+            );
+            assert_eq!(
+                a.prefs.interval_ms, INTERVAL_OPTIONS[3],
+                "the picked cadence applied"
+            );
+            assert!(
+                doc.get_heads().is_empty(),
+                "interval choice is device-local"
+            );
+        }
+
+        // Phase `interval_popover_semantic_rows_match_primitive_geometry`.
+        // Screen-reader option bounds must be the Popover's real hit geometry,
+        // not a duplicate of its private padding/row constants. This catches the
+        // same kind of visual primitive change that previously retargeted the
+        // pointer regression from 3s to 2s.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+            a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+            a.open_interval_popover();
+            let mut tr = TextRenderer::new();
+            a.interval_popover.place(&mut tr, &Theme::dark());
+            let targets = a.accessibility_targets();
+            for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
+                let target = format!("monitor.interval:{ms}");
+                let semantic_row = targets
+                    .iter()
+                    .find(|(candidate, _, _)| candidate == &target)
+                    .map(|(_, rect, _)| *rect)
+                    .expect("an open interval menu publishes every option");
+                assert_eq!(
+                    semantic_row,
+                    a.interval_popover
+                        .item_rect(index)
+                        .expect("the item has painted geometry"),
+                    "semantic row {index} is exactly the pointer row"
+                );
+            }
+        }
+
+        // Phase `interval_popover_keyboard_selects_and_captures_input`.
+        // Keyboard nav in the open popover: ↓ moves the highlight, Enter applies
+        // the highlighted device cadence, and every key is consumed so nothing
+        // leaks to the table behind it.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+            a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+            a.prefs.interval_ms = 1000; // selected index 0
+            a.open_interval_popover();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            // A stray letter must be swallowed, not fall through to a sort shortcut.
+            let sort_before = a.sort_key;
+            let mut h = false;
+            a.on_key(
+                &Key::Character("c".into()),
+                Some("c"),
+                false,
+                &mut doc,
+                &root,
+                &mut h,
+            );
+            assert!(h, "keys are captured while the popover is open");
+            assert_eq!(
+                a.sort_key, sort_before,
+                "the 'c' sort shortcut did not leak through"
+            );
+
+            // ↓ ↓ moves the highlight to index 2, Enter applies it.
+            let mut h = false;
+            a.on_key(
+                &Key::Named(NamedKey::ArrowDown),
+                None,
+                false,
+                &mut doc,
+                &root,
+                &mut h,
+            );
+            a.on_key(
+                &Key::Named(NamedKey::ArrowDown),
+                None,
+                false,
+                &mut doc,
+                &root,
+                &mut h,
+            );
+            assert_eq!(a.interval_popover.highlighted(), 2);
+            let mut h = false;
+            a.on_key(
+                &Key::Named(NamedKey::Enter),
+                None,
+                false,
+                &mut doc,
+                &root,
+                &mut h,
+            );
+            assert!(h);
+            assert!(!a.interval_popover.is_open(), "Enter applies + closes");
+            assert_eq!(
+                a.prefs.interval_ms, INTERVAL_OPTIONS[2],
+                "the highlighted cadence applied"
+            );
+            assert!(
+                doc.get_heads().is_empty(),
+                "keyboard view action is not history"
             );
         }
     }
 
     #[test]
-    fn selected_detail_always_refers_to_a_visible_tree_row() {
-        let mut a = app();
-        draw_at(&mut a, 1_280.0, 720.0);
-        let selected = a.selected_pid.expect("sample selects a visible row");
-        assert!(
-            a.hit.rows.iter().any(|(pid, _)| *pid == selected),
-            "a selected detail must not expose actions for a collapsed descendant"
-        );
-
-        // Collapsing a parent that contains the selection clears that stale
-        // detail rather than leaving hidden Stop/Kill controls behind.
-        let parent = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.ppid.is_none() && a.row_has_children(process.pid))
-            .expect("sample has a tree parent")
-            .pid;
-        a.toggle_expand(parent);
-        let child = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.ppid == Some(parent))
-            .expect("parent has a child")
-            .pid;
-        a.selected_pid = Some(child);
-        a.toggle_expand(parent);
-        assert_eq!(a.selected_pid, None);
-    }
-
-    #[test]
-    fn semantic_summary_tree_and_context_controls_follow_pointer_paths() {
-        let mut a = app();
-        draw_at(&mut a, 1_280.0, 720.0);
-        let mut doc = AutoCommit::new();
-
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            "monitor.summary.2",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(a.tab, Tab::Resources);
-
-        a.tab = Tab::Processes;
-        draw_at(&mut a, 1_280.0, 720.0);
-        let (pid, _) = a.hit.twisties[0];
-        let started_at = a
-            .model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid)
-            .expect("twisty process exists")
-            .started_at;
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            &format!(
-                "monitor.tree-toggle:{}",
-                process_resource_id(pid, started_at)
-            ),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(a.expanded.contains(&pid));
-
-        a.open_context_menu(pid, Point::new(20.0, 20.0));
-        let copy_item = a
-            .context
-            .items()
-            .iter()
-            .position(|item| item.label() == Some("Copy PID"))
-            .expect("copy item");
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            &format!(
-                "monitor.context:{}:{copy_item}",
-                process_resource_id(pid, started_at)
-            ),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
-        );
-        assert!(!a.context.is_open());
-    }
-
-    #[test]
-    fn semantic_process_actions_queue_the_same_control_invocation() {
-        let mut a = app();
-        draw_at(&mut a, 1_280.0, 720.0);
-        let pid = a.selected_pid.expect("sample selects a process");
-        let started_at = a.selected_process().unwrap().started_at;
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            &format!("{}:kill", monitor_process_target(pid, started_at)),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
-        );
-        assert!(a.model.processes.iter().any(|process| process.pid == pid));
-
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            "monitor.confirm-kills",
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
-    }
-
-    #[test]
-    fn resource_force_kill_is_typed_contract_confirmed_and_semantic_ids_are_unique() {
-        let mut a = app();
-        draw_at(&mut a, 1_280.0, 720.0);
-        let pid = a.selected_pid.expect("sample selects a process");
-        let resources = Widget::resources(&a, &AutoCommit::new());
-        let process = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
-            .expect("selected process is a stable resource");
-        let kill = process
-            .actions
-            .iter()
-            .find(|action| action.id == "kill")
-            .expect("force kill is exported");
-        assert_eq!(kill.contract.confirmation, ConfirmationPolicy::Confirm);
-
-        let targets = a.accessibility_targets();
-        let unique: HashSet<&str> = targets
-            .iter()
-            .map(|(target, _, _)| target.as_str())
-            .collect();
-        assert_eq!(
-            unique.len(),
-            targets.len(),
-            "semantic targets are stable and unique"
-        );
-
-        let started_at = a
-            .model
-            .processes
-            .iter()
-            .find(|candidate| candidate.pid == pid)
-            .expect("selected sample process remains in the model")
-            .started_at;
-
-        let payload = serde_json::to_vec(&MonitorOperation::Signal {
-            pid,
-            started_at,
-            signal: MonitorSignal::Kill,
-        })
-        .expect("typed monitor operation serializes");
-        let doc = AutoCommit::new();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut a,
-                OperationKind::Effect,
-                MONITOR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .expect("the action-contract-confirmed signal executes")
-        );
-        assert!(
-            a.confirm_stop.is_none(),
-            "no inaccessible local dialog is opened"
-        );
-        assert!(a.model.processes.iter().all(|process| process.pid != pid));
-    }
-
-    #[test]
-    fn process_resource_catalogue_is_bounded_and_omitted_generation_resolves_exactly() {
-        let mut a = app();
-        let template = a.model.processes[0].clone();
-        for offset in 0..=MAX_CONTEXT_PROCESS_RESOURCES {
-            let mut process = template.clone();
-            process.pid = 90_000 + u32::try_from(offset).expect("small test offset");
-            process.started_at = 7_000 + u64::try_from(offset).expect("small test offset");
-            process.name = format!("worker-{offset}");
-            a.model.processes.push(process);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn toolbar_and_summary_clicks_change_local_view_state() {
+        // Phase `kernel_toggle_click_is_local_and_reveals_threads`.
+        // Clicking the kernel-threads pill flips the local device pref, and the
+        // table now lists kernel threads — the whole `on_click` path, not a direct
+        // field poke.
+        {
+            let mut a = app();
+            assert!(a.visible_processes().iter().all(|p| !p.kernel));
+            a.hit.kernel_toggle = Rect::new(0.0, 0.0, 160.0, 30.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert!(a.prefs.show_kernel_threads, "toggled on");
+            assert!(
+                doc.get_heads().is_empty(),
+                "kernel filter is not shared state"
+            );
+            assert!(
+                a.visible_processes().iter().any(|p| p.kernel),
+                "kernel threads now visible"
+            );
         }
-        let target = a.model.processes.last().expect("added process").clone();
-        let resources = Widget::resources(&a, &AutoCommit::new());
-        let root = resources.first().expect("process root");
-        assert_eq!(
-            root.children.len(),
-            MAX_CONTEXT_PROCESS_RESOURCES,
-            "the contextual catalogue cannot grow with the OS process count"
-        );
-        let target_id = process_resource_id(target.pid, target.started_at);
-        assert!(
-            !root
+
+        // Phase `sort_header_click_sets_sort_key`.
+        // Clicking a sort-header sets that column as the sort key (numeric columns
+        // default descending) — the `on_click` → `set_sort` path.
+        {
+            let mut a = app();
+            a.hit.sort_headers = vec![(SortKey::Mem, Rect::new(0.0, 0.0, 60.0, 26.0))];
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert!(matches!(a.sort_key, SortKey::Mem));
+            assert!(a.sort_desc, "MEM is numeric → defaults descending");
+        }
+
+        // Phase `summary_cell_click_switches_and_scrolls_to_that_stat`.
+        // Clicking a summary-strip cell switches to Resources AND scrolls that
+        // stat's own chart into view — each of the four cells lands on a different
+        // scroll offset (not the identical "top of Resources" stub).
+        {
+            let mut a = app();
+            // Narrow + short → the Resources dashboard page-scrolls, so the target
+            // offsets are distinct and non-zero.
+            draw_at(&mut a, 480.0, 520.0);
+            let cells = a.hit.summary_cells.clone();
+            assert_eq!(cells.len(), 4, "four summary cells");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h0 = false;
+            a.on_click(cells[0].center(), &mut doc, &root, &mut h0); // CPU
+            assert!(h0);
+            assert_eq!(a.tab, Tab::Resources);
+            let cpu_scroll = a.view_scroll_y;
+
+            // Back to Processes, re-lay, then click the Disk cell.
+            a.tab = Tab::Processes;
+            a.view_scroll_y = 0.0;
+            draw_at(&mut a, 480.0, 520.0);
+            let cells = a.hit.summary_cells.clone();
+            let mut h3 = false;
+            a.on_click(cells[3].center(), &mut doc, &root, &mut h3); // Disk
+            assert!(h3);
+            assert_eq!(a.tab, Tab::Resources);
+            let disk_scroll = a.view_scroll_y;
+            assert!(
+                disk_scroll > cpu_scroll,
+                "Disk cell scrolls lower than CPU: disk={disk_scroll} cpu={cpu_scroll}"
+            );
+            // The offset matches the production stat-scroll math for this body.
+            let (bw, vh) = a.body_metrics();
+            assert_eq!(disk_scroll, a.resources_scroll_for_stat(3, bw, vh));
+        }
+
+        // Phase `confirm_kills_pill_is_local_and_does_not_ungate_resource_kill`.
+        // The Confirm-kills pill changes only this window's preference; the
+        // published force-kill action remains host-confirmed regardless.
+        {
+            let mut a = app();
+            assert!(a.prefs.confirm_kill, "confirm defaults on");
+            a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
+            assert!(
+                doc.get_heads().is_empty(),
+                "local safety preference is not shared"
+            );
+            // All visible force-kill routes still enter the host-owned contract.
+            let pid = a.visible_rows()[0].pid;
+            a.request_process_control(pid, "kill");
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn narrow_detail_push_and_return_respect_motion_preferences() {
+        // Phase `narrow_selecting_row_pushes_detail_pane`.
+        // On a narrow window, selecting a row through the real click path pushes
+        // the detail pane (the app-level wiring of `PushNav`, not the unit).
+        {
+            let mut a = app();
+            a.tree_mode = false;
+            draw_at(&mut a, 520.0, 900.0);
+            assert!(a.is_narrow());
+            let (pid, rect) = a.hit.rows.first().copied().expect("rows laid out");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(rect.center(), &mut doc, &root, &mut h);
+            assert!(h);
+            assert_eq!(a.selected_pid, Some(pid));
+            assert_eq!(
+                a.proc_push.pane(),
+                PushPane::Detail,
+                "selecting a row pushes the detail pane"
+            );
+        }
+
+        // Phase `narrow_back_chip_and_escape_return_to_table`.
+        // On a narrow window the Back chip click and Esc both pop the pushed
+        // detail back to the table — through the real `on_click`/`on_key` paths.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 520.0, 900.0);
+            assert!(a.is_narrow());
+            a.proc_push.snap(PushPane::Detail);
+            a.hit.detail_back = Rect::new(0.0, 0.0, 120.0, 32.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+            assert!(h);
+            assert_eq!(
+                a.proc_push.pane(),
+                PushPane::Master,
+                "Back chip returns to the table"
+            );
+
+            a.proc_push.snap(PushPane::Detail);
+            let mut he = false;
+            a.on_key(
+                &Key::Named(NamedKey::Escape),
+                None,
+                false,
+                &mut doc,
+                &root,
+                &mut he,
+            );
+            assert!(he);
+            assert_eq!(
+                a.proc_push.pane(),
+                PushPane::Master,
+                "Esc pops the pushed detail"
+            );
+        }
+
+        // Phase `reduced_motion_snaps_a_pending_process_push`.
+        {
+            let mut a = app();
+            a.proc_push.show_detail();
+            assert!(a.proc_push.is_animating());
+            Widget::set_motion_reduced(&mut a, true);
+            assert_eq!(a.proc_push.slide(), 1.0);
+            assert!(!a.proc_push.is_animating());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wheel_and_scrollbars_scroll_rows_and_page() {
+        // Phase `wheel_scrolls_rows_and_resources_page`.
+        // A vertical wheel over the process table scrolls its rows, and a wheel on
+        // the Resources tab scrolls the whole page — both through `handle_event`.
+        {
+            // Rows: many flat rows in a modest table so they overflow.
+            let mut a = app();
+            a.tree_mode = false;
+            draw_at(&mut a, 1280.0, 520.0);
+            assert!(
+                a.hit.v_scrollbar.is_some(),
+                "many rows overflow → vertical scrollbar"
+            );
+            a.last_cursor = a.table_viewport.center();
+            let before = a.scroll_off;
+            dispatch_ev(&mut a, &synth_wheel(0.0, -3.0));
+            assert!(
+                a.scroll_off > before,
+                "vertical wheel over the table scrolls the rows"
+            );
+
+            // Page: Resources dashboard taller than a short viewport.
+            let mut b = app();
+            b.tab = Tab::Resources;
+            b.model.metrics.cores = vec![20.0; 24];
+            draw_at(&mut b, 900.0, 360.0);
+            assert!(
+                b.hit.page_scrollbar.is_some(),
+                "Resources overflows → page scrollbar"
+            );
+            b.last_cursor = Point::new(450.0, 200.0);
+            let pbefore = b.view_scroll_y;
+            dispatch_ev(&mut b, &synth_wheel(0.0, -3.0));
+            assert!(
+                b.view_scroll_y > pbefore,
+                "wheel scrolls the Resources page"
+            );
+        }
+
+        // Phase `clicking_row_scrollbar_pages_and_does_not_select`.
+        // Clicking the vertical row scrollbar pages the rows and — critically —
+        // does NOT select the row beneath it (the old dead-scrollbar bug).
+        {
+            let mut a = app();
+            a.tree_mode = false;
+            draw_at(&mut a, 1280.0, 520.0);
+            let sb = a.hit.v_scrollbar.expect("vertical scrollbar present");
+            let before_sel = a.selected_pid;
+            let before_off = a.scroll_off;
+            let click = Point::new(
+                sb.track.center().x,
+                (sb.thumb.y1 + 4.0).min(sb.track.y1 - 1.0),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut h = false;
+            a.on_click(click, &mut doc, &root, &mut h);
+            assert!(h, "scrollbar consumed the click");
+            assert!(
+                a.scroll_off > before_off,
+                "clicking below the thumb pages down"
+            );
+            assert_eq!(
+                a.selected_pid, before_sel,
+                "the row beneath the scrollbar is NOT selected"
+            );
+        }
+
+        // Phase `dragging_row_scrollbar_thumb_scrolls_rows`.
+        // Dragging the vertical row scrollbar thumb scrolls the rows; release ends
+        // the drag — the full press → move → release path through `handle_event`.
+        {
+            let mut a = app();
+            a.tree_mode = false;
+            draw_at(&mut a, 1280.0, 520.0);
+            let sb = a.hit.v_scrollbar.expect("vertical scrollbar");
+            dispatch_ev(
+                &mut a,
+                &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
+            );
+            dispatch_ev(&mut a, &synth_press());
+            assert!(
+                matches!(a.scroll_drag, Some(ScrollDrag::Rows { .. })),
+                "press on thumb starts a row drag"
+            );
+            let before = a.scroll_off;
+            dispatch_ev(
+                &mut a,
+                &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0),
+            );
+            assert!(
+                a.scroll_off > before,
+                "dragging the thumb down scrolls rows"
+            );
+            dispatch_ev(&mut a, &synth_release());
+            assert!(a.scroll_drag.is_none(), "release ends the drag");
+        }
+
+        // Phase `narrow_table_does_not_expose_column_scrollbar`.
+        // A narrow table remains a directly scannable process list instead of
+        // exposing a horizontal scrollbar for its primary columns.
+        {
+            let mut a = app();
+            draw_at(&mut a, 430.0, 700.0);
+            assert!(
+                a.hit.h_scrollbar.is_none(),
+                "compact process columns must fit without horizontal scrolling"
+            );
+        }
+
+        // Phase `dragging_page_scrollbar_thumb_scrolls_view`.
+        // Dragging the whole-view page scrollbar thumb scrolls the Resources page.
+        {
+            let mut a = app();
+            a.tab = Tab::Resources;
+            a.model.metrics.cores = vec![20.0; 24];
+            draw_at(&mut a, 900.0, 360.0);
+            let sb = a.hit.page_scrollbar.expect("page scrollbar");
+            dispatch_ev(
+                &mut a,
+                &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
+            );
+            dispatch_ev(&mut a, &synth_press());
+            assert!(matches!(a.scroll_drag, Some(ScrollDrag::Page { .. })));
+            let before = a.view_scroll_y;
+            dispatch_ev(
+                &mut a,
+                &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0),
+            );
+            assert!(
+                a.view_scroll_y > before,
+                "dragging the page thumb down scrolls the view"
+            );
+            dispatch_ev(&mut a, &synth_release());
+            assert!(a.scroll_drag.is_none());
+        }
+    }
+
+    /// Process resources: bounded catalogue, exact generations (stale ones rejected
+    /// before any signal), single-line labels, safe copy-PID, and local-only views.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn process_resources_are_bounded_generation_exact_and_local() {
+        // Phase `resource_force_kill_is_typed_contract_confirmed_and_semantic_ids_are_unique`.
+        {
+            let mut a = app();
+            draw_at(&mut a, 1_280.0, 720.0);
+            let pid = a.selected_pid.expect("sample selects a process");
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
+            let process = resources[0]
                 .children
                 .iter()
-                .any(|resource| resource.id.0 == target_id),
-            "a tail process is intentionally omitted from the eager page"
-        );
-        let resolved = Widget::resource(&a, &AutoCommit::new(), &target_id)
-            .expect("an omitted exact PID generation stays agent-resolvable");
-        assert_eq!(resolved.id.0, target_id);
-        assert!(resolved.actions.iter().any(|action| action.id == "kill"));
+                .find(|resource| resource.id.0 == resource_id_for(&a, pid))
+                .expect("selected process is a stable resource");
+            let kill = process
+                .actions
+                .iter()
+                .find(|action| action.id == "kill")
+                .expect("force kill is exported");
+            assert_eq!(kill.contract.confirmation, ConfirmationPolicy::Confirm);
 
-        let page = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
-            .expect("Monitor publishes a bounded directory page");
-        assert_eq!(page.resources.len(), 1, "one root obeys max_results=1");
-        assert!(page.exhausted);
-        assert!(page.next_cursor.is_empty());
-        let empty = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
-            .expect("zero-size page is still a valid response");
-        assert!(empty.resources.is_empty(), "max_results is a hard ceiling");
-    }
+            let targets = a.accessibility_targets();
+            let unique: HashSet<&str> = targets
+                .iter()
+                .map(|(target, _, _)| target.as_str())
+                .collect();
+            assert_eq!(
+                unique.len(),
+                targets.len(),
+                "semantic targets are stable and unique"
+            );
 
-    #[test]
-    fn tail_processes_are_searchable_and_resolve_to_their_current_generation() {
-        let mut a = app();
-        let mut tail = a.model.processes[0].clone();
-        tail.pid = 99_991;
-        tail.started_at = 88_881;
-        tail.name = "searchable-tail-worker".into();
-        a.model.processes.push(tail.clone());
-        a.process_search.refresh(&a.model.processes);
-
-        let provider = a.search_providers().pop().expect("process provider");
-        let hit = provider
-            .search_limited("tail-worker", 1)
-            .pop()
-            .expect("the omitted catalogue tail remains globally searchable");
-        let address = hit.action_address().expect("search result has an action");
-        assert_eq!(
-            address.resource,
-            process_resource_id(tail.pid, tail.started_at)
-        );
-        assert_eq!(address.action, "inspect");
-        assert!(
-            provider.resolve_action_resource(&address).is_some(),
-            "the search address materializes the exact resource, not a PID-only fallback"
-        );
-    }
-
-    #[test]
-    fn process_resource_labels_are_single_line_and_bounded() {
-        let mut process = app().model.processes[0].clone();
-        process.name = format!(
-            "line\nbreak\t{}",
-            "x".repeat(MAX_PROCESS_RESOURCE_LABEL_CHARS + 8)
-        );
-        let label = process_resource_label(&process);
-        assert!(!label.contains('\n'));
-        assert!(!label.contains('\t'));
-        assert!(
-            label.chars().count() <= MAX_PROCESS_RESOURCE_LABEL_CHARS + 16,
-            "the bounded process name plus a tiny PID suffix is safe to publish"
-        );
-    }
-
-    /// Process effects are bound to a PID generation, not merely a reusable
-    /// PID. A stale palette/agent payload must fail before it reaches the
-    /// sampler, leaving the currently displayed process intact.
-    #[test]
-    fn stale_process_generation_is_rejected_before_signal_dispatch() {
-        let mut a = app();
-        let process = a.model.processes[0].clone();
-        let result = a.perform_operation(
-            &MonitorOperation::Signal {
-                pid: process.pid,
-                started_at: process.started_at.saturating_add(1),
-                signal: MonitorSignal::Kill,
-            },
-            SignalConfirmation::ActionContract,
-        );
-        assert!(result.is_err(), "a PID-reused target is rejected");
-        assert!(
-            a.model
+            let started_at = a
+                .model
                 .processes
                 .iter()
-                .any(|candidate| candidate.pid == process.pid),
-            "the current process remains untouched"
-        );
+                .find(|candidate| candidate.pid == pid)
+                .expect("selected sample process remains in the model")
+                .started_at;
+
+            let payload = serde_json::to_vec(&MonitorOperation::Signal {
+                pid,
+                started_at,
+                signal: MonitorSignal::Kill,
+            })
+            .expect("typed monitor operation serializes");
+            let mut doc = AutoCommit::new();
+            assert!(
+                Widget::start_operation(
+                    &mut a,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
+                )
+                .map(|started| started.is_some())
+                .expect("the action-contract-confirmed signal executes")
+            );
+            assert!(
+                a.confirm_stop.is_none(),
+                "no inaccessible local dialog is opened"
+            );
+            assert!(a.model.processes.iter().all(|process| process.pid != pid));
+        }
+
+        // Phase `process_resource_catalogue_is_bounded_and_omitted_generation_resolves_exactly`.
+        {
+            let mut a = app();
+            let template = a.model.processes[0].clone();
+            for offset in 0..=MAX_CONTEXT_PROCESS_RESOURCES {
+                let mut process = template.clone();
+                process.pid = 90_000 + u32::try_from(offset).expect("small test offset");
+                process.started_at = 7_000 + u64::try_from(offset).expect("small test offset");
+                process.name = format!("worker-{offset}");
+                a.model.processes.push(process);
+            }
+            let target = a.model.processes.last().expect("added process").clone();
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
+            let root = resources.first().expect("process root");
+            assert_eq!(
+                root.children.len(),
+                MAX_CONTEXT_PROCESS_RESOURCES,
+                "the contextual catalogue cannot grow with the OS process count"
+            );
+            let target_id = process_resource_id(target.pid, target.started_at);
+            assert!(
+                !root
+                    .children
+                    .iter()
+                    .any(|resource| resource.id.0 == target_id),
+                "a tail process is intentionally omitted from the eager page"
+            );
+            let resolved = ui::resources::resource(&a, &AutoCommit::new(), &target_id)
+                .expect("an omitted exact PID generation stays agent-resolvable");
+            assert_eq!(resolved.id.0, target_id);
+            assert!(resolved.actions.iter().any(|action| action.id == "kill"));
+
+            let page =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
+                    .expect("Monitor publishes a bounded directory page");
+            assert_eq!(page.resources.len(), 1, "one root obeys max_results=1");
+            assert!(page.exhausted);
+            assert!(page.next_cursor.is_empty());
+            let empty =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
+                    .expect("zero-size page is still a valid response");
+            assert!(empty.resources.is_empty(), "max_results is a hard ceiling");
+        }
+
+        // Phase `tail_processes_are_searchable_and_resolve_to_their_current_generation`.
+        {
+            let mut a = app();
+            let mut tail = a.model.processes[0].clone();
+            tail.pid = 99_991;
+            tail.started_at = 88_881;
+            tail.name = "searchable-tail-worker".into();
+            a.model.processes.push(tail.clone());
+            a.process_search.refresh(&a.model.processes);
+
+            let provider = ui::search::capability::search_providers(&a)
+                .pop()
+                .expect("process provider");
+            let hit = provider
+                .search_limited("tail-worker", 1)
+                .pop()
+                .expect("the omitted catalogue tail remains globally searchable");
+            let address = hit.action_address().expect("search result has an action");
+            assert_eq!(
+                address.resource,
+                process_resource_id(tail.pid, tail.started_at)
+            );
+            assert_eq!(address.action, "inspect");
+            assert!(
+                provider.resolve_action_resource(&address).is_some(),
+                "the search address materializes the exact resource, not a PID-only fallback"
+            );
+        }
+
+        // Phase `process_resource_labels_are_single_line_and_bounded`.
+        {
+            let mut process = app().model.processes[0].clone();
+            process.name = format!(
+                "line\nbreak\t{}",
+                "x".repeat(MAX_PROCESS_RESOURCE_LABEL_CHARS + 8)
+            );
+            let label = process_resource_label(&process);
+            assert!(!label.contains('\n'));
+            assert!(!label.contains('\t'));
+            assert!(
+                label.chars().count() <= MAX_PROCESS_RESOURCE_LABEL_CHARS + 16,
+                "the bounded process name plus a tiny PID suffix is safe to publish"
+            );
+        }
+
+        // Phase `stale_process_generation_is_rejected_before_signal_dispatch`.
+        // Process effects are bound to a PID generation, not merely a reusable
+        // PID. A stale palette/agent payload must fail before it reaches the
+        // sampler, leaving the currently displayed process intact.
+        {
+            let mut a = app();
+            let process = a.model.processes[0].clone();
+            let result = a.perform_operation(
+                &MonitorOperation::Signal {
+                    pid: process.pid,
+                    started_at: process.started_at.saturating_add(1),
+                    signal: MonitorSignal::Kill,
+                },
+                SignalConfirmation::ActionContract,
+            );
+            assert!(result.is_err(), "a PID-reused target is rejected");
+            assert!(
+                a.model
+                    .processes
+                    .iter()
+                    .any(|candidate| candidate.pid == process.pid),
+                "the current process remains untouched"
+            );
+        }
+
+        // Phase `stale_semantic_process_target_cannot_queue_a_pid_only_action`.
+        {
+            let mut a = app();
+            let process = a.model.processes[0].clone();
+            let mut doc = AutoCommit::new();
+            assert!(!Widget::perform_semantic_action(
+                &mut a,
+                &format!(
+                    "{}:kill",
+                    monitor_process_target(process.pid, process.started_at.saturating_add(1))
+                ),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(ui::widget::controls::take_control_invocation(&mut a).is_none());
+        }
+
+        // Phase `copy_pid_resource_operation_is_safe_and_shows_expiring_toast`.
+        // The canonical resource operation performs the copy and raises a
+        // transient toast that expires on its own rather than sticking forever.
+        {
+            let mut a = app();
+            a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let process = a.model.processes[3].clone();
+            let pid = process.pid;
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
+            let process_resource = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == resource_id_for(&a, pid))
+                .expect("process resource");
+            let copy = process_resource
+                .actions
+                .iter()
+                .find(|action| action.id == "copy-pid")
+                .expect("copy action");
+            assert_eq!(copy.kind, OperationKind::Effect);
+            assert_eq!(copy.contract.permission, PermissionRequirement::Read);
+            assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
+            let operation = MonitorOperation::CopyPid {
+                pid,
+                started_at: process.started_at,
+            };
+            assert!(
+                Widget::start_operation(
+                    &mut a,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&operation).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
+                )
+                .map(|started| started.is_some())
+                .expect("copy invocation accepted")
+            );
+            assert_eq!(a.copied_pid, Some(pid), "copy recorded");
+            assert!(a.copied_at.is_some());
+            let stale = MonitorOperation::CopyPid {
+                pid,
+                started_at: process.started_at.saturating_add(1),
+            };
+            assert!(
+                Widget::start_operation(
+                    &mut a,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&stale).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
+                )
+                .map(|started| started.is_some())
+                .is_err(),
+                "a recycled PID cannot receive a stale copy action"
+            );
+            assert!(
+                a.copy_toast_active(),
+                "toast active immediately after copying"
+            );
+            // The toast is time-limited: an old timestamp is no longer active.
+            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
+            assert!(
+                !a.copy_toast_active(),
+                "toast expires after its window (not a permanent caption)"
+            );
+        }
+
+        // Phase `local_monitor_views_and_device_prefs_do_not_cross_window_or_doc_heads`.
+        {
+            let mut first = app();
+            let mut second = app();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let heads_before = doc.get_heads();
+
+            // Device preferences: cadence, sampler state, kernel visibility, and
+            // local kill confirmation. These must remain first-window-only.
+            assert!(Widget::perform_semantic_action(
+                &mut first,
+                "monitor.interval:3000",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &root,
+            ));
+            assert!(Widget::perform_semantic_action(
+                &mut first,
+                "monitor.auto-refresh",
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &root,
+            ));
+            assert!(Widget::perform_semantic_action(
+                &mut first,
+                "monitor.kernel-threads",
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &root,
+            ));
+            assert!(Widget::perform_semantic_action(
+                &mut first,
+                "monitor.confirm-kills",
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &root,
+            ));
+            // Uncommitted widget fields (and device prefs) must not enter the
+            // shared document via sync. Collaborative view prefs only move
+            // through MonitorAction / present().
+            first.search_input.set_text("shell");
+            first.set_sort(&mut AutoCommit::new(), SortKey::Name);
+            first.tree_mode = false;
+            first.selected_pid = first.model.processes.last().map(|process| process.pid);
+
+            // A shared-document sync must not import first's uncommitted fields.
+            second.sync(&mut doc, &root);
+            assert_eq!(second.prefs, Prefs::default());
+            assert!(second.search_input.value().is_empty());
+            assert_eq!(second.sort_key, SortKey::Cpu);
+            assert!(second.tree_mode);
+            assert_ne!(second.selected_pid, first.selected_pid);
+            assert_eq!(
+                doc.get_heads(),
+                heads_before,
+                "uncommitted widget state must not enter history"
+            );
+        }
     }
 
+    /// Semantic (accessibility/automation) controls act at their drawn rects and
+    /// queue the same invocations as the pointer paths.
     #[test]
-    fn stale_semantic_process_target_cannot_queue_a_pid_only_action() {
-        let mut a = app();
-        let process = a.model.processes[0].clone();
-        let mut doc = AutoCommit::new();
-        assert!(!Widget::perform_semantic_action(
-            &mut a,
-            &format!(
-                "{}:kill",
-                monitor_process_target(process.pid, process.started_at.saturating_add(1))
-            ),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(a.take_control_invocation().is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn semantic_controls_follow_pointer_paths_at_drawn_rects() {
+        // Phase `monitor_semantic_controls_are_operable_at_their_drawn_rects`.
+        {
+            let mut a = app();
+            draw_at(&mut a, 1_280.0, 720.0);
+            let node = Widget::accessibility(&a).expect("monitor is semantic");
+            assert!(!node.children.is_empty());
+            for (index, child) in node.children.iter().enumerate() {
+                assert!(child.action_target.is_some(), "control {index} is operable");
+                assert_eq!(
+                    Widget::synthetic_accessibility_rect(&a, &[index]),
+                    child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                    "semantic control {index} must activate at its drawn rect"
+                );
+            }
+        }
 
-    #[test]
-    fn process_source_permission_state_has_an_accessible_shared_retry() {
-        let mut a = app();
-        a.seed_shot_scenario("process-permission-error");
-        draw_at(&mut a, 1_280.0, 800.0);
-        assert!(
-            a.hit.retry_process_source.area() > 0.0,
-            "the permission recovery panel exposes a visible retry control"
-        );
-        assert!(a.accessibility_targets().iter().any(|(target, _, node)| {
-            target == "monitor.process-source.retry"
-                && node.name.as_deref() == Some("Retry loading the process list")
-        }));
-        assert!(Widget::perform_semantic_action(
-            &mut a,
-            "monitor.process-source.retry",
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            a.take_control_invocation()
-                .map(|invocation| invocation.address),
-            Some(ActionAddress::new("processes", "refresh")),
-            "recovery uses the root resource action, not a direct sampler call"
-        );
-    }
+        // Phase `semantic_summary_tree_and_context_controls_follow_pointer_paths`.
+        {
+            let mut a = app();
+            draw_at(&mut a, 1_280.0, 720.0);
+            let mut doc = AutoCommit::new();
 
-    /// A live monitor asks the host for one cadence-aligned wake rather than
-    /// pinning the app to a 60 Hz animation loop while it is otherwise idle.
-    #[test]
-    fn idle_sampling_uses_a_deadline_not_continuous_frames() {
-        let a = MonitorApp::new_live();
-        assert!(
-            !a.needs_animation_frame(),
-            "a static monitor is not animated"
-        );
-        assert!(
-            a.next_wake_deadline().is_some(),
-            "the first real sample is scheduled as a bounded wake"
-        );
-        let sample = app();
-        assert!(
-            sample.next_wake_deadline().is_none(),
-            "deterministic screenshots never schedule live sampling"
-        );
-    }
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                "monitor.summary.2",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(a.tab, Tab::Resources);
 
-    #[test]
-    fn reduced_motion_snaps_a_pending_process_push() {
-        let mut a = app();
-        a.proc_push.show_detail();
-        assert!(a.proc_push.is_animating());
-        Widget::set_motion_reduced(&mut a, true);
-        assert_eq!(a.proc_push.slide(), 1.0);
-        assert!(!a.proc_push.is_animating());
+            a.tab = Tab::Processes;
+            draw_at(&mut a, 1_280.0, 720.0);
+            let (pid, _) = a.hit.twisties[0];
+            let started_at = a
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .expect("twisty process exists")
+                .started_at;
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                &format!(
+                    "monitor.tree-toggle:{}",
+                    process_resource_id(pid, started_at)
+                ),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(a.expanded.contains(&pid));
+
+            a.open_context_menu(pid, Point::new(20.0, 20.0));
+            let copy_item = a
+                .context
+                .items()
+                .iter()
+                .position(|item| item.label() == Some("Copy PID"))
+                .expect("copy item");
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                &format!(
+                    "monitor.context:{}:{copy_item}",
+                    process_resource_id(pid, started_at)
+                ),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
+            );
+            assert!(!a.context.is_open());
+        }
+
+        // Phase `semantic_process_actions_queue_the_same_control_invocation`.
+        {
+            let mut a = app();
+            draw_at(&mut a, 1_280.0, 720.0);
+            let pid = a.selected_pid.expect("sample selects a process");
+            let started_at = a.selected_process().unwrap().started_at;
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                &format!("{}:kill", monitor_process_target(pid, started_at)),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+            );
+            assert!(a.model.processes.iter().any(|process| process.pid == pid));
+
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                "monitor.confirm-kills",
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
+        }
+
+        // Phase `process_source_permission_state_has_an_accessible_shared_retry`.
+        {
+            let mut a = app();
+            a.seed_shot_scenario("process-permission-error");
+            draw_at(&mut a, 1_280.0, 800.0);
+            assert!(
+                a.hit.retry_process_source.area() > 0.0,
+                "the permission recovery panel exposes a visible retry control"
+            );
+            assert!(a.accessibility_targets().iter().any(|(target, _, node)| {
+                target == "monitor.process-source.retry"
+                    && node.name.as_deref() == Some("Retry loading the process list")
+            }));
+            assert!(Widget::perform_semantic_action(
+                &mut a,
+                "monitor.process-source.retry",
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                ui::widget::controls::take_control_invocation(&mut a)
+                    .map(|invocation| invocation.address),
+                Some(ActionAddress::new("processes", "refresh")),
+                "recovery uses the root resource action, not a direct sampler call"
+            );
+        }
     }
 
     // Monitor publishes only view and effect operations on live processes, so
@@ -8823,7 +9141,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&app(), doc),
+        resources: |doc| ui::resources::resources(&app(), doc),
         palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
     }
 }

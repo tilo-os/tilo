@@ -30,11 +30,20 @@ pub mod app;
 pub mod doc;
 pub mod engine;
 pub mod model;
+pub mod resource;
 pub mod search;
+mod web_file;
 pub use app::ImageEditorApp;
 use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImageEditorApp::new())
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.image-editor", app_root)
+        .component_actions(actions::register)
+        .as_definition("Image Editor")
 }
 pub const SHOT_SCENARIOS: &[&str] = &[
     "empty",
@@ -66,3 +75,4 @@ pub fn write_shot_image(path: &std::path::Path) -> Result<(), image::ImageError>
     }
     image.save(path)
 }
+pub use resource::{ImageEditor, ImageEditorShell, launch_spec, standalone_launch};

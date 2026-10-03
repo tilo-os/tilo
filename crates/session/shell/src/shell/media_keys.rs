@@ -19,9 +19,9 @@
 
 use std::path::Path;
 
-use smithay::input::keyboard::keysyms;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKey};
+use xkeysym::key as keysyms;
 
 use crate::shell::osd::{Osd, Transport};
 use crate::shell::quick_settings::actions::QsActions;
@@ -118,6 +118,17 @@ pub struct Context<'a> {
     /// compositor's settings watch picks it up. `None` without a config
     /// directory.
     pub settings: Option<&'a Path>,
+    /// Brightness keys adjust the monitor under the pointer.
+    pub brightness: BrightnessKeys<'a>,
+}
+
+/// What a brightness key acts on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrightnessKeys<'a> {
+    /// Every monitor with a brightness control and its cached level.
+    pub displays: &'a [os_actions::MonitorLevel],
+    /// Connector of the monitor under the pointer, when known.
+    pub under_pointer: Option<&'a str>,
 }
 
 /// Step per press, as a fraction of full scale.
@@ -169,12 +180,12 @@ fn classify_named(named: NamedKey) -> Option<MediaKey> {
 
 fn classify_keysym(raw: u32) -> Option<MediaKey> {
     Some(match raw {
-        keysyms::KEY_XF86KbdBrightnessUp => MediaKey::KeyboardBacklightUp,
-        keysyms::KEY_XF86KbdBrightnessDown => MediaKey::KeyboardBacklightDown,
-        keysyms::KEY_XF86KbdLightOnOff => MediaKey::KeyboardBacklightToggle,
-        keysyms::KEY_XF86WLAN | KEY_XF86_RFKILL => MediaKey::Wireless,
-        keysyms::KEY_XF86Display => MediaKey::DisplayMode,
-        keysyms::KEY_XF86TouchpadToggle => MediaKey::TouchpadToggle,
+        keysyms::XF86_KbdBrightnessUp => MediaKey::KeyboardBacklightUp,
+        keysyms::XF86_KbdBrightnessDown => MediaKey::KeyboardBacklightDown,
+        keysyms::XF86_KbdLightOnOff => MediaKey::KeyboardBacklightToggle,
+        keysyms::XF86_WLAN | KEY_XF86_RFKILL => MediaKey::Wireless,
+        keysyms::XF86_Display => MediaKey::DisplayMode,
+        keysyms::XF86_TouchpadToggle => MediaKey::TouchpadToggle,
         _ => return None,
     })
 }
@@ -192,8 +203,8 @@ pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
         MediaKey::VolumeDown => step_volume(-VOLUME_STEP, cx.actions, cx.status),
         MediaKey::VolumeMute => toggle_mute(cx.actions, cx.status),
         MediaKey::MicMute => toggle_mic_mute(),
-        MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, cx.actions),
-        MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, cx.actions),
+        MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, cx.actions, &cx.brightness),
+        MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, cx.actions, &cx.brightness),
         MediaKey::PlayPause => transport(Command::PlayPause, cx.transport_osd),
         MediaKey::NextTrack => transport(Command::Next, cx.transport_osd),
         MediaKey::PreviousTrack => transport(Command::Previous, cx.transport_osd),
@@ -264,7 +275,20 @@ fn toggle_mic_mute() -> Option<Osd> {
     Some(Osd::mic_mute(muted))
 }
 
-fn step_brightness(delta: f32, actions: &dyn QsActions) -> Option<Osd> {
+fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_>) -> Option<Osd> {
+    let target = keys
+        .under_pointer
+        .and_then(|connector| keys.displays.iter().find(|d| d.connector == connector))
+        .or_else(|| keys.displays.first());
+    if let Some(display) = target {
+        // Cached levels: a DDC/CI read takes tens of milliseconds, and a
+        // held key repeats faster than that.
+        let next = (display.level + delta).clamp(0.0, 1.0);
+        actions
+            .set_display_brightness(&display.connector, next * 100.0)
+            .ok()?;
+        return Some(Osd::brightness(next));
+    }
     // No poller: reading sysfs is a file read, not a subprocess, so
     // asking every time is cheap. A machine with nothing to read — an
     // external monitor, a desktop, a VM — says so instead of ignoring
@@ -321,6 +345,26 @@ fn toggle_touchpad(settings: &Path) -> Option<Osd> {
         return None;
     }
     Some(Osd::touchpad(next))
+}
+
+/// Flip mouse keys in the settings document, for the Shift+Alt+Num Lock
+/// chord. Like the touchpad key, the compositor picks the change up on its
+/// next settings poll, the path a Settings-pane toggle takes.
+pub fn toggle_mouse_keys(settings: &Path) -> Option<Osd> {
+    const SECTION: &str = "accessibility";
+    const KEY: &str = "mouse_keys";
+    let enabled = settings_store::load_section_at(settings, SECTION)
+        .get(KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let next = !enabled;
+    let mut values = serde_json::Map::new();
+    values.insert(KEY.into(), serde_json::Value::Bool(next));
+    if let Err(error) = settings_store::update_section_at(settings, SECTION, values) {
+        tracing::warn!(%error, "mouse keys toggle could not be saved");
+        return None;
+    }
+    Some(Osd::mouse_keys(next))
 }
 
 fn transport(
@@ -384,34 +428,130 @@ mod tests {
                 transport_osd: &transport_osd,
                 airplane_mode,
                 settings,
+                brightness: BrightnessKeys::default(),
             },
         )
     }
 
     #[test]
-    fn a_transport_osd_names_the_resulting_state() {
-        use crate::shell::mpris::{Command, Outcome};
-        use crate::shell::osd::OsdKind;
-        assert_eq!(
-            transport_outcome_osd(Command::PlayPause, Outcome::NowPaused).kind,
-            OsdKind::Transport(Transport::Pause)
-        );
-        assert_eq!(
-            transport_outcome_osd(Command::PlayPause, Outcome::NowPlaying).kind,
-            OsdKind::Transport(Transport::Play)
-        );
-        assert_eq!(
-            transport_outcome_osd(Command::Next, Outcome::Skipped).kind,
-            OsdKind::Transport(Transport::Next)
-        );
-        assert_eq!(
-            transport_outcome_osd(Command::Previous, Outcome::Skipped).kind,
-            OsdKind::Transport(Transport::Previous)
-        );
-        assert_eq!(
-            transport_outcome_osd(Command::Stop, Outcome::Stopped).kind,
-            OsdKind::Transport(Transport::Stop)
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn media_keys_are_classified_on_press_and_transport_osd_names_the_state() {
+        fn a_transport_osd_names_the_resulting_state() {
+            use crate::shell::mpris::{Command, Outcome};
+            use crate::shell::osd::OsdKind;
+            assert_eq!(
+                transport_outcome_osd(Command::PlayPause, Outcome::NowPaused).kind,
+                OsdKind::Transport(Transport::Pause)
+            );
+            assert_eq!(
+                transport_outcome_osd(Command::PlayPause, Outcome::NowPlaying).kind,
+                OsdKind::Transport(Transport::Play)
+            );
+            assert_eq!(
+                transport_outcome_osd(Command::Next, Outcome::Skipped).kind,
+                OsdKind::Transport(Transport::Next)
+            );
+            assert_eq!(
+                transport_outcome_osd(Command::Previous, Outcome::Skipped).kind,
+                OsdKind::Transport(Transport::Previous)
+            );
+            assert_eq!(
+                transport_outcome_osd(Command::Stop, Outcome::Stopped).kind,
+                OsdKind::Transport(Transport::Stop)
+            );
+        }
+
+        fn every_hardware_key_is_classified() {
+            let cases = [
+                (NamedKey::AudioVolumeUp, MediaKey::VolumeUp),
+                (NamedKey::AudioVolumeDown, MediaKey::VolumeDown),
+                (NamedKey::AudioVolumeMute, MediaKey::VolumeMute),
+                (NamedKey::MicrophoneVolumeMute, MediaKey::MicMute),
+                (NamedKey::BrightnessUp, MediaKey::BrightnessUp),
+                (NamedKey::BrightnessDown, MediaKey::BrightnessDown),
+                (NamedKey::MediaPlayPause, MediaKey::PlayPause),
+                (NamedKey::MediaTrackNext, MediaKey::NextTrack),
+                (NamedKey::MediaTrackPrevious, MediaKey::PreviousTrack),
+            ];
+            for (named, want) in cases {
+                assert_eq!(
+                    classify(&press(Key::Named(named))),
+                    Some(want),
+                    "{named:?} must reach a handler"
+                );
+            }
+        }
+
+        fn ordinary_keys_are_left_for_the_focused_client() {
+            assert_eq!(classify(&press(Key::Named(NamedKey::Enter))), None);
+            assert_eq!(
+                classify(&press(Key::Character("a".into()))),
+                None,
+                "typing must never be swallowed as a media key"
+            );
+        }
+
+        fn a_key_release_is_not_a_press() {
+            assert_eq!(
+                classify(&key_event(
+                    Key::Named(NamedKey::AudioVolumeUp),
+                    ElementState::Released
+                )),
+                None,
+                "acting on both edges would double every step"
+            );
+        }
+
+        fn every_machine_key_is_classified() {
+            let named = [
+                (NamedKey::MediaStop, MediaKey::Stop),
+                (NamedKey::Standby, MediaKey::Sleep),
+                (NamedKey::LaunchApplication2, MediaKey::Calculator),
+            ];
+            for (named, want) in named {
+                assert_eq!(
+                    classify(&press(Key::Named(named))),
+                    Some(want),
+                    "{named:?} must reach a handler"
+                );
+            }
+            let raw = [
+                (keysyms::XF86_KbdBrightnessUp, MediaKey::KeyboardBacklightUp),
+                (
+                    keysyms::XF86_KbdBrightnessDown,
+                    MediaKey::KeyboardBacklightDown,
+                ),
+                (
+                    keysyms::XF86_KbdLightOnOff,
+                    MediaKey::KeyboardBacklightToggle,
+                ),
+                (keysyms::XF86_WLAN, MediaKey::Wireless),
+                (KEY_XF86_RFKILL, MediaKey::Wireless),
+                (keysyms::XF86_Display, MediaKey::DisplayMode),
+                (keysyms::XF86_TouchpadToggle, MediaKey::TouchpadToggle),
+            ];
+            for (keysym, want) in raw {
+                assert_eq!(
+                    classify(&press_keysym(keysym)),
+                    Some(want),
+                    "keysym {keysym:#x} must reach a handler"
+                );
+            }
+            assert_eq!(
+                classify(&press_keysym(0x1008_ff00 + 0xee)),
+                None,
+                "an unknown vendor key is left for the client"
+            );
+        }
+
+        a_transport_osd_names_the_resulting_state();
+        every_hardware_key_is_classified();
+        ordinary_keys_are_left_for_the_focused_client();
+        a_key_release_is_not_a_press();
+        every_machine_key_is_classified();
     }
 
     /// Build a `KeyboardInput` event for `key` via the zeroed-struct
@@ -460,6 +600,12 @@ mod tests {
     impl QsActions for Recorder {
         fn set_brightness(&self, pct: f32) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("brightness={pct:.1}"));
+            Ok(())
+        }
+        fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("brightness:{connector}={pct:.1}"));
             Ok(())
         }
         fn set_volume(&self, pct: f32) -> Result<(), String> {
@@ -521,74 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn every_hardware_key_is_classified() {
-        let cases = [
-            (NamedKey::AudioVolumeUp, MediaKey::VolumeUp),
-            (NamedKey::AudioVolumeDown, MediaKey::VolumeDown),
-            (NamedKey::AudioVolumeMute, MediaKey::VolumeMute),
-            (NamedKey::MicrophoneVolumeMute, MediaKey::MicMute),
-            (NamedKey::BrightnessUp, MediaKey::BrightnessUp),
-            (NamedKey::BrightnessDown, MediaKey::BrightnessDown),
-            (NamedKey::MediaPlayPause, MediaKey::PlayPause),
-            (NamedKey::MediaTrackNext, MediaKey::NextTrack),
-            (NamedKey::MediaTrackPrevious, MediaKey::PreviousTrack),
-        ];
-        for (named, want) in cases {
-            assert_eq!(
-                classify(&press(Key::Named(named))),
-                Some(want),
-                "{named:?} must reach a handler"
-            );
-        }
-    }
-
-    #[test]
-    fn every_machine_key_is_classified() {
-        let named = [
-            (NamedKey::MediaStop, MediaKey::Stop),
-            (NamedKey::Standby, MediaKey::Sleep),
-            (NamedKey::LaunchApplication2, MediaKey::Calculator),
-        ];
-        for (named, want) in named {
-            assert_eq!(
-                classify(&press(Key::Named(named))),
-                Some(want),
-                "{named:?} must reach a handler"
-            );
-        }
-        let raw = [
-            (
-                keysyms::KEY_XF86KbdBrightnessUp,
-                MediaKey::KeyboardBacklightUp,
-            ),
-            (
-                keysyms::KEY_XF86KbdBrightnessDown,
-                MediaKey::KeyboardBacklightDown,
-            ),
-            (
-                keysyms::KEY_XF86KbdLightOnOff,
-                MediaKey::KeyboardBacklightToggle,
-            ),
-            (keysyms::KEY_XF86WLAN, MediaKey::Wireless),
-            (KEY_XF86_RFKILL, MediaKey::Wireless),
-            (keysyms::KEY_XF86Display, MediaKey::DisplayMode),
-            (keysyms::KEY_XF86TouchpadToggle, MediaKey::TouchpadToggle),
-        ];
-        for (keysym, want) in raw {
-            assert_eq!(
-                classify(&press_keysym(keysym)),
-                Some(want),
-                "keysym {keysym:#x} must reach a handler"
-            );
-        }
-        assert_eq!(
-            classify(&press_keysym(0x1008_ff00 + 0xee)),
-            None,
-            "an unknown vendor key is left for the client"
-        );
-    }
-
-    #[test]
     fn brightness_keys_without_a_backlight_say_so() {
         let rec = Recorder::default();
         for key in [MediaKey::BrightnessUp, MediaKey::BrightnessDown] {
@@ -598,6 +676,48 @@ mod tests {
         assert!(
             rec.calls.borrow().is_empty(),
             "nothing is written to a backlight that is not there"
+        );
+    }
+
+    #[test]
+    fn brightness_keys_adjust_the_monitor_under_the_pointer() {
+        let displays = [
+            os_actions::MonitorLevel {
+                connector: "eDP-1".into(),
+                level: 0.5,
+            },
+            os_actions::MonitorLevel {
+                connector: "DP-2".into(),
+                level: 0.3,
+            },
+        ];
+        let rec = Recorder::default();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        let press = |key, under_pointer| {
+            apply(
+                key,
+                &Context {
+                    actions: &rec,
+                    status: None,
+                    transport_osd: &transport_osd,
+                    airplane_mode: false,
+                    settings: None,
+                    brightness: BrightnessKeys {
+                        displays: &displays,
+                        under_pointer,
+                    },
+                },
+            )
+        };
+        let Some(Response::Osd(osd)) = press(MediaKey::BrightnessUp, Some("DP-2")) else {
+            panic!("an OSD for the adjusted monitor");
+        };
+        assert_eq!(osd.caption(), "Brightness 40%");
+        // A pointer over a monitor without a control adjusts the first.
+        press(MediaKey::BrightnessDown, Some("HDMI-A-1"));
+        assert_eq!(
+            *rec.calls.borrow(),
+            ["brightness:DP-2=40.0", "brightness:eDP-1=40.0"]
         );
     }
 
@@ -691,6 +811,20 @@ mod tests {
     }
 
     #[test]
+    fn the_mouse_keys_chord_flips_the_persisted_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let on = toggle_mouse_keys(&settings).expect("saved");
+        assert_eq!(on.caption(), "Mouse keys on", "absent means off");
+        assert_eq!(
+            settings_store::load_section_at(&settings, "accessibility").get("mouse_keys"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let off = toggle_mouse_keys(&settings).expect("saved");
+        assert_eq!(off.caption(), "Mouse keys off");
+    }
+
+    #[test]
     fn session_keys_hand_their_intent_to_the_compositor() {
         let rec = Recorder::default();
         assert_eq!(
@@ -712,140 +846,126 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_keys_are_left_for_the_focused_client() {
-        assert_eq!(classify(&press(Key::Named(NamedKey::Enter))), None);
-        assert_eq!(
-            classify(&press(Key::Character("a".into()))),
-            None,
-            "typing must never be swallowed as a media key"
-        );
-    }
-
-    #[test]
-    fn a_key_release_is_not_a_press() {
-        assert_eq!(
-            classify(&key_event(
-                Key::Named(NamedKey::AudioVolumeUp),
-                ElementState::Released
-            )),
-            None,
-            "acting on both edges would double every step"
-        );
-    }
-
-    #[test]
-    fn volume_up_steps_by_five_percent_and_publishes_the_new_level() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.40, false);
-        let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
-        assert_eq!(rec.calls.borrow().as_slice(), ["volume=45.0"]);
-        assert_eq!(osd.caption(), "Volume 45%");
-        let published = bridge.snapshot().volume.unwrap().level;
-        assert!(
-            (published - 0.45).abs() < 1e-5,
-            "the tray moves in the same frame, not at the next poll: got {published}"
-        );
-    }
-
-    #[test]
-    fn volume_down_steps_the_other_way_and_stops_at_silence() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.02, false);
-        let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
-        assert_eq!(rec.calls.borrow().as_slice(), ["volume=0.0"]);
-        assert_eq!(osd.caption(), "Volume 0%");
-    }
-
-    #[test]
-    fn volume_up_never_exceeds_full_scale() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.98, false);
-        apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
-        assert_eq!(rec.calls.borrow().as_slice(), ["volume=100.0"]);
-    }
-
-    #[test]
-    fn turning_a_muted_sink_up_unmutes_it() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.30, true);
-        let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
-        assert!(
-            rec.calls.borrow().contains(&"mute=false".to_string()),
-            "reaching for volume-up on a muted sink means 'let me hear it': {:?}",
-            rec.calls.borrow()
-        );
-        assert_eq!(osd.caption(), "Volume 35%");
-        assert!(!bridge.snapshot().volume.unwrap().muted);
-    }
-
-    #[test]
-    fn volume_up_does_not_claim_audio_when_unmute_fails() {
-        let rec = Recorder::default();
-        rec.fail_unmute.set(true);
-        let bridge = bridge_at(0.30, true);
-
-        assert!(apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).is_none());
-        assert_eq!(rec.calls.borrow().as_slice(), ["volume=35.0", "mute=false"]);
-        assert!(
-            bridge.snapshot().volume.unwrap().muted,
-            "a failed unmute must not publish an audible state"
-        );
-    }
-
-    #[test]
-    fn turning_a_muted_sink_down_leaves_it_muted() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.30, true);
-        let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
-        assert!(
-            !rec.calls.borrow().contains(&"mute=false".to_string()),
-            "turning down is not a request to hear anything"
-        );
-        assert_eq!(osd.caption(), "Muted");
-    }
-
-    #[test]
-    fn the_mute_key_flips_the_state_and_says_so() {
-        let rec = Recorder::default();
-        let bridge = bridge_at(0.50, false);
-        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
-        assert_eq!(rec.calls.borrow().as_slice(), ["toggle_mute"]);
-        assert_eq!(osd.caption(), "Muted");
-        assert!(bridge.snapshot().volume.unwrap().muted);
-
-        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
-        assert_eq!(osd.caption(), "Volume 50%");
-        assert!(!bridge.snapshot().volume.unwrap().muted);
-    }
-
-    #[test]
-    fn mute_uses_the_state_from_before_actuation() {
-        let bridge = bridge_at(0.50, false);
-        let rec = Recorder::default();
-        *rec.bridge_on_toggle.borrow_mut() = Some(bridge.clone());
-
-        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
-
-        assert_eq!(osd.caption(), "Muted");
-        assert!(
-            bridge.snapshot().volume.unwrap().muted,
-            "a post-toggle read must not be inverted a second time"
-        );
-    }
-
-    #[test]
-    fn a_machine_with_no_audio_daemon_shows_no_readout() {
-        let rec = Recorder::default();
-        // No bridge reading; this host may have no wpctl in the test sandbox.
-        if os_actions::get_volume_state().is_err() {
+    fn volume_keys_step_clamp_and_unmute_only_when_it_succeeds() {
+        fn volume_up_steps_by_five_percent_and_publishes_the_new_level() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.40, false);
+            let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(rec.calls.borrow().as_slice(), ["volume=45.0"]);
+            assert_eq!(osd.caption(), "Volume 45%");
+            let published = bridge.snapshot().volume.unwrap().level;
             assert!(
-                apply_local(MediaKey::VolumeUp, &rec, None).is_none(),
-                "no slab may claim a change that did not happen"
-            );
-            assert!(
-                rec.calls.borrow().is_empty(),
-                "and nothing is actuated either"
+                (published - 0.45).abs() < 1e-5,
+                "the tray moves in the same frame, not at the next poll: got {published}"
             );
         }
+
+        fn volume_down_steps_the_other_way_and_stops_at_silence() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.02, false);
+            let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(rec.calls.borrow().as_slice(), ["volume=0.0"]);
+            assert_eq!(osd.caption(), "Volume 0%");
+        }
+
+        fn volume_up_never_exceeds_full_scale() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.98, false);
+            apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(rec.calls.borrow().as_slice(), ["volume=100.0"]);
+        }
+
+        fn turning_a_muted_sink_up_unmutes_it() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.30, true);
+            let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+            assert!(
+                rec.calls.borrow().contains(&"mute=false".to_string()),
+                "reaching for volume-up on a muted sink means 'let me hear it': {:?}",
+                rec.calls.borrow()
+            );
+            assert_eq!(osd.caption(), "Volume 35%");
+            assert!(!bridge.snapshot().volume.unwrap().muted);
+        }
+
+        fn volume_up_does_not_claim_audio_when_unmute_fails() {
+            let rec = Recorder::default();
+            rec.fail_unmute.set(true);
+            let bridge = bridge_at(0.30, true);
+
+            assert!(apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).is_none());
+            assert_eq!(rec.calls.borrow().as_slice(), ["volume=35.0", "mute=false"]);
+            assert!(
+                bridge.snapshot().volume.unwrap().muted,
+                "a failed unmute must not publish an audible state"
+            );
+        }
+
+        fn turning_a_muted_sink_down_leaves_it_muted() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.30, true);
+            let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
+            assert!(
+                !rec.calls.borrow().contains(&"mute=false".to_string()),
+                "turning down is not a request to hear anything"
+            );
+            assert_eq!(osd.caption(), "Muted");
+        }
+
+        volume_up_steps_by_five_percent_and_publishes_the_new_level();
+        volume_down_steps_the_other_way_and_stops_at_silence();
+        volume_up_never_exceeds_full_scale();
+        turning_a_muted_sink_up_unmutes_it();
+        volume_up_does_not_claim_audio_when_unmute_fails();
+        turning_a_muted_sink_down_leaves_it_muted();
+    }
+
+    #[test]
+    fn mute_key_flips_the_prior_state_and_no_daemon_shows_nothing() {
+        fn the_mute_key_flips_the_state_and_says_so() {
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.50, false);
+            let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(rec.calls.borrow().as_slice(), ["toggle_mute"]);
+            assert_eq!(osd.caption(), "Muted");
+            assert!(bridge.snapshot().volume.unwrap().muted);
+
+            let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(osd.caption(), "Volume 50%");
+            assert!(!bridge.snapshot().volume.unwrap().muted);
+        }
+
+        fn mute_uses_the_state_from_before_actuation() {
+            let bridge = bridge_at(0.50, false);
+            let rec = Recorder::default();
+            *rec.bridge_on_toggle.borrow_mut() = Some(bridge.clone());
+
+            let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+
+            assert_eq!(osd.caption(), "Muted");
+            assert!(
+                bridge.snapshot().volume.unwrap().muted,
+                "a post-toggle read must not be inverted a second time"
+            );
+        }
+
+        fn a_machine_with_no_audio_daemon_shows_no_readout() {
+            let rec = Recorder::default();
+            // No bridge reading; this host may have no wpctl in the test sandbox.
+            if os_actions::get_volume_state().is_err() {
+                assert!(
+                    apply_local(MediaKey::VolumeUp, &rec, None).is_none(),
+                    "no slab may claim a change that did not happen"
+                );
+                assert!(
+                    rec.calls.borrow().is_empty(),
+                    "and nothing is actuated either"
+                );
+            }
+        }
+
+        the_mute_key_flips_the_state_and_says_so();
+        mute_uses_the_state_from_before_actuation();
+        a_machine_with_no_audio_daemon_shows_no_readout();
     }
 }

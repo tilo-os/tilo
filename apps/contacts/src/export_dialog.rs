@@ -13,6 +13,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -240,34 +241,43 @@ impl ExportDialog {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "export painting needs the render context, window bounds, sorted contact store and pointer position"
-    )]
     pub(crate) fn draw(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         window: Rect,
         store: &ContactStore,
         sort: SortKey,
         pointer: Point,
     ) {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             colors.surfaces.overlay,
             None,
             &window,
         );
         let geometry = self.geometry(window, store, sort);
-        menu_panel(scene, transform, theme, geometry.panel);
-        self.draw_header(scene, transform, text, theme, &geometry);
-        self.draw_rows(scene, transform, text, theme, store, pointer, &geometry);
-        self.draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
+        menu_panel(ctx.scene, ctx.transform, theme, geometry.panel);
+        self.draw_header(ctx.scene, ctx.transform, ctx.text, theme, &geometry);
+        self.draw_rows(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            store,
+            pointer,
+            &geometry,
+        );
+        self.draw_footer_buttons(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &geometry,
+            pointer,
+        );
     }
 
     /// The title, selection count, and Select all/none chips (part of
@@ -359,10 +369,6 @@ impl ExportDialog {
     }
 
     /// The scrolling, clipped contact list (part of [`Self::draw`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_rows(
         &self,
         scene: &mut Scene,
@@ -449,10 +455,7 @@ impl ExportDialog {
         pointer: Point,
     ) {
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.cancel,
             "Cancel",
             false,
@@ -460,10 +463,7 @@ impl ExportDialog {
             false,
         );
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.export_v3,
             "vCard 3.0",
             false,
@@ -471,10 +471,7 @@ impl ExportDialog {
             false,
         );
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.export_v4,
             "vCard 4.0",
             true,
@@ -837,121 +834,132 @@ mod tests {
         store
     }
 
+    /// The export dialog stays inside narrow and 200% windows, fits short books and caps large ones to a viewport.
     #[test]
-    fn narrow_geometry_stays_inside_the_window() {
-        let dialog = ExportDialog::new();
-        let window = Rect::new(0.0, 0.0, 320.0, 500.0);
-        let geometry = dialog.geometry(window, &store(), SortKey::Name);
-        assert!(window.contains(geometry.panel.origin()));
-        assert!(geometry.panel.x1 <= window.x1);
-    }
-
-    #[test]
-    fn true_two_hundred_percent_narrow_layout_stacks_without_overlap() {
-        let mut dialog = ExportDialog::new();
-        dialog.set_text_scale(2.0);
-        let window = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let geometry = dialog.geometry(window, &store(), SortKey::Name);
-
-        assert!(geometry.compact);
-        assert!(geometry.panel.y0 >= window.y0);
-        assert!(geometry.panel.y1 <= window.y1);
-        assert!(geometry.select_all.y1 <= geometry.list_body.y0);
-        assert!(geometry.select_none.y1 <= geometry.list_body.y0);
-        assert!(geometry.list_body.y1 <= geometry.cancel.y0);
-        assert!(geometry.cancel.y1 <= geometry.export_v3.y0);
-        assert!(geometry.cancel.y1 <= geometry.export_v4.y0);
-        assert!(geometry.export_v3.x1 <= geometry.export_v4.x0);
-        assert!(geometry.rows.iter().all(|(_, row, _)| row.height() >= 56.0));
-    }
-
-    #[test]
-    fn short_books_fit_their_rows_without_a_dead_middle() {
-        let store = store();
-        let dialog = ExportDialog::new();
-        let geometry = dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
-        assert_eq!(geometry.row_count, 7);
-        assert!(
-            (geometry.panel.height() - (EXPORT_HEADER_H + 7.0 * EXPORT_ROW_H + EXPORT_FOOTER_H))
-                .abs()
-                < f64::EPSILON
-        );
-        assert!((geometry.list_body.height() - 7.0 * EXPORT_ROW_H).abs() < f64::EPSILON);
-        assert!(
-            geometry.panel.height() < EXPORT_MAX_H,
-            "a short list does not consume the large-directory dialog height"
-        );
-    }
-
-    #[test]
-    fn large_books_cap_height_and_materialize_only_a_viewport() {
-        let mut store = ContactStore::new();
-        for index in 0..1_000 {
-            store.upsert(Contact {
-                id: uuid::Uuid::new_v4(),
-                first: format!("Directory {index:04}"),
-                ..Contact::default()
-            });
+    fn export_dialog_geometry_fits_every_book_and_width() {
+        // --- phase: narrow_geometry_stays_inside_the_window ---
+        {
+            let dialog = ExportDialog::new();
+            let window = Rect::new(0.0, 0.0, 320.0, 500.0);
+            let geometry = dialog.geometry(window, &store(), SortKey::Name);
+            assert!(window.contains(geometry.panel.origin()));
+            assert!(geometry.panel.x1 <= window.x1);
         }
-        let dialog = ExportDialog::new();
-        let geometry = dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
-        assert!((geometry.panel.height() - EXPORT_MAX_H).abs() < f64::EPSILON);
-        assert!(geometry.rows.len() < geometry.row_count);
+
+        // --- phase: true_two_hundred_percent_narrow_layout_stacks_without_overlap ---
+        {
+            let mut dialog = ExportDialog::new();
+            dialog.set_text_scale(2.0);
+            let window = Rect::new(0.0, 0.0, 390.0, 844.0);
+            let geometry = dialog.geometry(window, &store(), SortKey::Name);
+
+            assert!(geometry.compact);
+            assert!(geometry.panel.y0 >= window.y0);
+            assert!(geometry.panel.y1 <= window.y1);
+            assert!(geometry.select_all.y1 <= geometry.list_body.y0);
+            assert!(geometry.select_none.y1 <= geometry.list_body.y0);
+            assert!(geometry.list_body.y1 <= geometry.cancel.y0);
+            assert!(geometry.cancel.y1 <= geometry.export_v3.y0);
+            assert!(geometry.cancel.y1 <= geometry.export_v4.y0);
+            assert!(geometry.export_v3.x1 <= geometry.export_v4.x0);
+            assert!(geometry.rows.iter().all(|(_, row, _)| row.height() >= 56.0));
+        }
+
+        // --- phase: short_books_fit_their_rows_without_a_dead_middle ---
+        {
+            let store = store();
+            let dialog = ExportDialog::new();
+            let geometry =
+                dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
+            assert_eq!(geometry.row_count, 7);
+            assert!(
+                (geometry.panel.height()
+                    - (EXPORT_HEADER_H + 7.0 * EXPORT_ROW_H + EXPORT_FOOTER_H))
+                    .abs()
+                    < f64::EPSILON
+            );
+            assert!((geometry.list_body.height() - 7.0 * EXPORT_ROW_H).abs() < f64::EPSILON);
+            assert!(
+                geometry.panel.height() < EXPORT_MAX_H,
+                "a short list does not consume the large-directory dialog height"
+            );
+        }
+
+        // --- phase: large_books_cap_height_and_materialize_only_a_viewport ---
+        {
+            let mut store = ContactStore::new();
+            for index in 0..1_000 {
+                store.upsert(Contact {
+                    id: uuid::Uuid::new_v4(),
+                    first: format!("Directory {index:04}"),
+                    ..Contact::default()
+                });
+            }
+            let dialog = ExportDialog::new();
+            let geometry =
+                dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
+            assert!((geometry.panel.height() - EXPORT_MAX_H).abs() < f64::EPSILON);
+            assert!(geometry.rows.len() < geometry.row_count);
+        }
     }
 
+    /// Opening resets selection and visibility; row selection and version choice emit exactly one export request.
     #[test]
-    fn opening_replaces_selection_and_resets_visibility() {
-        let store = store();
-        let ids = store.filtered_sorted("", None, SortKey::Name);
-        let mut dialog = ExportDialog::new();
-        dialog.open(ids.iter().take(2).copied());
-        assert!(dialog.is_open());
-        assert_eq!(dialog.selection().len(), 2);
-        dialog.close();
-        assert!(!dialog.is_open());
-    }
+    fn export_dialog_selection_emits_one_request() {
+        // --- phase: opening_replaces_selection_and_resets_visibility ---
+        {
+            let store = store();
+            let ids = store.filtered_sorted("", None, SortKey::Name);
+            let mut dialog = ExportDialog::new();
+            dialog.open(ids.iter().take(2).copied());
+            assert!(dialog.is_open());
+            assert_eq!(dialog.selection().len(), 2);
+            dialog.close();
+            assert!(!dialog.is_open());
+        }
 
-    #[test]
-    fn row_selection_and_version_choice_emit_one_export_request() {
-        let store = store();
-        let ids = store.filtered_sorted("", None, SortKey::Name);
-        let window = Rect::new(0.0, 0.0, 960.0, 700.0);
-        let mut dialog = ExportDialog::new();
-        dialog.open(ids.iter().copied());
-        let press = WindowEvent::MouseInput {
-            // winit intentionally exposes no constructor for synthetic ids.
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        // --- phase: row_selection_and_version_choice_emit_one_export_request ---
+        {
+            let store = store();
+            let ids = store.filtered_sorted("", None, SortKey::Name);
+            let window = Rect::new(0.0, 0.0, 960.0, 700.0);
+            let mut dialog = ExportDialog::new();
+            dialog.open(ids.iter().copied());
+            let press = WindowEvent::MouseInput {
+                // winit intentionally exposes no constructor for synthetic ids.
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
 
-        let geometry = dialog.geometry(window, &store, SortKey::Name);
-        dialog.handle_event(
-            &press,
-            geometry.select_none.center(),
-            window,
-            &store,
-            SortKey::Name,
-        );
-        let geometry = dialog.geometry(window, &store, SortKey::Name);
-        let first = geometry.rows[0];
-        dialog.handle_event(&press, first.1.center(), window, &store, SortKey::Name);
-        let geometry = dialog.geometry(window, &store, SortKey::Name);
-        let (_, request) = dialog.handle_event(
-            &press,
-            geometry.export_v4.center(),
-            window,
-            &store,
-            SortKey::Name,
-        );
+            let geometry = dialog.geometry(window, &store, SortKey::Name);
+            dialog.handle_event(
+                &press,
+                geometry.select_none.center(),
+                window,
+                &store,
+                SortKey::Name,
+            );
+            let geometry = dialog.geometry(window, &store, SortKey::Name);
+            let first = geometry.rows[0];
+            dialog.handle_event(&press, first.1.center(), window, &store, SortKey::Name);
+            let geometry = dialog.geometry(window, &store, SortKey::Name);
+            let (_, request) = dialog.handle_event(
+                &press,
+                geometry.export_v4.center(),
+                window,
+                &store,
+                SortKey::Name,
+            );
 
-        assert_eq!(
-            request,
-            Some(ExportRequest {
-                ids: vec![first.0],
-                version: VCardVersion::V4,
-            })
-        );
-        assert!(!dialog.is_open());
+            assert_eq!(
+                request,
+                Some(ExportRequest {
+                    ids: vec![first.0],
+                    version: VCardVersion::V4,
+                })
+            );
+            assert!(!dialog.is_open());
+        }
     }
 }

@@ -251,11 +251,9 @@ impl Harness {
         harness
     }
 
-    /// Run client and server until `done` holds, or fail after 3s.
+    /// Run client and server until `done` holds, or fail at the hang bound.
     pub fn pump(&mut self, label: &str, done: impl Fn(&Client) -> bool) {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
-            .expect("deadline");
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             let _ = self.conn.flush();
             let _ = self.display.dispatch_clients(&mut self.state);
@@ -299,9 +297,7 @@ impl Harness {
         let surface = compositor.create_surface(&self.queue.handle(), ());
         surface.commit();
         self.pump("surface creation", |_| true);
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
-            .expect("deadline");
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(id) = self
                 .state

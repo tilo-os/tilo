@@ -159,15 +159,7 @@ impl AudioCapture {
 
 impl Drop for AudioCapture {
     fn drop(&mut self) {
-        if let Ok(pid) = i32::try_from(self.child.id())
-            && let Some(group) = pid.checked_neg()
-        {
-            // SAFETY: `start` places the recorder in its own pid-named process
-            // group, so the negative pid cannot target the compositor group.
-            unsafe { libc::kill(group, libc::SIGKILL) };
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        bounded_command::terminate_tree(&mut self.child, std::time::Duration::ZERO);
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -237,32 +229,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_sink_serial_comes_from_server_assigned_identity() {
-        let inspect = r#"
-            node.name = "spoofable-name"
-          * object.serial = "314"
-            media.class = "Audio/Sink"
-        "#;
-        assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
-        assert_eq!(parse_object_serial("object.serial = hacked"), None);
-    }
-
-    #[test]
-    fn desktop_and_microphone_request_different_pipewire_sources() {
-        let desktop = capture_args(AudioSource::System, "314").join(" ");
-        let microphone = capture_args(AudioSource::Microphone, "271").join(" ");
-        assert!(desktop.contains("--target 314"));
-        assert!(desktop.contains("stream.capture.sink = true"));
-        assert!(microphone.contains("--target 271"));
-        assert!(!microphone.contains("stream.capture.sink"));
-    }
-
-    #[test]
-    fn drain_keeps_only_complete_stereo_sample_frames() {
-        let mut pending = vec![1, 2, 3, 4, 5, 6];
-        let aligned = pending.len() / SAMPLE_FRAME_BYTES * SAMPLE_FRAME_BYTES;
-        let tail = pending.split_off(aligned);
-        assert_eq!(pending, [1, 2, 3, 4]);
-        assert_eq!(tail, [5, 6]);
+    fn pipewire_sources_come_from_server_assigned_identity() {
+        // Phase `default_sink_serial_comes_from_server_assigned_identity`.
+        {
+            let inspect = r#"
+                node.name = "spoofable-name"
+              * object.serial = "314"
+                media.class = "Audio/Sink"
+            "#;
+            assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
+            assert_eq!(parse_object_serial("object.serial = hacked"), None);
+        }
+        // Phase `desktop_and_microphone_request_different_pipewire_sources`.
+        {
+            let desktop = capture_args(AudioSource::System, "314").join(" ");
+            let microphone = capture_args(AudioSource::Microphone, "271").join(" ");
+            assert!(desktop.contains("--target 314"));
+            assert!(desktop.contains("stream.capture.sink = true"));
+            assert!(microphone.contains("--target 271"));
+            assert!(!microphone.contains("stream.capture.sink"));
+        }
+        // Phase `drain_keeps_only_complete_stereo_sample_frames`.
+        {
+            let mut pending = vec![1, 2, 3, 4, 5, 6];
+            let aligned = pending.len() / SAMPLE_FRAME_BYTES * SAMPLE_FRAME_BYTES;
+            let tail = pending.split_off(aligned);
+            assert_eq!(pending, [1, 2, 3, 4]);
+            assert_eq!(tail, [5, 6]);
+        }
     }
 }

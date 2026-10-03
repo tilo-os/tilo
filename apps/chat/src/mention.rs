@@ -340,115 +340,116 @@ mod tests {
     }
 
     #[test]
-    fn a_mention_is_a_participant_id_not_a_string() {
-        let m = resolve("morning @Ada", &room());
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].user, "u_ada");
-        assert_eq!(m[0].slice("morning @Ada"), "@Ada");
-        assert!(!m[0].is_agent);
+    fn resolve_maps_whole_word_room_names_to_participant_ids() {
+        // Phase: a_mention_is_a_participant_id_not_a_string.
+        {
+            let m = resolve("morning @Ada", &room());
+            assert_eq!(m.len(), 1);
+            assert_eq!(m[0].user, "u_ada");
+            assert_eq!(m[0].slice("morning @Ada"), "@Ada");
+            assert!(!m[0].is_agent);
+        }
+        // Phase: the_longest_matching_name_wins.
+        {
+            let text = "@Ada Lovelace can you look";
+            let m = resolve(text, &room());
+            assert_eq!(m.len(), 1, "one mention, not Ada plus stray prose");
+            assert_eq!(m[0].user, "u_lovelace");
+            assert_eq!(m[0].slice(text), "@Ada Lovelace");
+        }
+        // Phase: an_agent_resolves_the_same_way_a_person_does.
+        {
+            let m = resolve("@Scribe please summarise", &room());
+            assert_eq!(m[0].user, "agent_scribe");
+            assert!(
+                m[0].is_agent,
+                "the room's agent flag travels with the mention"
+            );
+        }
+        // Phase: an_unknown_name_is_left_as_prose.
+        {
+            assert!(resolve("email me @ ada@example.com", &room()).is_empty());
+            assert!(resolve("@Nobody", &room()).is_empty());
+        }
+        // Phase: a_name_inside_a_longer_word_is_not_a_mention.
+        {
+            assert!(resolve("@Adamant", &room()).is_empty());
+        }
+        // Phase: offsets_slice_the_body_they_came_from.
+        {
+            let text = "cc @Ada and @Scribe";
+            let m = resolve(text, &room());
+            assert_eq!(m.len(), 2);
+            assert_eq!(m[0].slice(text), "@Ada");
+            assert_eq!(m[1].slice(text), "@Scribe");
+            assert!(m[0].end() <= m[1].start);
+        }
     }
 
     #[test]
-    fn the_longest_matching_name_wins() {
-        let text = "@Ada Lovelace can you look";
-        let m = resolve(text, &room());
-        assert_eq!(m.len(), 1, "one mention, not Ada plus stray prose");
-        assert_eq!(m[0].user, "u_lovelace");
-        assert_eq!(m[0].slice(text), "@Ada Lovelace");
+    fn picker_opens_on_a_leading_at_and_ranks_room_candidates() {
+        // Phase: the_caret_query_opens_only_on_a_word_leading_at.
+        {
+            assert_eq!(query_at_caret("hi @ad", 6).unwrap().query, "ad");
+            assert_eq!(query_at_caret("hi @ad", 6).unwrap().start, 3);
+            assert!(
+                query_at_caret("mail@ad", 7).is_none(),
+                "an infix @ is an address"
+            );
+            assert!(
+                query_at_caret("hi @a\nb", 7).is_none(),
+                "a newline ends the run"
+            );
+        }
+        // Phase: candidates_rank_prefix_then_word_then_substring.
+        {
+            let r = room();
+            let c = candidates(&r, "ada");
+            assert_eq!(c[0].id, "u_ada");
+            let c = candidates(&r, "lov");
+            assert_eq!(c[0].id, "u_lovelace", "a later word still matches");
+            assert_eq!(
+                candidates(&r, "").len(),
+                3,
+                "an empty query offers the room"
+            );
+        }
+        // Phase: the_picker_stays_shut_when_the_room_offers_nobody.
+        {
+            assert!(picker_query("hi @zz", 6, &room()).is_none());
+            assert!(picker_query("hi @ad", 6, &room()).is_some());
+        }
     }
 
     #[test]
-    fn an_agent_resolves_the_same_way_a_person_does() {
-        let m = resolve("@Scribe please summarise", &room());
-        assert_eq!(m[0].user, "agent_scribe");
-        assert!(
-            m[0].is_agent,
-            "the room's agent flag travels with the mention"
-        );
-    }
-
-    #[test]
-    fn an_unknown_name_is_left_as_prose() {
-        assert!(resolve("email me @ ada@example.com", &room()).is_empty());
-        assert!(resolve("@Nobody", &room()).is_empty());
-    }
-
-    #[test]
-    fn a_name_inside_a_longer_word_is_not_a_mention() {
-        assert!(resolve("@Adamant", &room()).is_empty());
-    }
-
-    #[test]
-    fn offsets_slice_the_body_they_came_from() {
-        let text = "cc @Ada and @Scribe";
-        let m = resolve(text, &room());
-        assert_eq!(m.len(), 2);
-        assert_eq!(m[0].slice(text), "@Ada");
-        assert_eq!(m[1].slice(text), "@Scribe");
-        assert!(m[0].end() <= m[1].start);
-    }
-
-    #[test]
-    fn the_caret_query_opens_only_on_a_word_leading_at() {
-        assert_eq!(query_at_caret("hi @ad", 6).unwrap().query, "ad");
-        assert_eq!(query_at_caret("hi @ad", 6).unwrap().start, 3);
-        assert!(
-            query_at_caret("mail@ad", 7).is_none(),
-            "an infix @ is an address"
-        );
-        assert!(
-            query_at_caret("hi @a\nb", 7).is_none(),
-            "a newline ends the run"
-        );
-    }
-
-    #[test]
-    fn candidates_rank_prefix_then_word_then_substring() {
-        let r = room();
-        let c = candidates(&r, "ada");
-        assert_eq!(c[0].id, "u_ada");
-        let c = candidates(&r, "lov");
-        assert_eq!(c[0].id, "u_lovelace", "a later word still matches");
-        assert_eq!(
-            candidates(&r, "").len(),
-            3,
-            "an empty query offers the room"
-        );
-    }
-
-    #[test]
-    fn completion_closes_the_run_so_the_picker_does_not_reopen() {
-        let q = query_at_caret("hi @ad", 6).unwrap();
-        let who = Participant {
-            id: "u_lovelace".into(),
-            name: "Ada Lovelace".into(),
-            is_agent: false,
-        };
-        let (text, caret) = apply_completion("hi @ad", &q, 6, &who);
-        assert_eq!(text, "hi @Ada Lovelace ");
-        assert_eq!(caret, text.len());
-        assert!(
-            picker_query(&text, caret, &room()).is_none(),
-            "a finished pick must not leave the list up"
-        );
-    }
-
-    #[test]
-    fn the_picker_stays_shut_when_the_room_offers_nobody() {
-        assert!(picker_query("hi @zz", 6, &room()).is_none());
-        assert!(picker_query("hi @ad", 6, &room()).is_some());
-    }
-
-    #[test]
-    fn completing_mid_sentence_keeps_the_tail() {
-        let q = query_at_caret("hi @ad, look", 6).unwrap();
-        let who = Participant {
-            id: "u_ada".into(),
-            name: "Ada".into(),
-            is_agent: false,
-        };
-        let (text, caret) = apply_completion("hi @ad, look", &q, 6, &who);
-        assert_eq!(text, "hi @Ada , look");
-        assert_eq!(&text[..caret], "hi @Ada ");
+    fn completion_inserts_the_name_keeps_the_tail_and_closes_the_run() {
+        // Phase: completion_closes_the_run_so_the_picker_does_not_reopen.
+        {
+            let q = query_at_caret("hi @ad", 6).unwrap();
+            let who = Participant {
+                id: "u_lovelace".into(),
+                name: "Ada Lovelace".into(),
+                is_agent: false,
+            };
+            let (text, caret) = apply_completion("hi @ad", &q, 6, &who);
+            assert_eq!(text, "hi @Ada Lovelace ");
+            assert_eq!(caret, text.len());
+            assert!(
+                picker_query(&text, caret, &room()).is_none(),
+                "a finished pick must not leave the list up"
+            );
+        }
+        // Phase: completing_mid_sentence_keeps_the_tail.
+        {
+            let q = query_at_caret("hi @ad, look", 6).unwrap();
+            let who = Participant {
+                id: "u_ada".into(),
+                name: "Ada".into(),
+                is_agent: false,
+            };
+            let (text, caret) = apply_completion("hi @ad, look", &q, 6, &who);
+            assert_eq!(text, "hi @Ada , look");
+            assert_eq!(&text[..caret], "hi @Ada ");
+        }
     }
 }

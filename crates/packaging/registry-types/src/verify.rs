@@ -194,89 +194,89 @@ mod tests {
     }
 
     #[test]
-    fn entry_signature_verifies_after_sign() {
-        let (key, mut entry) = key_and_entry();
-        sign_entry(&mut entry, &key);
-        assert!(verify_entry_signature(&entry));
+    fn entry_signature_verification_rejects_tamper_and_wrong_keys() {
+        // phase: entry_signature_verifies_after_sign
+        {
+            let (key, mut entry) = key_and_entry();
+            sign_entry(&mut entry, &key);
+            assert!(verify_entry_signature(&entry));
+        }
+        // phase: entry_signature_rejects_tamper
+        {
+            let (key, mut entry) = key_and_entry();
+            sign_entry(&mut entry, &key);
+            entry.name = "Tampered".into();
+            assert!(!verify_entry_signature(&entry));
+        }
+        // phase: entry_signature_rejects_wrong_pubkey
+        {
+            let (key, mut entry) = key_and_entry();
+            sign_entry(&mut entry, &key);
+            // Swap in a different publisher pubkey.
+            entry.publisher_pubkey_hex = "ee".repeat(32);
+            assert!(!verify_entry_signature(&entry));
+        }
     }
 
     #[test]
-    fn entry_signature_rejects_tamper() {
-        let (key, mut entry) = key_and_entry();
-        sign_entry(&mut entry, &key);
-        entry.name = "Tampered".into();
-        assert!(!verify_entry_signature(&entry));
-    }
-
-    #[test]
-    fn entry_signature_rejects_wrong_pubkey() {
-        let (key, mut entry) = key_and_entry();
-        sign_entry(&mut entry, &key);
-        // Swap in a different publisher pubkey.
-        entry.publisher_pubkey_hex = "ee".repeat(32);
-        assert!(!verify_entry_signature(&entry));
-    }
-
-    #[test]
-    fn change_request_verifies_when_allowlisted() {
-        let (key, entry) = key_and_entry();
-        let allow = [key.verifying_key().to_bytes()];
-        let req = sign_change_request(EntryAction::Add, entry, &key);
-        assert_eq!(verify_change_request(&req, &allow), Ok(()));
-    }
-
-    #[test]
-    fn change_request_rejects_unallowlisted_publisher() {
-        let (key, entry) = key_and_entry();
-        let allow = [[0u8; 32]]; // deliberately not the publisher's key
-        let req = sign_change_request(EntryAction::Add, entry, &key);
-        assert_eq!(
-            verify_change_request(&req, &allow),
-            Err(VerifyError::PublisherNotAllowed)
-        );
-    }
-
-    #[test]
-    fn change_request_rejects_tampered_entry() {
-        let (key, entry) = key_and_entry();
-        let allow = [key.verifying_key().to_bytes()];
-        let mut req = sign_change_request(EntryAction::Update, entry, &key);
-        // Change a signed field after signing.
-        req.entry.name = "Tampered".into();
-        assert_eq!(
-            verify_change_request(&req, &allow),
-            Err(VerifyError::EntrySignatureMismatch)
-        );
-    }
-
-    #[test]
-    fn change_request_rejects_tampered_signature() {
-        let (key, entry) = key_and_entry();
-        let allow = [key.verifying_key().to_bytes()];
-        let mut req = sign_change_request(EntryAction::Add, entry, &key);
-        // Flip a sig byte.
-        let mut bytes = hex::decode(&req.publisher_signature_hex).unwrap();
-        bytes[0] ^= 1;
-        req.publisher_signature_hex = hex::encode(bytes);
-        assert_eq!(
-            verify_change_request(&req, &allow),
-            Err(VerifyError::BadSignature)
-        );
-    }
-
-    #[test]
-    fn change_request_rejects_bad_hex() {
-        let (key, mut entry) = key_and_entry();
-        entry.publisher_pubkey_hex = "zzzz".into();
-        let req = EntryChangeRequest {
-            action: EntryAction::Add,
-            entry,
-            publisher_signature_hex: hex::encode([0u8; 64]),
-        };
-        let allow = [key.verifying_key().to_bytes()];
-        assert!(matches!(
-            verify_change_request(&req, &allow),
-            Err(VerifyError::BadHex(_))
-        ));
+    fn change_request_verification_requires_an_allowlisted_untampered_signer() {
+        // phase: change_request_verifies_when_allowlisted
+        {
+            let (key, entry) = key_and_entry();
+            let allow = [key.verifying_key().to_bytes()];
+            let req = sign_change_request(EntryAction::Add, entry, &key);
+            assert_eq!(verify_change_request(&req, &allow), Ok(()));
+        }
+        // phase: change_request_rejects_unallowlisted_publisher
+        {
+            let (key, entry) = key_and_entry();
+            let allow = [[0u8; 32]]; // deliberately not the publisher's key
+            let req = sign_change_request(EntryAction::Add, entry, &key);
+            assert_eq!(
+                verify_change_request(&req, &allow),
+                Err(VerifyError::PublisherNotAllowed)
+            );
+        }
+        // phase: change_request_rejects_tampered_entry
+        {
+            let (key, entry) = key_and_entry();
+            let allow = [key.verifying_key().to_bytes()];
+            let mut req = sign_change_request(EntryAction::Update, entry, &key);
+            // Change a signed field after signing.
+            req.entry.name = "Tampered".into();
+            assert_eq!(
+                verify_change_request(&req, &allow),
+                Err(VerifyError::EntrySignatureMismatch)
+            );
+        }
+        // phase: change_request_rejects_tampered_signature
+        {
+            let (key, entry) = key_and_entry();
+            let allow = [key.verifying_key().to_bytes()];
+            let mut req = sign_change_request(EntryAction::Add, entry, &key);
+            // Flip a sig byte.
+            let mut bytes = hex::decode(&req.publisher_signature_hex).unwrap();
+            bytes[0] ^= 1;
+            req.publisher_signature_hex = hex::encode(bytes);
+            assert_eq!(
+                verify_change_request(&req, &allow),
+                Err(VerifyError::BadSignature)
+            );
+        }
+        // phase: change_request_rejects_bad_hex
+        {
+            let (key, mut entry) = key_and_entry();
+            entry.publisher_pubkey_hex = "zzzz".into();
+            let req = EntryChangeRequest {
+                action: EntryAction::Add,
+                entry,
+                publisher_signature_hex: hex::encode([0u8; 64]),
+            };
+            let allow = [key.verifying_key().to_bytes()];
+            assert!(matches!(
+                verify_change_request(&req, &allow),
+                Err(VerifyError::BadHex(_))
+            ));
+        }
     }
 }

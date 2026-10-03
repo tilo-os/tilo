@@ -13,7 +13,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
@@ -70,12 +69,23 @@ pub fn read_asset(content: &ContentStore, id: &str) -> Option<Vec<u8>> {
 }
 
 pub fn import_asset_file(content: &ContentStore, path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_IMAGE_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let bytes = read_bounded(path, MAX_IMAGE_FILE_BYTES).ok()??;
     store_asset(content, &bytes)
+}
+
+/// The file a chooser named, or `None` when it is larger than `limit`.
+pub(crate) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let (dir, name) = tilo_files::file_at(path).map_err(std::io::Error::other)?;
+    let too_big = |len: u64| usize::try_from(len).map_or(true, |len| len > limit);
+    if too_big(
+        tilo_files::blocking::metadata(&dir, &name)
+            .map_err(std::io::Error::other)?
+            .len,
+    ) {
+        return Ok(None);
+    }
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(std::io::Error::other)?;
+    Ok((!too_big(bytes.len() as u64)).then_some(bytes))
 }
 
 /// Current decode state of one image path.
@@ -122,18 +132,16 @@ impl ImageStore {
         // spawn is represented by `None`; callers then receive `Failed`
         // rather than an eternal loading placeholder.
         let worker_content = content.clone();
-        let request_tx = std::thread::Builder::new()
-            .name("slides-image-decode".into())
-            .spawn(move || {
-                while let Ok(path) = request_rx.recv() {
-                    let state = decode(&worker_content, &path);
-                    if result_tx.send((path, state)).is_err() {
-                        break;
-                    }
+        let request_tx = ui::rt::spawn_thread("slides-image-decode", move || {
+            while let Ok(path) = request_rx.recv() {
+                let state = decode(&worker_content, &path);
+                if result_tx.send((path, state)).is_err() {
+                    break;
                 }
-            })
-            .ok()
-            .map(|_| request_tx);
+            }
+        })
+        .ok()
+        .map(|_| request_tx);
         ImageStore {
             content,
             inner: RefCell::new(HashMap::new()),
@@ -330,65 +338,70 @@ pub(crate) fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageStat
 mod tests {
     use super::*;
 
+    /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.
     #[test]
-    fn frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget() {
-        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        assert!(matches!(
-            decode_bytes_with_budget(bytes.get_ref(), 15),
-            ImageState::Failed
-        ));
-        assert!(matches!(
-            decode_bytes_with_budget(bytes.get_ref(), 16),
-            ImageState::Ready(_)
-        ));
-    }
+    fn image_decoding_is_bounded_and_never_left_loading() {
+        // Case `frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget`.
+        {
+            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            assert!(matches!(
+                decode_bytes_with_budget(bytes.get_ref(), 15),
+                ImageState::Failed
+            ));
+            assert!(matches!(
+                decode_bytes_with_budget(bytes.get_ref(), 16),
+                ImageState::Ready(_)
+            ));
+        }
 
-    #[test]
-    fn frozen_decode_keeps_file_dimension_and_corrupt_byte_limits() {
-        assert!(matches!(
-            decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1]),
-            ImageState::Failed
-        ));
-        assert!(matches!(decode_bytes(b"corrupt"), ImageState::Failed));
-        let image =
-            image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        assert!(matches!(decode_bytes(bytes.get_ref()), ImageState::Failed));
-    }
+        // Case `frozen_decode_keeps_file_dimension_and_corrupt_byte_limits`.
+        {
+            assert!(matches!(
+                decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1]),
+                ImageState::Failed
+            ));
+            assert!(matches!(decode_bytes(b"corrupt"), ImageState::Failed));
+            let image =
+                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            assert!(matches!(decode_bytes(bytes.get_ref()), ImageState::Failed));
+        }
 
-    #[test]
-    fn decode_refuses_an_oversized_source_before_image_parsing() {
-        let path =
-            std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
-        std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1]).expect("write oversize source");
-        assert!(matches!(
-            decode(&ContentStore::memory(), path.to_str().expect("utf-8 path")),
-            ImageState::Failed
-        ));
-        let _ = std::fs::remove_file(path);
-    }
+        // Case `decode_refuses_an_oversized_source_before_image_parsing`.
+        {
+            let path =
+                std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
+            std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1])
+                .expect("write oversize source");
+            assert!(matches!(
+                decode(&ContentStore::memory(), path.to_str().expect("utf-8 path")),
+                ImageState::Failed
+            ));
+            let _ = std::fs::remove_file(path);
+        }
 
-    #[test]
-    fn image_store_never_leaves_a_failed_worker_request_loading() {
-        let store = ImageStore {
-            content: ContentStore::memory(),
-            inner: RefCell::new(HashMap::new()),
-            request_tx: None,
-            rx: std::sync::mpsc::channel().1,
-            ready_bytes: Cell::new(0),
-            access: RefCell::new(HashMap::new()),
-            access_clock: Cell::new(0),
-        };
-        assert!(matches!(
-            store.get("/does/not/exist.png"),
-            ImageState::Failed
-        ));
-        assert!(matches!(
-            store.get("/does/not/exist.png"),
-            ImageState::Failed
-        ));
+        // Case `image_store_never_leaves_a_failed_worker_request_loading`.
+        {
+            let store = ImageStore {
+                content: ContentStore::memory(),
+                inner: RefCell::new(HashMap::new()),
+                request_tx: None,
+                rx: std::sync::mpsc::channel().1,
+                ready_bytes: Cell::new(0),
+                access: RefCell::new(HashMap::new()),
+                access_clock: Cell::new(0),
+            };
+            assert!(matches!(
+                store.get("/does/not/exist.png"),
+                ImageState::Failed
+            ));
+            assert!(matches!(
+                store.get("/does/not/exist.png"),
+                ImageState::Failed
+            ));
+        }
     }
 }

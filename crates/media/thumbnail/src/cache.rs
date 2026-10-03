@@ -8,16 +8,14 @@
 //! The encoded PNGs live in a [`tilo_content::ContentStore`] — the system's one
 //! content store — addressed by their *own* hash, so identical previews are
 //! stored once and every read is verified. A small key index maps a
-//! [`ThumbKey`] to the PNG address, and a bounded `moka` LRU sits in front of
-//! both. The store handed to [`ThumbCache::with_store`] must be dedicated to
+//! [`ThumbKey`] to the PNG address, and a bounded LRU sits in front of both. The store handed to [`ThumbCache::with_store`] must be dedicated to
 //! previews: pruning collects everything the index no longer names.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use moka::sync::Cache;
-use tilo_content::ContentStore;
+use tilo_content::{ContentStore, DirBackend};
 
 use crate::generate::ThumbSize;
 
@@ -100,13 +98,86 @@ impl ThumbKey {
     }
 }
 
+/// The in-memory tier: at most `capacity` previews, the least recently used
+/// evicted first. A use counter orders them, so it needs no clock (the page
+/// has no `std` one) and stays exact for the few hundred entries it holds.
+#[derive(Clone)]
+struct Cache {
+    capacity: u64,
+    entries: Arc<Mutex<Entries>>,
+}
+
+/// Previews by key, each with the use tick it was last touched at.
+#[derive(Default)]
+struct Entries {
+    tick: u64,
+    map: HashMap<ThumbKey, (u64, Arc<Vec<u8>>)>,
+}
+
+impl Entries {
+    fn touch(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+}
+
+impl Cache {
+    fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            entries: Arc::default(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Entries> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, key: &ThumbKey) -> Option<Arc<Vec<u8>>> {
+        let mut entries = self.lock();
+        let tick = entries.touch();
+        let entry = entries.map.get_mut(key)?;
+        entry.0 = tick;
+        let value = Arc::clone(&entry.1);
+        drop(entries);
+        Some(value)
+    }
+
+    fn contains_key(&self, key: &ThumbKey) -> bool {
+        self.lock().map.contains_key(key)
+    }
+
+    fn insert(&self, key: ThumbKey, value: Arc<Vec<u8>>) {
+        if self.capacity == 0 {
+            return;
+        }
+        let mut entries = self.lock();
+        let tick = entries.touch();
+        entries.map.insert(key, (tick, value));
+        while entries.map.len() as u64 > self.capacity {
+            let Some(oldest) = entries
+                .map
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            entries.map.remove(&oldest);
+        }
+        drop(entries);
+    }
+}
+
 /// Content-addressed PNG-thumbnail store.
 #[derive(Clone)]
 pub struct ThumbCache {
     store: ContentStore,
     /// The key index directory; `None` for a cache that lives in memory only.
     index: Option<PathBuf>,
-    mem: Cache<ThumbKey, Arc<Vec<u8>>>,
+    mem: Cache,
     /// Cap on the number of indexed previews; the least-recently-written are
     /// pruned past it so the cache stays bounded across sessions.
     max_entries: usize,
@@ -139,7 +210,7 @@ impl ThumbCache {
         std::fs::create_dir_all(dir)?;
         forget_flat_layout(dir);
         Self::with_store(
-            ContentStore::in_dir(dir.join("content")),
+            ContentStore::new(DirBackend::new(dir.join("content")).regenerable()),
             dir.join("index"),
             mem_capacity,
             max_entries,
@@ -213,8 +284,10 @@ impl ThumbCache {
     }
 
     /// Store `png` for `key`: the bytes into the content store, then the index
-    /// entry naming them (durable temp-then-rename, so a crash never publishes
-    /// a half-written entry). Prunes back under the bound afterwards.
+    /// entry naming them (temp-then-rename, so a reader never sees a
+    /// half-written entry). Neither is synced: a preview can be regenerated,
+    /// and a torn entry or PNG left by a crash fails validation and reads as a
+    /// miss. Prunes back under the bound afterwards.
     pub fn put(&self, key: &ThumbKey, png: Vec<u8>) {
         let arc = Arc::new(png);
         self.mem.insert(*key, arc.clone());
@@ -224,7 +297,7 @@ impl ThumbCache {
         let Ok(address) = self.store.put(arc.as_slice()) else {
             return;
         };
-        if atomic_file::write(&entry, address.as_bytes()).is_ok() {
+        if tilo_files::native::atomic::write_regenerable(&entry, address.as_bytes()).is_ok() {
             self.prune();
         }
     }

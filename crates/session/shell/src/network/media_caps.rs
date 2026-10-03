@@ -135,28 +135,28 @@ mod tests {
     use media::StreamCodec;
 
     #[test]
-    fn an_unknown_peer_is_h264_only_and_an_advert_replaces_that() {
-        const PEER: PeerId = 0x5eed_0001;
-        assert_eq!(capabilities(PEER), CodecCapabilities::legacy_peer());
-        let before = generation();
-        record(
-            PEER,
-            &["av1".into(), "h266".into()],
-            &["h264".into()],
-            &[],
-            &[],
-        );
-        let caps = capabilities(PEER);
-        assert!(caps.hardware_decode.contains(&StreamCodec::Av1));
-        assert_eq!(caps.hardware_decode.len(), 1, "unknown labels are ignored");
-        assert_ne!(generation(), before);
-        let after = generation();
-        record(PEER, &["av1".into()], &["h264".into()], &[], &[]);
-        assert_eq!(generation(), after, "an unchanged advert is not a change");
-    }
-
-    #[test]
-    fn the_local_advert_names_this_peer() {
+    fn media_capability_adverts_replace_the_h264_default() {
+        // Phase `an_unknown_peer_is_h264_only_and_an_advert_replaces_that`.
+        {
+            const PEER: PeerId = 0x5eed_0001;
+            assert_eq!(capabilities(PEER), CodecCapabilities::legacy_peer());
+            let before = generation();
+            record(
+                PEER,
+                &["av1".into(), "h266".into()],
+                &["h264".into()],
+                &[],
+                &[],
+            );
+            let caps = capabilities(PEER);
+            assert!(caps.hardware_decode.contains(&StreamCodec::Av1));
+            assert_eq!(caps.hardware_decode.len(), 1, "unknown labels are ignored");
+            assert_ne!(generation(), before);
+            let after = generation();
+            record(PEER, &["av1".into()], &["h264".into()], &[], &[]);
+            assert_eq!(generation(), after, "an unchanged advert is not a change");
+        }
+        // Phase `the_local_advert_names_this_peer`.
         match local_advert(7) {
             NeighbourMsg::MediaCapabilities { peer, .. } => assert_eq!(peer, 7),
             other => panic!("expected a capabilities advert, got {other:?}"),

@@ -3,7 +3,7 @@ use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use tilo_ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
@@ -12,7 +12,8 @@ use tilo_ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Ve
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
-use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
+use tilo_ui::widget::{AppModel, ModelPath};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -28,6 +29,11 @@ thread_local! {
     static OPERATIONS: RefCell<Vec<Rc<RefCell<Vec<String>>>>> = const { RefCell::new(vec![]) };
     static PROVIDERS: RefCell<Option<Rc<RefCell<ProviderObservations>>>> = const { RefCell::new(None) };
     static PRESENTATION: RefCell<Option<Rc<RefCell<PresentationObservations>>>> = const { RefCell::new(None) };
+    static NATIVE_LIFECYCLE: RefCell<Vec<(&'static str, WakeHandle)>> = const { RefCell::new(vec![]) };
+}
+
+pub fn take_native_lifecycle_observations() -> Vec<(&'static str, WakeHandle)> {
+    NATIVE_LIFECYCLE.with_borrow_mut(std::mem::take)
 }
 
 #[derive(Default)]
@@ -232,6 +238,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         record_kind: RecordKind::new("probe"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create,
     }
 }
@@ -279,6 +286,7 @@ impl ProbeHost {
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
         PROVIDERS.with_borrow_mut(|providers| *providers = None);
+        NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut owners = RecordOwners::new(root.clone());
@@ -316,13 +324,15 @@ impl ProbeHost {
     ) -> Result<HostContext, LaunchError> {
         HostContext::prepare(
             definition,
-            self.records.clone(),
-            self.views.clone(),
-            DEVICE.into(),
-            instance,
-            permissions,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: self.records.clone(),
+                views: self.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: instance,
+                permissions,
+                author: author(),
+                action_context: provenance(),
+            },
             target,
         )
     }
@@ -511,6 +521,14 @@ struct ProbeRoot {
     rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
+    tilo_ui::provides!(
+        dyn tilo_ui::widget::NativeViewLifecycle,
+        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::search::capability::SearchSource,
+        dyn tilo_ui::view::capability::ViewState,
+        dyn tilo_ui::undo::UndoPoints
+    );
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {
@@ -518,12 +536,126 @@ impl Widget for ProbeRoot {
             }
         });
     }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["probe.view", "probe.effect", "probe.pending"]
+    }
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui::widget::ResourceOperation<'_>,
+        _: &mut AutoCommit,
+        _: &ObjId,
+    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+        let Some(tilo_ui::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        if !self.local_resource_operation_handlers().contains(&type_id) {
+            return Ok(None);
+        }
+        if type_id == "probe.pending" {
+            self.operations.borrow_mut().push("pending".into());
+            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
+        }
+        self.operations.borrow_mut().push(format!("{kind:?}"));
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancel {
+            return None;
+        }
+        assert!(!self.local.writer().try_set("cancelled after close".into()));
+        self.operations.borrow_mut().push("cancelled".into());
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
+    }
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+        assert!(self.operational, "construction must project read-only");
+        self.local_snapshot = self.local.with(Clone::clone);
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &tilo_ui::Theme,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations.borrow_mut().layouts.push(theme.clone());
+            }
+        });
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(80.0),
+                height: taffy::Dimension::length(30.0),
+            },
+            ..Default::default()
+        };
+        let node = tree.new_leaf(style).unwrap();
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        let layout = tree.layout(node).unwrap();
+        let x = origin.x + f64::from(layout.location.x);
+        let y = origin.y + f64::from(layout.location.y);
+        self.rect = vello::kurbo::Rect::new(
+            x,
+            y,
+            x + f64::from(layout.size.width),
+            y + f64::from(layout.size.height),
+        );
+    }
+    fn draw(
+        &mut self,
+        _: &mut vello::Scene,
+        _: vello::kurbo::Affine,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        _: &tilo_ui::PresenceCtx,
+    ) {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                let mut observations = observations.borrow_mut();
+                observations.draws.push((theme.clone(), text.text_scale()));
+                observations.local_draws.push(self.local_snapshot.clone());
+            }
+        });
+    }
+    fn name(&self) -> &'static str {
+        "application-probe"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+}
+
+impl tilo_ui::undo::UndoPoints for ProbeRoot {
     fn needs_commit(&self) -> bool {
         COMMIT_REQUEST.get()
-    }
-    fn on_commit(&mut self) {
-        COMMIT_REQUEST.set(false);
-        COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
     }
     fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
         Some(tilo_actions::ActionContext::for_resource(
@@ -533,7 +665,48 @@ impl Widget for ProbeRoot {
             &self.caret,
         ))
     }
+    fn on_commit(&mut self) {
+        COMMIT_REQUEST.set(false);
+        COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+    }
+    fn get_state(&self) -> Option<String> {
+        Some(self.caret.clone())
+    }
+    fn set_state(&mut self, state: &str) {
+        self.caret = state.into();
+    }
+}
 
+impl tilo_ui::view::capability::ViewState for ProbeRoot {
+    fn view_state(&self) -> Option<ViewContribution> {
+        Some(ViewContribution {
+            scroll: self.scroll.clone(),
+            view_mode: None,
+        })
+    }
+    fn restore_view_state(&mut self, view: &ViewContribution) {
+        self.scroll.clone_from(&view.scroll);
+        if self.corrupt_restore {
+            self.scroll = vec![f64::NAN];
+        }
+    }
+}
+
+impl tilo_ui::search::capability::SearchSource for ProbeRoot {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
+        PROVIDERS.with_borrow(|providers| {
+            providers.as_ref().map_or_else(Vec::new, |observations| {
+                vec![Box::new(ProbeProvider {
+                    observations: observations.clone(),
+                    local: LocalState::new(false),
+                })
+                    as Box<dyn tilo_ui::search::SearchProvider>]
+            })
+        })
+    }
+}
+
+impl tilo_ui::resources::PublishesResources for ProbeRoot {
     #[allow(
         clippy::too_many_lines,
         reason = "one shared resource declares the runner action matrix"
@@ -663,161 +836,25 @@ impl Widget for ProbeRoot {
                 ),
         ]
     }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["probe.view", "probe.effect", "probe.pending"]
-    }
-    fn start_resource_operation_with_document(
-        &mut self,
-        _: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
-        _: &mut AutoCommit,
-        _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
-        if !self.local_resource_operation_handlers().contains(&type_id) {
-            return Ok(None);
-        }
-        if type_id == "probe.pending" {
-            self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancel: bool,
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancel {
-            return None;
-        }
-        assert!(!self.local.writer().try_set("cancelled after close".into()));
-        self.operations.borrow_mut().push("cancelled".into());
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
-    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
-        PROVIDERS.with_borrow(|providers| {
-            providers.as_ref().map_or_else(Vec::new, |observations| {
-                vec![Box::new(ProbeProvider {
-                    observations: observations.clone(),
-                    local: LocalState::new(false),
-                })
-                    as Box<dyn tilo_ui::search::SearchProvider>]
-            })
-        })
-    }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {
-        assert!(self.operational, "construction must project read-only");
-        self.local_snapshot = self.local.with(Clone::clone);
-    }
-    fn build_layout(
-        &mut self,
-        tree: &mut taffy::TaffyTree<()>,
-        theme: &tilo_ui::Theme,
-        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        PRESENTATION.with_borrow(|slot| {
-            if let Some(observations) = slot {
-                observations.borrow_mut().layouts.push(theme.clone());
-            }
-        });
-        let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(80.0),
-                height: taffy::Dimension::length(30.0),
-            },
-            ..Default::default()
-        };
-        let node = tree.new_leaf(style).unwrap();
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(
-        &mut self,
-        tree: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        let layout = tree.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = vello::kurbo::Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        _: &tilo_ui::PresenceCtx,
-    ) {
-        PRESENTATION.with_borrow(|slot| {
-            if let Some(observations) = slot {
-                let mut observations = observations.borrow_mut();
-                observations.draws.push((theme.clone(), text.text_scale()));
-                observations.local_draws.push(self.local_snapshot.clone());
-            }
+}
+
+impl NativeViewLifecycle for ProbeRoot {
+    fn mount_native_view(&mut self, _: &tilo_ui::widget::native_view::NativeViewHost<'_>) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("mount", WakeHandle::new()));
         });
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
+
+    fn unmount_native_view(&mut self) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("unmount", WakeHandle::new()));
+        });
     }
-    fn name(&self) -> &'static str {
-        "application-probe"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-    fn get_state(&self) -> Option<String> {
-        Some(self.caret.clone())
-    }
-    fn set_state(&mut self, state: &str) {
-        self.caret = state.into();
-    }
-    fn view_state(&self) -> Option<ViewContribution> {
-        Some(ViewContribution {
-            scroll: self.scroll.clone(),
-            view_mode: None,
-        })
-    }
-    fn restore_view_state(&mut self, view: &ViewContribution) {
-        self.scroll.clone_from(&view.scroll);
-        if self.corrupt_restore {
-            self.scroll = vec![f64::NAN];
-        }
+
+    fn native_view_frame_start(&mut self) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("frame", WakeHandle::new()));
+        });
     }
 }
 impl AppWidget for ProbeRoot {

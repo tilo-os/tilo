@@ -257,116 +257,118 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_captured_disks_inventory() {
-        let devices = fixture(include_str!("../tests/fixtures/disks.json"));
-        let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, ["zram0", "nvme0n1", "nvme1n1"]);
+    fn parses_captured_disks_imager_and_installer_inventories() {
+        // Phase `parses_a_captured_disks_inventory`.
+        {
+            let devices = fixture(include_str!("../tests/fixtures/disks.json"));
+            let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(names, ["zram0", "nvme0n1", "nvme1n1"]);
 
-        let zram = find(&devices, "zram0");
-        assert_eq!(zram.kind, "disk");
-        assert_eq!(zram.size, 42_949_672_960);
-        assert_eq!(zram.model, None, "null model is absent");
-        assert_eq!(zram.fstype.as_deref(), Some("swap"));
-        assert_eq!(zram.mountpoint.as_deref(), Some("[SWAP]"));
-        assert!(zram.children.is_empty());
+            let zram = find(&devices, "zram0");
+            assert_eq!(zram.kind, "disk");
+            assert_eq!(zram.size, 42_949_672_960);
+            assert_eq!(zram.model, None, "null model is absent");
+            assert_eq!(zram.fstype.as_deref(), Some("swap"));
+            assert_eq!(zram.mountpoint.as_deref(), Some("[SWAP]"));
+            assert!(zram.children.is_empty());
 
-        let nvme = find(&devices, "nvme0n1");
-        assert_eq!(nvme.model.as_deref(), Some("CT2000P310SSD8"));
-        assert_eq!(nvme.tran.as_deref(), Some("nvme"));
-        assert!(!nvme.rotational && !nvme.removable);
-        assert_eq!(nvme.children.len(), 3);
+            let nvme = find(&devices, "nvme0n1");
+            assert_eq!(nvme.model.as_deref(), Some("CT2000P310SSD8"));
+            assert_eq!(nvme.tran.as_deref(), Some("nvme"));
+            assert!(!nvme.rotational && !nvme.removable);
+            assert_eq!(nvme.children.len(), 3);
 
-        let root = find(&devices, "nvme0n1p3");
-        assert_eq!(root.kind, "part");
-        assert_eq!(root.fstype.as_deref(), Some("btrfs"));
-        assert_eq!(root.fsused, Some(2_445_203_636_224));
-        assert!(
-            root.fsused > Some(root.size),
-            "pool usage exceeds the member"
-        );
-        assert_eq!(root.mountpoint.as_deref(), Some("/run/media/system/fedora"));
+            let root = find(&devices, "nvme0n1p3");
+            assert_eq!(root.kind, "part");
+            assert_eq!(root.fstype.as_deref(), Some("btrfs"));
+            assert_eq!(root.fsused, Some(2_445_203_636_224));
+            assert!(
+                root.fsused > Some(root.size),
+                "pool usage exceeds the member"
+            );
+            assert_eq!(root.mountpoint.as_deref(), Some("/run/media/system/fedora"));
 
-        let unmounted = find(&devices, "nvme1n1p2");
-        assert_eq!(unmounted.mountpoint, None);
-        assert_eq!(unmounted.fsused, None);
-        assert!(unmounted.all_mountpoints().is_empty());
+            let unmounted = find(&devices, "nvme1n1p2");
+            assert_eq!(unmounted.mountpoint, None);
+            assert_eq!(unmounted.fsused, None);
+            assert!(unmounted.all_mountpoints().is_empty());
+        }
+        // Phase `parses_a_captured_imager_inventory`.
+        {
+            let devices = fixture(include_str!("../tests/fixtures/imager.json"));
+            let nvme = find(&devices, "nvme1n1");
+            assert_eq!(nvme.model.as_deref(), Some("WD PC SN560 SDDPNQE-1T00-1002"));
+            assert!(nvme.wwn.as_deref().is_some_and(|w| w.starts_with("eui.")));
+            assert!(nvme.serial.is_some());
+            assert_eq!(
+                find(&devices, "nvme0n1p1").mountpoint.as_deref(),
+                Some("/boot/efi")
+            );
+        }
+        // Phase `parses_a_captured_installer_inventory_with_every_mount`.
+        {
+            let devices = fixture(include_str!("../tests/fixtures/installer.json"));
+            let disk = find(&devices, "/dev/nvme0n1");
+            assert_eq!(disk.pttype.as_deref(), Some("gpt"));
+            assert!(disk.ptuuid.is_some());
+            assert_eq!(disk.log_sec, Some(512));
+            assert_eq!(disk.maj_min.as_deref(), Some("259:0"));
+            assert!(!disk.read_only);
+
+            let esp = find(&devices, "/dev/nvme0n1p1");
+            assert_eq!(esp.start, Some(2048));
+            assert_eq!(
+                esp.parttype.as_deref(),
+                Some("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
+            );
+
+            let root = find(&devices, "/dev/nvme0n1p3");
+            let mounts = root.all_mountpoints();
+            assert!(mounts.contains(&"/sysroot"), "{mounts:?}");
+            assert!(mounts.contains(&"/var/home"), "{mounts:?}");
+            assert_eq!(root.mountpoint, None, "MOUNTPOINT was not requested");
+
+            let zram = find(&devices, "/dev/zram0");
+            assert_eq!(zram.all_mountpoints(), ["[SWAP]"]);
+        }
     }
 
     #[test]
-    fn parses_a_captured_imager_inventory() {
-        let devices = fixture(include_str!("../tests/fixtures/imager.json"));
-        let nvme = find(&devices, "nvme1n1");
-        assert_eq!(nvme.model.as_deref(), Some("WD PC SN560 SDDPNQE-1T00-1002"));
-        assert!(nvme.wwn.as_deref().is_some_and(|w| w.starts_with("eui.")));
-        assert!(nvme.serial.is_some());
-        assert_eq!(
-            find(&devices, "nvme0n1p1").mountpoint.as_deref(),
-            Some("/boot/efi")
-        );
-    }
-
-    #[test]
-    fn parses_a_captured_installer_inventory_with_every_mount() {
-        let devices = fixture(include_str!("../tests/fixtures/installer.json"));
-        let disk = find(&devices, "/dev/nvme0n1");
-        assert_eq!(disk.pttype.as_deref(), Some("gpt"));
-        assert!(disk.ptuuid.is_some());
-        assert_eq!(disk.log_sec, Some(512));
-        assert_eq!(disk.maj_min.as_deref(), Some("259:0"));
-        assert!(!disk.read_only);
-
-        let esp = find(&devices, "/dev/nvme0n1p1");
-        assert_eq!(esp.start, Some(2048));
-        assert_eq!(
-            esp.parttype.as_deref(),
-            Some("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
-        );
-
-        let root = find(&devices, "/dev/nvme0n1p3");
-        let mounts = root.all_mountpoints();
-        assert!(mounts.contains(&"/sysroot"), "{mounts:?}");
-        assert!(mounts.contains(&"/var/home"), "{mounts:?}");
-        assert_eq!(root.mountpoint, None, "MOUNTPOINT was not requested");
-
-        let zram = find(&devices, "/dev/zram0");
-        assert_eq!(zram.all_mountpoints(), ["[SWAP]"]);
-    }
-
-    #[test]
-    fn accepts_the_value_shapes_older_lsblk_emits() {
-        let devices = fixture(
-            r#"{"blockdevices":[{"name":"sdc","model":"Old Stick  ","size":"8000000000",
-                "type":"disk","rota":"0","rm":"1","ro":1,"fsused":"12",
-                "mountpoint":"  ","mountpoints":[null," /media "]}]}"#,
-        );
-        let stick = &devices[0];
-        assert_eq!(stick.size, 8_000_000_000);
-        assert_eq!(stick.model.as_deref(), Some("Old Stick"));
-        assert!(!stick.rotational);
-        assert!(stick.removable);
-        assert!(stick.read_only);
-        assert_eq!(stick.fsused, Some(12));
-        assert_eq!(stick.mountpoint, None, "blank is absent");
-        assert_eq!(stick.mountpoints, ["/media"]);
-    }
-
-    #[test]
-    fn malformed_and_empty_documents_are_distinguished() {
-        assert_eq!(parse_slice(br#"{"blockdevices":[]}"#), Some(Vec::new()));
-        assert_eq!(parse_slice(b"{}"), None);
-        assert_eq!(parse_slice(b"not json"), None);
-    }
-
-    #[test]
-    fn descendants_walk_the_holder_tree_depth_first() {
-        let devices = fixture(
-            r#"{"blockdevices":[{"name":"sda","type":"disk","children":[
-                {"name":"sda1","type":"part","children":[
-                    {"name":"luks","type":"crypt","children":[{"name":"root","type":"lvm"}]}]},
-                {"name":"sda2","type":"part"}]}]}"#,
-        );
-        let order: Vec<_> = devices[0].descendants().map(|d| d.name.as_str()).collect();
-        assert_eq!(order, ["sda", "sda1", "luks", "root", "sda2"]);
+    fn parser_accepts_older_shapes_walks_holders_and_distinguishes_malformed_documents() {
+        // Phase `accepts_the_value_shapes_older_lsblk_emits`.
+        {
+            let devices = fixture(
+                r#"{"blockdevices":[{"name":"sdc","model":"Old Stick  ","size":"8000000000",
+                    "type":"disk","rota":"0","rm":"1","ro":1,"fsused":"12",
+                    "mountpoint":"  ","mountpoints":[null," /media "]}]}"#,
+            );
+            let stick = &devices[0];
+            assert_eq!(stick.size, 8_000_000_000);
+            assert_eq!(stick.model.as_deref(), Some("Old Stick"));
+            assert!(!stick.rotational);
+            assert!(stick.removable);
+            assert!(stick.read_only);
+            assert_eq!(stick.fsused, Some(12));
+            assert_eq!(stick.mountpoint, None, "blank is absent");
+            assert_eq!(stick.mountpoints, ["/media"]);
+        }
+        // Phase `malformed_and_empty_documents_are_distinguished`.
+        {
+            assert_eq!(parse_slice(br#"{"blockdevices":[]}"#), Some(Vec::new()));
+            assert_eq!(parse_slice(b"{}"), None);
+            assert_eq!(parse_slice(b"not json"), None);
+        }
+        // Phase `descendants_walk_the_holder_tree_depth_first`.
+        {
+            let devices = fixture(
+                r#"{"blockdevices":[{"name":"sda","type":"disk","children":[
+                    {"name":"sda1","type":"part","children":[
+                        {"name":"luks","type":"crypt","children":[{"name":"root","type":"lvm"}]}]},
+                    {"name":"sda2","type":"part"}]}]}"#,
+            );
+            let order: Vec<_> = devices[0].descendants().map(|d| d.name.as_str()).collect();
+            assert_eq!(order, ["sda", "sda1", "luks", "root", "sda2"]);
+        }
     }
 
     #[test]

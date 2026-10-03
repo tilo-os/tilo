@@ -8,13 +8,13 @@ use std::collections::HashMap;
 use shell::notifications::NotificationBridge;
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, ChromeState};
-use shell::shell::notification::Notification;
 use shell::shell::notification_history::NotificationHistoryStore;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::{FreshId as _, WorkspaceId, WorkspaceTree};
 use taffy::prelude::TaffyMaxContent;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_desktop::notifications::Notification;
 use ui::a11y::AccessNode;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -115,14 +115,16 @@ fn deliver(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, eve
     let mut focus_target = None;
     host.handle_event(
         event,
-        1.0,
-        &Modifiers::default(),
-        &mut state,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy,
+        },
     );
 }
 
@@ -279,7 +281,7 @@ fn clicking_a_retained_notification_invokes_its_default_action_over_dbus() {
     let bridge = NotificationBridge::new();
     chrome.borrow_mut().set_notification_bridge(bridge.clone());
     let mut notification = from_app("org.mail", "Mail", "Invoice");
-    notification.dbus_id = Some(41);
+    notification.sender_id = Some(41);
     notification.actions = vec![("default".into(), "Open".into())];
     retain(&chrome, [notification]);
     let (taffy, node) = open_notification_centre(&mut host, &chrome);

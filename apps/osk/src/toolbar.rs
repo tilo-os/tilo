@@ -107,21 +107,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_toolbar_has_four_items() {
-        let t = OskToolbarItem::default_set();
-        assert_eq!(t.len(), 4);
-        assert_eq!(t[0].action, OskToolbarAction::Paste);
-        assert_eq!(t[3].action, OskToolbarAction::Dismiss);
-    }
-
-    #[test]
-    fn toolbar_rects_split_evenly_and_fill_width() {
-        let items = OskToolbarItem::default_set();
-        let rects = toolbar_rects(&items, Rect::new(0.0, 0.0, 400.0, 50.0));
-        assert_eq!(rects.len(), 4);
-        for (_, r) in &rects {
-            assert!((r.width() - 100.0).abs() < 1e-6);
+    fn default_toolbar_has_four_evenly_split_items() {
+        eprintln!("phase default_toolbar_has_four_items");
+        {
+            let t = OskToolbarItem::default_set();
+            assert_eq!(t.len(), 4);
+            assert_eq!(t[0].action, OskToolbarAction::Paste);
+            assert_eq!(t[3].action, OskToolbarAction::Dismiss);
         }
-        assert!((rects.last().unwrap().1.x1 - 400.0).abs() < 1e-6);
+
+        eprintln!("phase toolbar_rects_split_evenly_and_fill_width");
+        {
+            let items = OskToolbarItem::default_set();
+            let rects = toolbar_rects(&items, Rect::new(0.0, 0.0, 400.0, 50.0));
+            assert_eq!(rects.len(), 4);
+            for (_, r) in &rects {
+                assert!((r.width() - 100.0).abs() < 1e-6);
+            }
+            assert!((rects.last().unwrap().1.x1 - 400.0).abs() < 1e-6);
+        }
     }
 }

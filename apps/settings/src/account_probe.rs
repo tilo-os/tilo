@@ -5,7 +5,7 @@
 //! `CalDAV`/`WebDAV`. Both verify servers against Tilo's trust store.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::net::TcpStream;
@@ -42,10 +42,10 @@ impl LiveAccountTester {
         if addresses.is_empty() {
             return Err("server name returned no address".into());
         }
-        let deadline = Instant::now() + Self::NETWORK_TIMEOUT;
+        let deadline = ui::time::now() + Self::NETWORK_TIMEOUT;
         let mut last_error = None;
         for address in addresses {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(ui::time::now()) else {
                 break;
             };
             match timeout(remaining, TcpStream::connect(address)).await {
@@ -297,77 +297,103 @@ mod tests {
         account
     }
 
+    /// The IMAP probe signs in over verified TLS, reports rejected credentials,
+    /// refuses bad greetings and untrusted certificates, and never sends a
+    /// login carrying control characters.
     #[test]
-    fn email_probe_completes_tls_and_authenticates() {
-        let (port, roots, worker) = imap_server(
-            "* OK [CAPABILITY IMAP4rev1] ready\r\n",
-            "TAG OK LOGIN completed\r\n",
+    fn email_probe_authenticates_and_refuses_untrusted_servers() {
+        // (case, greeting, LOGIN reply, password, trust the server certificate,
+        //  expected result, substrings the server must see in LOGIN (None:
+        //  nothing may be sent))
+        type ImapCase = (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            bool,
+            Result<String, String>,
+            Option<&'static [&'static str]>,
         );
-        assert_eq!(
-            LiveAccountTester::email_with_roots(
-                &email_account(port),
-                &accounts::Secret::password("app-password"),
-                roots,
+        let served: [ImapCase; 4] = [
+            (
+                "tls sign-in succeeds",
+                "* OK [CAPABILITY IMAP4rev1] ready\r\n",
+                "TAG OK LOGIN completed\r\n",
+                "app-password",
+                true,
+                Ok("IMAP sign-in succeeded".into()),
+                Some(&[" LOGIN ", "\"ada@example.test\"", "\"app-password\""]),
             ),
-            Ok("IMAP sign-in succeeded".into())
-        );
-        let login = worker.join().expect("server worker");
-        assert!(login.contains(" LOGIN "), "{login}");
-        assert!(login.contains("\"ada@example.test\""), "{login}");
-        assert!(login.contains("\"app-password\""), "{login}");
-    }
-
-    #[test]
-    fn email_probe_reports_a_rejected_credential() {
-        let (port, roots, worker) = imap_server(
-            "* OK ready\r\n",
-            "TAG NO [AUTHENTICATIONFAILED] Invalid credentials\r\n",
-        );
-        assert_eq!(
-            LiveAccountTester::email_with_roots(
-                &email_account(port),
-                &accounts::Secret::password("wrong"),
-                roots,
+            (
+                "rejected credential",
+                "* OK ready\r\n",
+                "TAG NO [AUTHENTICATIONFAILED] Invalid credentials\r\n",
+                "wrong",
+                true,
+                Err("IMAP server rejected the saved credential".into()),
+                Some(&[]),
             ),
-            Err("IMAP server rejected the saved credential".into())
-        );
-        worker.join().expect("server worker");
-    }
-
-    #[test]
-    fn email_probe_refuses_a_non_ok_greeting() {
-        let (port, roots, worker) = imap_server("* BYE too busy\r\n", "");
-        assert_eq!(
-            LiveAccountTester::email_with_roots(
-                &email_account(port),
-                &accounts::Secret::password("app-password"),
-                roots,
+            (
+                "non-OK greeting sends no credential",
+                "* BYE too busy\r\n",
+                "",
+                "app-password",
+                true,
+                Err("server did not provide a valid IMAP greeting".into()),
+                None,
             ),
-            Err("server did not provide a valid IMAP greeting".into())
-        );
-        let login = worker.join().expect("server worker");
-        assert!(login.is_empty(), "no credential after a refused greeting");
-    }
-
-    #[test]
-    fn email_probe_refuses_an_untrusted_certificate() {
-        let (port, _roots, _worker) = imap_server("* OK ready\r\n", "");
-        assert_eq!(
-            LiveAccountTester::email_with_roots(
-                &email_account(port),
-                &accounts::Secret::password("app-password"),
-                rustls::RootCertStore::empty(),
+            (
+                "untrusted certificate",
+                "* OK ready\r\n",
+                "",
+                "app-password",
+                false,
+                Err("could not establish the secure IMAP connection".into()),
+                Some(&[]),
             ),
-            Err("could not establish the secure IMAP connection".into())
-        );
-    }
+        ];
+        for (case, greeting, reply, password, trusted, want, login_must_contain) in served {
+            let (port, roots, worker) = imap_server(
+                // The server fixture takes `'static` strings; the table is static.
+                greeting, reply,
+            );
+            let roots = if trusted {
+                roots
+            } else {
+                rustls::RootCertStore::empty()
+            };
+            assert_eq!(
+                LiveAccountTester::email_with_roots(
+                    &email_account(port),
+                    &accounts::Secret::password(password),
+                    roots,
+                ),
+                want,
+                "case {case}"
+            );
+            if !trusted {
+                // The handshake fails on the server side too; its worker is not joined.
+                drop(worker);
+                continue;
+            }
+            let login = worker.join().expect("server worker");
+            match login_must_contain {
+                Some(parts) => {
+                    for part in parts {
+                        assert!(login.contains(part), "case {case}: {login}");
+                    }
+                }
+                None => assert!(
+                    login.is_empty(),
+                    "case {case}: no credential after a refused greeting"
+                ),
+            }
+        }
 
-    #[test]
-    fn email_probe_rejects_control_characters_before_connecting() {
-        let account = email_account(9);
+        // Control characters are refused before any connection is attempted.
         assert_eq!(
             LiveAccountTester::email_with_roots(
-                &account,
+                &email_account(9),
                 &accounts::Secret::password("pass\r\nA1 DELETE INBOX"),
                 rustls::RootCertStore::empty(),
             ),
@@ -381,8 +407,10 @@ mod tests {
         account
     }
 
+    /// The DAV probe signs in with PROPFIND, reports rejection, and never
+    /// replays authorization to a redirect target.
     #[test]
-    fn dav_probe_accepts_a_signed_in_multistatus() {
+    fn dav_probe_authenticates_and_never_replays_credentials() {
         let server = Responder::start(vec![Reply::status(207).body(
             r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href></d:response></d:multistatus>"#,
         )]);
@@ -395,20 +423,15 @@ mod tests {
         assert_eq!(request.method, "PROPFIND");
         assert_eq!(request.header("depth"), Some("0"));
         assert!(request.body_text().contains("<D:resourcetype/>"));
-    }
 
-    #[test]
-    fn dav_probe_reports_a_rejected_credential() {
         let server = Responder::start(vec![Reply::status(401)]);
         let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
         assert_eq!(
             LiveAccountTester::dav(&account, &accounts::Secret::password("wrong")),
             Err("server rejected the saved credential".into())
         );
-    }
 
-    #[test]
-    fn dav_redirect_never_replays_authorization() {
+        // A redirect is reported, not followed with the credential.
         let target = Responder::silent();
         let target_url = format!("http://localhost:{}/stolen", target.port());
         let redirect = Responder::start(vec![Reply::status(302).header("Location", &target_url)]);

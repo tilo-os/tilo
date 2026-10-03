@@ -7,8 +7,10 @@
 //!
 //! A minimal [`World`] implementation backs compilation. We need only one
 //! in-memory source file (`/main.typ`) plus the fonts embedded by
-//! `typst-assets` (plus the shared Windows emoji face). There is no package
-//! resolution, no filesystem, no clock.
+//! `typst-assets` (plus the shared Windows emoji face). In the browser the
+//! same fonts arrive as host data after the editor opens, keeping 9 MiB out
+//! of the page's first download. There is no package resolution, no
+//! filesystem, no clock.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -116,6 +118,71 @@ impl CompileOutput {
     }
 }
 
+/// Whether a [`WorldParts`] has every font it will ever have.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fonts {
+    Ready,
+    /// The host is still fetching some; build again once it relayouts.
+    Loading,
+    /// The host could not supply some; compile with the rest.
+    Failed(String),
+}
+
+/// Typst's bundled fonts: embedded in native builds, and in a page fetched
+/// from the host by name when the editor opens (`tilo_typst_fonts`).
+mod fonts {
+    use typst::foundations::Bytes;
+    use typst::text::Font;
+
+    use super::Fonts;
+
+    /// The bundled fonts available now.
+    pub fn bundled() -> (Vec<Font>, Fonts) {
+        if tilo_typst_fonts::EMBEDDED {
+            (embedded(), Fonts::Ready)
+        } else {
+            from_host()
+        }
+    }
+
+    #[cfg(feature = "thin")]
+    fn embedded() -> Vec<Font> {
+        runtime_dylib::typst_fonts()
+    }
+
+    #[cfg(not(feature = "thin"))]
+    fn embedded() -> Vec<Font> {
+        tilo_typst_fonts::embedded()
+            .into_iter()
+            .flat_map(|data| Font::iter(Bytes::new(data)))
+            .collect()
+    }
+
+    fn from_host() -> (Vec<Font>, Fonts) {
+        let mut fonts = Vec::new();
+        let mut state = Fonts::Ready;
+        for name in tilo_typst_fonts::HOST_FONTS {
+            match ui::host_data::request(name) {
+                ui::host_data::Status::Ready(bytes) => fonts.extend(Font::iter(Bytes::new(bytes))),
+                ui::host_data::Status::Pending => state = Fonts::Loading,
+                ui::host_data::Status::Failed(reason) => {
+                    if state == Fonts::Ready {
+                        state = Fonts::Failed(format!("{name}: {reason}"));
+                    }
+                }
+            }
+        }
+        (fonts, state)
+    }
+
+    pub fn loading() -> bool {
+        !tilo_typst_fonts::EMBEDDED
+            && tilo_typst_fonts::HOST_FONTS
+                .iter()
+                .any(|name| ui::host_data::request(name) == ui::host_data::Status::Pending)
+    }
+}
+
 /// Immutable, reusable pieces of a [`World`]: the standard library, the font
 /// book, and the parsed fonts. Built once (parsing every embedded font is the
 /// expensive part) and shared by `Arc` across every compile.
@@ -123,46 +190,61 @@ pub struct WorldParts {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
     fonts: Vec<Font>,
+    state: Fonts,
 }
 
 impl WorldParts {
     /// Build the default library and font book once per process, then share
-    /// their immutable data across documents and compilation workers.
+    /// their immutable data across documents and compilation workers. While
+    /// the host is still supplying fonts the parts are rebuilt on each call
+    /// and kept only once complete.
     pub fn new() -> Arc<Self> {
         static PARTS: OnceLock<Arc<WorldParts>> = OnceLock::new();
-        Arc::clone(PARTS.get_or_init(|| {
-            #[cfg(feature = "thin")]
-            let fonts = runtime_dylib::typst_fonts();
-            #[cfg(not(feature = "thin"))]
-            let fonts: Vec<Font> = typst_assets::fonts()
-                .flat_map(|data| Font::iter(Bytes::new(data)))
-                .collect();
-            #[cfg(target_os = "windows")]
-            let fonts = {
-                let mut fonts = fonts;
-                // The toolkit already validates and shares the installed font
-                // catalog. Reuse its emoji face instead of bundling a second
-                // copy or relying on machine-specific Windows font discovery.
-                let system = ui::text_render::configured_font_system();
-                let database = system.db();
-                if let Some(face) = database.faces().find(|face| {
-                    face.families
-                        .iter()
-                        .any(|(name, _)| name == "Noto Color Emoji")
-                }) && let Some(Some(font)) = database.with_face_data(face.id, |data, index| {
-                    Font::new(Bytes::new(data.to_vec()), index)
-                }) {
-                    fonts.push(font);
-                }
-                fonts
-            };
-            let book = FontBook::from_fonts(fonts.iter());
-            Arc::new(Self {
-                library: LazyHash::new(Library::builder().build()),
-                book: LazyHash::new(book),
-                fonts,
-            })
-        }))
+        if let Some(parts) = PARTS.get() {
+            return Arc::clone(parts);
+        }
+        let parts = Arc::new(Self::build());
+        if parts.state == Fonts::Loading {
+            return parts;
+        }
+        Arc::clone(PARTS.get_or_init(|| parts))
+    }
+
+    pub fn fonts(&self) -> &Fonts {
+        &self.state
+    }
+
+    /// Whether the host is still fetching bundled fonts: cheap, so a caller
+    /// can wait for it before building again.
+    pub fn fonts_loading() -> bool {
+        fonts::loading()
+    }
+
+    fn build() -> Self {
+        let (mut fonts, state) = fonts::bundled();
+        if tilo_typst_fonts::BORROW_SYSTEM_EMOJI {
+            // The toolkit already validates and shares the installed font
+            // catalog. Reuse its emoji face instead of bundling a second
+            // copy or relying on machine-specific system font discovery.
+            let system = ui::text_render::configured_font_system();
+            let database = system.db();
+            if let Some(face) = database.faces().find(|face| {
+                face.families
+                    .iter()
+                    .any(|(name, _)| name == "Noto Color Emoji")
+            }) && let Some(Some(font)) = database.with_face_data(face.id, |data, index| {
+                Font::new(Bytes::new(data.to_vec()), index)
+            }) {
+                fonts.push(font);
+            }
+        }
+        let book = FontBook::from_fonts(fonts.iter());
+        Self {
+            library: LazyHash::new(Library::builder().build()),
+            book: LazyHash::new(book),
+            fonts,
+            state,
+        }
     }
 }
 
@@ -227,7 +309,7 @@ impl World for TypstWorld {
 /// bad input — compiler errors are returned as [`Diagnostic`]s with an empty
 /// page list.
 pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> CompileOutput {
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     let world = TypstWorld::new(parts.clone(), src);
 
     let result = typst::compile::<PagedDocument>(&world);
@@ -471,153 +553,155 @@ fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_compilation_uses_real_emoji_glyphs() {
-        let parts = WorldParts::new();
-        let world = TypstWorld::new(parts, "= Native Grün 🌍");
-        let output = typst::compile::<PagedDocument>(&world)
-            .output
-            .expect("emoji document compiles");
-        let mut frames: Vec<_> = output.pages.iter().map(|page| &page.frame).collect();
-        let mut glyph_count = 0;
-        while let Some(frame) = frames.pop() {
-            for (_, item) in frame.items() {
-                match item {
-                    FrameItem::Group(group) => frames.push(&group.frame),
-                    FrameItem::Text(text) => {
-                        glyph_count += text.glyphs.len();
-                        assert!(
-                            text.glyphs.iter().all(|glyph| glyph.id != 0),
-                            "compiled text contains a missing glyph"
-                        );
+    fn compile_extracts_text_glyphs_and_pdf_bytes() {
+        // Case `windows_compilation_uses_real_emoji_glyphs`.
+        #[cfg(target_os = "windows")]
+        {
+            let parts = WorldParts::new();
+            let world = TypstWorld::new(parts, "= Native Grün 🌍");
+            let output = typst::compile::<PagedDocument>(&world)
+                .output
+                .expect("emoji document compiles");
+            let mut frames: Vec<_> = output.pages.iter().map(|page| &page.frame).collect();
+            let mut glyph_count = 0;
+            while let Some(frame) = frames.pop() {
+                for (_, item) in frame.items() {
+                    match item {
+                        FrameItem::Group(group) => frames.push(&group.frame),
+                        FrameItem::Text(text) => {
+                            glyph_count += text.glyphs.len();
+                            assert!(
+                                text.glyphs.iter().all(|glyph| glyph.id != 0),
+                                "compiled text contains a missing glyph"
+                            );
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            assert!(glyph_count > 0, "the production compiler emitted no text");
         }
-        assert!(glyph_count > 0, "the production compiler emitted no text");
-    }
+        // Case `compile_extracts_positioned_text`:
+        // A clean compile renders a page, records its point size, and extracts
+        // selectable glyph cells whose left-to-right x positions increase — the
+        // geometry the preview's text selection hit-tests against.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
+            assert!(out.ok, "clean source compiles");
+            assert_eq!(out.error_count(), 0);
+            assert!(!out.pages.is_empty(), "produced a page");
+            assert!(
+                out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
+                "point size set"
+            );
 
-    /// A clean compile renders a page, records its point size, and extracts
-    /// selectable glyph cells whose left-to-right x positions increase — the
-    /// geometry the preview's text selection hit-tests against.
-    #[test]
-    fn compile_extracts_positioned_text() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
-        assert!(out.ok, "clean source compiles");
-        assert_eq!(out.error_count(), 0);
-        assert!(!out.pages.is_empty(), "produced a page");
-        assert!(
-            out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
-            "point size set"
-        );
+            let cells: usize = out
+                .page_text
+                .iter()
+                .flat_map(|p| p.iter())
+                .map(|r| r.cells.len())
+                .sum();
+            assert!(cells > 0, "extracted glyph cells for the text layer");
 
-        let cells: usize = out
-            .page_text
-            .iter()
-            .flat_map(|p| p.iter())
-            .map(|r| r.cells.len())
-            .sum();
-        assert!(cells > 0, "extracted glyph cells for the text layer");
-
-        // Within any run, glyph cells advance left-to-right.
-        for run in out.page_text.iter().flat_map(|p| p.iter()) {
-            for w in run.cells.windows(2) {
-                assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+            // Within any run, glyph cells advance left-to-right.
+            for run in out.page_text.iter().flat_map(|p| p.iter()) {
+                for w in run.cells.windows(2) {
+                    assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+                }
+                assert!(run.bottom > run.top, "run line box has positive height");
             }
-            assert!(run.bottom > run.top, "run line box has positive height");
+        }
+        // Case `compile_pdf_produces_pdf_bytes`:
+        // Exporting a clean document yields a real PDF: the byte stream opens with
+        // the `%PDF` magic and carries substantive content.
+        {
+            let parts = WorldParts::new();
+            let bytes = compile_pdf(&parts, "= Export me\n\nA body paragraph to typeset.\n")
+                .expect("a clean source exports to PDF");
+            assert!(
+                bytes.starts_with(b"%PDF"),
+                "exported bytes begin with the %PDF magic (got {:?})",
+                &bytes[..bytes.len().min(8)]
+            );
+            assert!(
+                bytes.len() > 400,
+                "a real single-page PDF is more than a stub"
+            );
         }
     }
 
-    /// A reference to an undefined variable is surfaced as an error with a
-    /// resolvable span whose end column is strictly past the start.
     #[test]
-    fn error_carries_resolvable_span() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
-        assert!(out.error_count() >= 1, "unknown variable is an error");
-        let d = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Error)
-            .expect("an error diagnostic");
-        assert!(d.line.is_some() && d.col.is_some(), "start resolved");
-        assert!(d.end_line.is_some() && d.end_col.is_some(), "end resolved");
-        assert!(
-            d.end_col.unwrap() > d.col.unwrap(),
-            "span has positive width: {:?}..{:?}",
-            d.col,
-            d.end_col
-        );
-        assert_eq!(d.line, Some(1), "on the first line");
-    }
+    fn compile_errors_carry_spans_and_both_severities() {
+        // Case `error_carries_resolvable_span`:
+        // A reference to an undefined variable is surfaced as an error with a
+        // resolvable span whose end column is strictly past the start.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
+            assert!(out.error_count() >= 1, "unknown variable is an error");
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Error)
+                .expect("an error diagnostic");
+            assert!(d.line.is_some() && d.col.is_some(), "start resolved");
+            assert!(d.end_line.is_some() && d.end_col.is_some(), "end resolved");
+            assert!(
+                d.end_col.unwrap() > d.col.unwrap(),
+                "span has positive width: {:?}..{:?}",
+                d.col,
+                d.end_col
+            );
+            assert_eq!(d.line, Some(1), "on the first line");
+        }
+        // Case `compile_pdf_reports_errors_instead_of_writing_garbage`:
+        // A source that can't compile can't export — the PDF path reports the same
+        // blocking error the preview would show, not a truncated/empty file.
+        {
+            let parts = WorldParts::new();
+            let err = compile_pdf(&parts, "Body #undefined_var end.\n")
+                .expect_err("a broken source must not produce PDF bytes");
+            assert!(
+                err.iter().any(|d| d.kind == DiagKind::Error),
+                "the blocking error is surfaced to the caller"
+            );
+        }
+        // Case `error_and_warning_fixture_surfaces_both_severities`:
+        // The bundled error+warning fixture drives the whole diagnostics surface:
+        // the real compiler returns **both** an error and a warning, each resolved
+        // to a distinct source line so the panel, the inline squiggles, and
+        // click-to-jump all have real spans to act on.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
+            assert!(out.error_count() >= 1, "fixture carries a blocking error");
+            assert!(out.warning_count() >= 1, "fixture carries a warning");
 
-    /// Exporting a clean document yields a real PDF: the byte stream opens with
-    /// the `%PDF` magic and carries substantive content.
-    #[test]
-    fn compile_pdf_produces_pdf_bytes() {
-        let parts = WorldParts::new();
-        let bytes = compile_pdf(&parts, "= Export me\n\nA body paragraph to typeset.\n")
-            .expect("a clean source exports to PDF");
-        assert!(
-            bytes.starts_with(b"%PDF"),
-            "exported bytes begin with the %PDF magic (got {:?})",
-            &bytes[..bytes.len().min(8)]
-        );
-        assert!(
-            bytes.len() > 400,
-            "a real single-page PDF is more than a stub"
-        );
-    }
-
-    /// A source that can't compile can't export — the PDF path reports the same
-    /// blocking error the preview would show, not a truncated/empty file.
-    #[test]
-    fn compile_pdf_reports_errors_instead_of_writing_garbage() {
-        let parts = WorldParts::new();
-        let err = compile_pdf(&parts, "Body #undefined_var end.\n")
-            .expect_err("a broken source must not produce PDF bytes");
-        assert!(
-            err.iter().any(|d| d.kind == DiagKind::Error),
-            "the blocking error is surfaced to the caller"
-        );
-    }
-
-    /// The bundled error+warning fixture drives the whole diagnostics surface:
-    /// the real compiler returns **both** an error and a warning, each resolved
-    /// to a distinct source line so the panel, the inline squiggles, and
-    /// click-to-jump all have real spans to act on.
-    #[test]
-    fn error_and_warning_fixture_surfaces_both_severities() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
-        assert!(out.error_count() >= 1, "fixture carries a blocking error");
-        assert!(out.warning_count() >= 1, "fixture carries a warning");
-
-        let err = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Error)
-            .expect("an error diagnostic");
-        let warn = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Warning)
-            .expect("a warning diagnostic");
-        assert!(
-            err.line.is_some() && err.col.is_some(),
-            "error span resolved"
-        );
-        assert!(
-            warn.line.is_some() && warn.col.is_some(),
-            "warning span resolved"
-        );
-        assert_ne!(
-            err.line, warn.line,
-            "the two diagnostics sit on different lines so a jump is observable"
-        );
-        assert_eq!(warn.line, Some(1), "the font warning is on line 1");
+            let err = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Error)
+                .expect("an error diagnostic");
+            let warn = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Warning)
+                .expect("a warning diagnostic");
+            assert!(
+                err.line.is_some() && err.col.is_some(),
+                "error span resolved"
+            );
+            assert!(
+                warn.line.is_some() && warn.col.is_some(),
+                "warning span resolved"
+            );
+            assert_ne!(
+                err.line, warn.line,
+                "the two diagnostics sit on different lines so a jump is observable"
+            );
+            assert_eq!(warn.line, Some(1), "the font warning is on line 1");
+        }
     }
 }

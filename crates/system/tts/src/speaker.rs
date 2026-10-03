@@ -151,47 +151,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_ordering_is_significance_ascending() {
-        assert!(Priority::Important > Priority::Message);
-        assert!(Priority::Message > Priority::Text);
-        assert!(Priority::Text > Priority::Notification);
-        assert!(Priority::Notification > Priority::Progress);
-    }
-
-    #[test]
-    fn default_priority_is_message() {
-        assert_eq!(Priority::default(), Priority::Message);
-    }
-
-    #[test]
-    fn utterance_builder() {
-        let u = Utterance::new("hi")
-            .with_priority(Priority::Important)
-            .with_interrupt(false);
-        assert_eq!(u.text, "hi");
-        assert_eq!(u.priority, Priority::Important);
-        assert!(!u.interrupt);
-    }
-
-    #[test]
-    fn utterance_new_defaults_to_interrupting_message() {
-        let u = Utterance::new("focus changed");
-        assert_eq!(u.priority, Priority::Message);
-        assert!(u.interrupt);
-    }
-
-    #[test]
-    fn rate_mapping() {
-        assert_eq!(rate_to_ssip(1.0), 0);
-        assert_eq!(rate_to_ssip(2.0), 100);
-        assert_eq!(rate_to_ssip(3.0), 100); // saturates
-        assert_eq!(rate_to_ssip(0.5), -100);
-        assert_eq!(rate_to_ssip(0.1), -100); // saturates
-        assert_eq!(rate_to_ssip(0.0), 0); // guarded
-        assert_eq!(rate_to_ssip(-1.0), 0); // guarded
-        assert_eq!(rate_to_ssip(f32::NAN), 0); // guarded
-        assert_eq!(rate_to_ssip(1.5), 50);
-        assert_eq!(rate_to_ssip(0.75), -50);
+    fn priorities_utterances_and_rates_have_documented_defaults() {
+        // Phase `priority_ordering_is_significance_ascending`.
+        {
+            assert!(Priority::Important > Priority::Message);
+            assert!(Priority::Message > Priority::Text);
+            assert!(Priority::Text > Priority::Notification);
+            assert!(Priority::Notification > Priority::Progress);
+        }
+        // Phase `default_priority_is_message`.
+        {
+            assert_eq!(Priority::default(), Priority::Message);
+        }
+        // Phase `utterance_builder`.
+        {
+            let u = Utterance::new("hi")
+                .with_priority(Priority::Important)
+                .with_interrupt(false);
+            assert_eq!(u.text, "hi");
+            assert_eq!(u.priority, Priority::Important);
+            assert!(!u.interrupt);
+        }
+        // Phase `utterance_new_defaults_to_interrupting_message`.
+        {
+            let u = Utterance::new("focus changed");
+            assert_eq!(u.priority, Priority::Message);
+            assert!(u.interrupt);
+        }
+        // Phase `rate_mapping`.
+        {
+            assert_eq!(rate_to_ssip(1.0), 0);
+            assert_eq!(rate_to_ssip(2.0), 100);
+            assert_eq!(rate_to_ssip(3.0), 100); // saturates
+            assert_eq!(rate_to_ssip(0.5), -100);
+            assert_eq!(rate_to_ssip(0.1), -100); // saturates
+            assert_eq!(rate_to_ssip(0.0), 0); // guarded
+            assert_eq!(rate_to_ssip(-1.0), 0); // guarded
+            assert_eq!(rate_to_ssip(f32::NAN), 0); // guarded
+            assert_eq!(rate_to_ssip(1.5), 50);
+            assert_eq!(rate_to_ssip(0.75), -50);
+        }
     }
 
     #[test]

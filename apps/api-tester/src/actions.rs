@@ -45,8 +45,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::doc::ApiDoc;
@@ -701,11 +700,40 @@ pub(crate) fn immediate(
     })
 }
 
-/// Frame-by-frame directory root. Deep records arrive through search or an
-/// exact stable-id resolver, preventing palette opens from allocating every
-/// request and variable action closure.
-pub fn provide_root_resources(_doc: &AutoCommit) -> Vec<Resource> {
-    vec![workspace_root().with_child(history_root())]
+/// Prompted workspace creates for [`tilo_resource::publish`]: ids are minted
+/// when the name is committed, then baked into the envelope so replay stays
+/// deterministic.
+pub(crate) fn workspace_bound_actions() -> Vec<ActionSpec> {
+    vec![
+        ActionSpec::prompted(
+            "new-collection",
+            "New collection",
+            "Collection name",
+            "e.g. Users API",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&create_collection_action(Uuid::new_v4(), name.trim())),
+        ),
+        ActionSpec::prompted(
+            "new-environment",
+            "New environment",
+            "Environment name",
+            "e.g. Production",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
+        ),
+    ]
+}
+
+/// Static workspace children for [`tilo_resource::publish`]: the active
+/// request Send Effect, contextual menus, and the history directory. Deep
+/// collection / request / environment records resolve by stable id.
+pub(crate) fn document_children() -> Vec<Resource> {
+    vec![
+        active_request_resource(),
+        request_menu_resource(),
+        environment_menu_resource(),
+        history_root(),
+    ]
 }
 
 fn history_root() -> Resource {
@@ -716,37 +744,30 @@ fn history_root() -> Resource {
     )
 }
 
-fn workspace_root() -> Resource {
-    let mut root = Resource::new(
-        "api_tester.workspace",
+/// Standalone / `--shots` / unit-test tree: [`tilo_resource::publish`] owns the
+/// workspace door. Deep records arrive through search or an exact stable-id
+/// resolver, preventing palette opens from allocating every request and
+/// variable action closure.
+pub fn provide_resources(state: &crate::resource::WorkspaceState) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::ApiTester>(
         "api_tester.workspace",
         "API workspace",
-    );
-    root = root.with_child(active_request_resource());
-    root = root.with_child(request_menu_resource());
-    root = root.with_child(environment_menu_resource());
+        state,
+    )]
+}
 
-    // Workspace-level: create a collection / environment (prompted for a name;
-    // the id is minted once when the argument is committed, then baked into the
-    // envelope, so replay stays deterministic).
-    root = root.with_action(ActionSpec::prompted(
-        "new-collection",
-        "New collection",
-        "Collection name",
-        "e.g. Users API",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&create_collection_action(Uuid::new_v4(), name.trim())),
-    ));
-    root = root.with_action(ActionSpec::prompted(
-        "new-environment",
-        "New environment",
-        "Environment name",
-        "e.g. Production",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
-    ));
-
-    root
+/// Hosted-only extras that are not document state: a failed search-catalog
+/// refresh surfaces as a palette diagnostic. Response bodies and in-flight
+/// HTTP work stay widget-local and are never published.
+pub(crate) fn live_search_status_resources(error: Option<String>) -> Vec<Resource> {
+    match error {
+        Some(message) => vec![Resource::new(
+            "api_tester.search_status",
+            "api_tester.search_status",
+            format!("Search index unavailable: {message}"),
+        )],
+        None => Vec::new(),
+    }
 }
 
 /// One stable, secret-safe variable resource. Kept separate so environment
@@ -796,9 +817,13 @@ pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Reso
     ))
 }
 
-impl ResourceProvider for crate::app::ApiTesterApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut roots = provide_root_resources(doc);
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ApiTesterApp {
+    /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state = <crate::resource::ApiTester as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut roots = provide_resources(&state);
         if let Some(error) = self.search_error_message()
             && let Some(root) = roots.first_mut()
         {
@@ -811,7 +836,12 @@ impl ResourceProvider for crate::app::ApiTesterApp {
         roots
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "api_tester.workspace" {
+            // The palette's published workspace. Collections, requests, and
+            // variables still resolve from the search catalog.
+            return self.publish_resources(doc).into_iter().next();
+        }
         self.resource_from_catalog(id)
     }
 }
@@ -850,116 +880,226 @@ mod tests {
         (doc, cid, rid, eid)
     }
 
-    /// An empty document still publishes the workspace root with the create
-    /// actions (so the first collection can be made from Ctrl+K), plus the
-    /// device-local current-request and contextual menu resources, but no
-    /// collection / environment records.
+    /// The workspace root directory is bounded: it publishes the create
+    /// actions and device-local child resources, never the records, which
+    /// resolve precisely by their canonical deep address instead.
     #[test]
-    fn empty_doc_publishes_workspace_with_create_actions_only() {
-        let doc = AutoCommit::new();
-        let resources = provide_root_resources(&doc);
-        assert_eq!(resources.len(), 1);
-        let root = &resources[0];
-        assert_eq!(root.kind, "api_tester.workspace");
-        assert!(root.actions.iter().any(|a| a.id == "new-collection"));
-        assert!(root.actions.iter().any(|a| a.id == "new-environment"));
+    fn workspace_directory_is_bounded_and_resolves_every_deep_address() {
+        // Phase "empty doc": an empty document still publishes the workspace
+        // root with the create actions (so the first collection can be made
+        // from Ctrl+K), plus the device-local current-request and contextual
+        // menu resources, but no collection / environment records.
+        {
+            let resources = provide_resources(&crate::resource::WorkspaceState::default());
+            assert_eq!(resources.len(), 1, "empty doc");
+            let root = &resources[0];
+            assert_eq!(root.kind, "api_tester.workspace", "empty doc");
+            assert!(
+                root.actions.iter().any(|a| a.id == "new-collection"),
+                "empty doc"
+            );
+            assert!(
+                root.actions.iter().any(|a| a.id == "new-environment"),
+                "empty doc"
+            );
+            assert_eq!(
+                root.children
+                    .iter()
+                    .map(|resource| resource.kind.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "api_tester.active_request",
+                    "api_tester.request_menu",
+                    "api_tester.environment_menu",
+                    "api_tester.history",
+                ],
+                "empty doc"
+            );
+        }
+
+        // Phase "seeded": every canonical deep address resolves on demand.
+        {
+            let mut app = crate::app::ApiTesterApp::new_demo();
+            let (doc, collection, request, environment) = seeded();
+            let collections = ApiDoc::collections(&doc, &ROOT);
+            let environments = ApiDoc::environments(&doc, &ROOT);
+            app.refresh_search_records(&collections, &environments);
+            let variable = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
+            let root = crate::app::ApiTesterApp::publish_resources(&app, &doc);
+            assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
+            assert!(
+                root[0]
+                    .children
+                    .iter()
+                    .all(|child| child.kind != "api_tester.collection")
+            );
+            for (id, actions) in [
+                (
+                    format!("api_tester.collection:{collection}"),
+                    &["rename", "delete", "add-request", "save-active"][..],
+                ),
+                (
+                    format!("api_tester.request:{request}"),
+                    &["rename", "delete", "send"][..],
+                ),
+                (
+                    format!("api_tester.environment:{environment}"),
+                    &["activate", "rename", "delete", "set-variable"][..],
+                ),
+                (
+                    format!("api_tester.variable:{environment}:{variable}"),
+                    &["rename", "set-value", "delete"][..],
+                ),
+            ] {
+                let exact = crate::app::ApiTesterApp::publish_resource(&app, &doc, &id)
+                    .expect("stable id resolves precisely on demand");
+                assert_eq!(exact.id.0, id);
+                for action in actions {
+                    assert!(
+                        exact
+                            .actions
+                            .iter()
+                            .any(|candidate| candidate.id == *action),
+                        "{id} exposes {action}"
+                    );
+                }
+            }
+        }
+
+        // Phase "failed catalog refresh": exposed as a palette diagnostic
+        // resource under the root.
+        {
+            let mut app = crate::app::ApiTesterApp::new_demo();
+            let collection = Collection::new("Duplicate");
+            let mut duplicate = collection.clone();
+            duplicate.name = "Conflicting duplicate".to_string();
+            app.refresh_search_records(&[collection, duplicate], &[]);
+
+            let roots = crate::app::ApiTesterApp::publish_resources(&app, &AutoCommit::new());
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "api_tester.search_status"),
+                "failed catalog refresh"
+            );
+        }
+    }
+
+    #[test]
+    fn resource_publish_owns_the_workspace_door_and_hosted_adds_no_second_tree() {
+        let state = crate::resource::WorkspaceState::default();
+        let published = ui::tilo_resource::publish::<crate::resource::ApiTester>(
+            "api_tester.workspace",
+            "API workspace",
+            &state,
+        );
+        let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(root_actions.contains(&"new-collection"), "{root_actions:?}");
+        assert!(
+            root_actions.contains(&"new-environment"),
+            "{root_actions:?}"
+        );
         assert_eq!(
-            root.children
+            published
+                .children
                 .iter()
-                .map(|resource| resource.kind.as_str())
+                .map(|child| child.kind.as_str())
                 .collect::<Vec<_>>(),
             [
                 "api_tester.active_request",
                 "api_tester.request_menu",
                 "api_tester.environment_menu",
                 "api_tester.history",
-            ]
+            ],
+            "send / menus / history ride Resource::children"
         );
-    }
-
-    #[test]
-    fn bounded_directory_resolves_each_canonical_deep_address() {
-        let mut app = crate::app::ApiTesterApp::new_demo();
-        let (doc, collection, request, environment) = seeded();
-        let collections = ApiDoc::collections(&doc, &ROOT);
-        let environments = ApiDoc::environments(&doc, &ROOT);
-        app.refresh_search_records(&collections, &environments);
-        let variable = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
-        let root = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &doc);
-        assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
         assert!(
-            root[0]
-                .children
+            published.children[0]
+                .actions
                 .iter()
-                .all(|child| child.kind != "api_tester.collection")
+                .any(|action| action.id == "send"),
+            "active request publishes the Send Effect"
         );
-        for (id, actions) in [
-            (
-                format!("api_tester.collection:{collection}"),
-                &["rename", "delete", "add-request", "save-active"][..],
-            ),
-            (
-                format!("api_tester.request:{request}"),
-                &["rename", "delete", "send"][..],
-            ),
-            (
-                format!("api_tester.environment:{environment}"),
-                &["activate", "rename", "delete", "set-variable"][..],
-            ),
-            (
-                format!("api_tester.variable:{environment}:{variable}"),
-                &["rename", "set-value", "delete"][..],
-            ),
-        ] {
-            let exact = <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, &doc, &id)
-                .expect("stable id resolves precisely on demand");
-            assert_eq!(exact.id.0, id);
-            for action in actions {
-                assert!(
-                    exact
-                        .actions
-                        .iter()
-                        .any(|candidate| candidate.id == *action)
-                );
-            }
-        }
-    }
 
-    #[test]
-    fn failed_catalog_refresh_is_exposed_as_a_palette_diagnostic_resource() {
-        let mut app = crate::app::ApiTesterApp::new_demo();
+        let mut app = crate::app::ApiTesterApp::new();
+        let doc = AutoCommit::new();
+        assert!(
+            !app.actions_are_hosted(),
+            "standalone tests stay on the local host"
+        );
+        let standalone = app.publish_resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "api_tester.workspace");
+        assert!(
+            standalone[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-collection")
+        );
+
+        // Hosted surfaces must not republish the workspace door beside
+        // ResourceRoot's tilo_resource::publish. Search-catalog failures remain
+        // a widget-local diagnostic extra.
+        app.mark_actions_hosted_for_test();
+        assert!(app.actions_are_hosted());
+        let extras = ui::resources::PublishesResources::resources(&app, &doc);
+        assert!(
+            extras.is_empty(),
+            "hosted api-tester publishes only through the framework resource when search is healthy"
+        );
+
         let collection = Collection::new("Duplicate");
         let mut duplicate = collection.clone();
         duplicate.name = "Conflicting duplicate".to_string();
         app.refresh_search_records(&[collection, duplicate], &[]);
-
-        let roots =
-            <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &AutoCommit::new());
-        assert!(
-            roots[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "api_tester.search_status")
-        );
+        let extras = ui::resources::PublishesResources::resources(&app, &doc);
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "api_tester.search_status");
     }
 
+    /// Record edits address their target by id and change it in place.
     #[test]
-    fn variable_rename_keeps_the_existing_secret_value_in_its_own_crdt_field() {
-        let root: ObjId = ROOT;
-        let mut doc = AutoCommit::new();
-        let mut environment = Environment::new("Production");
-        let environment_id = environment.id;
-        let variable = KeyValue::new("token", "keep-this-secret");
-        let variable_id = variable.id.clone();
-        environment.variables.push(variable);
-        ApiDoc::set_environments(&mut doc, &root, &[environment]);
+    fn record_edits_apply_in_place_by_id() {
+        // Case "variable rename": keeps the existing secret value in its own
+        // CRDT field.
+        {
+            let root: ObjId = ROOT;
+            let mut doc = AutoCommit::new();
+            let mut environment = Environment::new("Production");
+            let environment_id = environment.id;
+            let variable = KeyValue::new("token", "keep-this-secret");
+            let variable_id = variable.id.clone();
+            environment.variables.push(variable);
+            ApiDoc::set_environments(&mut doc, &root, &[environment]);
 
-        rename_variable_action(environment_id, variable_id, "api_token")
-            .apply(&mut doc)
-            .expect("key-only rename applies");
-        let variable = &ApiDoc::environments(&doc, &root)[0].variables[0];
-        assert_eq!(variable.key, "api_token");
-        assert_eq!(variable.value, "keep-this-secret");
+            rename_variable_action(environment_id, variable_id, "api_token")
+                .apply(&mut doc)
+                .expect("key-only rename applies");
+            let variable = &ApiDoc::environments(&doc, &root)[0].variables[0];
+            assert_eq!(variable.key, "api_token", "variable rename");
+            assert_eq!(variable.value, "keep-this-secret", "variable rename");
+        }
+
+        // Case "save request": `SaveRequest` is insert-or-replace keyed by
+        // request id: saving a request whose id already exists edits it in
+        // place rather than appending.
+        {
+            let (doc, cid, rid, _eid) = seeded();
+            let mut cols = ApiDoc::collections(&doc, &ROOT);
+            let mut edited = cols[0].requests[0].clone();
+            assert_eq!(edited.id, rid);
+            edited.method = HttpMethod::Delete;
+            edited.name = "Remove users".to_string();
+            save_request_action(cid, edited).apply_to_collections(&mut cols);
+            assert_eq!(cols[0].requests.len(), 1, "same id replaces, not appends");
+            assert_eq!(
+                cols[0].requests[0].method,
+                HttpMethod::Delete,
+                "save request"
+            );
+            assert_eq!(cols[0].requests[0].name, "Remove users", "save request");
+        }
     }
 
     /// The workspace root plus every seeded record, each materialized through
@@ -986,9 +1126,9 @@ mod tests {
                 ));
             }
         }
-        let mut resources = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, doc);
+        let mut resources = crate::app::ApiTesterApp::publish_resources(&app, doc);
         resources.extend(ids.iter().map(|id| {
-            <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, doc, id)
+            crate::app::ApiTesterApp::publish_resource(&app, doc, id)
                 .expect("a seeded record resolves")
         }));
         resources
@@ -1064,21 +1204,5 @@ mod tests {
                 ))
             }),
         ],
-    }
-
-    /// `SaveRequest` is insert-or-replace keyed by request id: saving a request
-    /// whose id already exists edits it in place rather than appending.
-    #[test]
-    fn save_request_replaces_in_place_by_id() {
-        let (doc, cid, rid, _eid) = seeded();
-        let mut cols = ApiDoc::collections(&doc, &ROOT);
-        let mut edited = cols[0].requests[0].clone();
-        assert_eq!(edited.id, rid);
-        edited.method = HttpMethod::Delete;
-        edited.name = "Remove users".to_string();
-        save_request_action(cid, edited).apply_to_collections(&mut cols);
-        assert_eq!(cols[0].requests.len(), 1, "same id replaces, not appends");
-        assert_eq!(cols[0].requests[0].method, HttpMethod::Delete);
-        assert_eq!(cols[0].requests[0].name, "Remove users");
     }
 }

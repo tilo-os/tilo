@@ -255,12 +255,12 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
 /// Several with nothing said about which denotes **nothing**: picking the
 /// first would answer a question nobody asked.
 fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-    let snap = qdoc::model::materialize(doc, &c);
-    let images: Vec<&qdoc::snapshot::BlockView> =
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let snap = tilo_doc::model::materialize(doc, &c);
+    let images: Vec<&tilo_doc::snapshot::BlockView> =
         snap.blocks.iter().filter(|b| b.kind == "image").collect();
-    let blob_of = |b: &qdoc::snapshot::BlockView| match b.attrs.get("blob") {
-        Some(qdoc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
+    let blob_of = |b: &tilo_doc::snapshot::BlockView| match b.attrs.get("blob") {
+        Some(tilo_doc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
         _ => None,
     };
     if let Some(b) = images.iter().find(|b| view.target_blocks.contains(&b.id)) {
@@ -278,8 +278,8 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
     // still a document, and reports its own empty anchor rather than
     // reading as though nothing were open.
     let anchor = view.focus_block.clone().or_else(|| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .first()
             .map(|b| b.id.clone())
@@ -354,8 +354,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
 }
 
 fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    use tilo_actions::ResourceProvider;
-    photos::actions::PhotosResources.resources(doc)
+    photos::actions::PhotosResources.publish_resources(doc)
 }
 
 /// Whether a document is the photo editor's — asked of its own schema.
@@ -373,7 +372,7 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
     app_id: "so.tilo.word-processor",
     title: "the word processor",
     namespace: "word-processor",
-    recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
+    recognises: |doc| tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
     resources: word_processor_resources,
     register: word_processor::actions::register,
     // "This parses as a rich-text document" is true of every document
@@ -434,7 +433,7 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
 
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| c.app_id == app_id)
+    CONTRACTS.iter().find(|contract| contract.app_id == app_id)
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -544,7 +543,80 @@ impl Offer {
 /// inert offers the planner already consumes. No application registry or
 /// document reconstruction is involved: arbitrary apps appear here solely
 /// because they published a descriptor to the authenticated broker.
-pub fn broker_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
+///
+/// Accepts either the action host's fetched [`tilo_actions::remote::CataloguePage`]
+/// or the broker's pushed [`ui::collaboration::BrokerActionSurface`] directory.
+pub fn broker_offers<C: BrokerCatalogue + ?Sized>(catalogue: &C) -> Vec<Offer> {
+    catalogue.broker_offers()
+}
+
+/// A live, permission-filtered action directory the broker supplies.
+pub trait BrokerCatalogue {
+    /// Every live action it names, as planner offers.
+    fn broker_offers(&self) -> Vec<Offer>;
+}
+
+impl BrokerCatalogue for tilo_actions::remote::CataloguePage {
+    fn broker_offers(&self) -> Vec<Offer> {
+        catalogue_page_offers(self)
+    }
+}
+
+impl BrokerCatalogue for [ui::collaboration::BrokerActionSurface] {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+/// Offers from the broker's pushed surface directory: only live surfaces.
+fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+    surfaces
+        .iter()
+        .filter(|surface| surface.live)
+        .flat_map(|surface| {
+            surface.actions.iter().map(|action| {
+                let input = if action.input.kind == "text" {
+                    tilo_actions::InputSpec::Text {
+                        prompt: action.input.prompt.clone(),
+                        placeholder: action.input.placeholder.clone(),
+                        collects: if action.input.wants_content {
+                            tilo_actions::Collects::Content
+                        } else {
+                            tilo_actions::Collects::Words
+                        },
+                    }
+                } else {
+                    tilo_actions::InputSpec::None
+                };
+                Offer {
+                    app: surface.app_id.clone(),
+                    broker_peer_id: Some(surface.peer_id),
+                    descriptor: ActionDescriptor {
+                        address: ActionAddress::new(&action.resource, &action.action),
+                        resource_kind: action.resource_kind.clone(),
+                        resource_label: action.resource_label.clone(),
+                        action_label: action.action_label.clone(),
+                        description: action.description.clone(),
+                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                        kind: action.operation_kind,
+                        contract: action.contract.clone(),
+                        params: action.params.clone(),
+                        input,
+                        view: None,
+                    },
+                }
+            })
+        })
+        .collect()
+}
+
+fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
     catalogue
         .rows
         .iter()
@@ -1089,6 +1161,26 @@ pub fn from_verbs<'a>(
         }
     }
     if best.len() > 1 {
+        // Equal keyword hits still leave a shorter label closer to what
+        // was said: "insert table" beats "generate table of contents" for
+        // an instruction that only said "table". Align left / Align centre
+        // stay tied (same length) and remain Ambiguous.
+        let label_words = |offer: &Offer| keywords(&offer.descriptor.action_label).len().max(1);
+        let fewest = best
+            .iter()
+            .map(|offer| label_words(offer))
+            .min()
+            .unwrap_or(1);
+        let denser: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|offer| label_words(offer) == fewest)
+            .collect();
+        if !denser.is_empty() {
+            best = denser;
+        }
+    }
+    if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
                 .take(4)
@@ -1131,66 +1223,433 @@ mod tests {
     use tilo_actions::door::ActionAddress;
 
     #[test]
-    fn an_address_with_a_path_in_it_round_trips() {
-        let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
-        assert_eq!(decode_address(&encode_address(&a)), Some(a));
+    fn offer_addresses_round_trip_name_their_app_and_stay_distinct_per_publisher() {
+        // Case `an_address_with_a_path_in_it_round_trips`.
+        {
+            let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
+            assert_eq!(decode_address(&encode_address(&a)), Some(a));
+        }
+
+        // Case `the_app_is_read_off_the_resource_namespace`.
+        {
+            assert_eq!(app_of("word-processor.document"), "word-processor");
+            assert_eq!(app_of("files.entry:/var/workspace/plan.md"), "files");
+        }
+
+        // Case `duplicate_addresses_from_two_live_publishers_remain_distinct`.
+        {
+            let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
+                provider: peer_id.to_string(),
+                app_id: "so.tilo.calculator".into(),
+                parent_resource: String::new(),
+                resource: tilo_actions::remote::CatalogueResource {
+                    id: "calculator.document".into(),
+                    kind: "calculator.document".into(),
+                    label: "Calculator".into(),
+                    presentation: None,
+                },
+                has_children: false,
+                visibility: None,
+                action: Some(ActionDescriptor {
+                    address: ActionAddress::new("calculator.document", "clear"),
+                    resource_kind: "calculator.document".into(),
+                    resource_label: "Calculator".into(),
+                    action_label: "Clear".into(),
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::ClientLocal,
+                    kind: tilo_actions::OperationKind::Effect,
+                    contract: tilo_actions::ActionContract::default(),
+                    params: Vec::new(),
+                    input: tilo_actions::InputSpec::None,
+                    view: None,
+                }),
+            };
+            let catalogue = tilo_actions::remote::CataloguePage {
+                revision: "1".into(),
+                rows: vec![entry(41), entry(42)],
+                ..tilo_actions::remote::CataloguePage::default()
+            };
+            let offers = broker_offers(&catalogue);
+            assert_eq!(offers.len(), 2);
+            assert_ne!(offers[0].id(), offers[1].id());
+            assert_eq!(
+                find(&offers, &offers[0].id()).unwrap().broker_peer_id,
+                Some(41)
+            );
+            assert_eq!(
+                find(&offers, &offers[1].id()).unwrap().broker_peer_id,
+                Some(42)
+            );
+        }
+
+        // Case `broker_prefixed_shell_launch_is_still_recognised_as_an_open`.
+        {
+            let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
+            let offer = Offer {
+                app: "so.tilo.diffmerge".into(),
+                broker_peer_id: Some(0),
+                descriptor: ActionDescriptor {
+                    address,
+                    resource_kind: APPLICATION_KIND.into(),
+                    resource_label: "Diffmerge".into(),
+                    action_label: "Open Diffmerge".into(),
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                    kind: tilo_actions::OperationKind::Effect,
+                    contract: ActionContract::default(),
+                    params: Vec::new(),
+                    input: tilo_actions::InputSpec::None,
+                    view: None,
+                },
+            };
+            let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
+            assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
+        }
     }
 
-    /// A word processor holding a document with nothing in it is still a
-    /// word processor with something to be done to it.
-    ///
-    /// This used to report an empty tree: no blocks meant no anchor, no
-    /// anchor meant nothing, so a room containing an open, untouched
-    /// document looked exactly like a room containing no word processor at
-    /// all.
     #[test]
-    fn a_document_with_no_blocks_is_still_something_to_act_on() {
-        let mut doc = AutoCommit::new();
-        qdoc::model::init(&mut doc, &automerge::ROOT);
-        doc.commit();
-        let c = qdoc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
-        assert!(
-            qdoc::model::materialize(&doc, &c).blocks.is_empty(),
-            "this test is about a document with nothing in it",
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn a_room_offers_what_held_documents_publish_and_opens_only_missing_granted_apps() {
+        // Case `a_document_with_no_blocks_is_still_something_to_act_on`.
+        {
+            let mut doc = AutoCommit::new();
+            tilo_doc::model::init(&mut doc, &automerge::ROOT);
+            doc.commit();
+            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
+            assert!(
+                tilo_doc::model::materialize(&doc, &c).blocks.is_empty(),
+                "this test is about a document with nothing in it",
+            );
 
-        let tree = word_processor_resources(&View::default(), &doc);
-        assert!(
-            !tree.is_empty(),
-            "an empty document reported nothing that could be done to it",
-        );
-        let inserts = tree[0].actions.iter().any(|a| a.id == "insert-table");
-        assert!(
-            inserts,
-            "the document exports {:?}, none of which inserts into it",
-            tree[0]
-                .actions
-                .iter()
-                .map(|a| a.id.clone())
-                .collect::<Vec<_>>(),
-        );
+            let tree = word_processor_resources(&View::default(), &doc);
+            assert!(
+                !tree.is_empty(),
+                "an empty document reported nothing that could be done to it",
+            );
+            let inserts = tree[0].actions.iter().any(|a| a.id == "insert-table");
+            assert!(
+                inserts,
+                "the document exports {:?}, none of which inserts into it",
+                tree[0]
+                    .actions
+                    .iter()
+                    .map(|a| a.id.clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        // Case `photos_requires_an_explicit_export_result_for_cross_app_content`.
+        {
+            let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
+            let hash = tilo_content::hash_bytes(&png);
+            let mut doc = automerge::AutoCommit::new();
+            photos::doc::PhotosDoc::seed(&mut doc);
+            photos::doc::PhotosDoc::set_image(
+                &mut doc,
+                Some(&photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash)),
+            );
+            photos::doc::PhotosDoc::set_edits(&mut doc, &photos::Edits::default().rotated_right());
+            doc.commit();
+
+            assert!(
+                (for_app_id("so.tilo.photos")
+                    .expect("Photos contract")
+                    .product)(&View::default(), &doc)
+                .is_none(),
+                "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
+            );
+        }
+
+        // Case `the_grants_that_open_an_application_and_the_one_that_does_not`.
+        {
+            let open = open_address("chat");
+            let post = ActionAddress::new("chat.channel:c1", "post");
+
+            assert_eq!(
+                scope_for(&open).resource,
+                ResourceRef::App("chat".to_string()),
+                "opening is asked about as the application itself"
+            );
+            assert_eq!(
+                scope_for(&post).resource,
+                ResourceRef::Action {
+                    app: "chat".to_string(),
+                    action: "post".to_string(),
+                },
+                "and an operation is still asked about as an operation"
+            );
+
+            let none = granting(Vec::new());
+            assert!(!permitted(&none, &open));
+
+            // "May do one thing inside an application that is already
+            // running." Not leave to start it.
+            let one_action = granting(vec![grant(Scope::Action {
+                app: "chat".to_string(),
+                action: "post".to_string(),
+            })]);
+            assert!(permitted(&one_action, &post));
+            assert!(
+                !permitted(&one_action, &open),
+                "leave to perform one operation in an app must not be leave to \
+                 start the app"
+            );
+
+            // "May open *this* application."
+            let this_app = granting(vec![grant(Scope::App("chat".to_string()))]);
+            assert!(permitted(&this_app, &open));
+            assert!(
+                !permitted(&this_app, &open_address("word-processor")),
+                "a grant naming one application must not open the catalogue"
+            );
+
+            // "May open applications."
+            let any = granting(vec![grant(Scope::Workspace)]);
+            assert!(permitted(&any, &open));
+            assert!(permitted(&any, &open_address("word-processor")));
+        }
+
+        // Case `only_the_apps_this_room_is_missing_are_offered_as_openable`.
+        {
+            let perms = granting(vec![grant(Scope::Workspace)]);
+            let view = View::default();
+
+            let empty = openable(&[], &View::default(), &perms);
+            let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
+            assert_eq!(
+                missing,
+                CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
+                "an empty room is missing every app the agent speaks"
+            );
+            assert!(
+                empty.iter().all(|o| !o.wants_arguments()),
+                "opening an application takes no argument"
+            );
+
+            let chat = chat_contract();
+            let doc = empty_chat();
+            assert!(
+                (chat.recognises)(&doc),
+                "the fixture has to be a document the contract claims"
+            );
+            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
+            assert!(
+                tree(chat, &view, &doc).is_empty(),
+                "this half is about an application with nothing open in it"
+            );
+            let empty_app = openable(&held, &view, &perms);
+            assert!(
+                empty_app.iter().any(|o| o.app == "chat"),
+                "an application here but with nothing open exports no \
+                 operations, so the open must stay on offer"
+            );
+            assert_eq!(empty_app.len(), empty.len(), "and nothing else may change");
+
+            let mut doc = doc;
+            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
+            doc.commit();
+            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
+            assert!(
+                !tree(chat, &view, &doc).is_empty(),
+                "the fixture has to publish something, or this proves nothing"
+            );
+            let now = openable(&held, &view, &perms);
+            assert!(
+                !now.iter().any(|o| o.app == "chat"),
+                "an app that is here *and* has something open must stop being \
+                 offered as something to open"
+            );
+            assert_eq!(now.len(), empty.len() - 1, "and nothing else may change");
+
+            let all = offers(&held, &view, &perms);
+            assert!(
+                all.iter().any(|o| opens(o.address()).is_some()),
+                "the survey has to carry the openable apps"
+            );
+        }
+
+        // Case `an_application_that_is_here_and_empty_is_not_yet_surveyable`.
+        {
+            let view = View::default();
+            let chat = chat_contract();
+
+            let doc = empty_chat();
+            assert!(
+                (chat.recognises)(&doc),
+                "this document is the app's own, so an agent holding it is \
+                 holding the app — which is all `holds` ever meant"
+            );
+            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
+            assert!(
+                !surveyable(&held, &view, "chat"),
+                "and it publishes nothing, so a step that followed an open here \
+                 would survey a room with no operation in it"
+            );
+
+            let mut doc = doc;
+            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
+            doc.commit();
+            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
+            assert!(
+                surveyable(&held, &view, "chat"),
+                "now it publishes its own operations, which is what the open \
+                 was for"
+            );
+            let perms = granting(vec![grant(Scope::Workspace)]);
+            assert!(
+                offers(&held, &view, &perms)
+                    .iter()
+                    .any(|o| o.id().ends_with("#new-channel")),
+                "and creating a channel is among them, or this proves nothing \
+                 about the step that wanted it"
+            );
+        }
+
+        // Case `no_app_publishes_an_address_that_reads_as_an_open`.
+        {
+            let view = View::default();
+            for contract in CONTRACTS {
+                let doc = automerge::AutoCommit::new();
+                for descriptor in tilo_actions::door::survey(&tree(contract, &view, &doc)) {
+                    assert!(
+                        opens(&descriptor.address).is_none(),
+                        "{} publishes {:?}, which reads as an open",
+                        contract.namespace,
+                        descriptor.address,
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn the_app_is_read_off_the_resource_namespace() {
-        assert_eq!(app_of("word-processor.document"), "word-processor");
-        assert_eq!(app_of("files.entry:/var/workspace/plan.md"), "files");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn a_quoted_literal_is_the_value_that_tells_same_verb_operations_apart() {
+        // Case `one_quoted_literal_is_an_argument_and_two_are_not`.
+        {
+            assert_eq!(
+                quoted_literal(r#"rename it to "launch.md""#),
+                Some("launch.md".into())
+            );
+            assert_eq!(quoted_literal(r#"rename "a.md" to "b.md""#), None);
+            assert_eq!(quoted_literal("rename it to launch.md"), None);
+            assert_eq!(
+                quoted_literal("rename it to \u{201c}launch.md\u{201d}"),
+                Some("launch.md".into())
+            );
+            assert_eq!(quoted_literal("don't rename anything"), None);
+            assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+        }
 
-    #[test]
-    fn one_quoted_literal_is_an_argument_and_two_are_not() {
-        assert_eq!(
-            quoted_literal(r#"rename it to "launch.md""#),
-            Some("launch.md".into())
-        );
-        assert_eq!(quoted_literal(r#"rename "a.md" to "b.md""#), None);
-        assert_eq!(quoted_literal("rename it to launch.md"), None);
-        assert_eq!(
-            quoted_literal("rename it to \u{201c}launch.md\u{201d}"),
-            Some("launch.md".into())
-        );
-        assert_eq!(quoted_literal("don't rename anything"), None);
-        assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+        // Case `a_supplied_value_tells_two_same_verb_operations_apart`.
+        {
+            let offers = vec![
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "crop",
+                    "Crop to a region",
+                    tilo_actions::InputSpec::Text {
+                        prompt: "Region to keep".to_string(),
+                        placeholder: "0.25,0.25,0.5,0.5".to_string(),
+                        collects: tilo_actions::Collects::Words,
+                    },
+                ),
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "crop-square",
+                    "Crop to a square",
+                    tilo_actions::InputSpec::None,
+                ),
+            ];
+
+            let (chosen, argument) =
+                from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
+                    .expect("a quoted region tells the two crops apart");
+            assert_eq!(
+                chosen.address().action,
+                "crop",
+                "a quoted region must reach the crop that collects one, not {}",
+                chosen.descriptor.action_label,
+            );
+            assert_eq!(
+                argument.get("value"),
+                Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
+            );
+
+            let (chosen, argument) = from_verbs("crop the photograph", &offers)
+                .expect("with no region said, the crop that needs none is the one that can act");
+            assert_eq!(chosen.address().action, "crop-square");
+            assert!(argument.is_empty());
+
+            // What is gone is a false ambiguity, not the mechanism: two
+            // operations that both take nothing are still not told apart by an
+            // instruction that supplies nothing, and that is still a genuine
+            // question rather than a guess.
+            let both_bare = vec![
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "rotate-left",
+                    "Rotate left",
+                    tilo_actions::InputSpec::None,
+                ),
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "rotate-right",
+                    "Rotate right",
+                    tilo_actions::InputSpec::None,
+                ),
+            ];
+            match from_verbs("rotate the photograph", &both_bare) {
+                Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+                other => panic!("a genuine ambiguity must still be refused: {other:?}"),
+            }
+
+            // Nor is it dropped when the split would leave nothing: two tied
+            // operations that both *want* a value are still ambiguous when the
+            // instruction supplied none — narrowing must give up and leave the
+            // original tie standing rather than choose from an empty set.
+            let both_prompted = vec![
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "crop-left-half",
+                    "Crop the left half",
+                    tilo_actions::InputSpec::Text {
+                        prompt: "Which half".to_string(),
+                        placeholder: String::new(),
+                        collects: tilo_actions::Collects::Words,
+                    },
+                ),
+                offer(
+                    "photos",
+                    "photos.image:1",
+                    "crop-right-half",
+                    "Crop the right half",
+                    tilo_actions::InputSpec::Text {
+                        prompt: "Which half".to_string(),
+                        placeholder: String::new(),
+                        collects: tilo_actions::Collects::Words,
+                    },
+                ),
+            ];
+            match from_verbs("crop the photograph", &both_prompted) {
+                Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+                other => panic!(
+                    "with no value supplied and both operations wanting one, the \
+                     tie must stand rather than pick from nothing: {other:?}"
+                ),
+            }
+        }
     }
 
     // -- telling two operations of one verb apart -------------------------
@@ -1230,146 +1689,16 @@ mod tests {
         }
     }
 
-    /// Which of two operations sharing a verb an instruction names is
-    /// settled by whether the instruction supplied a value.
-    ///
-    /// Two offers, one verb, the way a real app can genuinely publish one —
-    /// a crop that collects a region and a crop that collects nothing —
-    /// which used to be an unconditional [`NoMatch::Ambiguous`] even when
-    /// the instruction was not actually silent about the difference.
-    ///
-    /// Asserted in both directions: a rule that always preferred the
-    /// prompted operation would pass the first half and leave the
-    /// argument-less one unreachable, and one that always preferred the
-    /// argument-less operation would pass the second while throwing away a
-    /// value somebody had written down.
     #[test]
-    fn a_supplied_value_tells_two_same_verb_operations_apart() {
-        let offers = vec![
-            offer(
-                "photos",
-                "photos.image:1",
-                "crop",
-                "Crop to a region",
-                tilo_actions::InputSpec::Text {
-                    prompt: "Region to keep".to_string(),
-                    placeholder: "0.25,0.25,0.5,0.5".to_string(),
-                    collects: tilo_actions::Collects::Words,
-                },
-            ),
-            offer(
-                "photos",
-                "photos.image:1",
-                "crop-square",
-                "Crop to a square",
-                tilo_actions::InputSpec::None,
-            ),
-        ];
-
-        let (chosen, argument) =
-            from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
-                .expect("a quoted region tells the two crops apart");
+    fn contract_lookup_accepts_only_the_exact_app_id() {
         assert_eq!(
-            chosen.address().action,
-            "crop",
-            "a quoted region must reach the crop that collects one, not {}",
-            chosen.descriptor.action_label,
-        );
-        assert_eq!(
-            argument.get("value"),
-            Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
-        );
-
-        let (chosen, argument) = from_verbs("crop the photograph", &offers)
-            .expect("with no region said, the crop that needs none is the one that can act");
-        assert_eq!(chosen.address().action, "crop-square");
-        assert!(argument.is_empty());
-
-        // What is gone is a false ambiguity, not the mechanism: two
-        // operations that both take nothing are still not told apart by an
-        // instruction that supplies nothing, and that is still a genuine
-        // question rather than a guess.
-        let both_bare = vec![
-            offer(
-                "photos",
-                "photos.image:1",
-                "rotate-left",
-                "Rotate left",
-                tilo_actions::InputSpec::None,
-            ),
-            offer(
-                "photos",
-                "photos.image:1",
-                "rotate-right",
-                "Rotate right",
-                tilo_actions::InputSpec::None,
-            ),
-        ];
-        match from_verbs("rotate the photograph", &both_bare) {
-            Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
-            other => panic!("a genuine ambiguity must still be refused: {other:?}"),
-        }
-
-        // Nor is it dropped when the split would leave nothing: two tied
-        // operations that both *want* a value are still ambiguous when the
-        // instruction supplied none — narrowing must give up and leave the
-        // original tie standing rather than choose from an empty set.
-        let both_prompted = vec![
-            offer(
-                "photos",
-                "photos.image:1",
-                "crop-left-half",
-                "Crop the left half",
-                tilo_actions::InputSpec::Text {
-                    prompt: "Which half".to_string(),
-                    placeholder: String::new(),
-                    collects: tilo_actions::Collects::Words,
-                },
-            ),
-            offer(
-                "photos",
-                "photos.image:1",
-                "crop-right-half",
-                "Crop the right half",
-                tilo_actions::InputSpec::Text {
-                    prompt: "Which half".to_string(),
-                    placeholder: String::new(),
-                    collects: tilo_actions::Collects::Words,
-                },
-            ),
-        ];
-        match from_verbs("crop the photograph", &both_prompted) {
-            Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
-            other => panic!(
-                "with no value supplied and both operations wanting one, the \
-                 tie must stand rather than pick from nothing: {other:?}"
-            ),
-        }
-    }
-
-    /// A shared Photos replica is mutable state, not the immutable output of
-    /// a particular action. Only Photos' explicit export lifecycle may mint
-    /// content for the next application step.
-    #[test]
-    fn photos_requires_an_explicit_export_result_for_cross_app_content() {
-        let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
-        let hash = tilo_content::hash_bytes(&png);
-        let mut doc = automerge::AutoCommit::new();
-        photos::doc::PhotosDoc::seed(&mut doc);
-        photos::doc::PhotosDoc::set_image(
-            &mut doc,
-            Some(&photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash)),
-        );
-        photos::doc::PhotosDoc::set_edits(&mut doc, &photos::Edits::default().rotated_right());
-        doc.commit();
-
-        assert!(
-            (for_app_id("so.tilo.photos")
+            for_app_id("so.tilo.photos")
                 .expect("Photos contract")
-                .product)(&View::default(), &doc)
-            .is_none(),
-            "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
+                .namespace,
+            "photos"
         );
+        assert!(for_app_id("dev.tilo.photos").is_none());
+        assert!(for_app_id("so.tilo.unknown").is_none());
     }
 
     // -- opening an application ------------------------------------------
@@ -1382,58 +1711,6 @@ mod tests {
 
     fn grant(scope: Scope) -> CapOverride {
         CapOverride::grant(Subject::agent("Claude"), scope, Verb::Write).with_id("t")
-    }
-
-    /// An open is asked about as the application, not as an operation
-    /// inside it — which is what makes the three grants a room can write
-    /// about it say three different things.
-    #[test]
-    fn the_grants_that_open_an_application_and_the_one_that_does_not() {
-        let open = open_address("chat");
-        let post = ActionAddress::new("chat.channel:c1", "post");
-
-        assert_eq!(
-            scope_for(&open).resource,
-            ResourceRef::App("chat".to_string()),
-            "opening is asked about as the application itself"
-        );
-        assert_eq!(
-            scope_for(&post).resource,
-            ResourceRef::Action {
-                app: "chat".to_string(),
-                action: "post".to_string(),
-            },
-            "and an operation is still asked about as an operation"
-        );
-
-        let none = granting(Vec::new());
-        assert!(!permitted(&none, &open));
-
-        // "May do one thing inside an application that is already
-        // running." Not leave to start it.
-        let one_action = granting(vec![grant(Scope::Action {
-            app: "chat".to_string(),
-            action: "post".to_string(),
-        })]);
-        assert!(permitted(&one_action, &post));
-        assert!(
-            !permitted(&one_action, &open),
-            "leave to perform one operation in an app must not be leave to \
-             start the app"
-        );
-
-        // "May open *this* application."
-        let this_app = granting(vec![grant(Scope::App("chat".to_string()))]);
-        assert!(permitted(&this_app, &open));
-        assert!(
-            !permitted(&this_app, &open_address("word-processor")),
-            "a grant naming one application must not open the catalogue"
-        );
-
-        // "May open applications."
-        let any = granting(vec![grant(Scope::Workspace)]);
-        assert!(permitted(&any, &open));
-        assert!(permitted(&any, &open_address("word-processor")));
     }
 
     /// A seeded chat document with no workspace in it — the state the
@@ -1451,197 +1728,6 @@ mod tests {
             .iter()
             .find(|c| c.namespace == "chat")
             .expect("the chat contract")
-    }
-
-    /// The set of applications offered as openable is exactly the ones this
-    /// room has nothing open in — so it empties as the room fills, and an
-    /// app that is here *with something in it* is never offered as
-    /// something to open.
-    #[test]
-    fn only_the_apps_this_room_is_missing_are_offered_as_openable() {
-        let perms = granting(vec![grant(Scope::Workspace)]);
-        let view = View::default();
-
-        let empty = openable(&[], &View::default(), &perms);
-        let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
-        assert_eq!(
-            missing,
-            CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
-            "an empty room is missing every app the agent speaks"
-        );
-        assert!(
-            empty.iter().all(|o| !o.wants_arguments()),
-            "opening an application takes no argument"
-        );
-
-        let chat = chat_contract();
-        let doc = empty_chat();
-        assert!(
-            (chat.recognises)(&doc),
-            "the fixture has to be a document the contract claims"
-        );
-        let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-        assert!(
-            tree(chat, &view, &doc).is_empty(),
-            "this half is about an application with nothing open in it"
-        );
-        let empty_app = openable(&held, &view, &perms);
-        assert!(
-            empty_app.iter().any(|o| o.app == "chat"),
-            "an application here but with nothing open exports no \
-             operations, so the open must stay on offer"
-        );
-        assert_eq!(empty_app.len(), empty.len(), "and nothing else may change");
-
-        let mut doc = doc;
-        let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
-        doc.commit();
-        let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-        assert!(
-            !tree(chat, &view, &doc).is_empty(),
-            "the fixture has to publish something, or this proves nothing"
-        );
-        let now = openable(&held, &view, &perms);
-        assert!(
-            !now.iter().any(|o| o.app == "chat"),
-            "an app that is here *and* has something open must stop being \
-             offered as something to open"
-        );
-        assert_eq!(now.len(), empty.len() - 1, "and nothing else may change");
-
-        let all = offers(&held, &view, &perms);
-        assert!(
-            all.iter().any(|o| opens(o.address()).is_some()),
-            "the survey has to carry the openable apps"
-        );
-    }
-
-    /// **Here is not the same as ready**, asked of one document at the two
-    /// moments an open takes it through.
-    #[test]
-    fn an_application_that_is_here_and_empty_is_not_yet_surveyable() {
-        let view = View::default();
-        let chat = chat_contract();
-
-        let doc = empty_chat();
-        assert!(
-            (chat.recognises)(&doc),
-            "this document is the app's own, so an agent holding it is \
-             holding the app — which is all `holds` ever meant"
-        );
-        let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-        assert!(
-            !surveyable(&held, &view, "chat"),
-            "and it publishes nothing, so a step that followed an open here \
-             would survey a room with no operation in it"
-        );
-
-        let mut doc = doc;
-        let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
-        doc.commit();
-        let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-        assert!(
-            surveyable(&held, &view, "chat"),
-            "now it publishes its own operations, which is what the open \
-             was for"
-        );
-        let perms = granting(vec![grant(Scope::Workspace)]);
-        assert!(
-            offers(&held, &view, &perms)
-                .iter()
-                .any(|o| o.id().ends_with("#new-channel")),
-            "and creating a channel is among them, or this proves nothing \
-             about the step that wanted it"
-        );
-    }
-
-    /// No app's own resource tree may publish an address that reads as an
-    /// open, or opening would be indistinguishable from something an app
-    /// exports.
-    #[test]
-    fn no_app_publishes_an_address_that_reads_as_an_open() {
-        let view = View::default();
-        for contract in CONTRACTS {
-            let doc = automerge::AutoCommit::new();
-            for descriptor in tilo_actions::door::survey(&tree(contract, &view, &doc)) {
-                assert!(
-                    opens(&descriptor.address).is_none(),
-                    "{} publishes {:?}, which reads as an open",
-                    contract.namespace,
-                    descriptor.address,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
-        let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
-            provider: peer_id.to_string(),
-            app_id: "so.tilo.calculator".into(),
-            parent_resource: String::new(),
-            resource: tilo_actions::remote::CatalogueResource {
-                id: "calculator.document".into(),
-                kind: "calculator.document".into(),
-                label: "Calculator".into(),
-                presentation: None,
-            },
-            has_children: false,
-            visibility: None,
-            action: Some(ActionDescriptor {
-                address: ActionAddress::new("calculator.document", "clear"),
-                resource_kind: "calculator.document".into(),
-                resource_label: "Calculator".into(),
-                action_label: "Clear".into(),
-                description: None,
-                locus: tilo_actions::ExecutionLocus::ClientLocal,
-                kind: tilo_actions::OperationKind::Effect,
-                contract: tilo_actions::ActionContract::default(),
-                params: Vec::new(),
-                input: tilo_actions::InputSpec::None,
-                view: None,
-            }),
-        };
-        let catalogue = tilo_actions::remote::CataloguePage {
-            revision: "1".into(),
-            rows: vec![entry(41), entry(42)],
-            ..tilo_actions::remote::CataloguePage::default()
-        };
-        let offers = broker_offers(&catalogue);
-        assert_eq!(offers.len(), 2);
-        assert_ne!(offers[0].id(), offers[1].id());
-        assert_eq!(
-            find(&offers, &offers[0].id()).unwrap().broker_peer_id,
-            Some(41)
-        );
-        assert_eq!(
-            find(&offers, &offers[1].id()).unwrap().broker_peer_id,
-            Some(42)
-        );
-    }
-
-    #[test]
-    fn broker_prefixed_shell_launch_is_still_recognised_as_an_open() {
-        let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
-        let offer = Offer {
-            app: "so.tilo.diffmerge".into(),
-            broker_peer_id: Some(0),
-            descriptor: ActionDescriptor {
-                address,
-                resource_kind: APPLICATION_KIND.into(),
-                resource_label: "Diffmerge".into(),
-                action_label: "Open Diffmerge".into(),
-                description: None,
-                locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                kind: tilo_actions::OperationKind::Effect,
-                contract: ActionContract::default(),
-                params: Vec::new(),
-                input: tilo_actions::InputSpec::None,
-                view: None,
-            },
-        };
-        let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
-        assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
     }
 
     /// The agent publishes nothing of its own: what it can do is the tree each
@@ -1674,7 +1760,7 @@ mod tests {
 
         /// A short document built through qdoc's own editing path.
         fn seeded() -> AutoCommit {
-            let mut document = qdoc::Document::new();
+            let mut document = tilo_doc::Document::new();
             let heading = document.insert_block(None, "heading");
             document.splice_text(&heading, 0, 0, "Launch plan");
             let body = document.insert_block(Some(&heading), "paragraph");

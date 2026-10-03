@@ -1,4 +1,5 @@
 use crate::shell::state::{STATE_SCHEMA_VERSION, WorkspaceTree};
+use automerge::AutoCommit;
 use std::path::{Path, PathBuf};
 
 /// Why this session is not the one the state file describes. The
@@ -20,8 +21,8 @@ pub enum StateNotice {
 impl StateNotice {
     pub fn title(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => "Your workspaces were not opened".into(),
-            Self::Unreadable { .. } => "Your workspaces could not be read".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-title"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-title"),
         }
     }
 
@@ -29,10 +30,8 @@ impl StateNotice {
     /// that must survive the trim is "your work is still there".
     pub fn body(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => {
-                "Saved by a newer version of Tilo. Nothing was changed.".into()
-            }
-            Self::Unreadable { .. } => "The file could not be read. Nothing was changed.".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-body"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-body"),
         }
     }
 
@@ -42,19 +41,20 @@ impl StateNotice {
                 path,
                 found,
                 understood,
-            } => format!(
-                "{} was written by a newer version of Tilo (layout {found}; this \
-                 one understands {understood}). It has not been changed, and \
-                 nothing has been written over it — this session runs without \
-                 saving, so it cannot be. Update again, or roll forward, to get \
-                 back to your own workspaces.",
-                path.display()
+            } => crate::shell::i18n::t_args(
+                "state-notice-newer-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("found", (*found).into()),
+                    ("understood", (*understood).into()),
+                ],
             ),
-            Self::Unreadable { path, error } => format!(
-                "{} exists but could not be read ({error}). It has not been \
-                 changed, and this session runs without saving, so it cannot \
-                 be.",
-                path.display()
+            Self::Unreadable { path, error } => crate::shell::i18n::t_args(
+                "state-notice-unreadable-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.as_str().into()),
+                ],
             ),
         }
     }
@@ -117,23 +117,27 @@ pub fn fs_capability_export_path() -> PathBuf {
     )
 }
 
-/// Atomic. Capabilities whose expiry doesn't survive a restart
-/// (`EndOfSession`, `AfterUse`) are dropped, or persisting a session
-/// grant would quietly promote it to a permanent one.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory can't be created, `tree`
-/// can't be serialised, or the atomic write fails.
-pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+/// Native file envelope; the portable desktop schema remains independently versioned.
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
+
+pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
+    encode_durable(&durable_tree(tree)?)
+}
+
+/// The tree as it is written to disk: live surfaces become launch records,
+/// and process-local launch progress and session-only grants are dropped.
+fn durable_tree(tree: &WorkspaceTree) -> std::io::Result<WorkspaceTree> {
+    // Prove encoded refusal bounds before cloning any tree or serialization buffer.
+    super::native_workspace_owner::publication::validate_file_layout(
+        NATIVE_STATE_SCHEMA_VERSION,
+        &tree.native_authority,
+    )
+    .map_err(std::io::Error::other)?;
+    super::native_workspace_owner::publication::preflight_tree(tree)
+        .map_err(std::io::Error::other)?;
     let mut durable = tree.clone();
-    // A Wayland surface id belongs to this compositor process. Preserve the
-    // user's open-app topology as symbolic local launch records, never as
-    // dead protocol ids; startup rebinds the replacement surface into the
-    // same tab.
+    durable.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
+    // Native process surface IDs become durable symbolic launch records.
     symbolise_foreign_surfaces(&mut durable);
     clear_transient_launch_notes(&mut durable);
     durable.prune_local_app_records();
@@ -141,67 +145,263 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
     }
-    let json = serde_json::to_string_pretty(&durable)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    atomic_file::write(path, json.as_bytes())
+    // Symbolic launch records may grow (for example, copying a foreign title
+    // into its durable label). Preserve the reserve on the exact output shape.
+    super::native_workspace_owner::publication::preflight_tree(&durable)
+        .map_err(std::io::Error::other)?;
+    Ok(durable)
+}
+
+fn encode_durable(durable: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
+    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
+    let mut output = LimitedWriter::new(Vec::new(), MAX_STATE_BYTES);
+    serde_json::to_writer_pretty(&mut output, durable).map_err(std::io::Error::other)?;
+    Ok(output.into_inner())
+}
+
+/// Publish the complete native state file through its shared writer, then
+/// the tree document beside it (see [`state_doc_path`]).
+/// Session-only capabilities and native process surface IDs are not persisted.
+///
+/// # Errors
+/// Refuses stale authority snapshots, encoded limits, competing writers, and
+/// publication failures. Uncertain publication fences subsequent writes.
+pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
+    let mut durable = durable_tree(tree)?;
+    let bytes = encode_durable(&durable)?;
+    tree.native_runtime
+        .publish(path, &tree.native_authority, &tree.native_authority, &bytes)?;
+    save_doc_beside(&mut durable, path, &bytes);
+    Ok(())
+}
+
+/// Largest tree document this build reads or writes. History only grows,
+/// so this is far above the `state.json` cap.
+const MAX_STATE_DOC_BYTES: usize = 256 * 1024 * 1024;
+
+/// The tree document beside `state.json` (`state.automerge`): the desktop
+/// with its whole change history, which Activity and Replay read. When it is
+/// the companion of the `state.json` beside it, it is authoritative on load.
+pub fn state_doc_path(state: &Path) -> PathBuf {
+    state.with_extension("automerge")
+}
+
+/// Which `state.json` the document was written with, and the actor it was
+/// written as.
+fn state_doc_meta_path(state: &Path) -> PathBuf {
+    let mut s = state_doc_path(state).into_os_string();
+    s.push(".meta");
+    PathBuf::from(s)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StateDocMeta {
+    /// Kept so edits after a restart continue this device's history and are
+    /// attributed like the edits before it. Safe to reuse: the tree document
+    /// is never sent to a peer, so no change from this actor exists that is
+    /// not in the saved document or lost with the process.
+    actor: String,
+    /// blake3 of the `state.json` bytes the document was written with.
+    state_json: String,
+}
+
+fn state_json_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// Write `durable`'s document next to the `state.json` just published from
+/// it. The document first takes on exactly what `state.json` records, so the
+/// two agree on load. Best-effort: `state.json` is already durable, and a
+/// document that fails to write is caught on load by its meta.
+fn save_doc_beside(durable: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
+    durable.commit_room_change();
+    durable.seed_doc_from_cache();
+    let doc = durable.doc.save();
+    if doc.len() > MAX_STATE_DOC_BYTES {
+        tracing::warn!(
+            bytes = doc.len(),
+            "tree document exceeds its size cap; its history is not saved"
+        );
+        return;
+    }
+    let meta = StateDocMeta {
+        actor: durable.doc.get_actor().to_hex_string(),
+        state_json: state_json_digest(state_json),
+    };
+    let Ok(meta) = serde_json::to_vec(&meta) else {
+        return;
+    };
+    // Document before meta: a meta naming this `state.json` must never sit
+    // beside an older document.
+    let written = tilo_files::native::atomic::replace(
+        &state_doc_path(path),
+        &doc,
+        tilo_files::native::atomic::Privacy::OwnerOnly,
+    )
+    .and_then(|()| {
+        tilo_files::native::atomic::replace(
+            &state_doc_meta_path(path),
+            &meta,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
+        )
+    });
+    if let Err(error) = written {
+        tracing::warn!(path = %path.display(), %error, "could not save the tree document");
+    }
+}
+
+/// [`save_doc_beside`] for a publication that encoded `tree` itself.
+pub(crate) fn save_doc_for(tree: &WorkspaceTree, path: &Path, state_json: &[u8]) {
+    match durable_tree(tree) {
+        Ok(mut durable) => save_doc_beside(&mut durable, path, state_json),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not save the tree document");
+        }
+    }
+}
+
+enum SavedDoc {
+    Absent,
+    /// Written with the `state.json` being loaded.
+    Current(AutoCommit),
+    /// Written with an earlier `state.json`.
+    Stale(AutoCommit),
+}
+
+fn read_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((cap as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > cap {
+        return Err(std::io::Error::other("tree document exceeds its size cap"));
+    }
+    Ok(bytes)
+}
+
+/// Keep a document that cannot be opened for recovery, out of the way of
+/// the next save.
+fn set_aside_unreadable_doc(doc_path: &Path, error: &dyn std::fmt::Display) {
+    let mut aside = doc_path.as_os_str().to_os_string();
+    aside.push(".unreadable");
+    tracing::error!(
+        path = %doc_path.display(),
+        %error,
+        "tree document cannot be opened; history restarts from state.json"
+    );
+    if let Err(e) = std::fs::rename(doc_path, &aside) {
+        tracing::warn!(path = %doc_path.display(), error = %e, "could not set the unreadable tree document aside");
+    }
+}
+
+fn load_saved_doc(path: &Path, state_json: &[u8]) -> SavedDoc {
+    let doc_path = state_doc_path(path);
+    let bytes = match read_capped(&doc_path, MAX_STATE_DOC_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return SavedDoc::Absent,
+        Err(error) => {
+            set_aside_unreadable_doc(&doc_path, &error);
+            return SavedDoc::Absent;
+        }
+    };
+    let mut doc = match AutoCommit::load(&bytes) {
+        Ok(doc) => doc,
+        Err(error) => {
+            set_aside_unreadable_doc(&doc_path, &error);
+            return SavedDoc::Absent;
+        }
+    };
+    let meta = std::fs::read(state_doc_meta_path(path))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<StateDocMeta>(&bytes).ok());
+    if let Some(actor) = meta
+        .as_ref()
+        .and_then(|meta| hex::decode(&meta.actor).ok())
+        .filter(|actor| !actor.is_empty())
+    {
+        doc.set_actor(automerge::ActorId::from(actor));
+    }
+    if meta.is_some_and(|meta| meta.state_json == state_json_digest(state_json)) {
+        SavedDoc::Current(doc)
+    } else {
+        SavedDoc::Stale(doc)
+    }
+}
+
+/// Adopt the document saved beside `state.json`. A current one is
+/// authoritative: the cache is rebuilt from it. A stale one — left when only
+/// `state.json` was written, by an interrupted save or an older build —
+/// keeps its history but not its content; the seed after load splices
+/// `state.json`'s newer state into it. With no document, that seed starts
+/// the history from `state.json` as one change.
+fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
+    match load_saved_doc(path, state_json) {
+        SavedDoc::Current(doc) => {
+            tree.doc = doc;
+            tree.resync_cache_from_doc();
+        }
+        SavedDoc::Stale(doc) => {
+            tracing::info!(
+                path = %path.display(),
+                "tree document predates state.json; keeping its history and applying state.json"
+            );
+            tree.doc = doc;
+        }
+        SavedDoc::Absent => {}
+    }
 }
 
 /// # Errors
 ///
 /// Returns an error if `path` can't be read, its contents don't parse as
-/// a [`WorkspaceTree`], or its `schema_version` is newer than
-/// [`STATE_SCHEMA_VERSION`].
+/// a [`WorkspaceTree`], or its `schema_version` is not
+/// [`NATIVE_STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
-    let s = std::fs::read_to_string(path)?;
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut s = String::new();
+    file.take((super::native_workspace_owner::store::MAX_STATE_BYTES as u64).saturating_add(1))
+        .read_to_string(&mut s)?;
+    if s.len() > super::native_workspace_owner::store::MAX_STATE_BYTES {
+        return Err(std::io::Error::other(
+            "native encoded state refusal cap exceeded",
+        ));
+    }
     let mut tree: WorkspaceTree = serde_json::from_str::<WorkspaceTree>(&s)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Refuse before anything else touches it: mutators here write the
     // whole tree back, so "load it and see" is "overwrite it and see".
-    if tree.desktop.schema_version > STATE_SCHEMA_VERSION {
+    if tree.desktop.schema_version != NATIVE_STATE_SCHEMA_VERSION {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "state file layout {} is newer than the {STATE_SCHEMA_VERSION} \
+                "state file layout {} is not the {NATIVE_STATE_SCHEMA_VERSION} \
                  this build understands",
                 tree.desktop.schema_version
             ),
         ));
     }
-    // Normalise so the next write stamps the current version rather
-    // than carrying an old one forward for ever.
+    super::native_workspace_owner::publication::validate_file_layout(
+        tree.desktop.schema_version,
+        &tree.native_authority,
+    )
+    .map_err(std::io::Error::other)?;
+    super::native_workspace_owner::store::preflight(
+        &tree.native_authority,
+        super::native_workspace_owner::store::MAX_AUTHORITY_BYTES,
+    )?;
+    // The file envelope's version is stamped on write; in memory the tree
+    // carries the portable desktop schema.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
-    // An early production bootstrap accidentally used the screenshot/demo
-    // fixture. One of its own two-session demonstrations then renamed that
-    // synthetic Home room to `Shared room <unix time>`, leaving the invented
-    // Notes/Files/Terminal/Browser layout to be restored on every login. This
-    // signature is deliberately much stricter than a name or tab-count check:
-    // any genuine furniture edit makes it a near miss and preserves it.
-    if is_legacy_demo_bootstrap(&tree) {
-        tracing::warn!(
-            path = %path.display(),
-            "replacing the legacy synthetic demo workspace with an empty desktop"
-        );
-        tree = WorkspaceTree::bootstrap_default();
-        // Make the migration one-shot and crash-safe. A second restart reads
-        // the already-empty replacement rather than making the decision again.
-        save_tree_to(&tree, path)?;
-    }
-    // Repair state written by older builds which serialised process-local
-    // Wayland surface ids.  This must happen before seeding the room document,
-    // otherwise the dead window is immediately promoted back into the
-    // authoritative topology.
-    repair_legacy_foreign_surfaces(&mut tree);
-    // `Opening here…` describes work owned by the compositor process that
-    // wrote this file.  After a restart there is no corresponding launcher
-    // worker or pending placement left to complete it, so treating it as an
-    // answered symbolic window makes the card permanent and the application
-    // is never retried.  Older builds did persist this marker; normalise it
-    // before seeding the document so both local restore and peer projection
-    // see the retryable state.
-    clear_transient_launch_notes(&mut tree);
+    // Before the repairs below, so they apply to what the document
+    // restores too, and the seed after them records their outcome.
+    attach_saved_doc(&mut tree, path, s.as_bytes());
     tree.prune_local_app_records();
-    // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
-    // nothing and existing workspaces never propagate after restart.
+    // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: for
+    // a current document it writes only what the repairs changed; for a
+    // stale one, what `state.json` has that it lacks; with no document it
+    // is the one-time migration that starts the history.
     tree.seed_doc_from_cache();
     // The `next_id` counter restarts at 1; without seeding, the next
     // allocation collides with a persisted id.
@@ -209,157 +409,22 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     Ok(tree)
 }
 
-/// Exact structural signature of the two known demo bootstraps that escaped
-/// into user state. IDs are checked as one contiguous allocation sequence;
-/// names, furniture, active pointers and every user-content-bearing side map
-/// must also match. Governance is intentionally ignored because the demo's
-/// join/adoption flow itself changes owners, capabilities and room authority.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exact legacy-bootstrap signature is intentionally kept as one auditable predicate so migration cannot match a partial user workspace"
-)]
-fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
-    use crate::shell::state::{AppKind, TileContent, WindowWidth};
-
-    let [home, research, design] = tree.desktop.workspaces.as_slice() else {
-        return false;
-    };
-    let shared_demo_name = home
-        .name
-        .strip_prefix("Shared room ")
-        .is_some_and(|suffix| {
-            suffix.len() == 10 && suffix.bytes().all(|byte| byte.is_ascii_digit())
-        });
-    if home.name != "Home" && !shared_demo_name {
-        return false;
-    }
-    if research.name != "Research" || design.name != "Design" {
-        return false;
-    }
-
-    let base = home.id.raw();
-    let id = |offset| base.checked_add(offset);
-    let (
-        Some(home_strip_id),
-        Some(group_id),
-        Some(notes_id),
-        Some(files_id),
-        Some(terminal_id),
-        Some(fourth_id),
-        Some(research_id),
-        Some(research_strip_id),
-        Some(design_id),
-        Some(design_strip_id),
-    ) = (
-        id(1),
-        id(2),
-        id(3),
-        id(4),
-        id(5),
-        id(6),
-        id(7),
-        id(8),
-        id(9),
-        id(10),
-    )
-    else {
-        return false;
-    };
-    let ([home_strip], [research_strip], [design_strip]) = (
-        home.strips.as_slice(),
-        research.strips.as_slice(),
-        design.strips.as_slice(),
-    ) else {
-        return false;
-    };
-    let [group] = home_strip.window_groups.as_slice() else {
-        return false;
-    };
-    if !research_strip.window_groups.is_empty()
-        || !design_strip.window_groups.is_empty()
-        || home_strip.name != "Main"
-        || research_strip.name != "Main"
-        || design_strip.name != "Main"
-        || home_strip.id.raw() != home_strip_id
-        || group.id != group_id
-        || research.id.raw() != research_id
-        || research_strip.id.raw() != research_strip_id
-        || design.id.raw() != design_id
-        || design_strip.id.raw() != design_strip_id
-        || tree.desktop.active != home.id
-        || tree.desktop.active_strip.len() != 3
-        || tree.desktop.active_strip.get(&home.id) != Some(&home_strip.id)
-        || tree.desktop.active_strip.get(&research.id) != Some(&research_strip.id)
-        || tree.desktop.active_strip.get(&design.id) != Some(&design_strip.id)
-        || tree.desktop.active_group.len() != 1
-        || tree.desktop.active_group.get(&home_strip.id) != Some(&group.id)
-        || group.active_tab != notes_id
-        || group.width != WindowWidth::Wide
-        || group.maximized
-        || home
-            .strips
-            .iter()
-            .chain(&research.strips)
-            .chain(&design.strips)
-            .any(|strip| strip.name != "Main")
-        || tree
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| !workspace.tasks.is_empty() || !workspace.shared_surfaces.is_empty())
-        || !tree.room_peer_names.is_empty()
-        || !tree.room_peer_identities.is_empty()
-        || !tree.room_share_floor.is_empty()
-        || !tree.continuation_tabs.is_empty()
-        || !tree.continuation_rooms.is_empty()
-        || !tree.continuation_owned_tabs.is_empty()
-        || !tree.continuation_closed_tabs.is_empty()
-        || !tree.continuation_file_references.is_empty()
-        || !tree.native_document_tabs.is_empty()
-    {
-        return false;
-    }
-
-    let [notes, files, terminal, fourth] = group.tabs.as_slice() else {
-        return false;
-    };
-    if [notes.id, files.id, terminal.id, fourth.id] != [notes_id, files_id, terminal_id, fourth_id]
-        || notes.title != "Notes"
-        || files.title != "Files"
-        || terminal.title != "Terminal"
-        || !matches!(
-            &notes.tile,
-            TileContent::AppPlaceholder { kind: AppKind::Other(kind), label }
-                if kind == "Notes" && label == "Notes"
-        )
-        || !matches!(
-            &files.tile,
-            TileContent::AppPlaceholder { kind: AppKind::FileExplorer, label }
-                if label == "Files"
-        )
-        || !matches!(
-            &terminal.tile,
-            TileContent::AppPlaceholder { kind: AppKind::Terminal, label }
-                if label == "Terminal"
-        )
-    {
-        return false;
-    }
-
-    // Browser was the original fourth fake tile; a later demo revision
-    // replaced it with the in-process Document placeholder. Both are wholly
-    // synthetic and otherwise share the exact allocation signature above.
-    (fourth.title == "Browser"
-        && matches!(
-            &fourth.tile,
-            TileContent::Stub { kind: AppKind::Browser, label } if label == "Browser"
-        ))
-        || (fourth.title == "Document"
-            && matches!(
-                &fourth.tile,
-                TileContent::AppPlaceholder { kind: AppKind::Other(kind), label }
-                    if kind == "Word" && label == "Document"
-            ))
+/// The identity a live client window is relaunched by.
+///
+/// A mapped host window announces a toolkit/window-system identity, which
+/// need not be the desktop-file id that `run-host` accepts. Keep the durable
+/// record keyed by the launch identity whenever the installed catalogue can
+/// correlate it. For example, Rygel Preferences announces
+/// `org.gnome.Rygel.Preferences`, while its launchable entry is
+/// `rygel-preferences.desktop`. Persisting the former made a normal
+/// logout/login show "Not installed" even though a fresh palette launch
+/// worked. Unknown foreign windows deliberately retain their announced
+/// identity.
+pub(crate) fn durable_app_id(surface_id: u64, app_id: &str) -> String {
+    crate::shell::launcher::launch_key_for_surface(surface_id)
+        .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
+        .or_else(|| crate::shell::host_apps::app_for_window_id(app_id).map(|app| app.desktop_id))
+        .unwrap_or_else(|| app_id.to_string())
 }
 
 /// Remove live compositor-client bindings from a durable tree and repair the
@@ -376,27 +441,9 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
                     if let TileContent::Foreign { app_id, surface_id } = &tab.tile {
-                        // A mapped host window announces a toolkit/window-system
-                        // identity, which need not be the desktop-file id that
-                        // `run-host` accepts.  Keep the durable record keyed by
-                        // the launch identity whenever the installed catalogue
-                        // can correlate it.  For example, Rygel Preferences
-                        // announces `org.gnome.Rygel.Preferences`, while its
-                        // launchable entry is `rygel-preferences.desktop`.
-                        // Persisting the former made a normal logout/login show
-                        // "Not installed" even though a fresh palette launch
-                        // worked. Unknown foreign windows deliberately retain
-                        // their announced identity.
-                        let durable_app_id =
-                            crate::shell::launcher::launch_key_for_surface(*surface_id)
-                                .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
-                                .or_else(|| {
-                                    crate::shell::host_apps::app_for_window_id(app_id)
-                                        .map(|app| app.desktop_id)
-                                })
-                                .unwrap_or_else(|| app_id.clone());
+                        let launch_app_id = durable_app_id(*surface_id, app_id);
                         tab.tile = TileContent::LocalApp {
-                            app_id: durable_app_id,
+                            app_id: launch_app_id,
                             label: tab.title.clone(),
                             note: String::new(),
                         };
@@ -436,78 +483,6 @@ fn clear_transient_launch_notes(tree: &mut WorkspaceTree) {
     }
 }
 
-/// Old builds wrote raw foreign ids before the save-side sanitizer existed.
-/// Those records cannot be safely launched because their presence on disk is
-/// ambiguous, so retain the defensive deletion only for legacy input.
-fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
-    use crate::shell::state::TileContent;
-
-    let mut removed_tabs = std::collections::HashSet::new();
-    let mut removed_surfaces = std::collections::HashSet::new();
-
-    for workspace in &mut tree.desktop.workspaces {
-        for strip in &mut workspace.strips {
-            for group in &mut strip.window_groups {
-                group.tabs.retain(|tab| {
-                    if let TileContent::Foreign { surface_id, .. } = &tab.tile {
-                        removed_tabs.insert(tab.id);
-                        removed_surfaces.insert(*surface_id);
-                        false
-                    } else {
-                        true
-                    }
-                });
-                if !group.tabs.iter().any(|tab| tab.id == group.active_tab) {
-                    group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
-                }
-            }
-            strip.window_groups.retain(|group| !group.tabs.is_empty());
-        }
-        for surface in &removed_surfaces {
-            workspace.shared_surfaces.unshare(*surface);
-        }
-        for collaborator in &mut workspace.collaborators {
-            if collaborator
-                .active_tab
-                .is_some_and(|tab| removed_tabs.contains(&tab))
-            {
-                collaborator.active_tab = None;
-            }
-        }
-    }
-
-    let valid_active_groups: std::collections::HashSet<_> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| {
-            strip
-                .window_groups
-                .iter()
-                .map(move |group| (strip.id, group.id))
-        })
-        .collect();
-    tree.desktop
-        .active_group
-        .retain(|strip_id, group_id| valid_active_groups.contains(&(*strip_id, *group_id)));
-    for workspace in &tree.desktop.workspaces {
-        for strip in &workspace.strips {
-            if !tree.desktop.active_group.contains_key(&strip.id)
-                && let Some(group) = strip.window_groups.first()
-            {
-                tree.desktop.active_group.insert(strip.id, group.id);
-            }
-        }
-    }
-    tree.continuation_tabs
-        .retain(|tab| !removed_tabs.contains(tab));
-    tree.continuation_owned_tabs
-        .retain(|tab, _| !removed_tabs.contains(tab));
-    tree.continuation_file_references
-        .retain(|tab, _| !removed_tabs.contains(tab));
-}
-
 /// A missing file is the first boot and carries no notice; anything
 /// else means an unreadable file exists, and the demo-tree fallback is
 /// indistinguishable from a lost session unless [`StateNotice`] reaches
@@ -524,10 +499,10 @@ pub fn load_or_default(path: &Path) -> (WorkspaceTree, Option<StateNotice>) {
             // A newer layout means the data is intact and this build is
             // the wrong one; an unreadable file may be damage.
             let notice = match schema_version_in(path) {
-                Some(found) if found > STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
+                Some(found) if found > NATIVE_STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
                     path: path.to_path_buf(),
                     found,
-                    understood: STATE_SCHEMA_VERSION,
+                    understood: NATIVE_STATE_SCHEMA_VERSION,
                 },
                 _ => StateNotice::Unreadable {
                     path: path.to_path_buf(),
@@ -559,142 +534,6 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn escaped_demo_fixture() -> WorkspaceTree {
-        use crate::shell::state::{AppKind, TileContent};
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let base = 12_u64;
-        let home = &mut tree.desktop.workspaces[0];
-        home.id = crate::shell::state::WorkspaceId(base);
-        home.name = "Shared room 1786892560".into();
-        home.strips[0].id = crate::shell::state::StripId(base + 1);
-        home.strips[0].window_groups[0].id = base + 2;
-        let group = &mut home.strips[0].window_groups[0];
-        for (offset, tab) in (3_u64..=6).zip(&mut group.tabs) {
-            tab.id = base.saturating_add(offset);
-        }
-        group.active_tab = base.saturating_add(3);
-        group.tabs[3].title = "Browser".into();
-        group.tabs[3].tile = TileContent::Stub {
-            kind: AppKind::Browser,
-            label: "Browser".into(),
-        };
-        tree.desktop.workspaces[1].id = crate::shell::state::WorkspaceId(base + 7);
-        tree.desktop.workspaces[1].strips[0].id = crate::shell::state::StripId(base + 8);
-        tree.desktop.workspaces[2].id = crate::shell::state::WorkspaceId(base + 9);
-        tree.desktop.workspaces[2].strips[0].id = crate::shell::state::StripId(base + 10);
-        tree.desktop.active = crate::shell::state::WorkspaceId(base);
-        tree.desktop.active_strip = [
-            (
-                crate::shell::state::WorkspaceId(base),
-                crate::shell::state::StripId(base + 1),
-            ),
-            (
-                crate::shell::state::WorkspaceId(base + 7),
-                crate::shell::state::StripId(base + 8),
-            ),
-            (
-                crate::shell::state::WorkspaceId(base + 9),
-                crate::shell::state::StripId(base + 10),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        tree.desktop.active_group = [(crate::shell::state::StripId(base + 1), base + 2)]
-            .into_iter()
-            .collect();
-        // The leaked collaboration demo adopted/changed governance after
-        // creating the furniture. Those mutations are evidence of the demo,
-        // not user-created windows, and must not prevent cleanup.
-        tree.desktop.workspaces[0].owner = Some("alice".into());
-        let _ = tree.adopt_ownerless_workspaces(&"ada".to_string());
-        tree
-    }
-
-    fn assert_demo_near_miss_is_preserved(tree: &WorkspaceTree, label: &str) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        save_tree_to(tree, &path).expect("save near miss");
-        let loaded = load_tree_from(&path).expect("load near miss");
-        assert_eq!(
-            loaded.desktop.workspaces.len(),
-            3,
-            "a user-modified demo-shaped layout must be preserved ({label})"
-        );
-    }
-
-    #[test]
-    fn escaped_demo_bootstrap_migrates_once_to_an_empty_desktop() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        let fixture = escaped_demo_fixture();
-        assert!(fixture.desktop.workspaces[0].owner.is_some());
-        assert!(fixture.desktop.workspaces[1].owner.is_some());
-        assert!(!fixture.desktop.workspaces[1].capabilities.is_empty());
-        assert!(
-            is_legacy_demo_bootstrap(&fixture),
-            "automatic collaboration governance changes remain part of the escaped demo signature"
-        );
-        save_tree_to(&fixture, &path).expect("save escaped fixture");
-
-        let first = load_tree_from(&path).expect("migrate escaped fixture");
-        assert_eq!(first.desktop.workspaces.len(), 1);
-        assert_eq!(first.desktop.workspaces[0].name, "Home");
-        assert!(
-            first.desktop.workspaces[0].strips[0]
-                .window_groups
-                .is_empty()
-        );
-        let replacement = std::fs::read(&path).expect("read atomic replacement");
-
-        let second = load_tree_from(&path).expect("load replacement again");
-        assert_eq!(second.desktop.workspaces.len(), 1);
-        assert!(
-            second.desktop.workspaces[0].strips[0]
-                .window_groups
-                .is_empty()
-        );
-        assert_eq!(
-            std::fs::read(&path).expect("read after second restart"),
-            replacement,
-            "the migration must be one-shot; a later restart does not rewrite it"
-        );
-    }
-
-    #[test]
-    fn demo_migration_preserves_every_near_miss_user_layout() {
-        let mut renamed = escaped_demo_fixture();
-        renamed.desktop.workspaces[0].name = "My actual room".into();
-        assert_demo_near_miss_is_preserved(&renamed, "renamed room");
-
-        let mut retitled = escaped_demo_fixture();
-        retitled.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].title = "My notes".into();
-        assert_demo_near_miss_is_preserved(&retitled, "retitled tab");
-
-        let mut reordered = escaped_demo_fixture();
-        reordered.desktop.workspaces[0].strips[0].window_groups[0]
-            .tabs
-            .swap(0, 1);
-        assert_demo_near_miss_is_preserved(&reordered, "reordered tabs");
-
-        let mut resized = escaped_demo_fixture();
-        resized.desktop.workspaces[0].strips[0].window_groups[0].width =
-            crate::shell::state::WindowWidth::Normal;
-        assert_demo_near_miss_is_preserved(&resized, "resized group");
-
-        let mut continued = escaped_demo_fixture();
-        continued.continuation_tabs.insert(15);
-        assert_demo_near_miss_is_preserved(&continued, "continuation state");
-
-        let mut non_contiguous = escaped_demo_fixture();
-        non_contiguous.desktop.workspaces[2].strips[0].id = crate::shell::state::StripId(99_999);
-        non_contiguous.desktop.active_strip.insert(
-            non_contiguous.desktop.workspaces[2].id,
-            crate::shell::state::StripId(99_999),
-        );
-        assert_demo_near_miss_is_preserved(&non_contiguous, "non-demo id allocation");
-    }
 
     fn foreign_tabs(tree: &WorkspaceTree) -> Vec<(u64, u64)> {
         tree.desktop
@@ -745,711 +584,669 @@ mod tests {
     }
 
     #[test]
-    fn save_never_durably_records_process_local_opening_progress() {
-        use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    fn opening_progress_is_never_persisted_and_migrates_back_to_retryable() {
+        fn save_never_durably_records_process_local_opening_progress() {
+            use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].strips = vec![Strip {
-            id: StripId::from(91_100),
-            name: "Main".into(),
-            window_groups: vec![WindowGroup {
-                id: 91_099,
-                tabs: Vec::new(),
-                active_tab: 0,
-                width: WindowWidth::Normal,
-                maximized: false,
-            }],
-        }];
-        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-        group.tabs = vec![
-            Tab {
-                id: 91_101,
-                title: "XTerm".into(),
-                tile: TileContent::LocalApp {
-                    app_id: "XTerm".into(),
-                    label: "XTerm".into(),
-                    note: crate::shell::peer_windows::OPENING.into(),
-                },
-            },
-            Tab {
-                id: 91_102,
-                title: "Missing".into(),
-                tile: TileContent::PeerWindow {
-                    app_id: "org.example.Missing".into(),
-                    label: "Missing".into(),
-                    note: "Not installed on this machine".into(),
-                },
-            },
-        ];
-        group.active_tab = 91_101;
-
-        save_tree_to(&tree, &path).expect("save");
-        let on_disk: WorkspaceTree =
-            serde_json::from_slice(&std::fs::read(&path).expect("read durable state"))
-                .expect("decode durable state");
-        assert_eq!(symbolic_note(&on_disk, 91_101), Some(""));
-        assert_eq!(
-            symbolic_note(&on_disk, 91_102),
-            Some("Not installed on this machine"),
-            "a settled refusal remains an answered window after restart"
-        );
-    }
-
-    #[test]
-    fn load_migrates_stale_opening_progress_back_to_a_retryable_window() {
-        use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        let mut legacy = WorkspaceTree::bootstrap_default();
-        legacy.desktop.workspaces[0].strips = vec![Strip {
-            id: StripId::from(91_104),
-            name: "Main".into(),
-            window_groups: vec![WindowGroup {
-                id: 91_105,
-                tabs: Vec::new(),
-                active_tab: 0,
-                width: WindowWidth::Normal,
-                maximized: false,
-            }],
-        }];
-        let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
-        group.tabs = vec![Tab {
-            id: 91_103,
-            title: "XTerm".into(),
-            tile: TileContent::LocalApp {
-                app_id: "XTerm".into(),
-                label: "XTerm".into(),
-                note: crate::shell::peer_windows::OPENING.into(),
-            },
-        }];
-        group.active_tab = 91_103;
-        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
-            .expect("write legacy state");
-
-        let loaded = load_tree_from(&path).expect("load old in-flight state");
-        assert_eq!(symbolic_note(&loaded, 91_103), Some(""));
-        assert!(
-            crate::shell::peer_windows::any_pending(&loaded),
-            "an interrupted launch must be attempted by the new session"
-        );
-    }
-
-    #[test]
-    fn live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement() {
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let workspace_id = tree.desktop.workspaces[0].id;
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        let survivor = 90_000;
-        tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .push(WindowGroup {
-                id: 89_999,
-                tabs: vec![Tab {
-                    id: survivor,
-                    title: "Notes".into(),
-                    tile: TileContent::PeerWindow {
-                        app_id: "tilo.notes".into(),
-                        label: "Notes".into(),
-                        note: String::new(),
-                    },
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tree.desktop.workspaces[0].strips = vec![Strip {
+                id: StripId::from(91_100),
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: 91_099,
+                    tabs: Vec::new(),
+                    active_tab: 0,
+                    width: WindowWidth::Normal,
+                    maximized: false,
                 }],
-                active_tab: survivor,
-                width: WindowWidth::Normal,
-                maximized: false,
-            });
-        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-        group.tabs.push(Tab {
-            id: 90_001,
-            title: "External editor".into(),
-            tile: TileContent::Foreign {
-                app_id: "org.example.Editor".into(),
-                surface_id: 0xfeed_beef,
-            },
-        });
-        group.active_tab = 90_001;
-        tree.desktop.active = workspace_id;
-        tree.desktop.active_strip.insert(workspace_id, strip_id);
-        tree.desktop.active_group.insert(strip_id, 89_999);
+            }];
+            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            group.tabs = vec![
+                Tab {
+                    id: 91_101,
+                    title: "XTerm".into(),
+                    tile: TileContent::LocalApp {
+                        app_id: "XTerm".into(),
+                        label: "XTerm".into(),
+                        note: crate::shell::peer_windows::OPENING.into(),
+                    },
+                },
+                Tab {
+                    id: 91_102,
+                    title: "Missing".into(),
+                    tile: TileContent::PeerWindow {
+                        app_id: "org.example.Missing".into(),
+                        label: "Missing".into(),
+                        note: "Not installed on this machine".into(),
+                    },
+                },
+            ];
+            group.active_tab = 91_101;
 
-        save_tree_to(&tree, &path).expect("save");
-        let on_disk: WorkspaceTree =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read durable state"))
-                .expect("decode durable state");
-        assert!(
-            foreign_tabs(&on_disk).is_empty(),
-            "the writer itself must sanitize live ids; load repair is only migration defence"
-        );
-        let loaded = load_tree_from(&path).expect("load");
+            save_tree_to(&tree, &path).expect("save");
+            let on_disk: WorkspaceTree =
+                serde_json::from_slice(&std::fs::read(&path).expect("read durable state"))
+                    .expect("decode durable state");
+            assert_eq!(symbolic_note(&on_disk, 91_101), Some(""));
+            assert_eq!(
+                symbolic_note(&on_disk, 91_102),
+                Some("Not installed on this machine"),
+                "a settled refusal remains an answered window after restart"
+            );
+        }
 
-        assert!(foreign_tabs(&loaded).is_empty());
-        assert_eq!(
-            local_apps(&loaded),
-            vec![(90_001, "org.example.Editor".into())],
-            "a live app becomes a relaunchable record in the same tab"
-        );
-        let loaded_group = &loaded.desktop.workspaces[0].strips[0].window_groups[0];
-        assert_eq!(loaded.desktop.active, workspace_id);
-        assert_eq!(
-            loaded.desktop.active_strip.get(&workspace_id),
-            Some(&strip_id)
-        );
-        assert_eq!(loaded.desktop.active_group.get(&strip_id), Some(&89_999));
-        assert_eq!(loaded_group.active_tab, 90_001);
-        assert!(
-            loaded_group
-                .tabs
-                .iter()
-                .any(|tab| tab.id == loaded_group.active_tab),
-            "symbolising a live surface must preserve the selected tab"
-        );
+        save_never_durably_records_process_local_opening_progress();
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn host_foreign_surface_persists_the_launchable_desktop_id() {
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn foreign_surfaces_persist_symbolically_and_closed_ones_stay_closed() {
+        fn live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement() {
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("rygel-preferences.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nNotShowIn=GNOME;\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
-        crate::shell::launcher::clear_launched_for_test();
-        let app = crate::shell::host_apps::find("rygel-preferences")
-            .expect("Rygel desktop entry should scan");
-        let mut launch_identities = app.window_identities.clone();
-        launch_identities.push("org.gnome.Rygel.Preferences".into());
-        crate::shell::launcher::remember_launch_named(
-            &app.desktop_id,
-            &launch_identities,
-            &app.name,
-        );
-        crate::shell::launcher::attribute_surface_launch(90_102, &app.desktop_id);
-        crate::shell::launcher::set_pending_placement_for_identities(
-            &app.desktop_id,
-            &launch_identities,
-            crate::shell::tab_binding::Placement::NewGroup,
-        );
-        assert_eq!(
-            crate::shell::launcher::placement_for_toplevel("org.gnome.Rygel.Preferences", 90_102,),
-            Some(crate::shell::tab_binding::Placement::NewGroup)
-        );
-
-        let dir = tempfile::tempdir().expect("state directory");
-        let path = dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .push(WindowGroup {
-                id: 90_100,
-                tabs: Vec::new(),
-                active_tab: 0,
-                width: WindowWidth::Normal,
-                maximized: false,
-            });
-        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-        group.tabs.push(Tab {
-            id: 90_101,
-            title: "Rygel Preferences".into(),
-            tile: TileContent::Foreign {
-                app_id: "org.gnome.Rygel.Preferences".into(),
-                surface_id: 90_102,
-            },
-        });
-        group.active_tab = 90_101;
-
-        save_tree_to(&tree, &path).expect("save host window");
-        let loaded = load_tree_from(&path).expect("restart");
-        assert_eq!(
-            local_apps(&loaded),
-            vec![(90_101, "rygel-preferences".into())],
-            "restore must retain the desktop-file id accepted by run-host, not the transient WM class"
-        );
-        assert_eq!(
-            crate::shell::host_apps::find("rygel-preferences").map(|app| app.name),
-            Some("Rygel Preferences".into()),
-            "the persisted identity must resolve directly on the next login"
-        );
-
-        crate::shell::host_apps::invalidate_cache();
-        crate::shell::launcher::clear_launched_for_test();
-        crate::shell::launcher::clear_pending_placements();
-        drop(env);
-    }
-
-    #[test]
-    fn a_closed_foreign_app_is_not_recreated_by_the_next_save() {
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .push(WindowGroup {
-                id: 92_001,
-                tabs: vec![Tab {
-                    id: 92_002,
-                    title: "Chat".into(),
-                    tile: TileContent::Foreign {
-                        app_id: "com.example.Chat".into(),
-                        surface_id: 92_003,
-                    },
-                }],
-                active_tab: 92_002,
-                width: WindowWidth::Normal,
-                maximized: false,
-            });
-        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-            &mut tree, 92_003
-        ));
-
-        save_tree_to(&tree, &path).expect("save after close");
-        let loaded = load_tree_from(&path).expect("restart");
-        assert!(foreign_tabs(&loaded).is_empty());
-        assert!(local_apps(&loaded).is_empty());
-    }
-
-    #[test]
-    fn sanitizer_repairs_every_reference_when_the_last_live_group_disappears() {
-        use crate::shell::state::{Collaborator, Tab, TileContent, WindowGroup, WindowWidth};
-
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        let tab_id = 91_001;
-        let surface_id = 91_002;
-        tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .push(WindowGroup {
-                id: 91_003,
-                tabs: vec![Tab {
-                    id: tab_id,
-                    title: "Ephemeral".into(),
-                    tile: TileContent::Foreign {
-                        app_id: "org.example.Ephemeral".into(),
-                        surface_id,
-                    },
-                }],
-                active_tab: tab_id,
-                width: WindowWidth::Normal,
-                maximized: false,
-            });
-        tree.desktop.active_group.insert(strip_id, 91_003);
-        tree.desktop.workspaces[0]
-            .shared_surfaces
-            .share(surface_id, 44);
-        tree.desktop.workspaces[0]
-            .collaborators
-            .push(Collaborator::with_active_tab("peer", "Peer", tab_id));
-        tree.continuation_tabs.insert(tab_id);
-        tree.continuation_owned_tabs
-            .insert(tab_id, tree.desktop.workspaces[0].room);
-
-        repair_legacy_foreign_surfaces(&mut tree);
-
-        assert!(
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let workspace_id = tree.desktop.workspaces[0].id;
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            let survivor = 90_000;
             tree.desktop.workspaces[0].strips[0]
                 .window_groups
-                .is_empty()
-        );
-        assert!(!tree.desktop.active_group.contains_key(&strip_id));
-        assert!(tree.desktop.workspaces[0].shared_surfaces.is_empty());
-        assert_eq!(tree.desktop.workspaces[0].collaborators[0].active_tab, None);
-        assert!(!tree.continuation_tabs.contains(&tab_id));
-        assert!(!tree.continuation_owned_tabs.contains_key(&tab_id));
-    }
-
-    #[test]
-    fn load_repairs_legacy_foreign_tabs_but_keeps_explicit_placeholders() {
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("legacy-state.json");
-        let mut legacy = WorkspaceTree::bootstrap_default();
-        legacy.desktop.workspaces[0].strips[0]
-            .window_groups
-            .push(WindowGroup {
-                id: 90_004,
-                tabs: Vec::new(),
-                active_tab: 0,
-                width: WindowWidth::Normal,
-                maximized: false,
+                .push(WindowGroup {
+                    id: 89_999,
+                    tabs: vec![Tab {
+                        id: survivor,
+                        title: "Notes".into(),
+                        tile: TileContent::PeerWindow {
+                            app_id: "tilo.notes".into(),
+                            label: "Notes".into(),
+                            note: String::new(),
+                        },
+                    }],
+                    active_tab: survivor,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            group.tabs.push(Tab {
+                id: 90_001,
+                title: "External editor".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.example.Editor".into(),
+                    surface_id: 0xfeed_beef,
+                },
             });
-        let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
-        group.tabs.push(Tab {
-            id: 90_002,
-            title: "Stale client".into(),
-            tile: TileContent::Foreign {
-                app_id: "org.example.Editor".into(),
-                surface_id: 1234,
-            },
-        });
-        group.tabs.push(Tab {
-            id: 90_003,
-            title: "Continue here".into(),
-            tile: TileContent::PeerWindow {
-                app_id: "org.example.Editor".into(),
-                label: "Continue here".into(),
-                note: String::new(),
-            },
-        });
-        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
-            .expect("stage legacy state");
+            group.active_tab = 90_001;
+            tree.desktop.active = workspace_id;
+            tree.desktop.active_strip.insert(workspace_id, strip_id);
+            tree.desktop.active_group.insert(strip_id, 89_999);
 
-        let loaded = load_tree_from(&path).expect("load legacy state");
-        assert!(foreign_tabs(&loaded).is_empty());
-        assert!(
-            loaded.desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .iter()
-                .any(|tab| matches!(&tab.tile, TileContent::PeerWindow { .. }))
-        );
-    }
-
-    /// Presence must not survive the process that observed it — a
-    /// persisted roster would paint people who aren't there. Safe to
-    /// drop: durable membership lives on `capabilities` and `owner`,
-    /// held fixed here to prove the two aren't confused.
-    #[test]
-    fn a_persisted_roster_does_not_come_back_as_presence() {
-        use crate::shell::state::Collaborator;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-
-        let mut original = WorkspaceTree::bootstrap_default();
-        let room = original
-            .desktop
-            .active_workspace()
-            .expect("active workspace")
-            .room;
-        assert!(original.note_peer_present(room, 0x11, "alice"));
-        assert!(original.admit_collaborator_in_room(
-            room,
-            Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
-        ));
-        let owner_before = original.desktop.active_workspace().unwrap().owner.clone();
-        let caps_before = original
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .capabilities
-            .len();
-
-        save_tree_to(&original, &path).expect("save");
-        let (loaded, notice) = load_or_default(&path);
-        assert!(notice.is_none(), "a file this build just wrote must load");
-
-        for ws in &loaded.desktop.workspaces {
+            save_tree_to(&tree, &path).expect("save");
+            let on_disk: WorkspaceTree =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read durable state"))
+                    .expect("decode durable state");
             assert!(
-                ws.collaborators.is_empty(),
-                "workspace {:?} came back from disk showing {:?} — nobody \
-                 is connected to a shell that has only just started, and \
-                 these rows can never be retired because the sessions \
-                 they named are gone",
-                ws.name,
-                ws.collaborators,
+                foreign_tabs(&on_disk).is_empty(),
+                "the writer itself must sanitize live ids; load repair is only migration defence"
+            );
+            let loaded = load_tree_from(&path).expect("load");
+
+            assert!(foreign_tabs(&loaded).is_empty());
+            assert_eq!(
+                local_apps(&loaded),
+                vec![(90_001, "org.example.Editor".into())],
+                "a live app becomes a relaunchable record in the same tab"
+            );
+            let loaded_group = &loaded.desktop.workspaces[0].strips[0].window_groups[0];
+            assert_eq!(loaded.desktop.active, workspace_id);
+            assert_eq!(
+                loaded.desktop.active_strip.get(&workspace_id),
+                Some(&strip_id)
+            );
+            assert_eq!(loaded.desktop.active_group.get(&strip_id), Some(&89_999));
+            assert_eq!(loaded_group.active_tab, 90_001);
+            assert!(
+                loaded_group
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == loaded_group.active_tab),
+                "symbolising a live surface must preserve the selected tab"
             );
         }
 
-        let after = loaded
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room == room)
-            .expect("the room survives the round trip");
-        assert_eq!(
-            after.owner, owner_before,
-            "dropping presence must not disturb who owns the workspace"
-        );
-        assert_eq!(
-            after.capabilities.len(),
-            caps_before,
-            "dropping presence must not disturb granted capabilities"
-        );
-    }
+        fn host_foreign_surface_persists_the_launchable_desktop_id() {
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
-    /// A JSON-only load leaves the automerge doc empty; `load_or_default`
-    /// must seed it from the cache so `current_heads()` reports real history.
-    #[test]
-    fn load_or_default_seeds_doc_from_cache() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-
-        let original = WorkspaceTree::bootstrap_demo();
-        save_tree_to(&original, &path).expect("save");
-
-        let (mut loaded, notice) = load_or_default(&path);
-        assert!(
-            notice.is_none(),
-            "a file this build just wrote must load without a notice"
-        );
-        assert!(
-            !loaded.desktop.workspaces.is_empty(),
-            "bootstrap tree must round-trip workspaces"
-        );
-        assert!(
-            !loaded.current_heads().is_empty(),
-            "load_or_default must seed the automerge doc so peer-sync \
-             exports the persisted workspaces (C-2 regression)"
-        );
-    }
-
-    /// A state file written before workspaces had a room identity must
-    /// gain one exactly once. Minting on every load would be worse than
-    /// not minting at all: the workspace's room would change every
-    /// boot, so every peer previously invited to it would be talking to
-    /// a room that no longer exists.
-    #[test]
-    fn a_pre_rooms_state_file_gains_one_room_and_keeps_it() {
-        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-
-        // Derived from the live serialiser, then `room` stripped from
-        // every workspace, so it stays *loadable* as the struct grows.
-        let mut original = WorkspaceTree::default();
-        original
-            .desktop
-            .workspaces
-            .push(Workspace::new(WorkspaceId(7), "Home"));
-        save_tree_to(&original, &path).expect("save");
-        let mut raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
-                .expect("state file parses");
-        for ws in raw["workspaces"].as_array_mut().expect("workspaces array") {
-            assert!(
-                ws.as_object_mut()
-                    .expect("workspace object")
-                    .remove("room")
-                    .is_some(),
-                "the current writer must emit a room, or this fixture is \
-                 not removing anything"
+            let data = tempfile::tempdir().expect("temporary XDG data home");
+            let applications = data.path().join("applications");
+            std::fs::create_dir_all(&applications).expect("applications directory");
+            std::fs::write(
+                applications.join("rygel-preferences.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nNotShowIn=KDE;\n",
+            )
+            .expect("desktop entry");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", data.path());
+            crate::shell::host_apps::invalidate_cache();
+            crate::shell::launcher::clear_launched_for_test();
+            let app = crate::shell::host_apps::find("rygel-preferences")
+                .expect("Rygel desktop entry should scan");
+            let mut launch_identities = app.window_identities.clone();
+            launch_identities.push("org.gnome.Rygel.Preferences".into());
+            crate::shell::launcher::remember_launch_named(
+                &app.desktop_id,
+                &launch_identities,
+                &app.name,
             );
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
-            .expect("write legacy state");
+            crate::shell::launcher::attribute_surface_launch(90_102, &app.desktop_id);
+            crate::shell::launcher::set_pending_placement_for_identities(
+                &app.desktop_id,
+                &launch_identities,
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+            assert_eq!(
+                crate::shell::launcher::placement_for_toplevel(
+                    "org.gnome.Rygel.Preferences",
+                    90_102,
+                ),
+                Some(crate::shell::tab_binding::Placement::NewGroup)
+            );
 
-        let (mut first_boot, _) = load_or_default(&path);
-        // Identify the tree by the id the fixture wrote, not by its
-        // shape — `bootstrap_default` is also a single workspace, and
-        // its id is minted fresh, never 7.
-        assert_eq!(
-            first_boot
+            let dir = tempfile::tempdir().expect("state directory");
+            let path = dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 90_100,
+                    tabs: Vec::new(),
+                    active_tab: 0,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            group.tabs.push(Tab {
+                id: 90_101,
+                title: "Rygel Preferences".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.gnome.Rygel.Preferences".into(),
+                    surface_id: 90_102,
+                },
+            });
+            group.active_tab = 90_101;
+
+            save_tree_to(&tree, &path).expect("save host window");
+            let loaded = load_tree_from(&path).expect("restart");
+            assert_eq!(
+                local_apps(&loaded),
+                vec![(90_101, "rygel-preferences".into())],
+                "restore must retain the desktop-file id accepted by run-host, not the transient WM class"
+            );
+            assert_eq!(
+                crate::shell::host_apps::find("rygel-preferences").map(|app| app.name),
+                Some("Rygel Preferences".into()),
+                "the persisted identity must resolve directly on the next login"
+            );
+
+            crate::shell::host_apps::invalidate_cache();
+            crate::shell::launcher::clear_launched_for_test();
+            crate::shell::launcher::clear_pending_placements();
+            drop(env);
+        }
+
+        fn a_closed_foreign_app_is_not_recreated_by_the_next_save() {
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 92_001,
+                    tabs: vec![Tab {
+                        id: 92_002,
+                        title: "Chat".into(),
+                        tile: TileContent::Foreign {
+                            app_id: "com.example.Chat".into(),
+                            surface_id: 92_003,
+                        },
+                    }],
+                    active_tab: 92_002,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+                &mut tree, 92_003
+            ));
+
+            save_tree_to(&tree, &path).expect("save after close");
+            let loaded = load_tree_from(&path).expect("restart");
+            assert!(foreign_tabs(&loaded).is_empty());
+            assert!(local_apps(&loaded).is_empty());
+        }
+
+        live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement();
+        host_foreign_surface_persists_the_launchable_desktop_id();
+        a_closed_foreign_app_is_not_recreated_by_the_next_save();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn loaded_state_seeds_rooms_and_docs_but_not_presence() {
+        /// Presence must not survive the process that observed it — a
+        /// persisted roster would paint people who aren't there. Safe to
+        /// drop: durable membership lives on `capabilities` and `owner`,
+        /// held fixed here to prove the two aren't confused.
+        fn a_persisted_roster_does_not_come_back_as_presence() {
+            use crate::shell::state::Collaborator;
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+
+            let mut original = WorkspaceTree::bootstrap_default();
+            let room = original
+                .desktop
+                .active_workspace()
+                .expect("active workspace")
+                .room;
+            assert!(original.note_peer_present(room, 0x11, "alice"));
+            assert!(original.admit_collaborator_in_room(
+                room,
+                Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
+            ));
+            let owner_before = original.desktop.active_workspace().unwrap().owner.clone();
+            let caps_before = original
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .capabilities
+                .len();
+
+            save_tree_to(&original, &path).expect("save");
+            let (loaded, notice) = load_or_default(&path);
+            assert!(notice.is_none(), "a file this build just wrote must load");
+
+            for ws in &loaded.desktop.workspaces {
+                assert!(
+                    ws.collaborators.is_empty(),
+                    "workspace {:?} came back from disk showing {:?} — nobody \
+                     is connected to a shell that has only just started, and \
+                     these rows can never be retired because the sessions \
+                     they named are gone",
+                    ws.name,
+                    ws.collaborators,
+                );
+            }
+
+            let after = loaded
                 .desktop
                 .workspaces
                 .iter()
-                .map(|w| w.id)
-                .collect::<Vec<_>>(),
-            vec![WorkspaceId(7)],
-            "the legacy state file must still load; got the bootstrap \
-             fallback or something else entirely"
-        );
-        assert!(
-            first_boot.desktop.workspaces[0].room.is_nil(),
-            "a workspace deserialised from a pre-rooms file has no identity \
-             yet; that is what the boot-time migration is for"
-        );
-
-        first_boot.persist_path = Some(path.clone());
-        let minted = first_boot.adopt_roomless_workspaces();
-        assert_eq!(
-            minted.len(),
-            1,
-            "the migration must mint for the one roomless workspace"
-        );
-        let room = first_boot.desktop.workspaces[0].room;
-        assert!(!room.is_nil(), "the minted room must be a real identity");
-
-        // The mint and the write are one operation, so the *next* boot
-        // reads the same value rather than minting again.
-        let (mut second_boot, _) = load_or_default(&path);
-        assert_eq!(
-            second_boot.desktop.workspaces[0].room, room,
-            "the room minted on first boot must have been written to disk, \
-             so the second boot loads it instead of minting a new one"
-        );
-        second_boot.persist_path = Some(path);
-        assert!(
-            second_boot.adopt_roomless_workspaces().is_empty(),
-            "a second boot must find nothing to migrate"
-        );
-        assert_eq!(
-            second_boot.desktop.workspaces[0].room, room,
-            "and must leave the room it loaded alone"
-        );
-    }
-
-    /// Every state file this build writes says which layout it is. Without
-    /// this the version check has nothing to read on the next boot, and the
-    /// refusal below can only ever fire for a hand-edited file.
-    #[test]
-    fn a_written_state_file_stamps_its_schema_version() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        save_tree_to(&WorkspaceTree::bootstrap_demo(), &path).expect("save");
-
-        let raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-        assert_eq!(
-            raw.get("schema_version")
-                .and_then(serde_json::Value::as_u64),
-            Some(u64::from(STATE_SCHEMA_VERSION)),
-            "the writer must stamp the current schema version"
-        );
-    }
-
-    /// The one this whole thing exists for: an older binary meets a file
-    /// a newer one wrote. It must refuse, leave the file byte-for-byte
-    /// alone, and hand the caller something to show the person —
-    /// silently handing them a bootstrapped demo tree is indistinguishable
-    /// from having lost their session.
-    #[test]
-    fn a_newer_state_file_is_refused_preserved_and_reported() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-
-        // Derived from the live writer, so it stays a *loadable* file as the
-        // struct grows. A hand-written fixture that silently stopped parsing
-        // would take the "unreadable" branch and this test would be asserting
-        // about the wrong refusal.
-        let mut original = WorkspaceTree::default();
-        original
-            .desktop
-            .workspaces
-            .push(crate::shell::state::Workspace::new(
-                crate::shell::state::WorkspaceId(7),
-                "Home",
-            ));
-        save_tree_to(&original, &path).expect("save");
-        let mut raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-        let future = STATE_SCHEMA_VERSION + 1;
-        raw["schema_version"] = serde_json::json!(future);
-        let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
-        std::fs::write(&path, &on_disk).expect("write future state");
-
-        let (tree, notice) = load_or_default(&path);
-
-        // Refused: this is a bootstrapped tree, not the one on disk.
-        assert!(
-            !tree.desktop.workspaces.iter().any(|w| w.id.0 == 7),
-            "a file from a newer layout must NOT be loaded; workspace 7 came \
-             from it and must not be in the session"
-        );
-
-        // Reported, with the facts that make it actionable.
-        let notice = notice.expect(
-            "a refused state file must produce a notice — silently handing the \
-             person a bootstrapped tree is the behaviour this replaces",
-        );
-        match &notice {
-            StateNotice::NewerSchema {
-                found, understood, ..
-            } => {
-                assert_eq!(*found, future);
-                assert_eq!(*understood, STATE_SCHEMA_VERSION);
-            }
-            other @ StateNotice::Unreadable { .. } => panic!(
-                "expected NewerSchema so the person is told their data is \
-                 intact and this build is the wrong one, got {other:?}"
-            ),
+                .find(|w| w.room == room)
+                .expect("the room survives the round trip");
+            assert_eq!(
+                after.owner, owner_before,
+                "dropping presence must not disturb who owns the workspace"
+            );
+            assert_eq!(
+                after.capabilities.len(),
+                caps_before,
+                "dropping presence must not disturb granted capabilities"
+            );
         }
-        assert!(
-            notice.detail().contains(&path.display().to_string()),
-            "the detail must name the file, or there is nothing to act on"
-        );
-        // The on-screen line is short on purpose — a toast does not grow — but
-        // it still has to carry the claim a person cannot infer from an empty
-        // desktop.
-        assert!(
-            notice.body().len() < 80,
-            "the on-screen body must fit a 320x48 toast; it was {} chars: {:?}",
-            notice.body().len(),
-            notice.body()
-        );
-        assert!(
-            notice.body().to_lowercase().contains("nothing was changed"),
-            "the screen has to say the file is intact, got: {:?}",
-            notice.body()
-        );
 
-        // Preserved, byte for byte.
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("re-read"),
-            on_disk,
-            "the state file must not have been touched"
-        );
+        /// The one-time migration: a `state.json` written before the tree
+        /// document was saved beside it has no history to restore, so
+        /// `load_or_default` starts one from it — a single change holding the
+        /// whole desktop, so peer-sync exports the persisted workspaces
+        /// (C-2 regression).
+        fn a_state_file_without_a_document_starts_its_history_from_it() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
 
-        // And the explanation is on the disk too, for anyone who was not
-        // watching the screen when the session came up.
-        let beside = notice_path(&path);
-        let left = std::fs::read_to_string(&beside)
-            .unwrap_or_else(|e| panic!("no explanation at {}: {e}", beside.display()));
-        assert!(
-            left.contains(&future.to_string()) && left.contains("not"),
-            "the file left beside it must say what happened, got: {left}"
-        );
+            let mut original = WorkspaceTree::bootstrap_default();
+            original.desktop.workspaces[0].name = "Migrated".into();
+            save_tree_to(&original, &path).expect("save");
+            // Simulate the writing process exiting and releasing its state-file
+            // writer.
+            drop(original);
+            // What an older build leaves: `state.json` alone.
+            std::fs::remove_file(state_doc_path(&path))
+                .expect("the writer saves the document beside state.json");
+            std::fs::remove_file(state_doc_meta_path(&path)).expect("and the meta that pairs them");
+
+            let (mut loaded, notice) = load_or_default(&path);
+            assert!(
+                notice.is_none(),
+                "a file this build just wrote must load without a notice"
+            );
+            assert_eq!(loaded.desktop.workspaces[0].name, "Migrated");
+            assert_eq!(
+                loaded.doc.get_changes(&[]).len(),
+                1,
+                "with no document to restore, the history starts as one change"
+            );
+            let mut from_doc = tilo_desktop_model::DesktopTree::default();
+            tilo_desktop_model::desktop_doc::rebuild(&loaded.doc, &mut from_doc);
+            assert_eq!(
+                from_doc
+                    .workspaces
+                    .iter()
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .collect::<Vec<_>>(),
+                loaded
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .collect::<Vec<_>>(),
+                "the migrated document describes the loaded desktop"
+            );
+        }
+
+        a_persisted_roster_does_not_come_back_as_presence();
+        a_state_file_without_a_document_starts_its_history_from_it();
     }
 
-    /// The complement, and the reason the default is 1 rather than 0:
-    /// every state file written before the key existed must still open,
-    /// or the upgrade that introduced the check would itself cause the
-    /// exact failure the check is meant to prevent.
+    /// What the Activity pane shows for `tree`: rows as (id, author, summary),
+    /// contributors, named ranges, and the workspace names at each Replay
+    /// checkpoint.
+    type ActivitySnapshot = (
+        Vec<(ui::widget::HistoryEntryId, String, String)>,
+        Vec<String>,
+        Vec<String>,
+        Vec<Vec<String>>,
+    );
+
+    fn activity_of(tree: &mut WorkspaceTree) -> ActivitySnapshot {
+        let mut pane = tilo_desktop::activity::RoomActivityPane::new();
+        pane.set_host(std::rc::Rc::new(
+            crate::shell::room_activity::NativeActivityHost::default(),
+        ));
+        pane.set_scope(
+            crate::shell::room_activity::RoomScope::AllWorkspaces,
+            &*tree,
+        );
+        pane.refresh(tree);
+        assert_eq!(
+            pane.replay_unavailable_checkpoints(),
+            0,
+            "every Replay checkpoint must resolve in the document"
+        );
+        (
+            pane.entries()
+                .iter()
+                .map(|entry| (entry.id, entry.author.name.clone(), entry.summary.clone()))
+                .collect(),
+            pane.contributors().to_vec(),
+            pane.timeline()
+                .named_ranges()
+                .iter()
+                .map(|range| range.label.clone())
+                .collect(),
+            pane.replay_checkpoint_names(),
+        )
+    }
+
+    /// Activity and Replay read the tree document's history. Restarting
+    /// used to rebuild that document from `state.json` as one fresh change,
+    /// so every row, author, name and checkpoint was gone.
     #[test]
-    fn a_state_file_written_before_versioning_still_opens() {
+    fn activity_and_replay_survive_a_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
 
-        let mut original = WorkspaceTree::default();
-        original
-            .desktop
-            .workspaces
-            .push(crate::shell::state::Workspace::new(
-                crate::shell::state::WorkspaceId(9),
-                "Home",
-            ));
-        save_tree_to(&original, &path).expect("save");
-        let mut raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-        assert!(
-            raw.as_object_mut()
-                .expect("object")
-                .remove("schema_version")
-                .is_some(),
-            "the current writer must emit schema_version, or this fixture \
-             removes nothing and the test is vacuous"
+        // Local edits: a rename and a second workspace.
+        tree.desktop.workspaces[0].name = "Launch".into();
+        tree.seed_doc_from_cache();
+        let mut research = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(0x7e57_0001),
+            "Research",
         );
-        std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
-            .expect("write pre-versioning state");
+        // Replay draws a workspace through its strips.
+        research.strips.push(crate::shell::state::Strip {
+            id: crate::shell::state::StripId(0x7e57_0002),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        });
+        tree.desktop.workspaces.push(research);
+        tree.seed_doc_from_cache();
+        // A peer's edit, under the peer's own actor.
+        let base = tree.current_heads();
+        let mut peer = tree.doc.fork();
+        peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+        let mut peer_desktop = tree.desktop.clone();
+        peer_desktop.workspaces[1].name = "Ada's research".into();
+        tilo_desktop_model::desktop_doc::seed(&mut peer, &peer_desktop);
+        tilo_resource::history::commit_stamped(&mut peer);
+        let changes: Vec<Vec<u8>> = peer
+            .get_changes(&base)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        tree.apply_changes(&changes)
+            .expect("the peer's change applies");
+        // A named range over the first two rows.
+        let (rows, ..) = activity_of(&mut tree);
+        assert!(rows.len() >= 2, "the fixture must have history: {rows:?}");
+        ui::history_groups::name_range(&mut tree.doc, &rows[0].0, Some(&rows[1].0), "Launch prep");
+        tree.commit_room_change();
 
-        let (tree, notice) = load_or_default(&path);
+        let before = activity_of(&mut tree);
+        let heads = tree.current_heads();
+        let actor = tree.doc.get_actor().clone();
         assert!(
-            notice.is_none(),
-            "a pre-versioning file must not be refused"
+            before
+                .0
+                .iter()
+                .any(|(_, author, _)| author.to_lowercase().contains("ada")),
+            "the peer's row must be attributed to the peer: {:?}",
+            before.0
         );
+        assert_eq!(before.2, vec!["Launch prep".to_string()]);
         assert!(
-            tree.desktop.workspaces.iter().any(|w| w.id.0 == 9),
-            "the workspaces in a pre-versioning file must still be loaded"
+            before
+                .3
+                .contains(&vec!["Launch".to_string(), "Ada's research".to_string()]),
+            "Replay must have a checkpoint showing the current desktop: {:?}",
+            before.3
+        );
+
+        save_tree_to(&tree, &path).expect("save");
+        drop(tree);
+        let mut restarted = load_tree_from(&path).expect("restart");
+
+        assert_eq!(
+            restarted.current_heads(),
+            heads,
+            "a restart neither loses history nor writes any of its own"
         );
         assert_eq!(
-            tree.desktop.schema_version, STATE_SCHEMA_VERSION,
-            "and the loaded tree must carry the current version, so the next \
-             write stamps it rather than leaving the file unversioned for ever"
+            restarted.doc.get_actor(),
+            &actor,
+            "local edits after a restart continue this device's history"
         );
+        assert_eq!(activity_of(&mut restarted), before);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn state_file_schema_versions_are_stamped_and_anything_else_is_refused() {
+        /// Every state file this build writes says which layout it is. Without
+        /// this the version check has nothing to read on the next boot, and the
+        /// refusal below can only ever fire for a hand-edited file.
+        fn a_written_state_file_stamps_its_schema_version() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            save_tree_to(&WorkspaceTree::bootstrap_demo(), &path).expect("save");
+
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            assert_eq!(
+                raw.get("schema_version")
+                    .and_then(serde_json::Value::as_u64),
+                Some(u64::from(NATIVE_STATE_SCHEMA_VERSION)),
+                "the writer must stamp the current schema version"
+            );
+        }
+
+        /// The one this whole thing exists for: an older binary meets a file
+        /// a newer one wrote. It must refuse, leave the file byte-for-byte
+        /// alone, and hand the caller something to show the person —
+        /// silently handing them a bootstrapped demo tree is indistinguishable
+        /// from having lost their session.
+        fn a_newer_state_file_is_refused_preserved_and_reported() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+
+            // Derived from the live writer, so it stays a *loadable* file as the
+            // struct grows. A hand-written fixture that silently stopped parsing
+            // would take the "unreadable" branch and this test would be asserting
+            // about the wrong refusal.
+            let mut original = WorkspaceTree::default();
+            original
+                .desktop
+                .workspaces
+                .push(crate::shell::state::Workspace::new(
+                    crate::shell::state::WorkspaceId(7),
+                    "Home",
+                ));
+            save_tree_to(&original, &path).expect("save");
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            let future = NATIVE_STATE_SCHEMA_VERSION + 1;
+            raw["schema_version"] = serde_json::json!(future);
+            let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
+            std::fs::write(&path, &on_disk).expect("write future state");
+
+            let (tree, notice) = load_or_default(&path);
+
+            // Refused: this is a bootstrapped tree, not the one on disk.
+            assert!(
+                !tree.desktop.workspaces.iter().any(|w| w.id.0 == 7),
+                "a file from a newer layout must NOT be loaded; workspace 7 came \
+                 from it and must not be in the session"
+            );
+
+            // Reported, with the facts that make it actionable.
+            let notice = notice.expect(
+                "a refused state file must produce a notice — silently handing the \
+                 person a bootstrapped tree is the behaviour this replaces",
+            );
+            match &notice {
+                StateNotice::NewerSchema {
+                    found, understood, ..
+                } => {
+                    assert_eq!(*found, future);
+                    assert_eq!(*understood, NATIVE_STATE_SCHEMA_VERSION);
+                }
+                other @ StateNotice::Unreadable { .. } => panic!(
+                    "expected NewerSchema so the person is told their data is \
+                     intact and this build is the wrong one, got {other:?}"
+                ),
+            }
+            assert!(
+                notice.detail().contains(&path.display().to_string()),
+                "the detail must name the file, or there is nothing to act on"
+            );
+            // The on-screen line is short on purpose — a toast does not grow — but
+            // it still has to carry the claim a person cannot infer from an empty
+            // desktop.
+            assert!(
+                notice.body().len() < 80,
+                "the on-screen body must fit a 320x48 toast; it was {} chars: {:?}",
+                notice.body().len(),
+                notice.body()
+            );
+            assert!(
+                notice.body().to_lowercase().contains("nothing was changed"),
+                "the screen has to say the file is intact, got: {:?}",
+                notice.body()
+            );
+
+            // Preserved, byte for byte.
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("re-read"),
+                on_disk,
+                "the state file must not have been touched"
+            );
+
+            // And the explanation is on the disk too, for anyone who was not
+            // watching the screen when the session came up.
+            let beside = notice_path(&path);
+            let left = std::fs::read_to_string(&beside)
+                .unwrap_or_else(|e| panic!("no explanation at {}: {e}", beside.display()));
+            assert!(
+                left.contains(&future.to_string()) && left.contains("not"),
+                "the file left beside it must say what happened, got: {left}"
+            );
+        }
+
+        /// Older layouts are refused too, and the file is left untouched.
+        fn older_and_unversioned_state_files_are_refused_and_preserved() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+
+            let mut original = WorkspaceTree::default();
+            original
+                .desktop
+                .workspaces
+                .push(crate::shell::state::Workspace::new(
+                    crate::shell::state::WorkspaceId(9),
+                    "Home",
+                ));
+            save_tree_to(&original, &path).expect("save");
+            let written: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            let mut unversioned = written.clone();
+            assert!(
+                unversioned
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("schema_version")
+                    .is_some(),
+                "the current writer must emit schema_version, or this fixture \
+                 removes nothing and the test is vacuous"
+            );
+            let mut older = written;
+            older["schema_version"] = serde_json::json!(NATIVE_STATE_SCHEMA_VERSION - 1);
+            for raw in [unversioned, older] {
+                let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
+                std::fs::write(&path, &on_disk).expect("write older state");
+
+                let (tree, notice) = load_or_default(&path);
+                assert!(
+                    matches!(notice, Some(StateNotice::Unreadable { .. })),
+                    "an older state file must be refused, got {notice:?}"
+                );
+                assert!(
+                    !tree.desktop.workspaces.iter().any(|w| w.id.0 == 9),
+                    "the workspaces in an older file must not be loaded"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&path).expect("re-read"),
+                    on_disk,
+                    "the state file must not have been touched"
+                );
+            }
+        }
+
+        a_written_state_file_stamps_its_schema_version();
+        a_newer_state_file_is_refused_preserved_and_reported();
+        older_and_unversioned_state_files_are_refused_and_preserved();
     }
 }

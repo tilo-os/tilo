@@ -17,3 +17,6 @@ getrandom03 = { package = "getrandom", version = "0.3", optional = true }
 
 [lints]
 workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }

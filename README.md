@@ -58,7 +58,7 @@ Install Rust through rustup and the native dependencies listed in
 ```bash
 cargo build -p shell        # compositor, tilo-control, shots
 cargo build -p ui
-cargo build -p fs
+cargo build -p tilo-fs
 cargo build -p file-explorer
 ```
 
@@ -91,6 +91,18 @@ cargo run -q --bin tilo-control -- actions list
 Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
 The required application-facing resource/action contract is documented in
 [`apps/README.md`](apps/README.md#application-contract-required).
+
+## Help Development!
+
+Turn on the repository's git hooks once in your clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook checks your staged change the way CI's quality job does
+(rustfmt, workspace membership, lint `#[allow]` reasons, secrets and more), so a
+formatting slip fails in a second on your machine instead of minutes later in CI.
 
 ## Where to read first
 

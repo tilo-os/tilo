@@ -77,17 +77,13 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|path| Path::new(path).is_absolute())
-        .map_or_else(
-            || {
-                // SAFETY: `geteuid` only reads the process credentials and has no
-                // preconditions.
-                let uid = unsafe { libc::geteuid() };
-                PathBuf::from(format!("/run/user/{uid}"))
-            },
-            PathBuf::from,
-        )
+    xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(|| {
+            // SAFETY: `geteuid` only reads the process credentials and has no
+            // preconditions.
+            let uid = unsafe { libc::geteuid() };
+            PathBuf::from(format!("/run/user/{uid}"))
+        })
         .join("tilo/windows-vm/leases")
 }
 
@@ -497,172 +493,177 @@ mod tests {
     }
 
     #[test]
-    fn read_only_portal_file_is_projected_under_only_its_lease_and_revoked() {
-        let temp = TempDir::new().unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace",
-                "published.app",
-                source(&temp, "input", b"private"),
-                PortalDocumentAccess::ReadOnly,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(store);
-        let lease = broker.materialize(&request(grant)).unwrap();
-        assert_eq!(lease.shares.len(), 1);
-        assert!(lease.shares[0].read_only);
-        assert!(
-            lease.shares[0]
-                .host_path
-                .starts_with(temp.path().join("leases").join(&lease.lease_id))
-        );
-        assert_eq!(
-            fs::read(lease.shares[0].host_path.join("document")).unwrap(),
-            b"private"
-        );
-        broker.revoke(&lease.lease_id);
-        assert!(!temp.path().join("leases").join(&lease.lease_id).exists());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn portal_projections_follow_their_lease_mode_and_never_replaced_links() {
+        // Phase `read_only_portal_file_is_projected_under_only_its_lease_and_revoked`.
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            assert_eq!(lease.shares.len(), 1);
+            assert!(lease.shares[0].read_only);
+            assert!(
+                lease.shares[0]
+                    .host_path
+                    .starts_with(temp.path().join("leases").join(&lease.lease_id))
+            );
+            assert_eq!(
+                fs::read(lease.shares[0].host_path.join("document")).unwrap(),
+                b"private"
+            );
+            broker.revoke(&lease.lease_id);
+            assert!(!temp.path().join("leases").join(&lease.lease_id).exists());
+        }
+        // Phase `read_only_projection_is_marked_for_the_rail_mount_namespace`.
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            assert!(lease.shares[0].read_only);
+            let document = lease.shares[0].host_path.join("document");
+            let mode = fs::metadata(&document).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o400);
+            assert_eq!(
+                mode & 0o222,
+                0,
+                "read-only projections must have no write bits"
+            );
+            broker.revoke(&lease.lease_id);
+        }
+        // Phase `writable_projection_round_trips_only_through_the_portal_descriptor`.
+        {
+            let temp = TempDir::new().unwrap();
+            let source_path = temp.path().join("input");
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"before"),
+                    PortalDocumentAccess::ReadWrite,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            fs::write(lease.shares[0].host_path.join("document"), b"after").unwrap();
+            broker.revoke(&lease.lease_id);
+            let mut contents = String::new();
+            File::open(source_path)
+                .unwrap()
+                .read_to_string(&mut contents)
+                .unwrap();
+            assert_eq!(contents, "after");
+        }
+        // Phase `writable_projection_never_follows_a_replaced_symlink_on_save`.
+        {
+            let temp = TempDir::new().unwrap();
+            let source_path = temp.path().join("input");
+            let unrelated_path = temp.path().join("unrelated");
+            fs::write(&unrelated_path, b"must-not-be-copied").unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"before"),
+                    PortalDocumentAccess::ReadWrite,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(Arc::clone(&store));
+            let lease = broker.materialize(&request(grant)).unwrap();
+            let projection = lease.shares[0].host_path.join("document");
+            fs::remove_file(&projection).unwrap();
+            std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
+
+            assert!(store.revoke_checked(&lease.lease_id).is_err());
+            assert_eq!(fs::read(source_path).unwrap(), b"before");
+        }
     }
 
     #[test]
-    fn read_only_projection_is_marked_for_the_rail_mount_namespace() {
-        let temp = TempDir::new().unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace",
-                "published.app",
-                source(&temp, "input", b"private"),
-                PortalDocumentAccess::ReadOnly,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(store);
-        let lease = broker.materialize(&request(grant)).unwrap();
-        assert!(lease.shares[0].read_only);
-        let document = lease.shares[0].host_path.join("document");
-        let mode = fs::metadata(&document).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o400);
-        assert_eq!(
-            mode & 0o222,
-            0,
-            "read-only projections must have no write bits"
-        );
-        broker.revoke(&lease.lease_id);
-    }
-
-    #[test]
-    fn writable_projection_round_trips_only_through_the_portal_descriptor() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("input");
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace",
-                "published.app",
-                source(&temp, "input", b"before"),
-                PortalDocumentAccess::ReadWrite,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(store);
-        let lease = broker.materialize(&request(grant)).unwrap();
-        fs::write(lease.shares[0].host_path.join("document"), b"after").unwrap();
-        broker.revoke(&lease.lease_id);
-        let mut contents = String::new();
-        File::open(source_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        assert_eq!(contents, "after");
-    }
-
-    #[test]
-    fn writable_projection_never_follows_a_replaced_symlink_on_save() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("input");
-        let unrelated_path = temp.path().join("unrelated");
-        fs::write(&unrelated_path, b"must-not-be-copied").unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace",
-                "published.app",
-                source(&temp, "input", b"before"),
-                PortalDocumentAccess::ReadWrite,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(Arc::clone(&store));
-        let lease = broker.materialize(&request(grant)).unwrap();
-        let projection = lease.shares[0].host_path.join("document");
-        fs::remove_file(&projection).unwrap();
-        std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
-
-        assert!(store.revoke_checked(&lease.lease_id).is_err());
-        assert_eq!(fs::read(source_path).unwrap(), b"before");
-    }
-
-    #[test]
-    fn a_handle_is_scoped_to_the_portal_caller_that_selected_it() {
-        let temp = TempDir::new().unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace-a",
-                "published.app",
-                source(&temp, "input", b"private"),
-                PortalDocumentAccess::ReadOnly,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(store);
-        assert!(matches!(
-            broker.materialize(&request(grant)),
-            Err(LaunchError::CapabilityBroker(_))
-        ));
-    }
-
-    #[test]
-    fn a_portal_handle_can_materialize_only_one_launch() {
-        let temp = TempDir::new().unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let grant = store
-            .register(
-                "workspace",
-                "published.app",
-                source(&temp, "input", b"private"),
-                PortalDocumentAccess::ReadOnly,
-            )
-            .unwrap();
-        let broker = PortalRailCapabilityBroker::new(store);
-        let first = broker.materialize(&request(grant.clone())).unwrap();
-        assert!(matches!(
-            broker.materialize(&request(grant)),
-            Err(LaunchError::CapabilityBroker(_))
-        ));
-        broker.revoke(&first.lease_id);
-    }
-
-    #[test]
-    fn document_count_is_bounded_before_any_projection_is_created() {
-        let temp = TempDir::new().unwrap();
-        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
-        let broker = PortalRailCapabilityBroker::new(store);
-        let request = LaunchRequest {
-            workspace_id: "workspace".to_string(),
-            application_id: "published.app".to_string(),
-            grants: crate::VmLaunchGrants {
-                portal_documents: (0..=MAX_PORTAL_DOCUMENTS_PER_LAUNCH)
-                    .map(|number| PortalDocumentGrant {
-                        handle: format!("doc-{number}"),
-                        access: PortalDocumentAccess::ReadOnly,
-                    })
-                    .collect(),
-                ..crate::VmLaunchGrants::default()
-            },
-        };
-        assert!(matches!(
-            broker.materialize(&request),
-            Err(LaunchError::CapabilityBroker(message)) if message.contains("too many")
-        ));
-        assert!(!temp.path().join("leases").exists());
+    fn portal_handles_are_caller_scoped_one_shot_and_bounded() {
+        // Phase `a_handle_is_scoped_to_the_portal_caller_that_selected_it`.
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace-a",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            assert!(matches!(
+                broker.materialize(&request(grant)),
+                Err(LaunchError::CapabilityBroker(_))
+            ));
+        }
+        // Phase `a_portal_handle_can_materialize_only_one_launch`.
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let first = broker.materialize(&request(grant.clone())).unwrap();
+            assert!(matches!(
+                broker.materialize(&request(grant)),
+                Err(LaunchError::CapabilityBroker(_))
+            ));
+            broker.revoke(&first.lease_id);
+        }
+        // Phase `document_count_is_bounded_before_any_projection_is_created`.
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let broker = PortalRailCapabilityBroker::new(store);
+            let request = LaunchRequest {
+                workspace_id: "workspace".to_string(),
+                application_id: "published.app".to_string(),
+                grants: crate::VmLaunchGrants {
+                    portal_documents: (0..=MAX_PORTAL_DOCUMENTS_PER_LAUNCH)
+                        .map(|number| PortalDocumentGrant {
+                            handle: format!("doc-{number}"),
+                            access: PortalDocumentAccess::ReadOnly,
+                        })
+                        .collect(),
+                    ..crate::VmLaunchGrants::default()
+                },
+            };
+            assert!(matches!(
+                broker.materialize(&request),
+                Err(LaunchError::CapabilityBroker(message)) if message.contains("too many")
+            ));
+            assert!(!temp.path().join("leases").exists());
+        }
     }
 }

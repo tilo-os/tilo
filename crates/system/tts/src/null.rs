@@ -118,60 +118,58 @@ mod tests {
     use crate::speaker::Priority;
 
     #[test]
-    fn records_spoken_text() {
-        let mut s = NullSpeaker::new();
-        s.speak("hello", true);
-        s.speak("world", false);
-        assert_eq!(s.spoken(), &["hello".to_string(), "world".to_string()]);
-        assert_eq!(s.last(), Some("world"));
-    }
-
-    #[test]
-    fn records_full_utterance() {
-        let mut s = NullSpeaker::new();
-        s.speak_utterance(Utterance::new("err").with_priority(Priority::Important));
-        assert_eq!(s.utterances().len(), 1);
-        assert_eq!(s.utterances()[0].priority, Priority::Important);
-        assert!(s.utterances()[0].interrupt);
-    }
-
-    #[test]
-    fn stop_counts_and_clears_speaking() {
-        let mut s = NullSpeaker::new();
-        s.speak("hi", true);
-        assert!(s.is_speaking());
-        s.stop();
-        assert_eq!(s.stop_count(), 1);
-        assert!(!s.is_speaking());
-    }
-
-    #[test]
-    fn rate_and_voice_setters() {
-        let mut s = NullSpeaker::new();
-        assert_eq!(s.rate(), 1.0);
-        assert_eq!(s.voice(), None);
-        s.set_rate(1.5);
-        s.set_voice("en-us");
-        assert_eq!(s.rate(), 1.5);
-        assert_eq!(s.voice(), Some("en-us"));
-    }
-
-    #[test]
-    fn reset_keeps_rate_and_voice() {
-        let mut s = NullSpeaker::new();
-        s.set_rate(2.0);
-        s.set_voice("de");
-        s.speak("x", true);
-        s.stop();
-        s.reset();
-        assert!(s.spoken().is_empty());
-        assert_eq!(s.stop_count(), 0);
-        assert_eq!(s.rate(), 2.0);
-        assert_eq!(s.voice(), Some("de"));
-    }
-
-    #[test]
-    fn backend_name() {
-        assert_eq!(NullSpeaker::new().backend_name(), "null");
+    fn the_null_speaker_records_utterances_stops_and_settings() {
+        // Phase `records_spoken_text`.
+        {
+            let mut s = NullSpeaker::new();
+            s.speak("hello", true);
+            s.speak("world", false);
+            assert_eq!(s.spoken(), &["hello".to_string(), "world".to_string()]);
+            assert_eq!(s.last(), Some("world"));
+        }
+        // Phase `records_full_utterance`.
+        {
+            let mut s = NullSpeaker::new();
+            s.speak_utterance(Utterance::new("err").with_priority(Priority::Important));
+            assert_eq!(s.utterances().len(), 1);
+            assert_eq!(s.utterances()[0].priority, Priority::Important);
+            assert!(s.utterances()[0].interrupt);
+        }
+        // Phase `stop_counts_and_clears_speaking`.
+        {
+            let mut s = NullSpeaker::new();
+            s.speak("hi", true);
+            assert!(s.is_speaking());
+            s.stop();
+            assert_eq!(s.stop_count(), 1);
+            assert!(!s.is_speaking());
+        }
+        // Phase `rate_and_voice_setters`.
+        {
+            let mut s = NullSpeaker::new();
+            assert_eq!(s.rate(), 1.0);
+            assert_eq!(s.voice(), None);
+            s.set_rate(1.5);
+            s.set_voice("en-us");
+            assert_eq!(s.rate(), 1.5);
+            assert_eq!(s.voice(), Some("en-us"));
+        }
+        // Phase `reset_keeps_rate_and_voice`.
+        {
+            let mut s = NullSpeaker::new();
+            s.set_rate(2.0);
+            s.set_voice("de");
+            s.speak("x", true);
+            s.stop();
+            s.reset();
+            assert!(s.spoken().is_empty());
+            assert_eq!(s.stop_count(), 0);
+            assert_eq!(s.rate(), 2.0);
+            assert_eq!(s.voice(), Some("de"));
+        }
+        // Phase `backend_name`.
+        {
+            assert_eq!(NullSpeaker::new().backend_name(), "null");
+        }
     }
 }

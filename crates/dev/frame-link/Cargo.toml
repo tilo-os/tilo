@@ -21,9 +21,10 @@ tracing.workspace = true
 
 # Demo-only dependencies. The demo and library share this workspace crate.
 shell = { path = "../../session/shell", default-features = false }
-media = { path = "../../media/core", features = ["realtime"] }
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 cosmic-text = { workspace = true, features = ["fontconfig", "swash", "std"] }
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 proptest.workspace = true

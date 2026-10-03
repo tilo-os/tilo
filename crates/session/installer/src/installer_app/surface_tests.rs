@@ -110,82 +110,269 @@ fn state(app: &mut InstallerApp, doc: &mut AutoCommit) -> Value {
 }
 
 #[test]
-fn the_published_surface_is_valid_on_every_step() {
-    let backend = FakeBackend::new();
-    let (mut app, _doc) = app(&backend);
-    let handlers: HashSet<String> = op::HANDLERS.iter().map(|h| (*h).to_owned()).collect();
-    for step in [
-        Step::Keyboard,
-        Step::Network,
-        Step::Disk,
-        Step::Account,
-        Step::Options,
-        Step::Review,
-        Step::Install,
-    ] {
-        app.step = step;
-        let resources = app.publish();
-        let violations = tilo_actions::validate_surface(
-            &resources,
-            &tilo_actions::ActionRegistry::new(),
-            &handlers,
-        );
-        assert!(violations.is_empty(), "{step:?}: {violations:?}");
-        let described = tilo_actions::door::survey(&resources);
-        assert!(
-            described.iter().any(|d| d.address.action == "status"),
-            "{step:?} has no status"
-        );
-        // Exactly the current step's controls are available; every other
-        // action says why not.
-        for descriptor in &described {
-            if let tilo_actions::Availability::Unavailable { code, reason } =
-                &descriptor.contract.availability
-            {
-                assert!(!code.is_empty() && !reason.is_empty(), "{descriptor:?}");
+fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
+    // Phase `the_published_surface_is_valid_on_every_step`.
+    {
+        let backend = FakeBackend::new();
+        let (mut app, _doc) = app(&backend);
+        let handlers: HashSet<String> = op::HANDLERS.iter().map(|h| (*h).to_owned()).collect();
+        for step in [
+            Step::Keyboard,
+            Step::Network,
+            Step::Disk,
+            Step::Account,
+            Step::Options,
+            Step::Review,
+            Step::Install,
+        ] {
+            app.step = step;
+            let resources = app.publish();
+            let violations = tilo_actions::validate_surface(
+                &resources,
+                &tilo_actions::ActionRegistry::new(),
+                &handlers,
+            );
+            assert!(violations.is_empty(), "{step:?}: {violations:?}");
+            let described = tilo_actions::door::survey(&resources);
+            assert!(
+                described.iter().any(|d| d.address.action == "status"),
+                "{step:?} has no status"
+            );
+            // Exactly the current step's controls are available; every other
+            // action says why not.
+            for descriptor in &described {
+                if let tilo_actions::Availability::Unavailable { code, reason } =
+                    &descriptor.contract.availability
+                {
+                    assert!(!code.is_empty() && !reason.is_empty(), "{descriptor:?}");
+                }
             }
         }
+    }
+    // Phase `a_staged_installer_offers_only_alongside_and_the_way_back`.
+    // A staged (USB-free) installer publishes its way back and its one allowed
+    // plan through the same door as every other control.
+    {
+        let backend = Arc::new(FakeBackend {
+            disks: crate::disks::parse_lsblk(
+                &crate::internal_handoff::tests::lsblk_json().to_string(),
+            ),
+            installs: Mutex::new(Vec::new()),
+            power: Mutex::new(Vec::new()),
+            succeed: true,
+        });
+        let (mut app, mut doc) = app(&backend);
+        app.refresh_disks_with(backend.read_disks());
+        app.apply_internal_handoff(crate::internal_handoff::tests::handoff());
+        let doc = &mut doc;
+        app.step = Step::Disk;
+        let device = app.disks[0].name.clone();
+
+        let selected = invoke(
+            &mut app,
+            doc,
+            &format!("select@{}", op::disk_resource(&device)),
+            &json!({}),
+        );
+        assert!(selected.get("answer").is_some(), "{selected}");
+        let erase = invoke(
+            &mut app,
+            doc,
+            "set-method@installer.storage",
+            &json!({"method": "erase"}),
+        );
+        assert_eq!(refused(&erase), Some("action_failed"), "{erase}");
+        assert_eq!(app.install_method, InstallMethod::Alongside);
+
+        app.install_state = InstallState::Running;
+        let running = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
+        assert_eq!(refused(&running), Some("action_unavailable"), "{running}");
+        assert!(backend.power.lock().unwrap().is_empty());
+
+        app.install_state = InstallState::Failed;
+        let back = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
+        assert!(back.get("answer").is_some(), "{back}");
+        assert_eq!(*backend.power.lock().unwrap(), vec![PowerAction::Reboot]);
+    }
+    // Phase `an_ordinary_installer_publishes_no_way_back`.
+    {
+        let backend = FakeBackend::new();
+        let (mut app, mut doc) = app(&backend);
+        let reply = invoke(&mut app, &mut doc, "return-to-host@installer", &json!({}));
+        assert!(refused(&reply).is_some(), "{reply}");
     }
 }
 
 #[test]
-fn separate_disk_secret_action_keeps_backend_credentials_distinct_and_private() {
-    let backend = FakeBackend::new();
-    let (mut app, mut doc) = app(&backend);
-    app.step = Step::Account;
-    let account = "account-random-value-2026";
-    let disk = "disk-random-value-2026";
-    let set_disk = invoke(
-        &mut app,
-        &mut doc,
-        "set-disk-passphrase@installer.account",
-        &json!({"passphrase": disk, "confirmation": disk}),
-    );
-    assert!(set_disk.get("answer").is_some(), "{set_disk}");
-    let set_account = invoke(
-        &mut app,
-        &mut doc,
-        "set-passphrase@installer.account",
-        &json!({"passphrase": account, "confirmation": account}),
-    );
-    assert!(set_account.get("answer").is_some(), "{set_account}");
-    assert_ne!(app.install_options().pin.as_str(), account);
-    assert_eq!(app.install_options().pin.as_str(), disk);
-    for output in [
-        set_disk.to_string(),
-        set_account.to_string(),
-        state(&mut app, &mut doc).to_string(),
-    ] {
-        assert!(!output.contains(account) && !output.contains(disk));
+#[allow(
+    clippy::too_many_lines,
+    reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+)]
+fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
+    // Phase `wizard_controls_run_the_published_actions`.
+    {
+        // Selecting a disk by its row, and by its action, is one operation.
+        let backend = FakeBackend::new();
+        let (mut by_row, mut row_doc) = app(&backend);
+        let (mut by_action, mut action_doc) = app(&backend);
+        for app in [&mut by_row, &mut by_action] {
+            app.step = Step::Disk;
+            app.erase_confirmation = "stale".into();
+        }
+        let _ = row_doc.put(&automerge::ROOT, disk_path(1).as_str(), true);
+        by_row.sync(&mut row_doc, &automerge::ROOT);
+        let _ = invoke(
+            &mut by_action,
+            &mut action_doc,
+            "select@installer.disk:/dev/nvme0n1",
+            &json!({}),
+        );
+        assert_eq!(by_row.selected_disk, Some(1));
+        assert_eq!(by_row.selected_disk, by_action.selected_disk);
+        assert_eq!(by_row.erase_confirmation, by_action.erase_confirmation);
+
+        // A control whose action is unavailable shows the published reason: the
+        // same sentence an external caller receives.
+        by_row.step = Step::Install;
+        by_row.install_state = InstallState::Done;
+        by_row.recovery_key = Some(KEY.into());
+        let _ = row_doc.put(&automerge::ROOT, REBOOT_PATH, true);
+        by_row.sync(&mut row_doc, &automerge::ROOT);
+        let reason = by_row
+            .publish()
+            .iter()
+            .flat_map(|root| root.children.iter())
+            .find(|resource| resource.id.as_str() == op::POWER)
+            .and_then(|power| power.actions.iter().find(|a| a.id == "reboot"))
+            .map(|reboot| match &reboot.contract.availability {
+                tilo_actions::Availability::Unavailable { reason, .. } => reason.clone(),
+                tilo_actions::Availability::Available => String::new(),
+            })
+            .unwrap();
+        assert_eq!(by_row.status, reason);
+        assert!(backend.power.lock().unwrap().is_empty());
     }
-    let same = invoke(
-        &mut app,
-        &mut doc,
-        "set-passphrase@installer.account",
-        &json!({"passphrase": disk, "confirmation": disk}),
-    );
-    assert_eq!(refused(&same), Some("action_failed"));
-    assert!(!same.to_string().contains(disk));
+    // Phase `the_host_door_reaches_the_same_handler_and_refuses_a_stale_target`.
+    {
+        let backend = FakeBackend::new();
+        let (mut app, mut doc) = app(&backend);
+        let resources = app.publish();
+        let next = tilo_actions::door::resolve(
+            &resources,
+            &tilo_actions::ActionAddress::new(op::SESSION, "next"),
+        )
+        .unwrap();
+        let encoded = next.build_json(&serde_json::Map::new()).unwrap();
+        let started = app
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(matches!(
+            started,
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert_eq!(app.step, Step::Network);
+
+        // A confirmed begin for a target the review no longer names is refused,
+        // not redirected to whatever is selected now.
+        app.step = Step::Review;
+        app.selected_disk = Some(1);
+        app.recovery_ack = true;
+        *app.password.lock().unwrap() = SECRET.to_owned();
+        let stale = serde_json::to_vec(&Operation::BeginInstall {
+            target: "/dev/sda".into(),
+        })
+        .unwrap();
+        let refused = app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                op::OPERATION_TYPE,
+                &stale,
+            ),
+            &mut doc,
+            &automerge::ROOT,
+        );
+        assert!(refused.is_err());
+        assert!(backend.installs.lock().unwrap().is_empty());
+    }
+    // Phase `a_failed_install_goes_back_to_storage_through_the_same_action`.
+    {
+        let backend = FakeBackend::finishing(false);
+        let (mut app, mut doc) = app(&backend);
+        app.step = Step::Review;
+        app.selected_disk = Some(1);
+        app.recovery_ack = true;
+        *app.password.lock().unwrap() = SECRET.to_owned();
+        *app.password_confirmation.lock().unwrap() = SECRET.to_owned();
+        let started = invoke(
+            &mut app,
+            &mut doc,
+            "begin@installer.review",
+            &json!({"confirmation_phrase": "/dev/nvme0n1"}),
+        );
+        assert!(started.get("answer").is_some(), "{started}");
+        assert_eq!(app.install_state, InstallState::Failed);
+        let listed = console(
+            &mut app,
+            &mut doc,
+            &json!({"op": "actions_enumerate", "query": "Review storage"}),
+        );
+        assert_eq!(listed["answer"]["count"], 1, "{listed}");
+        let back = invoke(&mut app, &mut doc, "back@installer", &json!({}));
+        assert_eq!(back["answer"]["step"], "disk", "{back}");
+        assert_eq!(
+            app.selected_disk, None,
+            "a failed target is never pre-selected again"
+        );
+    }
+    // Phase `separate_disk_secret_action_keeps_backend_credentials_distinct_and_private`.
+    {
+        let backend = FakeBackend::new();
+        let (mut app, mut doc) = app(&backend);
+        app.step = Step::Account;
+        let account = "account-random-value-2026";
+        let disk = "disk-random-value-2026";
+        let set_disk = invoke(
+            &mut app,
+            &mut doc,
+            "set-disk-passphrase@installer.account",
+            &json!({"passphrase": disk, "confirmation": disk}),
+        );
+        assert!(set_disk.get("answer").is_some(), "{set_disk}");
+        let set_account = invoke(
+            &mut app,
+            &mut doc,
+            "set-passphrase@installer.account",
+            &json!({"passphrase": account, "confirmation": account}),
+        );
+        assert!(set_account.get("answer").is_some(), "{set_account}");
+        assert_ne!(app.install_options().pin.as_str(), account);
+        assert_eq!(app.install_options().pin.as_str(), disk);
+        for output in [
+            set_disk.to_string(),
+            set_account.to_string(),
+            state(&mut app, &mut doc).to_string(),
+        ] {
+            assert!(!output.contains(account) && !output.contains(disk));
+        }
+        let same = invoke(
+            &mut app,
+            &mut doc,
+            "set-passphrase@installer.account",
+            &json!({"passphrase": disk, "confirmation": disk}),
+        );
+        assert_eq!(refused(&same), Some("action_failed"));
+        assert!(!same.to_string().contains(disk));
+    }
 }
 
 #[test]
@@ -434,180 +621,4 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
             .is_some()
     );
     assert_eq!(*backend.power.lock().unwrap(), [PowerAction::PowerOff]);
-}
-
-#[test]
-fn a_failed_install_goes_back_to_storage_through_the_same_action() {
-    let backend = FakeBackend::finishing(false);
-    let (mut app, mut doc) = app(&backend);
-    app.step = Step::Review;
-    app.selected_disk = Some(1);
-    app.recovery_ack = true;
-    *app.password.lock().unwrap() = SECRET.to_owned();
-    *app.password_confirmation.lock().unwrap() = SECRET.to_owned();
-    let started = invoke(
-        &mut app,
-        &mut doc,
-        "begin@installer.review",
-        &json!({"confirmation_phrase": "/dev/nvme0n1"}),
-    );
-    assert!(started.get("answer").is_some(), "{started}");
-    assert_eq!(app.install_state, InstallState::Failed);
-    let listed = console(
-        &mut app,
-        &mut doc,
-        &json!({"op": "actions_enumerate", "query": "Review storage"}),
-    );
-    assert_eq!(listed["answer"]["count"], 1, "{listed}");
-    let back = invoke(&mut app, &mut doc, "back@installer", &json!({}));
-    assert_eq!(back["answer"]["step"], "disk", "{back}");
-    assert_eq!(
-        app.selected_disk, None,
-        "a failed target is never pre-selected again"
-    );
-}
-
-#[test]
-fn wizard_controls_run_the_published_actions() {
-    // Selecting a disk by its row, and by its action, is one operation.
-    let backend = FakeBackend::new();
-    let (mut by_row, mut row_doc) = app(&backend);
-    let (mut by_action, mut action_doc) = app(&backend);
-    for app in [&mut by_row, &mut by_action] {
-        app.step = Step::Disk;
-        app.erase_confirmation = "stale".into();
-    }
-    let _ = row_doc.put(&automerge::ROOT, disk_path(1).as_str(), true);
-    by_row.sync(&mut row_doc, &automerge::ROOT);
-    let _ = invoke(
-        &mut by_action,
-        &mut action_doc,
-        "select@installer.disk:/dev/nvme0n1",
-        &json!({}),
-    );
-    assert_eq!(by_row.selected_disk, Some(1));
-    assert_eq!(by_row.selected_disk, by_action.selected_disk);
-    assert_eq!(by_row.erase_confirmation, by_action.erase_confirmation);
-
-    // A control whose action is unavailable shows the published reason: the
-    // same sentence an external caller receives.
-    by_row.step = Step::Install;
-    by_row.install_state = InstallState::Done;
-    by_row.recovery_key = Some(KEY.into());
-    let _ = row_doc.put(&automerge::ROOT, REBOOT_PATH, true);
-    by_row.sync(&mut row_doc, &automerge::ROOT);
-    let reason = by_row
-        .publish()
-        .iter()
-        .flat_map(|root| root.children.iter())
-        .find(|resource| resource.id.as_str() == op::POWER)
-        .and_then(|power| power.actions.iter().find(|a| a.id == "reboot"))
-        .map(|reboot| match &reboot.contract.availability {
-            tilo_actions::Availability::Unavailable { reason, .. } => reason.clone(),
-            tilo_actions::Availability::Available => String::new(),
-        })
-        .unwrap();
-    assert_eq!(by_row.status, reason);
-    assert!(backend.power.lock().unwrap().is_empty());
-}
-
-#[test]
-fn the_host_door_reaches_the_same_handler_and_refuses_a_stale_target() {
-    let backend = FakeBackend::new();
-    let (mut app, mut doc) = app(&backend);
-    let resources = app.publish();
-    let next = tilo_actions::door::resolve(
-        &resources,
-        &tilo_actions::ActionAddress::new(op::SESSION, "next"),
-    )
-    .unwrap();
-    let encoded = next.build_json(&serde_json::Map::new()).unwrap();
-    let started = app
-        .start_resource_operation_with_document(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            &encoded.type_id,
-            &encoded.payload,
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
-    assert!(matches!(
-        started,
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-    assert_eq!(app.step, Step::Network);
-
-    // A confirmed begin for a target the review no longer names is refused,
-    // not redirected to whatever is selected now.
-    app.step = Step::Review;
-    app.selected_disk = Some(1);
-    app.recovery_ack = true;
-    *app.password.lock().unwrap() = SECRET.to_owned();
-    let stale = serde_json::to_vec(&Operation::BeginInstall {
-        target: "/dev/sda".into(),
-    })
-    .unwrap();
-    let refused = app.start_resource_operation_with_document(
-        tilo_actions::InvocationId::new(),
-        tilo_actions::OperationKind::Effect,
-        op::OPERATION_TYPE,
-        &stale,
-        &mut doc,
-        &automerge::ROOT,
-    );
-    assert!(refused.is_err());
-    assert!(backend.installs.lock().unwrap().is_empty());
-}
-
-/// A staged (USB-free) installer publishes its way back and its one allowed
-/// plan through the same door as every other control.
-#[test]
-fn a_staged_installer_offers_only_alongside_and_the_way_back() {
-    let backend = Arc::new(FakeBackend {
-        disks: crate::disks::parse_lsblk(&crate::internal_handoff::tests::lsblk_json().to_string()),
-        installs: Mutex::new(Vec::new()),
-        power: Mutex::new(Vec::new()),
-        succeed: true,
-    });
-    let (mut app, mut doc) = app(&backend);
-    app.refresh_disks_with(backend.read_disks());
-    app.apply_internal_handoff(crate::internal_handoff::tests::handoff());
-    let doc = &mut doc;
-    app.step = Step::Disk;
-    let device = app.disks[0].name.clone();
-
-    let selected = invoke(
-        &mut app,
-        doc,
-        &format!("select@{}", op::disk_resource(&device)),
-        &json!({}),
-    );
-    assert!(selected.get("answer").is_some(), "{selected}");
-    let erase = invoke(
-        &mut app,
-        doc,
-        "set-method@installer.storage",
-        &json!({"method": "erase"}),
-    );
-    assert_eq!(refused(&erase), Some("action_failed"), "{erase}");
-    assert_eq!(app.install_method, InstallMethod::Alongside);
-
-    app.install_state = InstallState::Running;
-    let running = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
-    assert_eq!(refused(&running), Some("action_unavailable"), "{running}");
-    assert!(backend.power.lock().unwrap().is_empty());
-
-    app.install_state = InstallState::Failed;
-    let back = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
-    assert!(back.get("answer").is_some(), "{back}");
-    assert_eq!(*backend.power.lock().unwrap(), vec![PowerAction::Reboot]);
-}
-
-#[test]
-fn an_ordinary_installer_publishes_no_way_back() {
-    let backend = FakeBackend::new();
-    let (mut app, mut doc) = app(&backend);
-    let reply = invoke(&mut app, &mut doc, "return-to-host@installer", &json!({}));
-    assert!(refused(&reply).is_some(), "{reply}");
 }

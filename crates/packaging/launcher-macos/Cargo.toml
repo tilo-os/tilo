@@ -1,0 +1,48 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "launcher-macos"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Confinement for Tilo apps on stock macOS: the kernel's App Sandbox for trusted signed apps, a Seatbelt profile for everything else."
+
+# The Linux launcher (`crates/packaging/launcher`) is bubblewrap, Landlock and
+# seccomp; its binary and integration tests do not build on macOS. This crate
+# reuses its policy types (capability grants, egress decision, the per-room app
+# directory) so both platforms confine from one decision, and keeps the
+# Apple-specific mechanism apart.
+#
+# The decision and the profile are plain data and build everywhere, so Linux CI
+# tests them too. Only code-signature inspection and process launch are
+# `cfg(target_os = "macos")`.
+
+[lib]
+name = "launcher_macos"
+path = "src/lib.rs"
+
+[dependencies]
+launcher = { path = "../launcher" }
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Issues the extension a picked path is granted with, as the runtime does.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The capture broker a confined app inherits, with synthetic devices.
+tilo-capture = { path = "../../platform/tilo-capture", features = ["test-support"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

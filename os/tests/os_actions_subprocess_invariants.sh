@@ -59,7 +59,7 @@ else
     if grep -Eq 'MAX_FIRMWARE_(STREAM|LINE)_BYTES|MAX_FIRMWARE_EVENTS' "$FIRMWARE"; then ok; else
         fail "firmware progress output is not allocation/event bounded"
     fi
-    if grep -Eq 'terminate_process_group' "$FIRMWARE"; then ok; else
+    if grep -Eq 'bounded_command::terminate_tree' "$FIRMWARE"; then ok; else
         fail "firmware timeout/error cleanup can leave descendants alive"
     fi
 fi

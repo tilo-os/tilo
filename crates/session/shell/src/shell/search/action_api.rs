@@ -146,10 +146,6 @@ impl ActionCatalog {
     /// Fan `query` out to `registry` under `scope`, then apply `visibility`.
     /// An empty `query` returns every provider's default set (score 0), so
     /// a caller can list the full surface without guessing a needle.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "catalog queries need registry, query scope and active provider alongside chrome, CRDT location and visibility policy"
-    )]
     pub fn build(
         registry: &SearchRegistry,
         query: &str,
@@ -193,14 +189,9 @@ impl ActionCatalog {
     /// providers use this path to retain the page that originally disclosed
     /// an opaque id while rechecking its current route and authority at
     /// invocation time.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact resolution keeps provider/resource identity and query context separate from chrome, CRDT location and visibility policy"
-    )]
     pub fn build_exact(
         registry: &SearchRegistry,
-        provider: &str,
-        id: &str,
+        resource: &ResourceRef,
         scope: SearchScope,
         active_provider_id: Option<&str>,
         chrome: &ChromeState,
@@ -209,7 +200,7 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         let args = QueryArgs {
-            needle: id,
+            needle: &resource.id,
             scope,
             active_provider_id,
             wanted_kinds: &[],
@@ -218,7 +209,7 @@ impl ActionCatalog {
             doc_root,
         };
         let results = registry
-            .query_provider_exact(provider, id, &args)
+            .query_provider_exact(&resource.provider, &resource.id, &args)
             .into_iter()
             .collect::<Vec<_>>();
         let visible: Vec<usize> = results
@@ -259,10 +250,6 @@ impl ActionCatalog {
         hierarchies
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "resource resolution keeps its address and query context separate from chrome, CRDT location and visibility policy"
-    )]
     pub fn build_for_resource(
         registry: &SearchRegistry,
         resource: &ResourceRef,
@@ -561,125 +548,152 @@ mod tests {
         reg
     }
 
-    /// The headline covenant: enumerate → select by id → invoke, entirely
-    /// headless, mutating chrome state through the production path.
     #[test]
-    fn enumerate_select_invoke_mutates_state_with_no_rendering() {
-        let reg = registry_with_actions();
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn headless_catalog_enumerates_selects_and_scopes_visible_resources() {
+        // Phase `enumerate_select_invoke_mutates_state_with_no_rendering`.
+        // The headline covenant: enumerate → select by id → invoke, entirely
+        // headless, mutating chrome state through the production path.
+        {
+            let reg = registry_with_actions();
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
 
-        // ENUMERATE — survey what the shell exports. No side-effect.
-        let catalog = ActionCatalog::build(
-            &reg,
-            "settings",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        let actions = catalog.enumerate();
-        assert!(
-            !actions.is_empty(),
-            "enumeration surfaces the exported actions"
-        );
-        let target = ResourceRef::new("actions", "settings.open");
-        let listed = actions
-            .iter()
-            .find(|a| a.resource == target)
-            .expect("the exported 'Open workspace settings' action is enumerable by id");
-        assert_eq!(listed.kind, ResourceKind::Action, "descriptors are typed");
-        assert_eq!(listed.title, "Open workspace settings");
-
-        // SELECT — resolve the id to a live, invokable handle.
-        let selected = catalog
-            .select(&target)
-            .expect("a listed resource is addressable by its ResourceRef");
-        assert_eq!(selected.kind(), &ResourceKind::Action);
-        assert_eq!(selected.resource(), target);
-
-        assert!(
-            !chrome.borrow().overlays.ws_settings,
-            "workspace-settings overlay starts closed"
-        );
-
-        // INVOKE — run the side-effect. No scene is ever constructed.
-        selected
-            .invoke_nullary(&mut doc, &root, &chrome)
-            .expect("a nullary action invoked with no arguments must run");
-
-        assert!(
-            chrome.borrow().overlays.ws_settings,
-            "invoking the exported action mutated chrome state, entirely headless"
-        );
-    }
-
-    /// The permission seam gates enumeration and selection uniformly.
-    #[test]
-    fn visibility_gate_hides_resources_from_enumerate_and_select() {
-        let mut reg = registry_with_actions();
-        reg.register(Rc::new(NotesProvider::new()));
-        let chrome = chrome_rc();
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
-
-        // Deny everything the "actions" provider exports.
-        let deny_actions = |r: &ResourceRef, _k: &ResourceKind| r.provider != "actions";
-        let catalog = ActionCatalog::build(
-            &reg,
-            "",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &deny_actions,
-        );
-
-        assert!(
-            catalog
-                .enumerate()
+            // ENUMERATE — survey what the shell exports. No side-effect.
+            let catalog = ActionCatalog::build(
+                &reg,
+                "settings",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            let actions = catalog.enumerate();
+            assert!(
+                !actions.is_empty(),
+                "enumeration surfaces the exported actions"
+            );
+            let target = ResourceRef::new("actions", "settings.open");
+            let listed = actions
                 .iter()
-                .all(|a| a.resource.provider != "actions"),
-            "gated provider is absent from enumeration"
-        );
-        assert!(
-            catalog
-                .select(&ResourceRef::new("actions", "settings.open"))
-                .is_none(),
-            "a resource the caller can't see is not selectable (and so not invokable)"
-        );
-    }
+                .find(|a| a.resource == target)
+                .expect("the exported 'Open workspace settings' action is enumerable by id");
+            assert_eq!(listed.kind, ResourceKind::Action, "descriptors are typed");
+            assert_eq!(listed.title, "Open workspace settings");
 
-    /// `ActiveApp` scope narrows the survey to the focused app's provider.
-    #[test]
-    fn active_app_scope_narrows_to_the_focused_provider() {
-        let mut reg = registry_with_actions();
-        reg.register(Rc::new(NotesProvider::new()));
-        let chrome = chrome_rc();
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
+            // SELECT — resolve the id to a live, invokable handle.
+            let selected = catalog
+                .select(&target)
+                .expect("a listed resource is addressable by its ResourceRef");
+            assert_eq!(selected.kind(), &ResourceKind::Action);
+            assert_eq!(selected.resource(), target);
 
-        let catalog = ActionCatalog::build(
-            &reg,
-            "",
-            SearchScope::ActiveApp,
-            Some("actions"),
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        assert!(
-            catalog
-                .enumerate()
-                .iter()
-                .all(|a| a.resource.provider == "actions"),
-            "ActiveApp scope enumerates only the focused provider's exports"
-        );
+            assert!(
+                !chrome.borrow().overlays.ws_settings,
+                "workspace-settings overlay starts closed"
+            );
+
+            // INVOKE — run the side-effect. No scene is ever constructed.
+            selected
+                .invoke_nullary(&mut doc, &root, &chrome)
+                .expect("a nullary action invoked with no arguments must run");
+
+            assert!(
+                chrome.borrow().overlays.ws_settings,
+                "invoking the exported action mutated chrome state, entirely headless"
+            );
+        }
+
+        // Phase `visibility_gate_hides_resources_from_enumerate_and_select`.
+        // The permission seam gates enumeration and selection uniformly.
+        {
+            let mut reg = registry_with_actions();
+            reg.register(Rc::new(NotesProvider::new()));
+            let chrome = chrome_rc();
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            // Deny everything the "actions" provider exports.
+            let deny_actions = |r: &ResourceRef, _k: &ResourceKind| r.provider != "actions";
+            let catalog = ActionCatalog::build(
+                &reg,
+                "",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &deny_actions,
+            );
+
+            assert!(
+                catalog
+                    .enumerate()
+                    .iter()
+                    .all(|a| a.resource.provider != "actions"),
+                "gated provider is absent from enumeration"
+            );
+            assert!(
+                catalog
+                    .select(&ResourceRef::new("actions", "settings.open"))
+                    .is_none(),
+                "a resource the caller can't see is not selectable (and so not invokable)"
+            );
+        }
+
+        // Phase `active_app_scope_narrows_to_the_focused_provider`.
+        // `ActiveApp` scope narrows the survey to the focused app's provider.
+        {
+            let mut reg = registry_with_actions();
+            reg.register(Rc::new(NotesProvider::new()));
+            let chrome = chrome_rc();
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            let catalog = ActionCatalog::build(
+                &reg,
+                "",
+                SearchScope::ActiveApp,
+                Some("actions"),
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            assert!(
+                catalog
+                    .enumerate()
+                    .iter()
+                    .all(|a| a.resource.provider == "actions"),
+                "ActiveApp scope enumerates only the focused provider's exports"
+            );
+        }
+
+        // Phase `no_match_yields_an_empty_catalog`.
+        // Empty stays empty — no fabricated rows when nothing matches.
+        {
+            let reg = registry_with_actions();
+            let chrome = chrome_rc();
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &reg,
+                "zzz-nothing-matches-this-needle-zzz",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            assert!(catalog.is_empty(), "an unmatched query enumerates nothing");
+        }
     }
 
     // ---- parameters -------------------------------------------------
@@ -693,127 +707,165 @@ mod tests {
         ArgValue::Text(s.to_string())
     }
 
-    /// The happy path, and the shape a caller reads back out.
     #[test]
-    fn binding_accepts_the_declared_parameters() {
-        let args = ActionArgs::bind(
-            PARAMS,
-            [
-                ("text".to_string(), text("hello")),
-                ("at".to_string(), ArgValue::Integer(4)),
-            ],
-        )
-        .expect("well-formed arguments must bind");
-        assert_eq!(args.text("text"), Some("hello"));
-        assert_eq!(args.integer("at"), Some(4));
-    }
-
-    /// An optional parameter may be left out; a required one may not.
-    #[test]
-    fn an_optional_parameter_may_be_omitted_and_a_required_one_may_not() {
-        let args = ActionArgs::bind(PARAMS, [("text".to_string(), text("hi"))])
-            .expect("omitting an optional parameter must bind");
-        assert_eq!(args.integer("at"), None, "no default is invented");
-
-        assert_eq!(
-            ActionArgs::bind(PARAMS, []),
-            Err(ArgError::Missing {
-                name: "text".to_string()
-            }),
-            "a required parameter must be supplied"
-        );
-    }
-
-    /// A dropped argument would answer `ok` to a caller that asked for
-    /// something it did not get.
-    #[test]
-    fn an_undeclared_argument_is_refused() {
-        assert_eq!(
-            ActionArgs::bind(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn argument_binding_follows_the_declared_parameters_exactly() {
+        // Phase `binding_accepts_the_declared_parameters`.
+        // The happy path, and the shape a caller reads back out.
+        {
+            let args = ActionArgs::bind(
                 PARAMS,
                 [
-                    ("text".to_string(), text("hi")),
-                    ("colour".to_string(), text("red")),
-                ]
-            ),
-            Err(ArgError::Unknown {
-                name: "colour".to_string()
-            })
-        );
-    }
+                    ("text".to_string(), text("hello")),
+                    ("at".to_string(), ArgValue::Integer(4)),
+                ],
+            )
+            .expect("well-formed arguments must bind");
+            assert_eq!(args.text("text"), Some("hello"));
+            assert_eq!(args.integer("at"), Some(4));
+        }
 
-    /// Types are checked, not coerced.
-    #[test]
-    fn a_wrong_typed_argument_is_refused() {
-        assert_eq!(
-            ActionArgs::bind(PARAMS, [("text".to_string(), ArgValue::Integer(7))]),
-            Err(ArgError::WrongType {
-                name: "text".to_string(),
-                expected: ParamType::Text,
-                got: ParamType::Integer,
-            })
-        );
-    }
+        // Phase `an_optional_parameter_may_be_omitted_and_a_required_one_may_not`.
+        // An optional parameter may be left out; a required one may not.
+        {
+            let args = ActionArgs::bind(PARAMS, [("text".to_string(), text("hi"))])
+                .expect("omitting an optional parameter must bind");
+            assert_eq!(args.integer("at"), None, "no default is invented");
 
-    /// Refuses an empty invocation *before* running, so a bad call cannot
-    /// leave a half-applied edit. Asserted through `invoke`, not `bind` alone.
-    #[test]
-    fn invoking_without_required_arguments_never_reaches_the_action() {
-        use std::cell::Cell;
-        use std::rc::Rc as StdRc;
+            assert_eq!(
+                ActionArgs::bind(PARAMS, []),
+                Err(ArgError::Missing {
+                    name: "text".to_string()
+                }),
+                "a required parameter must be supplied"
+            );
+        }
 
-        let ran = StdRc::new(Cell::new(false));
-        let flag = StdRc::clone(&ran);
-        let mut reg = SearchRegistry::new();
-        reg.register(StdRc::new(ParamProvider {
-            ran: StdRc::clone(&flag),
-        }));
+        // Phase `an_undeclared_argument_is_refused`.
+        // A dropped argument would answer `ok` to a caller that asked for
+        // something it did not get.
+        {
+            assert_eq!(
+                ActionArgs::bind(
+                    PARAMS,
+                    [
+                        ("text".to_string(), text("hi")),
+                        ("colour".to_string(), text("red")),
+                    ]
+                ),
+                Err(ArgError::Unknown {
+                    name: "colour".to_string()
+                })
+            );
+        }
 
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &reg,
-            "",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
+        // Phase `a_wrong_typed_argument_is_refused`.
+        // Types are checked, not coerced.
+        {
+            assert_eq!(
+                ActionArgs::bind(PARAMS, [("text".to_string(), ArgValue::Integer(7))]),
+                Err(ArgError::WrongType {
+                    name: "text".to_string(),
+                    expected: ParamType::Text,
+                    got: ParamType::Integer,
+                })
+            );
+        }
 
-        // Enumeration is the only way a headless caller learns to pass it.
-        let listed = catalog.enumerate();
-        let entry = listed
-            .iter()
-            .find(|a| a.resource.id == "needs.text")
-            .expect("the parameterised action is enumerable");
-        assert_eq!(entry.params.len(), 1);
-        assert_eq!(entry.params[0].name, "text");
-        assert!(entry.params[0].required);
+        // Phase `invoking_without_required_arguments_never_reaches_the_action`.
+        // Refuses an empty invocation *before* running, so a bad call cannot
+        // leave a half-applied edit. Asserted through `invoke`, not `bind` alone.
+        {
+            use std::cell::Cell;
+            use std::rc::Rc as StdRc;
 
-        let selected = catalog
-            .select(&ResourceRef::new("params", "needs.text"))
-            .expect("addressable");
+            let ran = StdRc::new(Cell::new(false));
+            let flag = StdRc::clone(&ran);
+            let mut reg = SearchRegistry::new();
+            reg.register(StdRc::new(ParamProvider {
+                ran: StdRc::clone(&flag),
+            }));
 
-        let err = selected
-            .invoke_nullary(&mut doc, &root, &chrome)
-            .expect_err("a required parameter must not be skippable");
-        assert!(matches!(
-            err,
-            ActionError::Arguments(ArgError::Missing { .. })
-        ));
-        assert!(
-            !ran.get(),
-            "the action's body must not run when its arguments are refused"
-        );
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &reg,
+                "",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
 
-        // …and with the argument it declared, it runs.
-        selected
-            .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
-            .expect("the declared argument must be accepted");
-        assert!(ran.get(), "a satisfied invocation reaches the action");
+            // Enumeration is the only way a headless caller learns to pass it.
+            let listed = catalog.enumerate();
+            let entry = listed
+                .iter()
+                .find(|a| a.resource.id == "needs.text")
+                .expect("the parameterised action is enumerable");
+            assert_eq!(entry.params.len(), 1);
+            assert_eq!(entry.params[0].name, "text");
+            assert!(entry.params[0].required);
+
+            let selected = catalog
+                .select(&ResourceRef::new("params", "needs.text"))
+                .expect("addressable");
+
+            let err = selected
+                .invoke_nullary(&mut doc, &root, &chrome)
+                .expect_err("a required parameter must not be skippable");
+            assert!(matches!(
+                err,
+                ActionError::Arguments(ArgError::Missing { .. })
+            ));
+            assert!(
+                !ran.get(),
+                "the action's body must not run when its arguments are refused"
+            );
+
+            // …and with the argument it declared, it runs.
+            selected
+                .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
+                .expect("the declared argument must be accepted");
+            assert!(ran.get(), "a satisfied invocation reaches the action");
+        }
+
+        // Phase `a_nullary_action_still_invokes_with_no_arguments`.
+        // The parameter machinery must not make an existing nullary caller
+        // pass anything new.
+        {
+            let reg = registry_with_actions();
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &reg,
+                "settings",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            let selected = catalog
+                .select(&ResourceRef::new("actions", "settings.open"))
+                .expect("addressable");
+            assert!(
+                selected.params().is_empty(),
+                "a chrome toggle declares no parameters"
+            );
+            selected
+                .invoke_nullary(&mut doc, &root, &chrome)
+                .expect("a nullary action takes no arguments");
+            assert!(chrome.borrow().overlays.ws_settings);
+        }
     }
 
     /// A provider whose one row takes a required text argument.
@@ -901,36 +953,124 @@ mod tests {
     }
 
     #[test]
-    fn headless_invocation_returns_the_providers_broker_receipt() {
-        let mut registry = SearchRegistry::new();
-        registry.register(std::rc::Rc::new(ReceiptProvider));
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &registry,
-            "",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        let disposition = catalog
-            .select(&ResourceRef::new("receipts", "broker.action"))
-            .expect("the broker action is addressable")
-            .invoke_nullary(&mut doc, &root, &chrome)
-            .expect("the provider admits the action");
-        let InvocationDisposition::Accepted(receipt) = disposition else {
-            panic!("the synchronous provider must return its receipt immediately");
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn invocations_return_the_brokers_receipt_and_admission_state() {
+        // Phase `headless_invocation_returns_the_providers_broker_receipt`.
+        {
+            let mut registry = SearchRegistry::new();
+            registry.register(std::rc::Rc::new(ReceiptProvider));
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &registry,
+                "",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            let disposition = catalog
+                .select(&ResourceRef::new("receipts", "broker.action"))
+                .expect("the broker action is addressable")
+                .invoke_nullary(&mut doc, &root, &chrome)
+                .expect("the provider admits the action");
+            let InvocationDisposition::Accepted(receipt) = disposition else {
+                panic!("the synchronous provider must return its receipt immediately");
+            };
 
-        assert_eq!(receipt.broker_invocation_id, Some(73));
-        assert!(matches!(
-            receipt.update,
-            tilo_actions::InvocationUpdate::Accepted { .. }
-        ));
+            assert_eq!(receipt.broker_invocation_id, Some(73));
+            assert!(matches!(
+                receipt.update,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+        }
+
+        // Phase `json_invocation_begins_once_and_retains_pending_admission_ticket`.
+        {
+            let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+            let polls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut registry = SearchRegistry::new();
+            registry.register(std::rc::Rc::new(AsyncJsonProvider {
+                begins: std::rc::Rc::clone(&begins),
+                polls: std::rc::Rc::clone(&polls),
+                refuse: false,
+            }));
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &registry,
+                "",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            let selected = catalog
+                .select(&ResourceRef::new("async-json", "wait-for-admission"))
+                .expect("async action is addressable");
+            let InvocationDisposition::Pending(ticket) = selected
+                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .expect("begin returns a pending ticket")
+            else {
+                panic!("admission must remain pending")
+            };
+
+            assert_eq!(begins.get(), 1, "the operation starts exactly once");
+            assert_eq!(ticket().expect("first poll succeeds"), None);
+            assert_eq!(ticket().expect("second poll succeeds"), None);
+            let receipt = ticket()
+                .expect("third poll succeeds")
+                .expect("third poll admits the invocation");
+            assert_eq!(begins.get(), 1, "polling must not restart the operation");
+            assert_eq!(receipt.broker_invocation_id, Some(91));
+            assert!(matches!(
+                receipt.update,
+                tilo_actions::InvocationUpdate::Accepted { invocation }
+                    if invocation == tilo_actions::InvocationId(uuid::Uuid::from_u128(0x91))
+            ));
+        }
+
+        // Phase `json_invocation_exposes_rejected_admission`.
+        {
+            let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut registry = SearchRegistry::new();
+            registry.register(std::rc::Rc::new(AsyncJsonProvider {
+                begins: std::rc::Rc::clone(&begins),
+                polls: std::rc::Rc::new(std::cell::Cell::new(0)),
+                refuse: true,
+            }));
+            let chrome = chrome_rc();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let catalog = ActionCatalog::build(
+                &registry,
+                "",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &root,
+                &AllVisible,
+            );
+            let error = catalog
+                .select(&ResourceRef::new("async-json", "wait-for-admission"))
+                .expect("async action is addressable")
+                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .expect_err("rejected admission must be returned");
+            assert_eq!(begins.get(), 1);
+            assert!(
+                matches!(error, ActionError::Refused(message) if message.contains("authority"))
+            );
+        }
     }
 
     struct AsyncJsonProvider {
@@ -999,135 +1139,5 @@ mod tests {
                 })),
             }]
         }
-    }
-
-    #[test]
-    fn json_invocation_begins_once_and_retains_pending_admission_ticket() {
-        let begins = std::rc::Rc::new(std::cell::Cell::new(0));
-        let polls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut registry = SearchRegistry::new();
-        registry.register(std::rc::Rc::new(AsyncJsonProvider {
-            begins: std::rc::Rc::clone(&begins),
-            polls: std::rc::Rc::clone(&polls),
-            refuse: false,
-        }));
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &registry,
-            "",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        let selected = catalog
-            .select(&ResourceRef::new("async-json", "wait-for-admission"))
-            .expect("async action is addressable");
-        let InvocationDisposition::Pending(ticket) = selected
-            .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
-            .expect("begin returns a pending ticket")
-        else {
-            panic!("admission must remain pending")
-        };
-
-        assert_eq!(begins.get(), 1, "the operation starts exactly once");
-        assert_eq!(ticket().expect("first poll succeeds"), None);
-        assert_eq!(ticket().expect("second poll succeeds"), None);
-        let receipt = ticket()
-            .expect("third poll succeeds")
-            .expect("third poll admits the invocation");
-        assert_eq!(begins.get(), 1, "polling must not restart the operation");
-        assert_eq!(receipt.broker_invocation_id, Some(91));
-        assert!(matches!(
-            receipt.update,
-            tilo_actions::InvocationUpdate::Accepted { invocation }
-                if invocation == tilo_actions::InvocationId(uuid::Uuid::from_u128(0x91))
-        ));
-    }
-
-    #[test]
-    fn json_invocation_exposes_rejected_admission() {
-        let begins = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut registry = SearchRegistry::new();
-        registry.register(std::rc::Rc::new(AsyncJsonProvider {
-            begins: std::rc::Rc::clone(&begins),
-            polls: std::rc::Rc::new(std::cell::Cell::new(0)),
-            refuse: true,
-        }));
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &registry,
-            "",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        let error = catalog
-            .select(&ResourceRef::new("async-json", "wait-for-admission"))
-            .expect("async action is addressable")
-            .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
-            .expect_err("rejected admission must be returned");
-        assert_eq!(begins.get(), 1);
-        assert!(matches!(error, ActionError::Refused(message) if message.contains("authority")));
-    }
-
-    /// The parameter machinery must not make an existing nullary caller
-    /// pass anything new.
-    #[test]
-    fn a_nullary_action_still_invokes_with_no_arguments() {
-        let reg = registry_with_actions();
-        let chrome = chrome_rc();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &reg,
-            "settings",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        let selected = catalog
-            .select(&ResourceRef::new("actions", "settings.open"))
-            .expect("addressable");
-        assert!(
-            selected.params().is_empty(),
-            "a chrome toggle declares no parameters"
-        );
-        selected
-            .invoke_nullary(&mut doc, &root, &chrome)
-            .expect("a nullary action takes no arguments");
-        assert!(chrome.borrow().overlays.ws_settings);
-    }
-
-    /// Empty stays empty — no fabricated rows when nothing matches.
-    #[test]
-    fn no_match_yields_an_empty_catalog() {
-        let reg = registry_with_actions();
-        let chrome = chrome_rc();
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let catalog = ActionCatalog::build(
-            &reg,
-            "zzz-nothing-matches-this-needle-zzz",
-            SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &root,
-            &AllVisible,
-        );
-        assert!(catalog.is_empty(), "an unmatched query enumerates nothing");
     }
 }

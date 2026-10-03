@@ -247,8 +247,8 @@ pub fn merge_exact(
 fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMergeError> {
     // Loading through qdoc first rejects arbitrary Automerge documents that do
     // not implement the canonical document schema.
-    qdoc::Document::load(first).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
-    qdoc::Document::load(second).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::load(first).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::load(second).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
     let mut left = Automerge::load(first).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     let mut right = Automerge::load(second).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     left.merge(&mut right)
@@ -257,7 +257,7 @@ fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMerge
     if bytes.len() > MAX_MERGE_INPUT_BYTES {
         return Err(DeterministicMergeError::OutputTooLarge);
     }
-    qdoc::Document::load(&bytes).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
+    tilo_doc::Document::load(&bytes).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     Ok(bytes)
 }
 
@@ -316,7 +316,7 @@ pub enum DeterministicMergeError {
 mod tests {
     use super::*;
     use collab_types::{ContentHash, FileActor, FileProvenance, FileRecordId};
-    use qdoc::Document;
+    use tilo_doc::Document;
 
     fn version(value: u128) -> FileVersionId {
         FileVersionId(uuid::Uuid::from_u128(value))
@@ -339,226 +339,231 @@ mod tests {
     }
 
     #[test]
-    fn common_base_is_exact_and_criss_cross_is_refused() {
-        let versions = vec![
-            graph_version(1, &[]),
-            graph_version(2, &[1]),
-            graph_version(3, &[1]),
-            graph_version(4, &[2]),
-            graph_version(5, &[3]),
-        ];
-        assert_eq!(
-            exact_common_base(&versions, version(4), version(5)),
-            Ok(version(1))
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn plain_text_merges_only_disjoint_edits_from_an_exact_common_base() {
+        // Phase `common_base_is_exact_and_criss_cross_is_refused`.
+        {
+            let versions = vec![
+                graph_version(1, &[]),
+                graph_version(2, &[1]),
+                graph_version(3, &[1]),
+                graph_version(4, &[2]),
+                graph_version(5, &[3]),
+            ];
+            assert_eq!(
+                exact_common_base(&versions, version(4), version(5)),
+                Ok(version(1))
+            );
 
-        let criss_cross = vec![
-            graph_version(1, &[]),
-            graph_version(2, &[1]),
-            graph_version(3, &[1]),
-            graph_version(4, &[2, 3]),
-            graph_version(5, &[2, 3]),
-        ];
-        assert_eq!(
-            exact_common_base(&criss_cross, version(4), version(5)),
-            Err(DeterministicMergeError::AmbiguousCommonBase)
-        );
-    }
-
-    #[test]
-    fn plain_text_merges_only_disjoint_prepend_and_append() {
-        let result = merge_exact(
-            ExactMergeInput {
-                version_id: version(2),
-                bytes: b"base\ntail\n".to_vec(),
-            },
-            ExactMergeInput {
-                version_id: version(3),
-                bytes: b"head\nbase\n".to_vec(),
-            },
-            Some(ExactMergeBase {
-                version_id: version(1),
-                bytes: b"base\n".to_vec(),
-            }),
-        )
-        .unwrap();
-        assert_eq!(result.codec, DeterministicMergeCodec::PlainUtf8ThreeWayV1);
-        assert_eq!(result.bytes, b"head\nbase\ntail\n");
-    }
-
-    #[test]
-    fn plain_text_preflight_is_safe_and_order_independent_for_arriving_edits() {
-        let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
-            preflight_exact(
+            let criss_cross = vec![
+                graph_version(1, &[]),
+                graph_version(2, &[1]),
+                graph_version(3, &[1]),
+                graph_version(4, &[2, 3]),
+                graph_version(5, &[2, 3]),
+            ];
+            assert_eq!(
+                exact_common_base(&criss_cross, version(4), version(5)),
+                Err(DeterministicMergeError::AmbiguousCommonBase)
+            );
+        }
+        // Phase `plain_text_merges_only_disjoint_prepend_and_append`.
+        {
+            let result = merge_exact(
                 ExactMergeInput {
-                    version_id: version(first_id),
-                    bytes: first.to_vec(),
+                    version_id: version(2),
+                    bytes: b"base\ntail\n".to_vec(),
                 },
                 ExactMergeInput {
-                    version_id: version(second_id),
-                    bytes: second.to_vec(),
+                    version_id: version(3),
+                    bytes: b"head\nbase\n".to_vec(),
                 },
                 Some(ExactMergeBase {
                     version_id: version(1),
                     bytes: b"base\n".to_vec(),
                 }),
             )
-        };
-        let first_arrival = input(2, b"base\ntail\n", 3, b"head\nbase\n");
-        let second_arrival = input(3, b"head\nbase\n", 2, b"base\ntail\n");
+            .unwrap();
+            assert_eq!(result.codec, DeterministicMergeCodec::PlainUtf8ThreeWayV1);
+            assert_eq!(result.bytes, b"head\nbase\ntail\n");
+        }
+        // Phase `plain_text_preflight_is_safe_and_order_independent_for_arriving_edits`.
+        {
+            let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
+                preflight_exact(
+                    ExactMergeInput {
+                        version_id: version(first_id),
+                        bytes: first.to_vec(),
+                    },
+                    ExactMergeInput {
+                        version_id: version(second_id),
+                        bytes: second.to_vec(),
+                    },
+                    Some(ExactMergeBase {
+                        version_id: version(1),
+                        bytes: b"base\n".to_vec(),
+                    }),
+                )
+            };
+            let first_arrival = input(2, b"base\ntail\n", 3, b"head\nbase\n");
+            let second_arrival = input(3, b"head\nbase\n", 2, b"base\ntail\n");
 
-        assert_eq!(first_arrival, second_arrival);
-        let MergePreflight::Safe {
-            result,
-            explanation,
-        } = first_arrival
-        else {
-            panic!("disjoint text edits should produce a safe preflight");
-        };
-        assert_eq!(result.bytes, b"head\nbase\ntail\n");
-        assert!(explanation.contains("separate"));
-    }
+            assert_eq!(first_arrival, second_arrival);
+            let MergePreflight::Safe {
+                result,
+                explanation,
+            } = first_arrival
+            else {
+                panic!("disjoint text edits should produce a safe preflight");
+            };
+            assert_eq!(result.bytes, b"head\nbase\ntail\n");
+            assert!(explanation.contains("separate"));
+        }
+        // Phase `overlapping_text_arrival_orders_need_review_without_a_result`.
+        {
+            let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
+                preflight_exact(
+                    ExactMergeInput {
+                        version_id: version(first_id),
+                        bytes: first.to_vec(),
+                    },
+                    ExactMergeInput {
+                        version_id: version(second_id),
+                        bytes: second.to_vec(),
+                    },
+                    Some(ExactMergeBase {
+                        version_id: version(1),
+                        bytes: b"agenda\n".to_vec(),
+                    }),
+                )
+            };
+            let first_arrival = input(2, b"agenda: Ada\n", 3, b"agenda: Lin\n");
+            let second_arrival = input(3, b"agenda: Lin\n", 2, b"agenda: Ada\n");
 
-    #[test]
-    fn overlapping_text_arrival_orders_need_review_without_a_result() {
-        let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
-            preflight_exact(
-                ExactMergeInput {
-                    version_id: version(first_id),
-                    bytes: first.to_vec(),
-                },
-                ExactMergeInput {
-                    version_id: version(second_id),
-                    bytes: second.to_vec(),
-                },
-                Some(ExactMergeBase {
-                    version_id: version(1),
-                    bytes: b"agenda\n".to_vec(),
-                }),
-            )
-        };
-        let first_arrival = input(2, b"agenda: Ada\n", 3, b"agenda: Lin\n");
-        let second_arrival = input(3, b"agenda: Lin\n", 2, b"agenda: Ada\n");
-
-        assert_eq!(first_arrival, second_arrival);
-        assert!(!first_arrival.is_safe());
-        assert!(first_arrival.explanation().contains("same text region"));
-        assert!(matches!(
-            first_arrival,
-            MergePreflight::NeedsReview {
-                error: DeterministicMergeError::OverlappingTextEdits,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn overlapping_or_invalid_utf8_content_is_refused() {
-        let overlapping = merge_exact(
-            ExactMergeInput {
-                version_id: version(2),
-                bytes: b"first".to_vec(),
-            },
-            ExactMergeInput {
-                version_id: version(3),
-                bytes: b"second".to_vec(),
-            },
-            Some(ExactMergeBase {
-                version_id: version(1),
-                bytes: b"base".to_vec(),
-            }),
-        );
-        assert_eq!(
-            overlapping,
-            Err(DeterministicMergeError::OverlappingTextEdits)
-        );
-
-        let binary = merge_exact(
-            ExactMergeInput {
-                version_id: version(2),
-                bytes: vec![0xff],
-            },
-            ExactMergeInput {
-                version_id: version(3),
-                bytes: vec![0xfe],
-            },
-            Some(ExactMergeBase {
-                version_id: version(1),
-                bytes: Vec::new(),
-            }),
-        );
-        assert_eq!(binary, Err(DeterministicMergeError::UnsupportedContent));
-    }
-
-    #[test]
-    fn qdoc_merge_is_input_order_independent_and_valid() {
-        let mut base = Document::new();
-        let block = base.insert_block(None, "paragraph");
-        base.splice_text(&block, 0, 0, "base");
-        let mut left = base.fork();
-        let mut right = base.fork();
-        left.splice_text(&block, 0, 0, "L");
-        right.splice_text(&block, 4, 0, "R");
-        let left = left.save();
-        let right = right.save();
-
-        let merge = |a: (FileVersionId, Vec<u8>), b: (FileVersionId, Vec<u8>)| {
-            merge_exact(
-                ExactMergeInput {
-                    version_id: a.0,
-                    bytes: a.1,
-                },
-                ExactMergeInput {
-                    version_id: b.0,
-                    bytes: b.1,
-                },
-                None,
-            )
-            .unwrap()
-        };
-        let forward = merge((version(2), left.clone()), (version(3), right.clone()));
-        let reverse = merge((version(3), right), (version(2), left));
-        assert_eq!(forward, reverse);
-        assert_eq!(forward.codec, DeterministicMergeCodec::QdocAutomergeV1);
-        Document::load(&forward.bytes).unwrap();
-
-        assert_eq!(
-            merge_exact(
-                ExactMergeInput {
-                    version_id: version(4),
-                    bytes: b"not a qdoc".to_vec(),
-                },
-                ExactMergeInput {
-                    version_id: version(5),
-                    bytes: b"also not a qdoc".to_vec(),
-                },
-                None,
-            ),
-            Err(DeterministicMergeError::UnsupportedContent)
-        );
-    }
-
-    #[test]
-    fn identical_retry_is_deterministic() {
-        let input = || {
-            (
+            assert_eq!(first_arrival, second_arrival);
+            assert!(!first_arrival.is_safe());
+            assert!(first_arrival.explanation().contains("same text region"));
+            assert!(matches!(
+                first_arrival,
+                MergePreflight::NeedsReview {
+                    error: DeterministicMergeError::OverlappingTextEdits,
+                    ..
+                }
+            ));
+        }
+        // Phase `overlapping_or_invalid_utf8_content_is_refused`.
+        {
+            let overlapping = merge_exact(
                 ExactMergeInput {
                     version_id: version(2),
-                    bytes: b"base+".to_vec(),
+                    bytes: b"first".to_vec(),
                 },
                 ExactMergeInput {
                     version_id: version(3),
-                    bytes: b"-base".to_vec(),
+                    bytes: b"second".to_vec(),
                 },
                 Some(ExactMergeBase {
                     version_id: version(1),
                     bytes: b"base".to_vec(),
                 }),
-            )
-        };
-        let (a, b, base) = input();
-        let first = merge_exact(a, b, base).unwrap();
-        let (a, b, base) = input();
-        assert_eq!(first, merge_exact(a, b, base).unwrap());
+            );
+            assert_eq!(
+                overlapping,
+                Err(DeterministicMergeError::OverlappingTextEdits)
+            );
+
+            let binary = merge_exact(
+                ExactMergeInput {
+                    version_id: version(2),
+                    bytes: vec![0xff],
+                },
+                ExactMergeInput {
+                    version_id: version(3),
+                    bytes: vec![0xfe],
+                },
+                Some(ExactMergeBase {
+                    version_id: version(1),
+                    bytes: Vec::new(),
+                }),
+            );
+            assert_eq!(binary, Err(DeterministicMergeError::UnsupportedContent));
+        }
+    }
+
+    #[test]
+    fn qdoc_merges_are_order_independent_and_deterministic() {
+        // Phase `qdoc_merge_is_input_order_independent_and_valid`.
+        {
+            let mut base = Document::new();
+            let block = base.insert_block(None, "paragraph");
+            base.splice_text(&block, 0, 0, "base");
+            let mut left = base.fork();
+            let mut right = base.fork();
+            left.splice_text(&block, 0, 0, "L");
+            right.splice_text(&block, 4, 0, "R");
+            let left = left.save();
+            let right = right.save();
+
+            let merge = |a: (FileVersionId, Vec<u8>), b: (FileVersionId, Vec<u8>)| {
+                merge_exact(
+                    ExactMergeInput {
+                        version_id: a.0,
+                        bytes: a.1,
+                    },
+                    ExactMergeInput {
+                        version_id: b.0,
+                        bytes: b.1,
+                    },
+                    None,
+                )
+                .unwrap()
+            };
+            let forward = merge((version(2), left.clone()), (version(3), right.clone()));
+            let reverse = merge((version(3), right), (version(2), left));
+            assert_eq!(forward, reverse);
+            assert_eq!(forward.codec, DeterministicMergeCodec::QdocAutomergeV1);
+            Document::load(&forward.bytes).unwrap();
+
+            assert_eq!(
+                merge_exact(
+                    ExactMergeInput {
+                        version_id: version(4),
+                        bytes: b"not a qdoc".to_vec(),
+                    },
+                    ExactMergeInput {
+                        version_id: version(5),
+                        bytes: b"also not a qdoc".to_vec(),
+                    },
+                    None,
+                ),
+                Err(DeterministicMergeError::UnsupportedContent)
+            );
+        }
+        // Phase `identical_retry_is_deterministic`.
+        {
+            let input = || {
+                (
+                    ExactMergeInput {
+                        version_id: version(2),
+                        bytes: b"base+".to_vec(),
+                    },
+                    ExactMergeInput {
+                        version_id: version(3),
+                        bytes: b"-base".to_vec(),
+                    },
+                    Some(ExactMergeBase {
+                        version_id: version(1),
+                        bytes: b"base".to_vec(),
+                    }),
+                )
+            };
+            let (a, b, base) = input();
+            let first = merge_exact(a, b, base).unwrap();
+            let (a, b, base) = input();
+            assert_eq!(first, merge_exact(a, b, base).unwrap());
+        }
     }
 }

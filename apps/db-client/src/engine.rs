@@ -11,7 +11,6 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
@@ -274,7 +273,7 @@ impl SqliteEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         // Decide select-vs-DML by trying to prepare and asking the column
         // count. A zero-column statement is DML/DDL.
@@ -470,86 +469,94 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
 mod tests {
     use super::*;
 
+    /// The `SQLite` engine introspects tables and foreign keys, returns rows and reports affected rows.
     #[test]
-    fn sample_engine_introspects_expected_tables() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let schema = eng.introspect().unwrap();
-        assert_eq!(schema.schemas.len(), 1);
-        // The sample ships several tables.
-        assert!(schema.table_count() >= 4, "got {}", schema.table_count());
-        let artists = schema.find_table("artists").expect("artists table");
-        assert!(artists.columns.iter().any(|c| c.primary_key));
+    fn sqlite_engine_introspects_and_executes() {
+        // --- phase: sample_engine_introspects_expected_tables ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let schema = eng.introspect().unwrap();
+            assert_eq!(schema.schemas.len(), 1);
+            // The sample ships several tables.
+            assert!(schema.table_count() >= 4, "got {}", schema.table_count());
+            let artists = schema.find_table("artists").expect("artists table");
+            assert!(artists.columns.iter().any(|c| c.primary_key));
+        }
+
+        // --- phase: select_returns_rows_with_columns ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let r = eng
+                .run("SELECT name FROM artists ORDER BY name LIMIT 3")
+                .unwrap();
+            assert!(r.is_select);
+            assert_eq!(r.columns, vec!["name".to_string()]);
+            assert_eq!(r.rows.len(), 3);
+        }
+
+        // --- phase: dml_reports_rows_affected ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let r = eng
+                .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
+                .unwrap();
+            assert!(!r.is_select);
+            assert_eq!(r.rows_affected, Some(0));
+        }
+
+        // --- phase: foreign_keys_are_discovered ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let schema = eng.introspect().unwrap();
+            let albums = schema.find_table("albums").unwrap();
+            assert!(
+                albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
+                "albums should reference artists"
+            );
+        }
     }
 
+    /// Hostile text and many large cells are truncated to bounded sizes.
     #[test]
-    fn select_returns_rows_with_columns() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let r = eng
-            .run("SELECT name FROM artists ORDER BY name LIMIT 3")
-            .unwrap();
-        assert!(r.is_select);
-        assert_eq!(r.columns, vec!["name".to_string()]);
-        assert_eq!(r.rows.len(), 3);
-    }
+    fn sqlite_results_are_bounded() {
+        // --- phase: sqlite_hostile_text_is_retained_at_a_bounded_size ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let sql = format!(
+                "SELECT '{}' AS hostile",
+                "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99)
+            );
+            let result = eng.run(&sql).unwrap();
+            let Cell::Text(value) = &result.rows[0][0] else {
+                panic!("text result expected")
+            };
+            assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+            assert!(value.ends_with("… [truncated]"));
+        }
 
-    #[test]
-    fn dml_reports_rows_affected() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let r = eng
-            .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
-            .unwrap();
-        assert!(!r.is_select);
-        assert_eq!(r.rows_affected, Some(0));
-    }
-
-    #[test]
-    fn foreign_keys_are_discovered() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let schema = eng.introspect().unwrap();
-        let albums = schema.find_table("albums").unwrap();
-        assert!(
-            albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
-            "albums should reference artists"
-        );
-    }
-
-    #[test]
-    fn sqlite_hostile_text_is_retained_at_a_bounded_size() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let sql = format!(
-            "SELECT '{}' AS hostile",
-            "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99)
-        );
-        let result = eng.run(&sql).unwrap();
-        let Cell::Text(value) = &result.rows[0][0] else {
-            panic!("text result expected")
-        };
-        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
-        assert!(value.ends_with("… [truncated]"));
-    }
-
-    #[test]
-    fn aggregate_budget_truncates_many_large_cells_across_rows_and_columns() {
-        let eng = SqliteEngine::open_sample().unwrap();
-        let text = "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES);
-        let columns = (0..8)
-            .map(|index| format!("'{text}' AS c{index}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let result = eng
+        // --- phase: aggregate_budget_truncates_many_large_cells_across_rows_and_columns ---
+        {
+            let eng = SqliteEngine::open_sample().unwrap();
+            let text = "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES);
+            let columns = (0..8)
+                .map(|index| format!("'{text}' AS c{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let result = eng
             .run(&format!(
                 "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 100) \
                  SELECT {columns} FROM n"
             ))
             .unwrap();
-        assert!(result.truncated);
-        assert!(result.rows.len() < 100);
-        let retained: usize = result
-            .rows
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(Cell::retained_bytes)
-            .sum();
-        assert!(retained <= MAX_QUERY_RESULT_BYTES);
+            assert!(result.truncated);
+            assert!(result.rows.len() < 100);
+            let retained: usize = result
+                .rows
+                .iter()
+                .flat_map(|row| row.iter())
+                .map(Cell::retained_bytes)
+                .sum();
+            assert!(retained <= MAX_QUERY_RESULT_BYTES);
+        }
     }
 }

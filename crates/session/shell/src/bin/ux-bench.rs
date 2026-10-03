@@ -6,6 +6,9 @@ use std::process::ExitCode;
 #[cfg(target_os = "macos")]
 mod ux_bench_support;
 
+#[cfg(target_os = "macos")]
+use shell::shell::state::WorkspaceAuthority as _;
+
 fn main() -> ExitCode {
     match execute() {
         Ok(true) => ExitCode::SUCCESS,
@@ -124,6 +127,7 @@ fn execute() -> Result<bool, String> {
         let chrome = session.chrome.borrow();
         let tree = chrome.tree();
         let workspace = tree
+            .desktop
             .active_workspace()
             .ok_or("fixture has no active workspace")?;
         let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room));
@@ -146,8 +150,8 @@ fn execute() -> Result<bool, String> {
     );
     let state_snapshot = || {
         let tree = session.tree.read();
-        let active = tree.active_workspace();
-        let snapshot = serde_json::json!({"workspace_count":tree.workspaces.len(),
+        let active = tree.desktop.active_workspace();
+        let snapshot = serde_json::json!({"workspace_count":tree.desktop.workspaces.len(),
             "active_workspace":active.map(|w| &w.name),
             "tab_titles":active.map(|w|w.strips.iter().flat_map(|s|s.window_groups.iter()).flat_map(|g|g.tabs.iter()).map(|t|t.title.clone()).collect::<Vec<_>>()),
             "active_tabs":active.map(|w|w.strips.iter().flat_map(|s|s.window_groups.iter()).flat_map(|g|g.tabs.iter()).map(|t|serde_json::json!({"title":t.title,"content":t.tile})).collect::<Vec<_>>())});
@@ -162,7 +166,12 @@ fn execute() -> Result<bool, String> {
                 .map_err(|e| e.to_string())?;
             let reopened =
                 shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
-            Ok(reopened.workspaces.iter().map(|w| w.name.clone()).collect())
+            Ok(reopened
+                .desktop
+                .workspaces
+                .iter()
+                .map(|w| w.name.clone())
+                .collect())
         });
     }
     let report = ui::ux_bench::run_with_state(&mut driver, &scenario, &out, state_snapshot)?;
@@ -175,11 +184,17 @@ fn execute() -> Result<bool, String> {
     let expected_names: Vec<_> = session
         .tree
         .read()
+        .desktop
         .workspaces
         .iter()
         .map(|w| w.name.clone())
         .collect();
-    let actual_names: Vec<_> = reopened.workspaces.iter().map(|w| w.name.clone()).collect();
+    let actual_names: Vec<_> = reopened
+        .desktop
+        .workspaces
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
     if expected_names != actual_names {
         return Err("workspace names did not survive shutdown persistence".into());
     }
@@ -205,3 +220,9 @@ fn execute() -> Result<bool, String> {
     );
     Ok(report.passed)
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

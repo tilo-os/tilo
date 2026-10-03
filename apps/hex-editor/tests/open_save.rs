@@ -51,8 +51,8 @@ fn tmp(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nonce = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("hex_cli_{}_{nonce}", std::process::id()));
@@ -99,7 +99,15 @@ fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+/// The in-process lifecycle through the production widget paths: open via
+/// the portal drain, edit then save to disk, and raw typing stays local.
 #[test]
+fn widget_file_lifecycle_opens_edits_saves_and_keeps_bytes_local() {
+    open_via_portal_loads_real_bytes_through_the_drain_path();
+    edit_then_save_writes_back_to_disk();
+    keystroke_keeps_raw_bytes_local();
+}
+
 fn open_via_portal_loads_real_bytes_through_the_drain_path() {
     let path = tmp("portal_open");
     std::fs::write(&path, b"HELLO-HEX").unwrap();
@@ -122,14 +130,16 @@ fn open_via_portal_loads_real_bytes_through_the_drain_path() {
         let mut focus = None;
         view.handle_event(
             &key_press(Key::Character("o".into())),
-            1.0,
-            &ctrl,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled, "Ctrl+O is consumed in the empty state");
     });
@@ -154,7 +164,6 @@ fn open_via_portal_loads_real_bytes_through_the_drain_path() {
     std::fs::remove_file(&path).ok();
 }
 
-#[test]
 fn edit_then_save_writes_back_to_disk() {
     let path = tmp("edit_save");
     std::fs::write(&path, [0x00u8, 0x11, 0x22, 0x33]).unwrap();
@@ -179,14 +188,16 @@ fn edit_then_save_writes_back_to_disk() {
         let mut focus = None;
         view.handle_event(
             &key_press(Key::Character(ch.into())),
-            1.0,
-            &no_mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &no_mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
     assert_eq!(
@@ -201,14 +212,16 @@ fn edit_then_save_writes_back_to_disk() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("s".into())),
-        1.0,
-        &ctrl,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 
     let on_disk = std::fs::read(&path).unwrap();
@@ -228,7 +241,6 @@ fn edit_then_save_writes_back_to_disk() {
 
 /// Raw typing remains in the local model: it must neither seed nor mutate the
 /// collaboration document, and it creates a device-local undo boundary.
-#[test]
 fn keystroke_keeps_raw_bytes_local() {
     let mut view = HexView::new(vec![0x00, 0x11, 0x22, 0x33], "buf.bin");
     let mut doc = AutoCommit::new();
@@ -243,14 +255,16 @@ fn keystroke_keeps_raw_bytes_local() {
     let mut focus = None;
     view.handle_event(
         &key_press(Key::Character("a".into())),
-        1.0,
-        &no_mods,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &no_mods,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     assert!(handled, "the hex-digit keystroke was consumed");
 

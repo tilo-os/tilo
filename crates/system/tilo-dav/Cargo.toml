@@ -2,24 +2,34 @@
 name = "tilo-dav"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
-description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies and a blocking client on Tilo's TLS defaults."
+repository.workspace = true
+homepage.workspace = true
+description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies, and blocking and async clients on Tilo's TLS defaults."
 
 [dependencies]
+quick-xml.workspace = true
 roxmltree.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
-tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["client"]
 # The blocking HTTP client. Without it the crate is the parser and request
 # bodies only, for builds that must stay free of the TLS/HTTP stack.
-client = ["dep:reqwest", "dep:tilo-net", "dep:zeroize"]
+client = ["dep:reqwest", "dep:tilo-net", "tilo-net/blocking", "dep:zeroize"]
+# The async client on `tilo_net`, for Linux, macOS and the web.
+net = ["dep:tilo-net", "tilo-net/http", "dep:zeroize"]
 
 [dev-dependencies]
 test-http = { path = "../../dev/test-http" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -249,21 +249,14 @@ impl QuickFS {
         if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
             return Err(Error::TooLarge);
         }
-        // FileVersion content_hash identifies the deterministic chunk manifest,
-        // not raw bytes. Verify the complete reconstructed manifest mapping.
-        let chunks = crate::content::split(&bytes)
-            .into_iter()
-            .map(|chunk| {
-                Ok(crate::content::ChunkRef {
-                    hash: *blake3::hash(chunk).as_bytes(),
-                    len: u32::try_from(chunk.len()).map_err(|_| Error::TooLarge)?,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let manifest = crate::content::Manifest { chunks }
-            .encode()
-            .map_err(|_| Error::Unavailable)?;
-        if blake3::hash(&manifest).as_bytes() != &hash.0 {
+        // FileVersion content_hash identifies the chunk manifest, not raw
+        // bytes. The bytes must be exactly the chunks the manifest names.
+        let hydrator = self.hydrator.clone();
+        let runtime = hydrator.runtime_handle.clone();
+        let manifest = tokio::task::block_in_place(|| {
+            runtime.block_on(async move { hydrator.local_manifest_index(Hash::from(hash.0)).await })
+        });
+        if !manifest.is_some_and(|manifest| manifest.verify(&bytes)) {
             return Err(Error::Unavailable);
         }
         Ok(bytes)

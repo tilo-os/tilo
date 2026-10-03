@@ -20,6 +20,7 @@ bounded-command = { path = "../bounded-command" }
 serde_json.workspace = true
 # Matches the zbus the disk tools already resolve, so one copy stays in the lock.
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

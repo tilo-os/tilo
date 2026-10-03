@@ -24,36 +24,35 @@ class AppTextContractTests(unittest.TestCase):
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
 
-    def test_public_ui_text_surface_passes(self):
-        root = self.fixture(
-            '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
-            "use ui::text_render::TextRenderer;\n",
-        )
-        violations, apps, users = contract.audit(root)
-        self.assertEqual(violations, [])
-        self.assertEqual((apps, users), (1, 1))
-
-    def test_private_shaper_dependency_and_glyph_paint_fail(self):
-        root = self.fixture(
-            '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\ncosmic-text="0.19"\n',
-            "fn paint(scene: &mut vello::Scene) { scene.draw_glyphs(todo!()); }\n",
-        )
-        violations, _, _ = contract.audit(root)
-        reasons = "\n".join(item.reason for item in violations)
-        self.assertIn("private text crate", reasons)
-        self.assertIn("raw Vello glyph emission", reasons)
-
-    def test_product_font_literal_fails(self):
-        root = self.fixture(
-            '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
-            'const FONT: &str = "Noto Serif";\n',
-        )
-        violations, _, _ = contract.audit(root)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("font family literal", violations[0].reason)
+    def test_ui_text_surface_is_public_and_free_of_private_shaping_and_fonts(self):
+        with self.subTest(phase='public ui text surface passes'):
+            root = self.fixture(
+                '[package]\nname="sample"\nversion="0.1.0"\n'
+                '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
+                "use ui::text_render::TextRenderer;\n",
+            )
+            violations, apps, users = contract.audit(root)
+            self.assertEqual(violations, [])
+            self.assertEqual((apps, users), (1, 1))
+        with self.subTest(phase='private shaper dependency and glyph paint fail'):
+            root = self.fixture(
+                '[package]\nname="sample"\nversion="0.1.0"\n'
+                '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\ncosmic-text="0.19"\n',
+                "fn paint(scene: &mut vello::Scene) { scene.draw_glyphs(todo!()); }\n",
+            )
+            violations, _, _ = contract.audit(root)
+            reasons = "\n".join(item.reason for item in violations)
+            self.assertIn("private text crate", reasons)
+            self.assertIn("raw Vello glyph emission", reasons)
+        with self.subTest(phase='product font literal fails'):
+            root = self.fixture(
+                '[package]\nname="sample"\nversion="0.1.0"\n'
+                '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
+                'const FONT: &str = "Noto Serif";\n',
+            )
+            violations, _, _ = contract.audit(root)
+            self.assertEqual(len(violations), 1)
+            self.assertIn("font family literal", violations[0].reason)
 
 
 if __name__ == "__main__":

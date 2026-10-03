@@ -150,40 +150,44 @@ fn exceeded(phases: &[Phase]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Receipts record phases and flag slow ones, and never overwrite.
     #[test]
-    fn receipt_records_phases_and_flags_slow_ones() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut receipt = Receipt::new(dir.path(), vec!["tilo-vm".into(), "swap".into()]);
-        receipt.phase("assemble", || ());
-        receipt.phases.push(Phase {
-            name: "build".into(),
-            seconds: 75.0,
-        });
-        receipt.set("slot", "a");
-        assert_eq!(
-            receipt.slow(),
-            ["warm component build took 75.0s (goal < 60s)"]
-        );
-        let path = receipt.finish(Ok(&json!({"generation": 3}))).unwrap();
-        assert!(path.starts_with(dir.path().join("target/dev-runs")));
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written["status"], "success");
-        assert_eq!(written["slot"], "a");
-        assert_eq!(written["result"]["generation"], 3);
-        assert_eq!(written["phases"][0]["name"], "assemble");
-        assert_eq!(written["slow"].as_array().unwrap().len(), 1);
-    }
+    fn receipts_record_phases_flag_slow_ones_and_never_overwrite() {
+        // Phase: receipt_records_phases_and_flags_slow_ones.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut receipt = Receipt::new(dir.path(), vec!["tilo-vm".into(), "swap".into()]);
+            receipt.phase("assemble", || ());
+            receipt.phases.push(Phase {
+                name: "build".into(),
+                seconds: 75.0,
+            });
+            receipt.set("slot", "a");
+            assert_eq!(
+                receipt.slow(),
+                ["warm component build took 75.0s (goal < 60s)"]
+            );
+            let path = receipt.finish(Ok(&json!({"generation": 3}))).unwrap();
+            assert!(path.starts_with(dir.path().join("target/dev-runs")));
+            let written: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(written["status"], "success");
+            assert_eq!(written["slot"], "a");
+            assert_eq!(written["result"]["generation"], 3);
+            assert_eq!(written["phases"][0]["name"], "assemble");
+            assert_eq!(written["slow"].as_array().unwrap().len(), 1);
+        }
 
-    #[test]
-    fn receipts_never_overwrite() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = Receipt::new(dir.path(), vec![])
-            .finish(Ok(&json!({})))
-            .unwrap();
-        let b = Receipt::new(dir.path(), vec![])
-            .finish(Err(&json!({"error": "x"})))
-            .unwrap();
-        assert_ne!(a, b);
+        // Phase: receipts_never_overwrite.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let a = Receipt::new(dir.path(), vec![])
+                .finish(Ok(&json!({})))
+                .unwrap();
+            let b = Receipt::new(dir.path(), vec![])
+                .finish(Err(&json!({"error": "x"})))
+                .unwrap();
+            assert_ne!(a, b);
+        }
     }
 }

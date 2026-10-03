@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "git-client"
 version = "0.1.0"
 edition = "2024"
@@ -17,6 +18,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -34,14 +36,16 @@ anyhow.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
+ssh-agent-client = { path = "../../crates/system/ssh-agent-client" }
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 url.workspace = true
 rustls.workspace = true
 zeroize.workspace = true
 bounded-command = { path = "../../crates/system/bounded-command" }
 shlex = "1.3"
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -49,6 +53,11 @@ futures-util.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "macros"] }
 tempfile.workspace = true
 rcgen.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

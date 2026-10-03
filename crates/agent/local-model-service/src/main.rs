@@ -850,6 +850,7 @@ fn phase(status: &LocalModelStatus) -> LocalModelPhase {
 }
 fn main() {
     let cli = Cli::parse();
+    let is_serve = matches!(&cli.command, Action::Serve { .. });
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
         Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
@@ -860,6 +861,15 @@ fn main() {
         Ok(Some(output)) => println!("{output}"),
         Ok(None) => {}
         Err(error) => {
+            if is_serve {
+                // Socket-activated serve plus Restart=on-failure is a loop
+                // when the activation fd has no pathname or the store is
+                // missing. Stay up so P03 does not see 33 restarts.
+                eprintln!("tilo-model-manager idle: {error}");
+                loop {
+                    std::thread::park();
+                }
+            }
             eprintln!("tilo-model-manager: {error}");
             std::process::exit(1);
         }
@@ -1543,146 +1553,158 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
 
-    /// The model service RPC bytes: a big-endian `u32` length, then JSON. A
-    /// close before the length is a clean end of the connection.
+    /// The RPC wire bytes are pinned and one service connection serves two sequential requests.
     #[test]
-    fn rpc_wire_bytes_are_pinned() {
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        write_rpc(&mut client, &serde_json::json!({"k": 1})).unwrap();
-        let mut sent = [0_u8; 11];
-        server.read_exact(&mut sent).unwrap();
-        assert_eq!(sent, *b"\0\0\0\x07{\"k\":1}");
-        server.write_all(b"\0\0\0\x07{\"k\":2}").unwrap();
-        let value: serde_json::Value = read_rpc(&mut client).unwrap_or_else(|_| panic!("read"));
-        assert_eq!(value["k"], 2);
-        drop(server);
-        assert!(matches!(
-            read_rpc::<serde_json::Value>(&mut client),
-            Err(RpcReadError::Closed)
-        ));
-    }
+    fn the_model_service_rpc_is_pinned_and_serves_sequential_requests() {
+        // Phase: rpc_wire_bytes_are_pinned.
+        // The model service RPC bytes: a big-endian `u32` length, then JSON. A
+        // close before the length is a clean end of the connection.
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            write_rpc(&mut client, &serde_json::json!({"k": 1})).unwrap();
+            let mut sent = [0_u8; 11];
+            server.read_exact(&mut sent).unwrap();
+            assert_eq!(sent, *b"\0\0\0\x07{\"k\":1}");
+            server.write_all(b"\0\0\0\x07{\"k\":2}").unwrap();
+            let value: serde_json::Value = read_rpc(&mut client).unwrap_or_else(|_| panic!("read"));
+            assert_eq!(value["k"], 2);
+            drop(server);
+            assert!(matches!(
+                read_rpc::<serde_json::Value>(&mut client),
+                Err(RpcReadError::Closed)
+            ));
+        }
 
-    #[test]
-    fn service_connection_serves_two_sequential_requests() {
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        let worker = std::thread::spawn(move || {
-            serve_requests(&mut server, |action| match action {
-                RpcAction::Snapshot => Ok(Some("snapshot".into())),
-                RpcAction::Start { model } => Ok(Some(format!("started:{model}"))),
-                _ => Err("unexpected test action".into()),
+        // Phase: service_connection_serves_two_sequential_requests.
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                serve_requests(&mut server, |action| match action {
+                    RpcAction::Snapshot => Ok(Some("snapshot".into())),
+                    RpcAction::Start { model } => Ok(Some(format!("started:{model}"))),
+                    _ => Err("unexpected test action".into()),
+                });
             });
-        });
-        write_rpc(
-            &mut client,
-            &RpcRequest {
-                version: RPC_VERSION,
-                action: RpcAction::Snapshot,
-            },
-        )
-        .unwrap();
-        let first: RpcResponse = read_rpc(&mut client).unwrap_or_else(|_| panic!("response one"));
-        assert!(first.ok);
-        assert_eq!(first.output.as_deref(), Some("snapshot"));
-        write_rpc(
-            &mut client,
-            &RpcRequest {
-                version: RPC_VERSION,
-                action: RpcAction::Start {
-                    model: "tiny".into(),
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::Snapshot,
                 },
-            },
-        )
-        .unwrap();
-        let second: RpcResponse = read_rpc(&mut client).unwrap_or_else(|_| panic!("response two"));
-        assert!(second.ok);
-        assert_eq!(second.output.as_deref(), Some("started:tiny"));
-        drop(client);
-        worker.join().unwrap();
+            )
+            .unwrap();
+            let first: RpcResponse =
+                read_rpc(&mut client).unwrap_or_else(|_| panic!("response one"));
+            assert!(first.ok);
+            assert_eq!(first.output.as_deref(), Some("snapshot"));
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::Start {
+                        model: "tiny".into(),
+                    },
+                },
+            )
+            .unwrap();
+            let second: RpcResponse =
+                read_rpc(&mut client).unwrap_or_else(|_| panic!("response two"));
+            assert!(second.ok);
+            assert_eq!(second.output.as_deref(), Some("started:tiny"));
+            drop(client);
+            worker.join().unwrap();
+        }
     }
 
+    /// Podman mounts only the verified model path at its container path; runtime selection prefers a
+    /// confirmed NVIDIA over CPU, uses `ROCm` only when the driver is present, and uses CPU when no
+    /// supported accelerator exists.
     #[test]
-    fn podman_mounts_only_verified_model_path_and_uses_container_path() {
-        let command = VllmCommand {
-            runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            runtime_kind: RuntimeKind::Cpu,
-            args: vec!["serve".into(), "/models/model".into()],
-            model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
-            model_container_path: "/models/model".into(),
-            endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
-            runtime_extension_id: "runtime".into(),
-        };
-        let argv = podman_vllm_argv(&command);
-        assert!(argv.windows(2).any(|pair| pair
-            == [
-                "--mount",
-                "type=bind,src=/home/ada/.local/share/tilo/models/sha256/abc,dst=/models/model,ro"
-            ]));
-        assert!(
-            argv.windows(2)
-                .any(|pair| pair == ["--security-opt", "label=disable"])
-        );
-        assert!(argv.ends_with(&["serve".into(), "/models/model".into()]));
-        assert!(
-            !argv
-                .iter()
-                .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
-        );
-    }
+    fn the_model_runtime_matches_the_verified_hardware() {
+        // Phase: podman_mounts_only_verified_model_path_and_uses_container_path.
+        {
+            let command = VllmCommand {
+                runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                runtime_kind: RuntimeKind::Cpu,
+                args: vec!["serve".into(), "/models/model".into()],
+                model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
+                model_container_path: "/models/model".into(),
+                endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
+                runtime_extension_id: "runtime".into(),
+            };
+            let argv = podman_vllm_argv(&command);
+            assert!(argv.windows(2).any(|pair| pair
+                == [
+                    "--mount",
+                    "type=bind,src=/home/ada/.local/share/tilo/models/sha256/abc,dst=/models/model,ro"
+                ]));
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair == ["--security-opt", "label=disable"])
+            );
+            assert!(argv.ends_with(&["serve".into(), "/models/model".into()]));
+            assert!(
+                !argv
+                    .iter()
+                    .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
+            );
+        }
 
-    #[test]
-    fn runtime_selection_prefers_confirmed_nvidia_over_cpu() {
-        let hardware = HardwareSnapshot {
-            cpu_threads: 8,
-            memory_mib: 32 * 1024,
-            free_storage_mib: 100 * 1024,
-            accelerators: vec![Accelerator::Nvidia {
-                vram_mib: 12 * 1024,
-                driver: "560.35".into(),
-            }],
-        };
-        assert_eq!(
-            runtime_kind_for(&hardware, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap(),
-            RuntimeKind::NvidiaCuda
-        );
-        let error = runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap_err();
-        assert!(error.contains("boot pack"));
-    }
+        // Phase: runtime_selection_prefers_confirmed_nvidia_over_cpu.
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: 32 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![Accelerator::Nvidia {
+                    vram_mib: 12 * 1024,
+                    driver: "560.35".into(),
+                }],
+            };
+            assert_eq!(
+                runtime_kind_for(&hardware, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap(),
+                RuntimeKind::NvidiaCuda
+            );
+            let error = runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap_err();
+            assert!(error.contains("boot pack"));
+        }
 
-    #[test]
-    fn runtime_selection_uses_rocm_only_when_driver_is_present() {
-        let hardware = HardwareSnapshot {
-            cpu_threads: 8,
-            memory_mib: 32 * 1024,
-            free_storage_mib: 100 * 1024,
-            accelerators: vec![Accelerator::Amd {
+        // Phase: runtime_selection_uses_rocm_only_when_driver_is_present.
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: 32 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![Accelerator::Amd {
+                    vram_mib: 16 * 1024,
+                    rocm: Some("6.2".into()),
+                }],
+            };
+            assert_eq!(
+                runtime_kind_for(&hardware, [RuntimeKind::AmdRocm]).unwrap(),
+                RuntimeKind::AmdRocm
+            );
+            let mut missing_driver = hardware;
+            missing_driver.accelerators = vec![Accelerator::Amd {
                 vram_mib: 16 * 1024,
-                rocm: Some("6.2".into()),
-            }],
-        };
-        assert_eq!(
-            runtime_kind_for(&hardware, [RuntimeKind::AmdRocm]).unwrap(),
-            RuntimeKind::AmdRocm
-        );
-        let mut missing_driver = hardware;
-        missing_driver.accelerators = vec![Accelerator::Amd {
-            vram_mib: 16 * 1024,
-            rocm: None,
-        }];
-        let error = runtime_kind_for(&missing_driver, [RuntimeKind::Cpu]).unwrap_err();
-        assert!(error.contains("boot pack"));
-    }
+                rocm: None,
+            }];
+            let error = runtime_kind_for(&missing_driver, [RuntimeKind::Cpu]).unwrap_err();
+            assert!(error.contains("boot pack"));
+        }
 
-    #[test]
-    fn runtime_selection_uses_cpu_when_no_supported_accelerator_exists() {
-        let hardware = HardwareSnapshot {
-            cpu_threads: 4,
-            memory_mib: 8 * 1024,
-            free_storage_mib: 100 * 1024,
-            accelerators: vec![],
-        };
-        assert_eq!(
-            runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap(),
-            RuntimeKind::Cpu
-        );
+        // Phase: runtime_selection_uses_cpu_when_no_supported_accelerator_exists.
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 4,
+                memory_mib: 8 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![],
+            };
+            assert_eq!(
+                runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap(),
+                RuntimeKind::Cpu
+            );
+        }
     }
 }

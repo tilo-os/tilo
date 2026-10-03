@@ -36,7 +36,12 @@
 pub mod actions;
 pub mod app;
 pub mod collab;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
+mod kept;
 mod preferences;
+pub mod resource;
 pub mod search;
 pub mod shared;
 pub use app::{PlayerApp, source_for_path};
@@ -74,9 +79,17 @@ fn media_handoff_transport_env() -> Option<(u64, bool)> {
     Some((position, resume))
 }
 
+/// The app as every host mounts it: the live player and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.video-player", || app_root(None))
+        .component_actions(actions::register)
+        .as_definition("Video Player")
+}
+
 /// The headless `--shots` root: a player staged with a frame + revealed
 /// controls, no collab socket. Opens `open` when given, else a demo clip.
 /// `scenario` selects a demo overlay (see [`PlayerApp::for_shot`]).
 pub fn app_root_for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(PlayerApp::for_shot(open, scenario))
 }
+pub use resource::{VideoPlayer, VideoPlayerShell, launch_spec as framework_launch_spec};

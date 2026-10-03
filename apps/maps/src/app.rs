@@ -11,26 +11,26 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::chrome::{SelectionState, selection_tier};
 use ui::format::bytes as format_bytes;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
-    ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
-    ResultSpec, RetryPolicy,
+    ActionFailure, ActionOutput, InvocationId, InvocationUpdate, OperationKind, Resource,
 };
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
@@ -39,7 +39,7 @@ use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
 use ui::widget::{FloatingSurfaceProvider, ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
-use crate::canvas::{self, MapPalette};
+use crate::canvas::{self, MapPalette, MapView};
 use crate::doc::MapsDoc;
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
@@ -50,10 +50,10 @@ use crate::model::{
     Category, LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode,
 };
 use crate::net::{self, NetMsg};
-use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel};
+use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
 use crate::sample::{self, Basemap};
 use crate::search_box::{SearchBox, SearchEffect, SearchHit, SearchKeyEffect, SearchOverlay};
-use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
+use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 use ui::location::{self, LocationChannel, LocationOutcome};
 
@@ -157,9 +157,35 @@ struct AccessibilityTarget {
 fn stable_access_key(id: &str) -> u64 {
     // FNV-1a keeps accessibility child identity stable across responsive
     // reordering without depending on a process-random hash seed.
-    id.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-    })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, id.as_bytes());
+    std::hash::Hasher::finish(&hasher)
+}
+
+/// The app's end of its network fetches: a result is queued and the app woken
+/// to take it, so nothing polls for it frame by frame while a slow or failing
+/// service keeps a request open.
+#[derive(Clone)]
+struct NetSender {
+    tx: Sender<NetMsg>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl NetSender {
+    fn send(&self, msg: NetMsg) -> Result<(), std::sync::mpsc::SendError<NetMsg>> {
+        self.tx.send(msg)?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
+/// Run a network fetch as a task on the app runtime; its result arrives on
+/// the app's channel.
+fn spawn_net(fetch: impl Future<Output = ()> + Send + 'static) {
+    match ui::rt::try_app() {
+        Ok(runtime) => drop(runtime.spawn(fetch)),
+        Err(error) => tracing::warn!("maps: no app runtime for a network fetch: {error}"),
+    }
 }
 
 #[allow(
@@ -177,7 +203,7 @@ pub struct MapsApp {
     /// place, clear the route, add/remove an offline region) goes through this so
     /// it brackets one undo boundary and replays byte-identically on peers — the
     /// same path a Ctrl+K palette dispatch takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
@@ -214,7 +240,7 @@ pub struct MapsApp {
     loaded: bool,
 
     // networking
-    net_tx: Sender<NetMsg>,
+    net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
     pending: u32,
     /// Whether background network/portal work may be spawned. False for the
@@ -509,16 +535,12 @@ impl MapsApp {
         self.navigation_end_rect = end;
         let handle = Rect::new(rect.x0, rect.y0, end.x0 - 4.0, rect.y0 + 34.0);
         self.navigation_drag_handle = handle;
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             "Navigation",
-            rect.x0 + pad,
-            rect.y0 + 10.0,
-            text_sm(),
+            &TextStyle::new(text_sm()).with_weight(TextWeight::Medium),
             theme.text_dim,
-            TextWeight::Medium,
+            Point::new(rect.x0 + pad, rect.y0 + 10.0),
+            None,
         );
         ui::surface::floating_drag_grip(scene, visual, rect, theme.text_dim);
 
@@ -563,16 +585,15 @@ impl MapsApp {
             1.5,
             end_text,
         );
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             "End",
-            end.x0 + 19.0,
-            text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
-            NAV_END_TEXT,
+            &TextStyle::new(NAV_END_TEXT).with_weight(TextWeight::Medium),
             end_text,
-            TextWeight::Medium,
+            Point::new(
+                end.x0 + 19.0,
+                text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
+            ),
+            None,
         );
 
         let instruction = route.steps.first();
@@ -596,13 +617,9 @@ impl MapsApp {
             draw::alpha(theme.accent_primary, 0.18),
         );
         draw::text_center(
-            scene,
-            tr,
-            visual,
+            &mut PaintCtx::new(scene, visual, tr, theme),
             glyph,
-            badge.x0,
-            badge.x1,
-            badge.y0 + 8.0,
+            Point::new(badge.center().x, badge.y0 + 8.0),
             17.0,
             theme.accent_primary,
         );
@@ -618,12 +635,9 @@ impl MapsApp {
         let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0 + title_growth);
         let shift = rule_y - (rect.y0 + 98.0);
         draw::text_clip(
-            scene,
-            tr,
-            visual,
+            &mut PaintCtx::new(scene, visual, tr, theme),
             text,
-            rect.x0 + 64.0,
-            instr_y,
+            Point::new(rect.x0 + 64.0, instr_y),
             15.0,
             theme.text_primary,
             rect.width() - 82.0,
@@ -650,16 +664,12 @@ impl MapsApp {
             rule_y,
             c.surfaces.raised,
         );
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             &geo::fmt_duration(route.duration_s),
-            rect.x0 + pad,
-            rect.y0 + 114.0 + shift,
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Bold),
             theme.accent_primary,
-            TextWeight::Bold,
+            Point::new(rect.x0 + pad, rect.y0 + 114.0 + shift),
+            None,
         );
         draw::text_right(
             scene,
@@ -712,14 +722,18 @@ impl MapsApp {
         nav_open: bool,
         online: bool,
     ) -> Self {
-        let (net_tx, net_rx) = std::sync::mpsc::channel();
+        let (tx, net_rx) = std::sync::mpsc::channel();
+        let net_tx = NetSender {
+            tx,
+            wake: ui::wake::WakeHandle::new(),
+        };
         let cache_bytes = tiles.cache_bytes();
         Self {
             model,
             basemap,
             rect: Rect::ZERO,
             node: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             last_mouse: Point::ZERO,
             map_controls: MapControls::default(),
             search: SearchBox::new(),
@@ -979,8 +993,8 @@ impl MapsApp {
         Self::build(
             MapModel::default(),
             Basemap::default(),
-            // Style-scoped like the real `new()` — the cache is rooted here and
-            // the active theme's style subdir is chosen on the first draw.
+            // Rooted here like the real `new()`; the active theme's style is
+            // chosen on the first draw.
             TileLayer::live_with_root(cache_dir),
             false,
             true,
@@ -1003,6 +1017,12 @@ impl MapsApp {
     /// i.e. imagery is unreachable (egress blocked / offline).
     pub fn tiles_has_failures(&self) -> bool {
         self.tiles.has_failures()
+    }
+
+    /// Why tile fetches are failing, if they are: a refusing server
+    /// ([`TileFault::Rejected`]) or unreachable imagery.
+    pub fn tiles_failure(&self) -> Option<TileFault> {
+        self.tiles.failure()
     }
 
     /// Whether any tile request is still awaiting the background worker.
@@ -1243,20 +1263,133 @@ impl MapsApp {
     ///
     /// The host applies the same canonical binding used by resources and
     /// on-screen controls. Local presentation state is never pre-flushed.
+    fn has_durable_map(&self) -> bool {
+        !self.model.places.is_empty()
+            || !self.model.regions.is_empty()
+            || !self.model.recents.is_empty()
+            || !self.model.transit.is_empty()
+            || self.model.route.is_some()
+    }
+
+    /// Publish a sample or offline map through the existing map actions.
+    /// Live empty maps stay unpublished until a later action.
+    fn publish_durable(&mut self, doc: &mut AutoCommit) {
+        let places = self.model.places.clone();
+        let recents = self.model.recents.clone();
+        let regions = self.model.regions.clone();
+        let route = self.model.route.clone();
+        let transit = self.model.transit.clone();
+        let mode = self.model.mode;
+        let transit_time = self.model.transit_time;
+        let origin = self.model.origin;
+        let origin_name = self.model.origin_name.clone();
+        let dest = self.model.dest;
+        let dest_name = self.model.dest_name.clone();
+        if !places.is_empty() {
+            self.dispatch_map(doc, &MapsAction::UpsertPlaces { places });
+        }
+        for query in recents.into_iter().rev() {
+            self.dispatch_map(doc, &MapsAction::CommitSearch { query });
+        }
+        self.dispatch_map(doc, &MapsAction::SetTravelMode { mode });
+        self.dispatch_map(
+            doc,
+            &MapsAction::SetTransitTime {
+                value: transit_time,
+            },
+        );
+        for region in regions {
+            self.dispatch_map(doc, &MapsAction::AddRegion(region));
+        }
+        if let Some(route) = route {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetRoute {
+                    route,
+                    origin,
+                    origin_name: origin_name.clone(),
+                    dest,
+                    dest_name: dest_name.clone(),
+                    mode,
+                },
+            );
+        }
+        if !transit.is_empty() {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetTransit {
+                    transit,
+                    origin,
+                    origin_name,
+                    dest,
+                    dest_name,
+                },
+            );
+        }
+    }
+
+    fn dispatch_map(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            MAPS_ACTION_TYPE,
+            action,
+            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
+        );
+    }
+
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         // Test/standalone callers may invoke an action before the widget's
         // first sync. Seed once only; ordinary interactions never mirror local
         // presentation back into an existing document.
-        if MapsDoc::load(doc).is_none() {
-            MapsDoc::save(doc, &self.model);
+        if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() && self.has_durable_map() {
+            self.publish_durable(doc);
         }
         self.actions.dispatch_with_context(
             doc,
             MAPS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Maps", "Maps", action),
+            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
         );
         MapsDoc::apply_durable(doc, &mut self.model);
+    }
+
+    /// Show the places, routes and regions the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &MapModel) {
+        self.model.places.clone_from(&state.places);
+        self.model.recents.clone_from(&state.recents);
+        self.model.route.clone_from(&state.route);
+        self.model.transit.clone_from(&state.transit);
+        self.model.mode = state.mode;
+        self.model.origin = state.origin;
+        self.model.origin_name.clone_from(&state.origin_name);
+        self.model.dest = state.dest;
+        self.model.dest_name.clone_from(&state.dest_name);
+        self.model.transit_time = state.transit_time;
+        self.model.regions.clone_from(&state.regions);
+        self.loaded = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Maps>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test helper: stage ranked search hits that are not document state.
+    #[cfg(test)]
+    pub(crate) fn seed_search_results_for_test(&mut self, results: Vec<crate::model::Place>) {
+        self.model.results = results;
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -1455,7 +1588,7 @@ impl MapsApp {
     fn on_search_input(&mut self) {
         let q = self.model.query.trim().to_string();
         let matches = self.ranked_matches(&q);
-        self.search.query_changed(&q, matches, Instant::now());
+        self.search.query_changed(&q, matches, ui::time::now());
     }
 
     /// Fire the debounced live geocode if the quiet period has elapsed. Called
@@ -1469,8 +1602,8 @@ impl MapsApp {
         self.model.status = "Searching…".to_string();
         if self.online {
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
-                let results = net::geocode(&q);
+            spawn_net(async move {
+                let results = net::geocode(&q).await;
                 let _ = tx.send(NetMsg::Search { query: q, results });
             });
         }
@@ -1514,8 +1647,8 @@ impl MapsApp {
             return;
         }
         let tx = self.net_tx.clone();
-        std::thread::spawn(move || {
-            let results = net::geocode(&query);
+        spawn_net(async move {
+            let results = net::geocode(&query).await;
             let _ = tx.send(NetMsg::Search { query, results });
         });
     }
@@ -1551,8 +1684,8 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             let origin = endpoint == Endpoint::Origin;
-            std::thread::spawn(move || {
-                let results = net::geocode(&query);
+            spawn_net(async move {
+                let results = net::geocode(&query).await;
                 let _ = tx.send(NetMsg::EndpointSearch {
                     origin,
                     query,
@@ -1681,8 +1814,8 @@ impl MapsApp {
         self.model.status = "Routing…".to_string();
         if self.online {
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
-                let r = net::route(origin, dest, mode);
+            spawn_net(async move {
+                let r = net::route(origin, dest, mode).await;
                 let _ = tx.send(NetMsg::Route(r));
             });
         }
@@ -1725,8 +1858,8 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             let query = self.transit_query();
-            std::thread::spawn(move || {
-                let r = net::transit(origin, dest, &query);
+            spawn_net(async move {
+                let r = net::transit(origin, dest, &query).await;
                 let _ = tx.send(NetMsg::Transit(r));
             });
         }
@@ -1886,7 +2019,7 @@ impl MapsApp {
     /// Arm the viewport POI refetch. Debounced so a drag/zoom gesture fires one
     /// Overpass query when it settles, not per pointer event.
     fn schedule_pois(&mut self) {
-        self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+        self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
     }
 
     /// Fire the debounced POI refetch if the quiet period has elapsed. Called
@@ -1919,8 +2052,8 @@ impl MapsApp {
     /// reply for a previous viewport is discarded on drain.
     fn fetch_viewport_pois(&mut self) {
         if self.rect.width() <= 1.0 {
-            // No valid viewport yet — re-arm so the first real frame fetches.
-            self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+            // No valid viewport yet: `apply_layout` arms the fetch once one
+            // exists, rather than a timer polling for it.
             return;
         }
         if self.model.zoom < POI_MIN_ZOOM {
@@ -1944,13 +2077,14 @@ impl MapsApp {
             self.pending += 1;
             self.model.status = "Loading places…".to_string();
             let tx = self.net_tx.clone();
-            std::thread::spawn(move || {
+            spawn_net(async move {
                 let pois = net::overpass(
                     bounds.min.lat,
                     bounds.min.lon,
                     bounds.max.lat,
                     bounds.max.lon,
-                );
+                )
+                .await;
                 let _ = tx.send(NetMsg::Pois { generation, pois });
             });
         }
@@ -2301,8 +2435,8 @@ impl MapsApp {
                 if self.online {
                     self.pending += 1;
                     let tx = self.net_tx.clone();
-                    std::thread::spawn(move || {
-                        let r = net::reverse_geocode(pos.lat, pos.lon);
+                    spawn_net(async move {
+                        let r = net::reverse_geocode(pos.lat, pos.lon).await;
                         let _ = tx.send(NetMsg::ReverseGeocode(r));
                     });
                 }
@@ -2469,6 +2603,9 @@ impl MapsApp {
         match action {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
+            OfflineAction::Download if !self.tiles.allows_prefetch() => {
+                self.model.status = OFFLINE_AREAS_REFUSED.to_string();
+            }
             OfflineAction::Download => {
                 let request = self.offline_panel.download_request(
                     self.viewport_bounds(),
@@ -2596,7 +2733,7 @@ impl MapsApp {
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
-        // steady state; on a theme change it re-points the worker + cache.
+        // steady state; on a theme change it re-points the worker's decode.
         self.tiles.set_style(TileStyle::from_theme(theme));
         let pal = MapPalette::from_theme(theme);
         let proj = self.projection();
@@ -2614,7 +2751,13 @@ impl MapsApp {
             clip
         };
 
-        let painted_tiles = self.draw_map_layers(scene, t, tr, theme, &pal, proj, clip, map_clip);
+        let view = MapView {
+            proj: &proj,
+            pal: &pal,
+            clip,
+        };
+        let painted_tiles =
+            self.draw_map_layers(&mut PaintCtx::new(scene, t, tr, theme), view, map_clip);
         self.draw_panel_and_scale(scene, t, tr, theme, overlay, clip, painted_tiles);
         self.draw_chrome(scene, t, tr, theme);
     }
@@ -2622,29 +2765,21 @@ impl MapsApp {
     /// Map layers only: real tiles or their vector/grid fallback, traffic,
     /// route, transit, POIs and markers. Returns whether real imagery painted,
     /// which the caller needs to decide whether the offline/loading hint is due.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the frame's shared draw context (scene/transform/theme/palette/projection/clip \
-                  rects), computed once in draw_app and threaded through unchanged"
-    )]
     fn draw_map_layers(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &MapPalette,
-        proj: Projection,
-        clip: Rect,
+        ctx: &mut PaintCtx<'_>,
+        view: MapView<'_>,
         map_clip: Rect,
     ) -> bool {
+        let MapView { proj, pal, clip } = view;
+        let theme = ctx.theme;
         // Map layers. Real OSM raster tiles paint first (non-blocking); the
         // stylised vector basemap is the fallback shown only until imagery is
         // available (headless `--shots`, or the very first offline frame).
         let view_center = self.view_center();
         let painted_tiles = canvas::draw_tiles(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             clip,
             &mut self.tiles,
             &self.model,
@@ -2656,9 +2791,16 @@ impl MapsApp {
                 // Live first-run / offline gap: no imagery and no vector
                 // cartography yet. Draw a reference grid so the map reads as a
                 // map rather than a black void, with a loading affordance.
-                canvas::draw_grid_substrate(scene, t, clip, &self.model, view_center, pal);
+                canvas::draw_grid_substrate(
+                    ctx.scene,
+                    ctx.transform,
+                    clip,
+                    &self.model,
+                    view_center,
+                    pal,
+                );
             } else {
-                canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, pal);
+                canvas::draw_basemap(ctx.scene, ctx.transform, clip, proj, &self.basemap, pal);
             }
         }
         // Traffic overlay: coloured congestion over the roads, under the active
@@ -2666,10 +2808,10 @@ impl MapsApp {
         // nothing here — the honest "No traffic data" pill is drawn with the
         // chrome below.
         if self.map_controls.traffic_enabled() {
-            canvas::draw_traffic(scene, t, &proj, &self.traffic, pal);
+            canvas::draw_traffic(ctx.scene, ctx.transform, proj, &self.traffic, pal);
         }
         if let Some(route) = &self.model.route {
-            canvas::draw_route(scene, t, &proj, route, pal);
+            canvas::draw_route(ctx.scene, ctx.transform, proj, route, pal);
         }
         // Public-transport itinerary: the selected journey's legs draw on the
         // map (mode-coloured lines + transfer pucks) when Transit is the active
@@ -2677,35 +2819,37 @@ impl MapsApp {
         if self.model.mode.is_transit()
             && let Some(j) = self.model.transit.get(self.model.transit_choice)
         {
-            canvas::draw_transit(scene, t, &proj, j, theme, pal, clip);
+            canvas::draw_transit(ctx.scene, ctx.transform, proj, j, theme, pal, clip);
         }
         // Live POI marker layer (Overpass) — our own themed category markers
         // over the basemap, decluttered and under the user's saved/selected
         // pins.
         let visible_pois = self.visible_poi_indices();
         canvas::draw_pois(
-            scene,
-            t,
-            tr,
-            &proj,
+            ctx,
+            MapView {
+                clip: map_clip,
+                ..view
+            },
             &self.pois,
             &visible_pois,
             self.selected_poi.as_deref(),
+        );
+        canvas::draw_markers(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            proj,
+            &self.model,
             theme,
             pal,
             map_clip,
         );
-        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, pal, map_clip);
         painted_tiles
     }
 
     /// Side panel (docked or overlay drawer + scrim), the scale bar, and the
     /// offline/loading hint that only shows while no real imagery has painted.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the frame's shared draw context plus the two map-layer outcomes \
-                  (`overlay`, `painted_tiles`) this section's branches depend on"
-    )]
     fn draw_panel_and_scale(
         &mut self,
         scene: &mut Scene,
@@ -2723,7 +2867,12 @@ impl MapsApp {
         // returns as soon as the results dismiss.
         let show_panel = !self.search_overlay_active();
         if overlay && self.nav_open {
-            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.5));
+            draw::fill_rect(
+                scene,
+                t,
+                clip,
+                draw::alpha(theme.tokens.colors.surfaces.scrim, 0.5),
+            );
             self.click_targets.push((clip, Hit::CloseNav));
             if show_panel {
                 self.draw_panel(scene, t, tr, theme);
@@ -2732,17 +2881,12 @@ impl MapsApp {
             self.draw_panel(scene, t, tr, theme);
         }
 
-        // Scale bar, bottom-right, ending just left of the ⋯ overflow button.
-        // Attribution/licenses moved into that menu, so nothing overlaps it.
-        canvas::draw_scale_bar(
-            scene,
-            t,
-            tr,
-            clip,
-            self.overflow_rect().x0 - GAP,
-            &self.model,
-            theme,
-        );
+        // Scale bar, bottom-right, ending just left of the ⋯ overflow button,
+        // with the tile credit beside it; the full attribution and licenses
+        // live in that menu.
+        let scale_x1 = self.overflow_rect().x0 - GAP;
+        let scale_x0 = canvas::draw_scale_bar(scene, t, tr, clip, scale_x1, &self.model, theme);
+        canvas::draw_attribution(scene, t, tr, clip, scale_x0, scale_x1, theme);
 
         // Loading / offline affordance while the substrate grid is showing —
         // above the map but below the chrome, and skipped once real imagery or
@@ -2786,6 +2930,7 @@ impl MapsApp {
                     viewport_zoom: TileLayer::tile_zoom(self.model.zoom),
                     regions: &self.model.regions,
                     progress: self.tiles.progress(),
+                    downloads_allowed: self.tiles.allows_prefetch(),
                 },
             );
         }
@@ -3020,7 +3165,7 @@ impl MapsApp {
         let y1 = self.rect.y1 - 54.0; // above the scale bar + attribution
         let y0 = y1 - card_h;
         let card = Rect::new(x0, y0, x0 + w, y1);
-        draw::card(scene, t, card, 16.0, c.surfaces.raised);
+        draw::card(scene, t, theme, card, 16.0, c.surfaces.raised);
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
@@ -3045,28 +3190,20 @@ impl MapsApp {
             card.y0 + s2 + close_edge,
         );
         draw::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "✕",
-            close.x0,
-            close.x1,
-            self.vmid(close.y0, close_edge, 14.0),
+            Point::new(close.center().x, self.vmid(close.y0, close_edge, 14.0)),
             14.0,
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
         let name = tr.elide_to_width(&poi.name, 18.0, ui::num::f32_of_f64(close.x0 - s2 - x));
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &name,
-            x,
-            y,
-            18.0,
+            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            TextWeight::Bold,
+            Point::new(x, y),
+            None,
         );
         y += title_h + s1;
         draw::text(
@@ -3082,12 +3219,9 @@ impl MapsApp {
         if let Some(k) = &poi.kind {
             let cw = draw::measure_w(tr, poi.category.label(), 12.0);
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &format!("· {k}"),
-                x + cw + 10.0,
-                y,
+                Point::new(x + cw + 10.0, y),
                 12.0,
                 theme.text_dim,
                 right - x - cw - 10.0,
@@ -3102,7 +3236,14 @@ impl MapsApp {
             } else {
                 theme.text_primary
             };
-            draw::text_clip(scene, tr, t, text, x + 20.0, y, 12.0, col, right - x - 20.0);
+            draw::text_clip(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                text,
+                Point::new(x + 20.0, y),
+                12.0,
+                col,
+                right - x - 20.0,
+            );
             y += row_line;
         }
         y += s3;
@@ -3170,6 +3311,7 @@ impl MapsApp {
             draw::card(
                 scene,
                 t,
+                theme,
                 pill,
                 h / 2.0,
                 draw::alpha(c.surfaces.raised, 0.96),
@@ -3204,30 +3346,30 @@ impl MapsApp {
         let w = 180.0_f64;
         let h = pad + header_h + Congestion::ALL.len() as f64 * row_h + pad - 4.0;
         let card = Rect::new(map_left, bottom - h, map_left + w, bottom);
-        draw::card(scene, t, card, 12.0, draw::alpha(c.surfaces.raised, 0.96));
+        draw::card(
+            scene,
+            t,
+            theme,
+            card,
+            12.0,
+            draw::alpha(c.surfaces.raised, 0.96),
+        );
 
         let x = card.x0 + pad;
         let mut y = card.y0 + pad;
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Traffic",
-            x,
-            y,
-            title_fs,
+            &TextStyle::new(title_fs).with_weight(TextWeight::Semibold),
             c.text_primary,
-            TextWeight::Semibold,
+            Point::new(x, y),
+            None,
         );
         if let Some(src) = &self.traffic.source {
             let tw = draw::measure_w(tr, "Traffic", title_fs) + 8.0;
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &format!("· {src}"),
-                x + tw,
-                y,
+                Point::new(x + tw, y),
                 10.0,
                 c.text_dim,
                 card.x1 - pad - (x + tw),
@@ -3284,7 +3426,14 @@ impl MapsApp {
         // (which spans most of the top edge in the narrow layout).
         let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
         let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
-        draw::card(scene, t, r, 15.0, theme.tokens.colors.surfaces.raised);
+        draw::card(
+            scene,
+            t,
+            theme,
+            r,
+            15.0,
+            theme.tokens.colors.surfaces.raised,
+        );
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
         draw::fill_circle(
@@ -3320,11 +3469,12 @@ impl MapsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let offline = self.tiles.has_failures() && !self.tiles.has_inflight();
-        let msg = if offline {
-            "Map imagery unavailable offline"
-        } else {
-            "Loading map…"
+        let fault = self.tiles.failure().filter(|_| !self.tiles.has_inflight());
+        let offline = fault.is_some();
+        let msg = match fault {
+            Some(TileFault::Rejected) => "The map tile server refused the request",
+            Some(TileFault::Unreachable) => "Map imagery unavailable offline",
+            None => "Loading map…",
         };
         // Centre within the map area (right of the docked panel when present).
         let area_x0 = if self.panel_docked_expanded() {
@@ -3338,7 +3488,7 @@ impl MapsApp {
         let w = draw::measure_w(tr, msg, size) + 44.0;
         let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
         let c = &theme.tokens.colors;
-        draw::card(scene, t, r, 17.0, c.surfaces.raised);
+        draw::card(scene, t, theme, r, 17.0, c.surfaces.raised);
         let dot = Point::new(r.x0 + 18.0, r.center().y);
         let dot_col = if offline {
             c.semantic.warning
@@ -3385,19 +3535,15 @@ impl MapsApp {
                 pr.x1,
                 pr.y0 + self.panel_header_h() + 2.0 * inset,
             );
-            draw::card(scene, t, bar, 14.0, c.surfaces.raised);
+            draw::card(scene, t, theme, bar, 14.0, c.surfaces.raised);
             self.click_targets.push((bar, Hit::Consume));
             let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "Places",
-                bar.x0 + inset + s1,
-                by,
-                15.0,
+                &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
                 theme.text_primary,
-                TextWeight::Semibold,
+                Point::new(bar.x0 + inset + s1, by),
+                None,
             );
             let btn = Rect::new(
                 bar.x1 - inset - self.panel_header_h(),
@@ -3420,7 +3566,7 @@ impl MapsApp {
             return;
         }
 
-        draw::card(scene, t, pr, 14.0, c.surfaces.raised);
+        draw::card(scene, t, theme, pr, 14.0, c.surfaces.raised);
         // Swallow background clicks.
         self.click_targets.push((pr, Hit::Consume));
 
@@ -3456,16 +3602,12 @@ impl MapsApp {
             hx = back.x1 + f64::from(self.spacing.s2);
         }
         let title = if directions { "Directions" } else { "Places" };
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             title,
-            hx,
-            self.vmid(header.y0, header.height(), 16.0),
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            TextWeight::Bold,
+            Point::new(hx, self.vmid(header.y0, header.height(), 16.0)),
+            None,
         );
         if docked {
             let btn = Rect::new(
@@ -3545,16 +3687,12 @@ impl MapsApp {
             && self.pois.is_empty();
         if empty {
             let (title_h, body_h) = (line(16.0), line(13.0));
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "Find your way",
-                x,
-                y,
-                16.0,
+                &TextStyle::new(16.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
             let body_y = y + title_h + s2;
             draw::text(
@@ -3604,16 +3742,12 @@ impl MapsApp {
             );
             let name =
                 tr.elide_to_width(&sel.name, 18.0, ui::num::f32_of_f64(right - x - 2.0 * s4));
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &name,
-                x + s4,
-                name_y,
-                18.0,
+                &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x + s4, name_y),
+                None,
             );
             draw::text(
                 scene,
@@ -3626,12 +3760,9 @@ impl MapsApp {
                 theme.accent_primary,
             );
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &sel.address,
-                x + s4,
-                addr_y,
+                Point::new(x + s4, addr_y),
                 12.0,
                 theme.text_dim,
                 right - x - 2.0 * s4,
@@ -3667,13 +3798,9 @@ impl MapsApp {
                         draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
                     }
                     draw::text_center(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         label,
-                        br.x0,
-                        br.x1,
-                        self.vmid(br.y0, bh, 12.0),
+                        Point::new(br.center().x, self.vmid(br.y0, bh, 12.0)),
                         12.0,
                         theme.text_primary,
                     );
@@ -3686,16 +3813,12 @@ impl MapsApp {
         // Results / recents / saved sections.
         let results = self.model.results.clone();
         if !results.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "RESULTS",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             for p in &results {
@@ -3709,21 +3832,23 @@ impl MapsApp {
         // opens the POI's info card, and the selected marker highlights its row.
         let nearby = self.nearby_pois();
         if !nearby.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "NEARBY",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             let anchor = self.search_anchor();
             for poi in &nearby {
-                y = self.draw_poi_row(scene, t, tr, theme, content, y, poi, anchor);
+                y = self.draw_poi_row(
+                    &mut PaintCtx::new(scene, t, tr, theme),
+                    content,
+                    y,
+                    poi,
+                    anchor,
+                );
             }
             y += s2;
         }
@@ -3735,16 +3860,12 @@ impl MapsApp {
             .cloned()
             .collect::<Vec<_>>();
         if !saved.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "SAVED",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             for p in &saved {
@@ -3757,16 +3878,12 @@ impl MapsApp {
             let clear_label = "Clear";
             let clear_w = draw::measure_w(tr, clear_label, 11.0) + 12.0;
             let clear = Rect::new(right - clear_w, y - 5.0, right, y + 15.0);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "RECENT SEARCHES",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             draw::text_right(
                 scene,
@@ -3810,12 +3927,6 @@ impl MapsApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "shares the standard (scene, t, tr, theme) drawing-context params with every \
-                  other draw_* method in this file; bundling them into a context struct is a \
-                  file-wide refactor out of scope here"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "conventional short names for the shared drawing context (scene, t: transform, \
               tr: text renderer, c: theme colours, r: rect) used consistently across every \
@@ -3857,24 +3968,18 @@ impl MapsApp {
         let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 36.0;
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &p.name,
-            tx,
-            name_y,
+            Point::new(tx, name_y),
             13.0,
             theme.text_primary,
             r.x1 - tx - 50.0,
         );
         let sub = format!("{} · {}", p.category.label(), p.address);
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &sub,
-            tx,
-            name_y + name_h,
+            Point::new(tx, name_y + name_h),
             11.0,
             theme.text_dim,
             r.x1 - tx - 50.0,
@@ -3899,48 +4004,47 @@ impl MapsApp {
     /// matching the map markers), the name, a "Category · detail" subtitle, and a
     /// trailing distance chip. The whole row selects the POI (centre + info card)
     /// and highlights while its marker is the open one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "POI row painting needs the shared render inputs plus row and map geometry"
-    )]
     fn draw_poi_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         content: Rect,
         y: f64,
         poi: &crate::model::Poi,
         anchor: LatLon,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let s2 = f64::from(self.spacing.s2);
         let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
         if selected {
-            draw::selected_row(scene, t, r, 8.0, theme);
+            draw::selected_row(ctx.scene, ctx.transform, r, 8.0, theme);
         }
         // The pictogram, category label and map marker already identify this
         // POI. Keeping list decoration neutral makes distance and selection
         // easier to scan across mixed categories.
         let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
         let cc = Point::new(r.x0 + 18.0, r.center().y);
-        draw::fill_circle(scene, t, cc, 11.0, marker);
-        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, theme.text_primary, marker);
+        draw::fill_circle(ctx.scene, ctx.transform, cc, 11.0, marker);
+        canvas::draw_category_icon(
+            ctx.scene,
+            ctx.transform,
+            cc,
+            11.0,
+            poi.category,
+            theme.text_primary,
+            marker,
+        );
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
-        let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let dw = draw::measure_w(ctx.text, &dist, 11.0) + 10.0;
         let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
         let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 38.0;
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            ctx,
             &poi.name,
-            tx,
-            name_y,
+            Point::new(tx, name_y),
             13.0,
             theme.text_primary,
             r.x1 - tx - dw,
@@ -3953,21 +4057,18 @@ impl MapsApp {
             poi.category.label().to_string()
         };
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            ctx,
             &sub,
-            tx,
-            name_y + name_h,
+            Point::new(tx, name_y + name_h),
             11.0,
             theme.text_dim,
             r.x1 - tx - dw,
         );
         // The distance chip sits on the name line's centre.
         draw::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &dist,
             r.x1 - s2,
             name_y + (name_h - sub_h) / 2.0,
@@ -4100,11 +4201,7 @@ impl MapsApp {
         let seg_inset = f64::from(self.spacing.s1);
         draw::edged(scene, t, mode_rect, track_radius, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
-        let active_fg = c.ink_on(
-            theme.accent_primary,
-            Color::WHITE,
-            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-        );
+        let active_fg = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
@@ -4120,13 +4217,9 @@ impl MapsApp {
             }
             let fg = if active { active_fg } else { theme.text_dim };
             draw::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 m.label(),
-                seg.x0,
-                seg.x1,
-                self.vmid(seg.y0, seg.height(), 12.0),
+                Point::new(seg.center().x, self.vmid(seg.y0, seg.height(), 12.0)),
                 12.0,
                 fg,
             );
@@ -4149,16 +4242,12 @@ impl MapsApp {
         // Route summary + steps for the road modes.
         if let Some(route) = self.model.route.clone() {
             let big = geo::fmt_duration(route.duration_s);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &big,
-                x,
-                y,
-                26.0,
+                &TextStyle::new(26.0).with_weight(TextWeight::Bold),
                 theme.accent_primary,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
             // The distance and the Clear link sit on the duration's line box,
             // each centred from its own measured height; the row then advances
@@ -4197,41 +4286,29 @@ impl MapsApp {
             // the full pair only shows once a specific departure/arrival is set.
             let (dep_label, arr_label) = self.road_trip_clock(route.duration_s);
             if self.model.transit_time.is_now() {
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &arr_label,
-                    x,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_dim,
-                    TextWeight::Medium,
+                    Point::new(x, y),
+                    None,
                 );
             } else {
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &dep_label,
-                    x,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_primary,
-                    TextWeight::Medium,
+                    Point::new(x, y),
+                    None,
                 );
                 let dep_w = draw::measure_w(tr, &dep_label, 13.0);
                 draw::text(scene, tr, t, "→", x + dep_w + 10.0, y, 13.0, theme.text_dim);
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &arr_label,
-                    x + dep_w + 30.0,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_primary,
-                    TextWeight::Medium,
+                    Point::new(x + dep_w + 30.0, y),
+                    None,
                 );
             }
             y += authored_h(28.0, &[13.0], tr.text_scale());
@@ -4250,23 +4327,16 @@ impl MapsApp {
                 let bc = Point::new(x + 16.0, y + instr_h / 2.0 + 2.0);
                 draw::fill_circle(scene, t, bc, 13.0, draw::alpha(theme.accent_primary, 0.16));
                 draw::text_center(
-                    scene,
-                    tr,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     step.maneuver.glyph(),
-                    bc.x - 13.0,
-                    bc.x + 13.0,
-                    self.vmid(bc.y - 13.0, 26.0, 15.0),
+                    Point::new(bc.x, self.vmid(bc.y - 13.0, 26.0, 15.0)),
                     15.0,
                     theme.accent_primary,
                 );
                 draw::text_clip(
-                    scene,
-                    tr,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     &step.instruction,
-                    x + 38.0,
-                    y,
+                    Point::new(x + 38.0, y),
                     13.0,
                     theme.text_primary,
                     right - x - 38.0,
@@ -4407,13 +4477,9 @@ impl MapsApp {
                 theme.text_dim
             };
             draw::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 label,
-                seg.x0,
-                seg.x1,
-                self.vmid(seg.y0, seg.height(), 12.0),
+                Point::new(seg.center().x, self.vmid(seg.y0, seg.height(), 12.0)),
                 12.0,
                 fg,
             );
@@ -4442,13 +4508,9 @@ impl MapsApp {
             target.format("%H:%M").to_string()
         };
         draw::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &label,
-            minus.x1,
-            plus.x0,
-            self.vmid(y, row_h, 15.0),
+            Point::new((minus.x1 + plus.x0) / 2.0, self.vmid(y, row_h, 15.0)),
             15.0,
             theme.accent_primary,
         );
@@ -4518,16 +4580,12 @@ impl MapsApp {
             f64::from(self.spacing.s2),
             f64::from(self.spacing.s3),
         );
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &format!("Departures to {to}"),
-            x,
-            y,
-            14.0,
+            &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            TextWeight::Semibold,
+            Point::new(x, y),
+            None,
         );
         y += line_h(14.0, self.text_scale) + s2;
 
@@ -4567,16 +4625,12 @@ impl MapsApp {
                 draw::edged(scene, t, jr, 10.0, c.surfaces.base);
             }
             // Header: dep–arr  ·  duration  ·  transfers.
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &format!("{} – {}", j.dep, j.arr),
-                x + 12.0,
-                y + 10.0,
-                15.0,
+                &TextStyle::new(15.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x + 12.0, y + 10.0),
+                None,
             );
             draw::text_right(
                 scene,
@@ -4628,7 +4682,7 @@ impl MapsApp {
                         .text_color
                         .as_deref()
                         .and_then(draw::hex_color)
-                        .unwrap_or(Color::WHITE);
+                        .unwrap_or_else(|| theme.tokens.colors.on_surface(col).ink);
                     let lbl = if leg.line.is_empty() {
                         leg.mode.label().to_string()
                     } else {
@@ -4638,13 +4692,9 @@ impl MapsApp {
                     let pill = Rect::new(px, py, px + w, py + 22.0);
                     draw::fill_round(scene, t, pill, 6.0, col);
                     draw::text_center(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &lbl,
-                        pill.x0,
-                        pill.x1,
-                        self.vmid(pill.y0, 22.0, 12.0),
+                        Point::new(pill.center().x, self.vmid(pill.y0, 22.0, 12.0)),
                         12.0,
                         fg,
                     );
@@ -4678,12 +4728,9 @@ impl MapsApp {
                     };
                     let head = head.trim().to_string();
                     draw::text_clip(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &head,
-                        x + 32.0,
-                        y,
+                        Point::new(x + 32.0, y),
                         12.0,
                         theme.text_primary,
                         right - x - 120.0,
@@ -4719,12 +4766,9 @@ impl MapsApp {
                         )
                     };
                     draw::text_clip(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &sub,
-                        x + 32.0,
-                        y + 16.0,
+                        Point::new(x + 32.0, y + 16.0),
                         11.0,
                         theme.text_dim,
                         right - x - 90.0,
@@ -4771,7 +4815,14 @@ impl MapsApp {
         };
         draw::separator(scene, t, x, right, y, c.surfaces.raised);
         y += s3;
-        draw::text_clip(scene, tr, t, &src, x, y, 10.0, theme.text_dim, right - x);
+        draw::text_clip(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            &src,
+            Point::new(x, y),
+            10.0,
+            theme.text_dim,
+            right - x,
+        );
         y += line_h(10.0, self.text_scale) + s2;
         y
     }
@@ -5165,13 +5216,12 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "maps.locate",
@@ -5184,22 +5234,23 @@ impl Widget for MapsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull any background network results into the model first.
         self.drain_net(Some(state));
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
         // Fire a debounced search-as-you-type geocode once typing settles.
-        self.tick_search_debounce(Instant::now());
+        self.tick_search_debounce(ui::time::now());
         // Refetch viewport POIs once a pan/zoom settles.
-        self.tick_poi_debounce(Instant::now());
+        self.tick_poi_debounce(ui::time::now());
         // Fire the offline panel's live city geocode once its field settles.
-        if let Some(query) = self.offline_panel.take_due_query(Instant::now()) {
+        if let Some(query) = self.offline_panel.take_due_query(ui::time::now()) {
             self.pending += 1;
             if self.online {
                 let tx = self.net_tx.clone();
-                std::thread::spawn(move || {
-                    let results = net::geocode_regions(&query);
+                spawn_net(async move {
+                    let results = net::geocode_regions(&query).await;
                     let _ = tx.send(NetMsg::RegionSearch { query, results });
                 });
             }
@@ -5223,18 +5274,20 @@ impl Widget for MapsApp {
             // panel, selection and ranked results never mirror back into it.
             MapsDoc::apply_durable(state, &mut self.model);
         } else {
-            if MapsDoc::load(state).is_some() {
-                // Workspace resources merge into this window; the camera,
-                // panel, draft, selection and status remain local.
+            if MapsDoc::load(state).is_some() || self.actions.is_hosted() || !self.has_durable_map()
+            {
+                // The hosted record is the library. An empty live map stays
+                // empty until a map action writes it. Sample places still
+                // publish on the offline path.
                 MapsDoc::apply_durable(state, &mut self.model);
             } else {
-                MapsDoc::save(state, &self.model);
+                self.publish_durable(state);
             }
             self.loaded = true;
         }
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
-        if let Some(effect) = self.endpoints.take_due_search(Instant::now()) {
+        if let Some(effect) = self.endpoints.take_due_search(ui::time::now()) {
             self.apply_endpoint_effect(effect);
         }
     }
@@ -5289,7 +5342,7 @@ impl Widget for MapsApp {
             && self.rect.width() > 1.0
             && self.model.zoom >= POI_MIN_ZOOM
         {
-            self.poi_debounce = Some(Instant::now() + POI_DEBOUNCE);
+            self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
         }
     }
 
@@ -5309,25 +5362,14 @@ impl Widget for MapsApp {
         reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The shared information dialog is modal and owns its event routing.
         // Covered map controls must never observe the same event.
         if self
             .info_sheet
-            .handle_event(event, scale_factor, *modifiers, state)
+            .handle_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A click, scroll or keypress dismisses any shown control tooltip.
@@ -5343,7 +5385,7 @@ impl Widget for MapsApp {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 if self.navigation_placement.is_dragging() {
                     let source_region = self.navigation_rect().inflate(8.0, 8.0);
@@ -5355,27 +5397,27 @@ impl Widget for MapsApp {
                     if handoff == ui::floating_surface::Handoff::Detached {
                         self.pending_floating = self.active_navigation_request_from(source_region);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let end_hovered =
                     self.model.route.is_some() && self.navigation_end_rect.contains(p);
                 if self.navigation_end_hovered != end_hovered {
                     self.navigation_end_hovered = end_hovered;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
-                self.forward_move_to_field_inputs(event, scale_factor, *modifiers);
+                self.forward_move_to_field_inputs(event, ctx.scale_factor, *ctx.modifiers);
                 // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                 }
                 if self.offline_panel.is_open() {
                     self.offline_panel.route_field_event(
                         event,
-                        scale_factor,
-                        *modifiers,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
                         self.last_mouse,
                     );
                 }
@@ -5392,7 +5434,7 @@ impl Widget for MapsApp {
                         // updates but the screen never repaints — drag-to-pan
                         // reads as frozen. This mirrors the wheel-zoom path, which
                         // already marks its events handled for the same reason.
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     self.drag_last = p;
                 }
@@ -5407,9 +5449,9 @@ impl Widget for MapsApp {
                     .chain(std::iter::once((self.overflow_rect(), "More")));
                 if self
                     .map_controls
-                    .on_pointer(p, self.left_down, extra_targets, Instant::now())
+                    .on_pointer(p, self.left_down, extra_targets, ui::time::now())
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -5419,9 +5461,9 @@ impl Widget for MapsApp {
             } => {
                 let p = self.last_mouse;
                 if self.model.route.is_some() && self.navigation_end_rect.contains(p) {
-                    self.clear_route(state);
+                    self.clear_route(ctx.state);
                     self.navigation_end_hovered = false;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.model.route.is_some() && self.navigation_drag_handle.contains(p) {
@@ -5432,7 +5474,7 @@ impl Widget for MapsApp {
                         self.rect,
                         self.desktop_floating_bounds(),
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 self.left_down = true;
@@ -5440,11 +5482,11 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
                 // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // The offline dialog's city field / dropdown takes its own clicks
@@ -5453,27 +5495,27 @@ impl Widget for MapsApp {
                 if self.offline_panel.is_open() {
                     if self.offline_panel.route_field_event(
                         event,
-                        scale_factor,
-                        *modifiers,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
                         self.last_mouse,
                     ) {
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     if let Some(action) = self.offline_panel.action_at(p) {
-                        self.dispatch_offline(action, state);
-                        *handled = true;
+                        self.dispatch_offline(action, ctx.state);
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 if matches!(self.model.panel, Panel::Directions)
                     && let Some(effect) =
                         self.endpoints
-                            .pointer_press(p, event, scale_factor, *modifiers)
+                            .pointer_press(p, event, ctx.scale_factor, *ctx.modifiers)
                 {
                     self.search.dismiss();
                     self.apply_endpoint_effect(effect);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Hit-test recorded UI targets (topmost = last drawn).
@@ -5491,15 +5533,15 @@ impl Widget for MapsApp {
                         self.search.dismiss();
                     }
                     self.endpoints.dismiss();
-                    self.dispatch(&hit, state);
+                    self.dispatch(&hit, ctx.state);
                     // A click that focused a text field forwards the press so the
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
                     if matches!(hit, Hit::Search(SearchHit::Field)) {
-                        self.forward_press_to_field(&hit, event, scale_factor, *modifiers);
+                        self.forward_press_to_field(&hit, event, ctx.scale_factor, *ctx.modifiers);
                     }
                     consumed = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 if !consumed {
                     self.search.dismiss();
@@ -5508,14 +5550,14 @@ impl Widget for MapsApp {
                     // above, but above the actual map surface.
                     if let Some(action) = self.map_controls.hit_test(p) {
                         self.dispatch_map_control(action);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if let Some(id) = self.marker_at(p) {
                         // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if let Some(pid) = self.poi_at(p) {
                         self.select_poi(&pid);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else {
                         // Empty map: close any open POI card and begin a pan.
                         // Claim the press so the compositor/ui App treats the map
@@ -5523,7 +5565,7 @@ impl Widget for MapsApp {
                         self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -5538,7 +5580,7 @@ impl Widget for MapsApp {
                 self.left_down = false;
                 self.dragging = false;
                 if navigation_dragging {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -5555,7 +5597,7 @@ impl Widget for MapsApp {
                 } else {
                     self.zoom_by(dy * 0.35, self.last_mouse);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -5566,11 +5608,11 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
                 // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // While the offline dialog is open, Escape closes it and every
@@ -5581,12 +5623,12 @@ impl Widget for MapsApp {
                     } else {
                         self.offline_panel.route_field_event(
                             event,
-                            scale_factor,
-                            *modifiers,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
                             self.last_mouse,
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // A focused text field (search or an endpoint) owns the
@@ -5594,11 +5636,11 @@ impl Widget for MapsApp {
                 // shortcuts apply.
                 let field_focused = self.endpoints.is_focused() || self.search.is_focused();
                 if field_focused {
-                    if self.route_field_key(event, scale_factor, *modifiers, state) {
-                        *handled = true;
+                    if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, ctx.state) {
+                        *ctx.handled = true;
                     }
-                } else if self.handle_key(&key_event.logical_key, *modifiers, state) {
-                    *handled = true;
+                } else if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state) {
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -5609,159 +5651,35 @@ impl Widget for MapsApp {
         "MapsApp"
     }
 
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
-    /// places, the active route, and the offline regions currently in the shared
-    /// document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if resources.is_empty() {
-            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
-        }
-        if let Some(workspace) = resources.first_mut() {
-            workspace
-                .children
-                .extend(self.model.results.iter().take(12).map(|place| {
-                    Resource::new(
-                        format!("maps.search-result:{}", place.id),
-                        "maps.search-result",
-                        place.name.clone(),
-                    )
-                }));
-            workspace.children.extend(
-                self.nearby_pois()
-                    .into_iter()
-                    .take(12)
-                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
-            );
-        }
-        for resource in &mut resources {
-            self.decorate_live_resource(resource);
-        }
-        resources
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-            .or_else(|| {
-                (id == "maps.workspace")
-                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.search-result:").and_then(|place_id| {
-                    self.model
-                        .results
-                        .iter()
-                        .find(|place| place.id == place_id)
-                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
-                })
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.poi:").and_then(|poi_id| {
-                    self.pois
-                        .iter()
-                        .find(|poi| poi.id == poi_id)
-                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
-                })
-            })?;
-        self.decorate_live_resource(&mut resource);
-        Some(resource)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        match (kind, type_id) {
-            (OperationKind::View, "maps.search") => {
-                let query: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.model.query = query;
-                self.run_search(None);
-            }
-            (OperationKind::Effect, "maps.locate") => {
-                if self.location_rx.is_some() {
-                    return Err("A location request is already in progress".into());
-                }
-                self.use_my_location();
-            }
-            (OperationKind::View, "maps.toggle-traffic") => {
-                self.set_traffic(!self.map_controls.traffic_enabled());
-            }
-            (OperationKind::View, "maps.open-place" | "maps.directions") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if self.model.place(&id).is_none() {
-                    return Err("Map place is no longer available".into());
-                }
-                self.select_place(&id);
-                if type_id == "maps.directions" {
-                    self.enter_directions();
-                }
-            }
-            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if !self.pois.iter().any(|poi| poi.id == id) {
-                    return Err("Map point of interest is no longer in this viewport".into());
-                }
-                self.select_poi(&id);
-                if type_id == "maps.directions-poi" {
-                    self.poi_directions();
-                }
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
-            return self
-                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-                .map(|output| output.map(ResourceOperationStart::Completed));
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if !self.online {
-            return Err("The location service is unavailable in this session".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if self.location_invocation.is_some() || self.location_rx.is_some() {
-            return Err("A location request is already in progress".into());
-        }
-        self.location_invocation = Some(invocation);
-        self.location_terminal = None;
-        self.use_my_location();
-        Ok(Some(ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5777,13 +5695,6 @@ impl Widget for MapsApp {
         let terminal = self.location_terminal.take()?;
         self.location_invocation = None;
         Some(terminal)
-    }
-
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5847,9 +5758,10 @@ impl Widget for MapsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.offline_panel.is_open() {
             // Text input needs the framework's exact-rectangle pointer
             // fallback so it can place its caret. All buttons dispatch through
@@ -5924,26 +5836,29 @@ impl Widget for MapsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Same rule as `needs_idle_sync`: only ask for another frame while
-        // something is legitimately in flight (net, tiles, download) or the
-        // search caret is blinking. Failed tiles back off and clear
-        // `has_inflight()`, so a viewport of unfetchable tiles no longer pins
-        // the loop at 60 Hz.
-        self.pending > 0
-            || self.search.is_focused()
-            || self.search.has_pending_query()
-            || self.endpoints.has_pending_query()
-            || self.poi_debounce.is_some()
-            || self.endpoints.is_focused()
-            || self.locating
+        // Only motion takes a frame every vsync. Network replies, tiles and
+        // download ticks wake the app when they land, however long a slow or
+        // failing service keeps them open; debounces are wake deadlines; the
+        // search caret does not blink.
+        self.locating
             || self.location_rx.is_some()
-            || self.tiles.has_inflight()
-            || self.tiles.progress().is_active()
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.navigation_placement.is_dragging()
             || (!self.motion_reduced && self.navigation_placement.is_handoff_animating())
             || self.map_controls.needs_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.search.query_deadline(),
+            self.endpoints.query_deadline(),
+            self.offline_panel.query_deadline(),
+            self.poi_debounce,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -5961,6 +5876,183 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for MapsApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only live search hits and POIs.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use ui::tilo_resource::Resource as _;
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        let mut resources = self.publish_resources(doc);
+        if resources.is_empty() {
+            let state = crate::resource::Maps::read(doc).unwrap_or_default();
+            resources.push(ui::tilo_resource::publish::<crate::resource::Maps>(
+                "maps.workspace",
+                "Maps",
+                &state,
+            ));
+        }
+        if let Some(workspace) = resources.first_mut() {
+            workspace
+                .children
+                .extend(self.live_search_and_poi_resources_undecorated());
+        }
+        for resource in &mut resources {
+            self.decorate_live_resource(resource);
+        }
+        resources
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        use ui::tilo_resource::Resource as _;
+        // The framework root already owns the workspace door.
+        if self.is_hosted() && id == "maps.workspace" {
+            return None;
+        }
+        let mut resource = self
+            .publish_resource(doc, id)
+            .or_else(|| {
+                (id == "maps.workspace").then(|| {
+                    let state = crate::resource::Maps::read(doc).unwrap_or_default();
+                    ui::tilo_resource::publish::<crate::resource::Maps>(
+                        "maps.workspace",
+                        "Maps",
+                        &state,
+                    )
+                })
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.search-result:").and_then(|place_id| {
+                    self.model
+                        .results
+                        .iter()
+                        .find(|place| place.id == place_id)
+                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
+                })
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.poi:").and_then(|poi_id| {
+                    self.pois
+                        .iter()
+                        .find(|poi| poi.id == poi_id)
+                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
+                })
+            })?;
+        self.decorate_live_resource(&mut resource);
+        Some(resource)
+    }
+}
+
+impl ui::undo::CommittedActions for MapsApp {
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl MapsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::View, "maps.search") => {
+                let query: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.model.query = query;
+                self.run_search(None);
+            }
+            (OperationKind::Effect, "maps.locate") => {
+                if self.location_rx.is_some() {
+                    return Err("A location request is already in progress".into());
+                }
+                self.use_my_location();
+            }
+            (OperationKind::View, "maps.toggle-traffic") => {
+                self.set_traffic(!self.map_controls.traffic_enabled());
+            }
+            (OperationKind::View, "maps.open-place" | "maps.directions") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if self.model.place(&id).is_none() {
+                    return Err("Map place is no longer available".into());
+                }
+                self.select_place(&id);
+                if type_id == "maps.directions" {
+                    self.enter_directions();
+                }
+            }
+            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.pois.iter().any(|poi| poi.id == id) {
+                    return Err("Map point of interest is no longer in this viewport".into());
+                }
+                self.select_poi(&id);
+                if type_id == "maps.directions-poi" {
+                    self.poi_directions();
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
+                    })
+                });
+        }
+        if !self.online {
+            return Err("The location service is unavailable in this session".into());
+        }
+        if self.location_invocation.is_some() || self.location_rx.is_some() {
+            return Err("A location request is already in progress".into());
+        }
+        self.location_invocation = Some(invocation);
+        self.location_terminal = None;
+        self.use_my_location();
+        Ok(Some(ResourceOperationStart::Accepted))
     }
 }
 

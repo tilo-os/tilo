@@ -135,7 +135,7 @@ impl Admission {
             .iter()
             .map(|action| ActionAddress::new(resource.id.as_str(), &action.id))
             .collect();
-        dialog.refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(&mut dialog, &allowed);
         self.dialog = Some(Box::new(dialog));
     }
     pub fn take_command(&self) -> Option<Command> {
@@ -229,41 +229,45 @@ pub(crate) fn wake_deadline(
 mod tests {
     use super::*;
     #[test]
-    fn pending_save_deadline_survives_an_otherwise_idle_host() {
-        let now = crate::time::now();
-        let close = now + crate::time::Duration::from_millis(100);
-        assert_eq!(wake_deadline(None, true, now), Some(close));
-        let sooner = now + crate::time::Duration::from_millis(10);
-        assert_eq!(wake_deadline(Some(sooner), true, now), Some(sooner));
-        assert_eq!(wake_deadline(None, false, now), None);
-    }
-    #[test]
-    fn stale_discard_and_late_save_cannot_close_a_new_session() {
-        let mut admission = Admission::default();
-        admission.show(
-            "close-title",
-            "close-unsaved",
-            &[Choice::Discard, Choice::KeepEditing],
-            crate::platform::PlatformConventions::default(),
-        );
-        let stale = Command {
-            session: admission.session,
-            choice: Choice::Discard,
-        };
-        let stale_address = ActionAddress::new(admission.resources()[0].id.as_str(), "discard");
-        admission.dismiss();
-        admission.show(
-            "close-title",
-            "close-unsaved",
-            &[Choice::Discard, Choice::KeepEditing],
-            crate::platform::PlatformConventions::default(),
-        );
-        assert!(!admission.validate(&stale));
-        assert!(tilo_actions::door::resolve(&admission.resources(), &stale_address).is_none());
-        admission.save_waiting = true;
-        admission.save_local = Some(tilo_actions::InvocationId::new());
-        admission.dismiss();
-        assert!(!admission.save_waiting && admission.save_local.is_none());
-        assert!(admission.resources().is_empty());
+    fn close_admission_keeps_deadlines_and_refuses_stale_session_closes() {
+        // Case `pending_save_deadline_survives_an_otherwise_idle_host`.
+        {
+            let now = crate::time::now();
+            let close = now + crate::time::Duration::from_millis(100);
+            assert_eq!(wake_deadline(None, true, now), Some(close));
+            let sooner = now + crate::time::Duration::from_millis(10);
+            assert_eq!(wake_deadline(Some(sooner), true, now), Some(sooner));
+            assert_eq!(wake_deadline(None, false, now), None);
+        }
+
+        // Case `stale_discard_and_late_save_cannot_close_a_new_session`.
+        {
+            let mut admission = Admission::default();
+            admission.show(
+                "close-title",
+                "close-unsaved",
+                &[Choice::Discard, Choice::KeepEditing],
+                crate::platform::PlatformConventions::default(),
+            );
+            let stale = Command {
+                session: admission.session,
+                choice: Choice::Discard,
+            };
+            let stale_address = ActionAddress::new(admission.resources()[0].id.as_str(), "discard");
+            admission.dismiss();
+            admission.show(
+                "close-title",
+                "close-unsaved",
+                &[Choice::Discard, Choice::KeepEditing],
+                crate::platform::PlatformConventions::default(),
+            );
+            assert!(!admission.validate(&stale));
+            assert!(tilo_actions::door::resolve(&admission.resources(), &stale_address).is_none());
+            admission.save_waiting = true;
+            admission.save_local = Some(tilo_actions::InvocationId::new());
+            admission.dismiss();
+            assert!(!admission.save_waiting && admission.save_local.is_none());
+            assert!(admission.resources().is_empty());
+        }
     }
 }

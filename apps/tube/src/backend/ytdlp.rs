@@ -382,8 +382,8 @@ fn f64_field(v: &Value, key: &str) -> f64 {
 
 /// Today, as days since the civil epoch (UTC).
 fn today_days() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| (d.as_secs() / 86_400) as i64)
 }
 
@@ -431,29 +431,30 @@ mod date_tests {
     use super::*;
 
     #[test]
-    fn relative_ages_read_naturally() {
-        assert_eq!(age_label(0, "x"), "today");
-        assert_eq!(age_label(1, "x"), "yesterday");
-        assert_eq!(age_label(3, "x"), "3 days ago");
-        assert_eq!(age_label(10, "x"), "1 week ago");
-        assert_eq!(age_label(21, "x"), "3 weeks ago");
-        assert_eq!(age_label(30, "x"), "1 month ago");
-        assert_eq!(age_label(75, "x"), "2 months ago");
-        assert_eq!(age_label(800, "Nov 3, 2023"), "Nov 3, 2023");
-        assert_eq!(age_label(-5, "Nov 3, 2023"), "Nov 3, 2023");
-    }
-
-    #[test]
-    fn full_yyyymmdd_absolute_beyond_a_year() {
-        // A date well over a year old renders as a tidy absolute date, never a
-        // raw ISO string.
-        assert_eq!(humanize_date("20200704"), "Jul 4, 2020");
-    }
-
-    #[test]
-    fn non_date_passes_through() {
-        assert_eq!(humanize_date("3 days ago"), "3 days ago");
-        assert_eq!(humanize_date(""), "");
+    fn upload_dates_read_as_relative_or_absolute() {
+        // Case `relative_ages_read_naturally`.
+        {
+            assert_eq!(age_label(0, "x"), "today");
+            assert_eq!(age_label(1, "x"), "yesterday");
+            assert_eq!(age_label(3, "x"), "3 days ago");
+            assert_eq!(age_label(10, "x"), "1 week ago");
+            assert_eq!(age_label(21, "x"), "3 weeks ago");
+            assert_eq!(age_label(30, "x"), "1 month ago");
+            assert_eq!(age_label(75, "x"), "2 months ago");
+            assert_eq!(age_label(800, "Nov 3, 2023"), "Nov 3, 2023");
+            assert_eq!(age_label(-5, "Nov 3, 2023"), "Nov 3, 2023");
+        }
+        // Case `full_yyyymmdd_absolute_beyond_a_year`.
+        {
+            // A date well over a year old renders as a tidy absolute date, never a
+            // raw ISO string.
+            assert_eq!(humanize_date("20200704"), "Jul 4, 2020");
+        }
+        // Case `non_date_passes_through`.
+        {
+            assert_eq!(humanize_date("3 days ago"), "3 days ago");
+            assert_eq!(humanize_date(""), "");
+        }
     }
 }
 
@@ -650,155 +651,155 @@ impl YtBackend for YtDlpBackend {
 mod tests {
     use super::*;
 
-    /// A canned flat-playlist search entry (the shape yt-dlp emits) must map
-    /// onto a `Video` with the real title, channel and a thumbnail URL. This is
-    /// hermetic — no yt-dlp invocation, just the JSON→model mapping the live
-    /// path relies on.
     #[test]
-    fn maps_search_entry_to_video_with_thumbnail() {
-        let entry = serde_json::json!({
-            "id": "WhWc3b3KhnY",
-            "title": "Spring - Blender Open Movie",
-            "channel": "Blender Studio",
-            "channel_id": "UCz75RVbH8q2jdBJ4SnwuZZQ",
-            "duration": 465,
-            "view_count": 10_815_517u64,
-            "thumbnails": [
-                {"url": "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg", "width": 720, "height": 404},
-                {"url": "https://i.ytimg.com/vi/WhWc3b3KhnY/small.jpg", "width": 360, "height": 202}
-            ]
-        });
-        let v = video_from_json(&entry, "Search");
-        assert_eq!(v.id, "WhWc3b3KhnY");
-        assert_eq!(v.title, "Spring - Blender Open Movie");
-        assert_eq!(v.channel_name, "Blender Studio");
-        assert_eq!(v.channel_id, "UCz75RVbH8q2jdBJ4SnwuZZQ");
-        assert_eq!(v.duration, 465);
-        assert_eq!(v.views, 10_815_517);
-        // Largest thumbnail is chosen.
-        assert_eq!(
-            v.thumbnail_url,
-            "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
-        );
-    }
+    fn search_entries_map_to_videos_and_channel_images() {
+        // Case `maps_search_entry_to_video_with_thumbnail`:
+        // A canned flat-playlist search entry (the shape yt-dlp emits) must map
+        // onto a `Video` with the real title, channel and a thumbnail URL. This is
+        // hermetic — no yt-dlp invocation, just the JSON→model mapping the live
+        // path relies on.
+        {
+            let entry = serde_json::json!({
+                "id": "WhWc3b3KhnY",
+                "title": "Spring - Blender Open Movie",
+                "channel": "Blender Studio",
+                "channel_id": "UCz75RVbH8q2jdBJ4SnwuZZQ",
+                "duration": 465,
+                "view_count": 10_815_517u64,
+                "thumbnails": [
+                    {"url": "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg", "width": 720, "height": 404},
+                    {"url": "https://i.ytimg.com/vi/WhWc3b3KhnY/small.jpg", "width": 360, "height": 202}
+                ]
+            });
+            let v = video_from_json(&entry, "Search");
+            assert_eq!(v.id, "WhWc3b3KhnY");
+            assert_eq!(v.title, "Spring - Blender Open Movie");
+            assert_eq!(v.channel_name, "Blender Studio");
+            assert_eq!(v.channel_id, "UCz75RVbH8q2jdBJ4SnwuZZQ");
+            assert_eq!(v.duration, 465);
+            assert_eq!(v.views, 10_815_517);
+            // Largest thumbnail is chosen.
+            assert_eq!(
+                v.thumbnail_url,
+                "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
+            );
+        }
+        // Case `falls_back_to_hqdefault_thumbnail`:
+        // A video with no thumbnails still gets a usable image: the canonical
+        // `hqdefault.jpg` derived from the id.
+        {
+            let entry = serde_json::json!({ "id": "abc123", "title": "T" });
+            let v = video_from_json(&entry, "Search");
+            assert_eq!(
+                v.thumbnail_url,
+                "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+            );
+        }
+        // Case `extracts_channel_avatar_and_banner`:
+        // The channel object's avatar + banner are lifted from `thumbnails` by
+        // their yt-dlp `id` tags (`avatar_uncropped` / `banner_uncropped`).
+        {
+            let ch = serde_json::json!({
+                "channel_id": "UCz75RVbH8q2jdBJ4SnwuZZQ",
+                "channel": "Blender Studio",
+                "uploader_id": "@BlenderStudio",
+                "channel_follower_count": 560_000u64,
+                "channel_is_verified": true,
+                "thumbnails": [
+                    {"id": "banner_uncropped", "url": "https://yt3.googleusercontent.com/banner"},
+                    {"id": "avatar_uncropped", "url": "https://yt3.googleusercontent.com/avatar"},
+                    {"id": "7", "url": "https://yt3.googleusercontent.com/sq", "width": 900, "height": 900}
+                ],
+                "entries": [
+                    {"id": "_KjTlL5HBdc", "title": "Log 30", "channel": "Blender Studio"}
+                ]
+            });
+            let c = channel_from_json(&ch);
+            assert_eq!(c.name, "Blender Studio");
+            assert_eq!(c.handle, "@BlenderStudio");
+            assert_eq!(c.subscribers, 560_000);
+            assert!(c.verified);
+            assert_eq!(c.avatar_url, "https://yt3.googleusercontent.com/avatar");
+            assert_eq!(c.banner_url, "https://yt3.googleusercontent.com/banner");
 
-    /// A video with no thumbnails still gets a usable image: the canonical
-    /// `hqdefault.jpg` derived from the id.
-    #[test]
-    fn falls_back_to_hqdefault_thumbnail() {
-        let entry = serde_json::json!({ "id": "abc123", "title": "T" });
-        let v = video_from_json(&entry, "Search");
-        assert_eq!(
-            v.thumbnail_url,
-            "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
-        );
-    }
-
-    /// The channel object's avatar + banner are lifted from `thumbnails` by
-    /// their yt-dlp `id` tags (`avatar_uncropped` / `banner_uncropped`).
-    #[test]
-    fn extracts_channel_avatar_and_banner() {
-        let ch = serde_json::json!({
-            "channel_id": "UCz75RVbH8q2jdBJ4SnwuZZQ",
-            "channel": "Blender Studio",
-            "uploader_id": "@BlenderStudio",
-            "channel_follower_count": 560_000u64,
-            "channel_is_verified": true,
-            "thumbnails": [
-                {"id": "banner_uncropped", "url": "https://yt3.googleusercontent.com/banner"},
-                {"id": "avatar_uncropped", "url": "https://yt3.googleusercontent.com/avatar"},
-                {"id": "7", "url": "https://yt3.googleusercontent.com/sq", "width": 900, "height": 900}
-            ],
-            "entries": [
-                {"id": "_KjTlL5HBdc", "title": "Log 30", "channel": "Blender Studio"}
-            ]
-        });
-        let c = channel_from_json(&ch);
-        assert_eq!(c.name, "Blender Studio");
-        assert_eq!(c.handle, "@BlenderStudio");
-        assert_eq!(c.subscribers, 560_000);
-        assert!(c.verified);
-        assert_eq!(c.avatar_url, "https://yt3.googleusercontent.com/avatar");
-        assert_eq!(c.banner_url, "https://yt3.googleusercontent.com/banner");
-
-        let uploads = videos_from_entries(&ch, "Channel");
-        assert_eq!(uploads.len(), 1);
-        assert_eq!(uploads[0].id, "_KjTlL5HBdc");
-    }
-
-    /// The banner falls back to the widest image and the avatar to the largest
-    /// square when the explicit `*_uncropped` tags are absent.
-    #[test]
-    fn channel_image_heuristic_fallbacks() {
-        let ch = serde_json::json!({
-            "channel_id": "UCx",
-            "thumbnails": [
-                {"id": "0", "url": "https://x/banner", "width": 2560, "height": 424},
-                {"id": "1", "url": "https://x/avatar", "width": 800, "height": 800}
-            ]
-        });
-        let (avatar, banner) = pick_channel_images(&ch);
-        assert_eq!(banner, "https://x/banner", "widest → banner");
-        assert_eq!(avatar, "https://x/avatar", "square → avatar");
-    }
-
-    /// The `--print` field object (what yt-dlp's format selector produces) is
-    /// parsed into a `PlaybackSource`: a muxed format reports audio.
-    #[test]
-    fn parses_muxed_playback_source_with_audio() {
-        let v = serde_json::json!({
-            "url": "https://gv/muxed",
-            "ext": "mp4", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2",
-            "width": 640, "height": 360, "fps": 30, "format_note": "360p"
-        });
-        let src = playback_source_from_print(&v).expect("a playable source");
-        assert_eq!(src.url, "https://gv/muxed");
-        assert!(src.has_audio, "muxed format carries audio");
-        assert_eq!(src.height, 360);
-        assert_eq!(src.width, 640);
-        assert_eq!(src.fps, 30);
-        assert_eq!(src.quality, "360p");
-    }
-
-    /// A video-only selection (no audio codec) reports `has_audio == false`, and
-    /// the quality falls back to `resolution` when `format_note` is absent.
-    #[test]
-    fn parses_video_only_source_without_audio() {
-        let v = serde_json::json!({
-            "url": "https://gv/vp9-1080",
-            "ext": "webm", "vcodec": "vp9", "acodec": "none",
-            "width": 1920, "height": 1080, "fps": 60, "resolution": "1920x1080"
-        });
-        let src = playback_source_from_print(&v).expect("a playable source");
-        assert_eq!(src.url, "https://gv/vp9-1080");
-        assert!(!src.has_audio);
-        assert_eq!(src.quality, "1920x1080");
-    }
-
-    /// No URL → no source (the caller degrades to the poster).
-    #[test]
-    fn no_url_yields_no_playback_source() {
-        let v = serde_json::json!({ "ext": "mp4", "vcodec": "avc1" });
-        assert!(playback_source_from_print(&v).is_none());
+            let uploads = videos_from_entries(&ch, "Channel");
+            assert_eq!(uploads.len(), 1);
+            assert_eq!(uploads[0].id, "_KjTlL5HBdc");
+        }
+        // Case `channel_image_heuristic_fallbacks`:
+        // The banner falls back to the widest image and the avatar to the largest
+        // square when the explicit `*_uncropped` tags are absent.
+        {
+            let ch = serde_json::json!({
+                "channel_id": "UCx",
+                "thumbnails": [
+                    {"id": "0", "url": "https://x/banner", "width": 2560, "height": 424},
+                    {"id": "1", "url": "https://x/avatar", "width": 800, "height": 800}
+                ]
+            });
+            let (avatar, banner) = pick_channel_images(&ch);
+            assert_eq!(banner, "https://x/banner", "widest → banner");
+            assert_eq!(avatar, "https://x/avatar", "square → avatar");
+        }
+        // Case `channel_url_normalises_id_handle_and_url`.
+        {
+            assert_eq!(
+                YtDlpBackend::channel_videos_url("UCabc"),
+                "https://www.youtube.com/channel/UCabc/videos"
+            );
+            assert_eq!(
+                YtDlpBackend::channel_videos_url("@Blender"),
+                "https://www.youtube.com/@Blender/videos"
+            );
+            assert_eq!(
+                YtDlpBackend::channel_videos_url("Blender"),
+                "https://www.youtube.com/@Blender/videos"
+            );
+            assert_eq!(
+                YtDlpBackend::channel_videos_url("https://www.youtube.com/@Blender"),
+                "https://www.youtube.com/@Blender/videos"
+            );
+        }
     }
 
     #[test]
-    fn channel_url_normalises_id_handle_and_url() {
-        assert_eq!(
-            YtDlpBackend::channel_videos_url("UCabc"),
-            "https://www.youtube.com/channel/UCabc/videos"
-        );
-        assert_eq!(
-            YtDlpBackend::channel_videos_url("@Blender"),
-            "https://www.youtube.com/@Blender/videos"
-        );
-        assert_eq!(
-            YtDlpBackend::channel_videos_url("Blender"),
-            "https://www.youtube.com/@Blender/videos"
-        );
-        assert_eq!(
-            YtDlpBackend::channel_videos_url("https://www.youtube.com/@Blender"),
-            "https://www.youtube.com/@Blender/videos"
-        );
+    fn playback_sources_parse_muxed_video_only_or_none() {
+        // Case `parses_muxed_playback_source_with_audio`:
+        // The `--print` field object (what yt-dlp's format selector produces) is
+        // parsed into a `PlaybackSource`: a muxed format reports audio.
+        {
+            let v = serde_json::json!({
+                "url": "https://gv/muxed",
+                "ext": "mp4", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2",
+                "width": 640, "height": 360, "fps": 30, "format_note": "360p"
+            });
+            let src = playback_source_from_print(&v).expect("a playable source");
+            assert_eq!(src.url, "https://gv/muxed");
+            assert!(src.has_audio, "muxed format carries audio");
+            assert_eq!(src.height, 360);
+            assert_eq!(src.width, 640);
+            assert_eq!(src.fps, 30);
+            assert_eq!(src.quality, "360p");
+        }
+        // Case `parses_video_only_source_without_audio`:
+        // A video-only selection (no audio codec) reports `has_audio == false`, and
+        // the quality falls back to `resolution` when `format_note` is absent.
+        {
+            let v = serde_json::json!({
+                "url": "https://gv/vp9-1080",
+                "ext": "webm", "vcodec": "vp9", "acodec": "none",
+                "width": 1920, "height": 1080, "fps": 60, "resolution": "1920x1080"
+            });
+            let src = playback_source_from_print(&v).expect("a playable source");
+            assert_eq!(src.url, "https://gv/vp9-1080");
+            assert!(!src.has_audio);
+            assert_eq!(src.quality, "1920x1080");
+        }
+        // Case `no_url_yields_no_playback_source`:
+        // No URL → no source (the caller degrades to the poster).
+        {
+            let v = serde_json::json!({ "ext": "mp4", "vcodec": "avc1" });
+            assert!(playback_source_from_print(&v).is_none());
+        }
     }
 }

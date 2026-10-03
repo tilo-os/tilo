@@ -13,6 +13,7 @@
 //! edits so two instances pointed at one collab socket edit the same ruleset.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,6 +28,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -570,7 +572,7 @@ pub struct FirewallApp {
     /// [`FirewallAction`] through here so it brackets exactly **one** undo
     /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_effect: Option<PendingFirewallEffect>,
     completed_effect: Option<tilo_actions::InvocationUpdate>,
 }
@@ -679,7 +681,7 @@ impl FirewallApp {
             seeded: false,
             available,
             pending_delete: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_effect: None,
             completed_effect: None,
         }
@@ -711,7 +713,7 @@ impl FirewallApp {
     /// executor (a pinned actor + committed change, so it replays byte-identically
     /// on peers), exactly as the palette does. The document heads captured just
     /// before the first action of an event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     /// The action mutates its addressed shared document field; we then adopt
     /// the result back into the in-memory view so the next frame paints it, and
     /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
@@ -725,7 +727,7 @@ impl FirewallApp {
             state,
             crate::actions::FIREWALL_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Firewall", "Firewall", action),
+            tilo_actions::ActionContext::for_action("so.tilo.firewall", "Firewall", action),
         );
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(cfg) = FirewallDoc::load(state) {
@@ -734,16 +736,48 @@ impl FirewallApp {
         }
     }
 
+    /// Show a shared configuration the framework resource already holds.
+    /// An empty projection does not wipe a config just read from the host.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::FirewallConfig) {
+        if state.zones.is_empty() || state.validate().is_err() {
+            return;
+        }
+        self.config = state.clone();
+        self.available = true;
+        if self.config.zone(self.selected_zone).is_none() {
+            self.selected_zone = self.config.default_zone;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Firewall>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
-    /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// firewall is unavailable / has no zones (nothing to act on). Exposed to
     /// [`crate::actions`], which can't read the app's private fields directly.
     pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
         if !self.available || self.config.zones.is_empty() {
@@ -1405,14 +1439,16 @@ impl FirewallApp {
         let mut ft: Option<NodeId> = None;
         input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut ft,
-            NodeId::new(0),
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: NodeId::new(0),
+                taffy,
+            },
         );
         handled
     }
@@ -1445,6 +1481,11 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "firewall.apply",
@@ -1454,7 +1495,8 @@ impl Widget for FirewallApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             // Adopt an existing shared config, or publish the one we read
             // from the host. We only ever publish REAL data: a config we
@@ -1473,15 +1515,25 @@ impl Widget for FirewallApp {
                     let snapshot = if FirewallDoc::has_native(state) {
                         self.config.to_json()
                     } else {
-                        FirewallDoc::store(state, &self.config)
+                        self.perform_action(
+                            state,
+                            &crate::actions::FirewallAction::PublishImported {
+                                config: self.config.clone(),
+                            },
+                        );
+                        self.last_json.clone().unwrap_or_default()
                     };
                     self.last_json = Some(snapshot);
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
             } else if !self.config.zones.is_empty() {
-                let json = FirewallDoc::store(state, &self.config);
-                self.last_json = Some(json);
+                self.perform_action(
+                    state,
+                    &crate::actions::FirewallAction::PublishImported {
+                        config: self.config.clone(),
+                    },
+                );
             }
             self.seeded = true;
             return;
@@ -1612,58 +1664,46 @@ impl Widget for FirewallApp {
         self.draw(scene, t, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, *modifiers, state, path, handled, taffy);
+                self.handle_key(
+                    event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.taffy,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_click(
-                    self.last_cursor,
-                    state,
-                    handled,
-                    scale_factor,
-                    *modifiers,
-                    path,
-                    taffy,
-                    event,
-                );
+                self.handle_click(event, ctx, self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1672,20 +1712,20 @@ impl Widget for FirewallApp {
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             _ => {}
@@ -1713,6 +1753,7 @@ impl Widget for FirewallApp {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.status.clone())
+                    .with_hashed_key("firewall.status")
                     .with_live(Politeness::Polite),
             );
         }
@@ -1735,6 +1776,7 @@ impl Widget for FirewallApp {
                 } else {
                     "Stopped"
                 })
+                .with_action_target("firewall.header.enabled")
                 .with_bounds(self.layout.enable_pill)
                 .with_state(
                     AccessState::new()
@@ -1746,6 +1788,7 @@ impl Widget for FirewallApp {
             AccessNode::new(Role::ToggleButton)
                 .with_name("Panic mode")
                 .with_value(if self.config.panic_mode { "On" } else { "Off" })
+                .with_action_target("firewall.header.panic")
                 .with_bounds(self.layout.panic_btn)
                 .with_state(
                     AccessState::new()
@@ -1756,6 +1799,7 @@ impl Widget for FirewallApp {
         root.children.push(
             AccessNode::new(Role::Button)
                 .with_name("Apply firewall configuration")
+                .with_action_target("firewall.header.apply")
                 .with_bounds(self.layout.apply_btn)
                 .with_state(AccessState::new().focusable(true)),
         );
@@ -1773,11 +1817,13 @@ impl Widget for FirewallApp {
                 .selected(*zone == self.selected_zone),
             );
         }
-        root.children.push(zones.accessibility());
+        root.children
+            .push(zones.accessibility().with_hashed_key("firewall.zones"));
         if !self.layout.content_seg.is_empty() {
             let mut routes = AccessNode::new(Role::Group)
                 .with_name("Firewall content")
-                .with_description("Choose rules or services");
+                .with_description("Choose rules or services")
+                .with_hashed_key("firewall.routes");
             for (index, bounds) in self.layout.content_seg.iter().enumerate() {
                 let (name, route, selected) = if index == 0 {
                     ("Rules", "rules", self.compact_view == CompactView::Rules)
@@ -1799,11 +1845,17 @@ impl Widget for FirewallApp {
             root.children.push(routes);
         }
         if self.layout.compact_services {
-            root.children.push(self.services_accessibility());
+            root.children.push(
+                self.services_accessibility()
+                    .with_hashed_key("firewall.services"),
+            );
         } else {
             root.children.push(self.rules_table_accessibility());
             if self.layout.services_visible {
-                root.children.push(self.services_accessibility());
+                root.children.push(
+                    self.services_accessibility()
+                        .with_hashed_key("firewall.services"),
+                );
             }
         }
         Some(root)
@@ -1813,116 +1865,29 @@ impl Widget for FirewallApp {
         self.rail.is_animating()
     }
 
-    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    #[allow(
-        clippy::expect_used,
-        reason = "the empty string operation payload is always serializable"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if !self.available {
-            return vec![
-                tilo_actions::Resource::new(
-                    "firewall.recovery",
-                    "firewall.recovery",
-                    "Firewall service recovery",
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "retry",
-                        "Retry firewalld connection",
-                        tilo_actions::OperationKind::Effect,
-                        "firewall.retry",
-                        &"",
-                    )
-                    .expect("firewall retry payload is serializable")
-                    .with_contract(tilo_actions::ActionContract {
-                        retry: tilo_actions::RetryPolicy::Idempotent,
-                        discovery: tilo_actions::DiscoveryScope::Launchable,
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-            ];
-        }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            root.actions.push(
-                tilo_actions::ActionSpec::operation(
-                    "apply",
-                    "Apply firewall configuration",
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &"",
-                )
-                .expect("firewall apply payload is serializable")
-                .with_contract(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    retry: tilo_actions::RetryPolicy::Idempotent,
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
-        }
-        resources
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        match type_id {
-            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" | "firewall.retry" => {
-                Err("firewall effects require the lifecycle-capable operation host".into())
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        if self.pending_effect.is_some() {
-            return Err("another firewall operation is still running".into());
-        }
-        let effect = match type_id {
-            "firewall.retry" => FirewallEffect::Retry,
-            _ if !self.available => return Err("Firewall service is unavailable".into()),
-            "firewall.apply" => FirewallEffect::Apply,
-            "firewall.set-enabled" => FirewallEffect::SetEnabled(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            "firewall.set-panic" => FirewallEffect::SetPanic(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            _ => return Ok(None),
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(None)
     }
 
     fn poll_resource_operation(
@@ -1958,12 +1923,32 @@ impl Widget for FirewallApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
             self.retry_connect(state);
             return true;
+        }
+        let toggles = matches!(action, A11yAction::Activate | A11yAction::ToggleCheck);
+        match target {
+            "firewall.header.enabled" if toggles => {
+                self.toggle_enabled(state);
+                self.set_form_focus(None);
+                return true;
+            }
+            "firewall.header.panic" if toggles => {
+                self.toggle_panic(state);
+                self.set_form_focus(None);
+                return true;
+            }
+            "firewall.header.apply" if matches!(action, A11yAction::Activate) => {
+                let _ = self.apply();
+                self.set_form_focus(None);
+                return true;
+            }
+            _ => {}
         }
         if let Some(route) = target.strip_prefix("firewall.route:")
             && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
@@ -2037,12 +2022,115 @@ impl Widget for FirewallApp {
         }
         false
     }
+}
 
+impl ui::resources::PublishesResources for FirewallApp {
+    /// Publish the open configuration so the host's Ctrl+K palette scopes to
+    /// it. When the framework hosts the surface, that door already owns the
+    /// config — only service-recovery stays here.
+    #[allow(
+        clippy::expect_used,
+        reason = "the empty string operation payload is always serializable"
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if !self.available {
+            return vec![
+                tilo_actions::Resource::new(
+                    "firewall.recovery",
+                    "firewall.recovery",
+                    "Firewall service recovery",
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "retry",
+                        "Retry firewalld connection",
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.retry",
+                        &"",
+                    )
+                    .expect("firewall retry payload is serializable")
+                    .with_contract(tilo_actions::ActionContract {
+                        retry: tilo_actions::RetryPolicy::Idempotent,
+                        discovery: tilo_actions::DiscoveryScope::Launchable,
+                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                        result: tilo_actions::ResultSpec::Job,
+                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
+                        ..tilo_actions::ActionContract::default()
+                    }),
+                ),
+            ];
+        }
+        // The framework root publishes the config document (including apply).
+        // When hosted and available, return nothing — recovery above stays as
+        // the only live extra (it is not in Resource::children).
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "firewall.config" {
+            return None;
+        }
+        find_resource_tree(&self.publish_resources(doc), id)
+    }
+}
+
+fn find_resource_tree(
+    resources: &[tilo_actions::Resource],
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl ui::undo::CommittedActions for FirewallApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its firewall action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+}
+
+impl FirewallApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.pending_effect.is_some() {
+            return Err("another firewall operation is still running".into());
+        }
+        let effect = match type_id {
+            "firewall.retry" => FirewallEffect::Retry,
+            _ if !self.available => return Err("Firewall service is unavailable".into()),
+            "firewall.apply" => FirewallEffect::Apply,
+            "firewall.set-enabled" => FirewallEffect::SetEnabled(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            "firewall.set-panic" => FirewallEffect::SetPanic(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            _ => return Ok(None),
+        };
+        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2314,55 +2402,29 @@ impl FirewallApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the click-dispatch entry point threading the shared event/input context; \
-                  splitting the body into handle_click_* helpers (below) is what keeps this \
-                  one under the line-length lint, not shrinking its argument list further"
-    )]
-    fn handle_click(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-        event: &WindowEvent,
-    ) {
+    fn handle_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>, p: Point) {
         // Nothing is interactive while firewalld is unavailable — there is
         // no real config to edit or apply.
         if !self.available {
             if self.layout.recover_btn.contains(p) {
-                self.retry_connect(state);
-                *handled = true;
+                self.retry_connect(ctx.state);
+                *ctx.handled = true;
             }
             return;
         }
 
         let l = self.layout.clone();
 
-        if self.handle_click_rail(p, &l, handled) {
+        if self.handle_click_rail(p, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_primary(p, state, &l, handled) {
+        if self.handle_click_primary(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_form(p, state, &l, handled) {
+        if self.handle_click_form(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_text_field(
-            p,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
-            &l,
-            handled,
-        ) {
+        if self.handle_click_text_field(event, ctx, p, &l) {
             return;
         }
 
@@ -2571,35 +2633,25 @@ impl FirewallApp {
 
     /// Port/source text fields: focus + forward the press for caret
     /// placement. Returns whether the click was consumed here.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same shared event/input context as handle_click, split out only \
-                  to keep handle_click itself under the line-length lint"
-    )]
     fn handle_click_text_field(
         &mut self,
-        p: Point,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        p: Point,
         l: &Layout,
-        handled: &mut bool,
     ) -> bool {
         if !self.form.is_service && l.port_field.contains(p) {
             self.set_form_focus(Some(FocusField::Port));
             Self::forward_to_input(
                 &mut self.form.port,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if l.source_field.contains(p) {
@@ -2607,13 +2659,13 @@ impl FirewallApp {
             Self::forward_to_input(
                 &mut self.form.source,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -2723,20 +2775,15 @@ impl FirewallApp {
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
         paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "firewalld unavailable",
             18.0,
             theme.text_primary,
-            card.x0 + 24.0,
-            card.y0 + 26.0,
+            Point::new(card.x0 + 24.0, card.y0 + 26.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             if self.status.is_empty() {
                 "The firewalld service is not installed or not running."
             } else {
@@ -2748,30 +2795,23 @@ impl FirewallApp {
             } else {
                 theme.tokens.colors.semantic.danger
             },
-            card.x0 + 24.0,
-            card.y0 + 62.0,
+            Point::new(card.x0 + 24.0, card.y0 + 62.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "No live firewall is displayed, and no rules have been changed.",
             13.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 106.0,
+            Point::new(card.x0 + 24.0, card.y0 + 106.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Start or authorize firewalld, then retry (keyboard: R).",
             12.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 132.0,
+            Point::new(card.x0 + 24.0, card.y0 + 132.0),
             cw - 48.0,
         );
         Button::paint(
@@ -2865,16 +2905,15 @@ impl FirewallApp {
             let sub_max = (ctrl_left - sub_x).max(80.0);
             let shown = tr.elide_to_width(&sub, 13.0, sub_max as f32);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 13.0,
                 sub_color,
-                sub_x,
-                h.y0,
-                h.height(),
-                sub_max,
+                Rect {
+                    x0: sub_x,
+                    x1: sub_x + sub_max,
+                    ..h
+                },
             );
         }
     }
@@ -2901,15 +2940,14 @@ impl FirewallApp {
                 Mode::DryRun => "dry-run",
             };
             paint::label_right_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 mode_txt,
                 11.0,
                 theme.text_dim,
-                l.enable_pill.x0 - 10.0,
-                h.y0,
-                h.height(),
+                Rect {
+                    x1: l.enable_pill.x0 - 10.0,
+                    ..h
+                },
             );
         }
 
@@ -2939,16 +2977,15 @@ impl FirewallApp {
         );
         let w = paint::text_width(tr, pill_txt, 12.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             pill_txt,
             12.0,
             pill_fg,
-            l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
-            l.enable_pill.y0,
-            l.enable_pill.height(),
-            w + 2.0,
+            Rect {
+                x0: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
+                x1: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0 + w + 2.0,
+                ..l.enable_pill
+            },
         );
 
         // Panic and Apply are the shared button face: rest edge, hover and
@@ -3027,14 +3064,11 @@ impl FirewallApp {
             ),
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "ZONES",
             11.0,
             theme.text_dim,
-            rail.x0 + 18.0,
-            rail.y0 + 18.0,
+            Point::new(rail.x0 + 18.0, rail.y0 + 18.0),
             120.0,
         );
 
@@ -3048,10 +3082,6 @@ impl FirewallApp {
     /// edge, HIG §9.3 — the accent stays for the *live* default zone's chip),
     /// the trust dot, the name and the active chip or rule count. Split out
     /// of [`Self::draw_rail`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the fixed draw-call boilerplate; the rest is this row's zone, rect and the rail's selected face"
-    )]
     fn draw_rail_zone_row(
         &self,
         scene: &mut Scene,
@@ -3093,48 +3123,45 @@ impl FirewallApp {
             theme.text_dim
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             kind.name(),
             14.0,
             name_color,
-            rect.x0 + 30.0,
-            rect.y0,
-            rect.height(),
-            120.0,
+            Rect {
+                x0: rect.x0 + 30.0,
+                x1: rect.x0 + 30.0 + 120.0,
+                ..rect
+            },
         );
 
         // Active marker chip.
         if is_default {
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "active",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                rect.x1 - 52.0,
-                cy,
-                6.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 6.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(rect.x1 - 52.0, cy),
             );
         } else if let Some(z) = self.config.zone(kind) {
             // Rule + service count.
             let n = z.rules.len() + z.services.len();
             if n > 0 {
                 paint::label_right_v(
-                    tr,
-                    scene,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     &n.to_string(),
                     11.0,
                     theme.text_dim,
-                    rect.x1 - 8.0,
-                    rect.y0,
-                    rect.height(),
+                    Rect {
+                        x1: rect.x1 - 8.0,
+                        ..rect
+                    },
                 );
             }
         }
@@ -3182,14 +3209,11 @@ impl FirewallApp {
         inset_x: f64,
     ) {
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.selected_zone.name(),
             22.0,
             theme.text_primary,
-            inset_x,
-            card.y0 + PAD,
+            Point::new(inset_x, card.y0 + PAD),
             260.0,
         );
         let (title_w, title_h) = tr.measure(self.selected_zone.name(), 22.0, None);
@@ -3197,18 +3221,20 @@ impl FirewallApp {
             // The chip rides the title's measured centre line rather than a
             // nominal offset, so it stays beside the name at every text scale.
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "ACTIVE ZONE",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                inset_x + f64::from(title_w) + S3,
-                card.y0 + PAD + f64::from(title_h) / 2.0,
-                7.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 7.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(
+                    inset_x + f64::from(title_w) + S3,
+                    card.y0 + PAD + f64::from(title_h) / 2.0,
+                ),
             );
         }
         // The description follows the title's measured line, the chips
@@ -3219,14 +3245,11 @@ impl FirewallApp {
             (card.width() - 2.0 * PAD) as f32,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &shown,
             12.0,
             theme.text_dim,
-            inset_x,
-            card.y0 + self.metrics.desc_top(),
+            Point::new(inset_x, card.y0 + self.metrics.desc_top()),
             card.width() - 2.0 * PAD,
         );
     }
@@ -3282,11 +3305,6 @@ impl FirewallApp {
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
     /// in a soft chip filling `rect` (sized by `Metrics::measure` from the
     /// same caption/value).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a single-call-site draw primitive; bundling position/color/text into a \
-                  struct would only add construction boilerplate for no real readability gain"
-    )]
     fn stat_chip(
         scene: &mut Scene,
         t: Affine,
@@ -3308,25 +3326,19 @@ impl FirewallApp {
         let stack_h = f64::from(cap_h) + f64::from(val_h);
         let cap_top = rect.y0 + (rect.height() - stack_h) / 2.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             caption,
             9.0,
             theme.text_dim,
-            rect.x0 + 10.0,
-            cap_top,
+            Point::new(rect.x0 + 10.0, cap_top),
             inner + 2.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             value,
             13.0,
             value_color,
-            rect.x0 + 10.0,
-            cap_top + f64::from(cap_h),
+            Point::new(rect.x0 + 10.0, cap_top + f64::from(cap_h)),
             inner + 2.0,
         );
     }
@@ -3357,16 +3369,16 @@ impl FirewallApp {
         // control at phone widths.
         if l.content_seg.is_empty() {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Rules",
                 15.0,
                 theme.text_primary,
-                l.summary.x0,
-                y0,
-                first_seg.height(),
-                120.0,
+                Rect::new(
+                    l.summary.x0,
+                    y0,
+                    l.summary.x0 + 120.0,
+                    y0 + first_seg.height(),
+                ),
             );
         }
         let labels = [
@@ -3444,14 +3456,11 @@ impl FirewallApp {
 
         if l.rule_rows.is_empty() {
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "No rules match this filter.",
                 13.0,
                 theme.text_dim,
-                cols.text,
-                table.y0 + head_h + PAD,
+                Point::new(cols.text, table.y0 + head_h + PAD),
                 300.0,
             );
             return;
@@ -3464,17 +3473,12 @@ impl FirewallApp {
             let Some(rule) = z.rules.iter().find(|r| r.id == row.id) else {
                 continue;
             };
-            self.draw_table_row(scene, t, tr, theme, l, cols, row, rule);
+            self.draw_table_row(&mut PaintCtx::new(scene, t, tr, theme), l, cols, row, rule);
         }
     }
 
     /// Column headers — five columns collapse to two labels when narrow —
     /// and the separator line beneath them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one call site; the caption band height comes from the measured metrics \
-                  the row layout was built with"
-    )]
     fn draw_table_header(
         scene: &mut Scene,
         t: Affine,
@@ -3493,25 +3497,56 @@ impl FirewallApp {
         let hh = head_h;
         let hc = theme.text_dim;
         if l.narrow {
-            paint::label_v(tr, scene, t, "RULE", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
-        } else {
-            paint::label_v(tr, scene, t, "TARGET", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "PROTO", 10.0, hc, cols.proto, hy0, hh, 80.0);
-            paint::label_v(tr, scene, t, "ACTION", 10.0, hc, cols.action, hy0, hh, 80.0);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "RULE",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
+        } else {
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "TARGET",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "PROTO",
+                10.0,
+                hc,
+                Rect::new(cols.proto, hy0, cols.proto + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ACTION",
+                10.0,
+                hc,
+                Rect::new(cols.action, hy0, cols.action + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "SOURCE",
                 10.0,
                 hc,
-                cols.source,
-                hy0,
-                hh,
-                160.0,
+                Rect::new(cols.source, hy0, cols.source + 160.0, hy0 + hh),
             );
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
         }
         // The caption rule is derived against the table it sits in and inset
         // `S3` from the card edge (HIG §9.5), never run into the radius.
@@ -3528,50 +3563,40 @@ impl FirewallApp {
 
     /// One rule row: selection highlight, narrow/wide content, then the
     /// shared toggle + delete controls and row separator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint orchestrator threading the shared scene/transform/theme plus \
-                  this row's own geometry and data; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         l: &Layout,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
     ) {
+        let theme = ctx.theme;
         let selected = self.selected_rule == Some(row.id);
         if selected {
             // Selected row: a step measured against the raised table card it
             // sits on, with a derived ring — not an accent ring, and not
             // `selection_tier`'s lift, which is the card's own colour on light.
             let (fill, edge) = selected_on(theme.tokens.colors.surfaces.raised);
-            paint::fill_round(scene, t, row.rect, 8.0, fill);
-            scene.stroke(
+            paint::fill_round(ctx.scene, ctx.transform, row.rect, 8.0, fill);
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
-                t,
+                ctx.transform,
                 edge,
                 None,
                 &ui::surface::edge_outline(row.rect, 8.0),
             );
         }
         let style = RowStyle::for_rule(theme, rule);
-        let src = rule.source_label();
-
         if l.narrow {
-            Self::draw_table_row_narrow(scene, t, tr, &self.metrics, cols, row, rule, &style, src);
+            self.draw_table_row_narrow(ctx, cols, row, rule, &style);
         } else {
-            Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
+            Self::draw_table_row_wide(ctx, cols, row, rule, &style);
         }
 
         Self::draw_table_row_controls(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             theme,
             row,
             rule.enabled,
@@ -3581,29 +3606,21 @@ impl FirewallApp {
 
     /// Two-line row: target + action on top, proto · source beneath. Used
     /// when the table is too narrow for five columns abreast.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        m: &Metrics,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let (m, src) = (&self.metrics, rule.source_label());
         // First-line centre and second-line top follow the measured 14px
         // label, as the row height the layout built does.
         let dot_y = row.rect.y0 + m.rule_dot_y;
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cols.dot, dot_y),
             3.0,
             if style.dim {
@@ -3615,33 +3632,29 @@ impl FirewallApp {
         // Action chip on the top line, right-aligned 8px before the toggle
         // (a fixed left edge ran under the toggle once the label doubled);
         // the target label elides against the chip.
-        let chip_w = paint::text_width(tr, style.action_text, 11.0) + 16.0;
+        let chip_w = paint::text_width(ctx.text, style.action_text, 11.0) + 16.0;
         let chip_x = row.toggle.x0 - 8.0 - chip_w;
         let label_max = chip_x - cols.text - 8.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cols.text,
-            row.rect.y0 + 10.0,
+            Point::new(cols.text, row.rect.y0 + 10.0),
             label_max.max(40.0),
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            chip_x,
-            dot_y,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(chip_x, dot_y),
         );
         // Second line: proto · source.
         let sub = if src == "anywhere" {
@@ -3650,35 +3663,24 @@ impl FirewallApp {
             format!("{} · {}", rule.matcher.proto_label(), src)
         };
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &sub,
             12.0,
             style.secondary,
-            cols.text,
-            row.rect.y0 + m.rule_sub_top,
+            Point::new(cols.text, row.rect.y0 + m.rule_sub_top),
             row.rect.width() - 30.0,
         );
     }
 
     /// Five columns abreast: target, proto, action chip, source.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_wide(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let src = rule.source_label();
         let RuleColumns {
             dot: cx_dot,
             text: cx_text,
@@ -3689,8 +3691,8 @@ impl FirewallApp {
         } = cols;
         let cy = f64::midpoint(row.rect.y0, row.rect.y1);
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cx_dot, cy),
             3.0,
             if style.dim {
@@ -3700,42 +3702,39 @@ impl FirewallApp {
             },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cx_text,
-            row.rect.y0,
-            row.rect.height(),
-            cx_proto - cx_text - 4.0,
+            Rect {
+                x0: cx_text,
+                x1: cx_proto - 4.0,
+                ..row.rect
+            },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.proto_label(),
             12.0,
             style.secondary,
-            cx_proto,
-            row.rect.y0,
-            row.rect.height(),
-            60.0,
+            Rect {
+                x0: cx_proto,
+                x1: cx_proto + 60.0,
+                ..row.rect
+            },
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            cx_action,
-            cy,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(cx_action, cy),
         );
         let src_color = if src == "anywhere" {
             style.secondary
@@ -3743,16 +3742,15 @@ impl FirewallApp {
             style.primary
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             src,
             12.0,
             src_color,
-            cx_source,
-            row.rect.y0,
-            row.rect.height(),
-            cx_ctrl - cx_source - 8.0,
+            Rect {
+                x0: cx_source,
+                x1: cx_ctrl - 8.0,
+                ..row.rect
+            },
         );
     }
 
@@ -3857,27 +3855,23 @@ impl FirewallApp {
         // same offsets `layout_center` uses for `svc_top`).
         let header_h = if l.compact_services { 38.0 } else { 48.0 };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "SERVICES",
             11.0,
             theme.text_dim,
-            panel.x0 + 16.0,
-            panel.y0,
-            header_h,
-            120.0,
+            Rect::new(
+                panel.x0 + 16.0,
+                panel.y0,
+                panel.x0 + 16.0 + 120.0,
+                panel.y0 + header_h,
+            ),
         );
         paint::label_right_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &format!("{on_count} enabled"),
             11.0,
             theme.accent_primary,
-            panel.x1 - 16.0,
-            panel.y0,
-            header_h,
+            Rect::new(panel.x0, panel.y0, panel.x1 - 16.0, panel.y0 + header_h),
         );
 
         let Some(z) = self.config.zone(self.selected_zone) else {
@@ -3893,35 +3887,32 @@ impl FirewallApp {
             }
             let compact = l.compact_services;
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 def.name,
                 if compact { 13.0 } else { 14.0 },
                 theme.text_primary,
-                row.x0 + 10.0,
-                row.y0 + if compact { 3.0 } else { 5.0 },
+                Point::new(row.x0 + 10.0, row.y0 + if compact { 3.0 } else { 5.0 }),
                 row.width() - 60.0,
             );
             let detail = format!("{}/{}", def.ports, def.proto);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &detail,
                 10.0,
                 theme.text_dim,
-                if compact {
-                    row.x0 + 118.0
-                } else {
-                    row.x0 + 10.0
-                },
-                row.y0
-                    + if compact {
-                        5.0
+                Point::new(
+                    if compact {
+                        row.x0 + 118.0
                     } else {
-                        self.metrics.svc_detail_top
+                        row.x0 + 10.0
                     },
+                    row.y0
+                        + if compact {
+                            5.0
+                        } else {
+                            self.metrics.svc_detail_top
+                        },
+                ),
                 if compact {
                     row.width() - 180.0
                 } else {
@@ -3946,14 +3937,11 @@ impl FirewallApp {
 
         let title = format!("Add rule to {}", self.selected_zone.name());
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &title,
             13.0,
             theme.accent_primary,
-            card.x0 + PAD,
-            card.y0 + S3,
+            Point::new(card.x0 + PAD, card.y0 + S3),
             300.0,
         );
 
@@ -4020,14 +4008,11 @@ impl FirewallApp {
             };
             let shown = tr.elide_to_width(&self.status, 11.0, (card.width() - 32.0) as f32);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 11.0,
                 status_color,
-                card.x0 + 16.0,
-                status_y,
+                Point::new(card.x0 + 16.0, status_y),
                 card.width() - 32.0,
             );
         }
@@ -4069,16 +4054,15 @@ impl FirewallApp {
         paint::card(scene, t, well, 7.0, theme.tokens.colors.surfaces.base);
         let w = paint::text_width(tr, name, 13.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             name,
             13.0,
             theme.text_primary,
-            well.x0 + (well.width() - w) / 2.0,
-            well.y0,
-            well.height(),
-            w + 2.0,
+            Rect {
+                x0: well.x0 + (well.width() - w) / 2.0,
+                x1: well.x0 + (well.width() - w) / 2.0 + w + 2.0,
+                ..well
+            },
         );
     }
 
@@ -4098,28 +4082,27 @@ impl FirewallApp {
             // The caption sits in the gap the layout left above the field
             // (`form_source_gap`), ending 2px above the field's top edge.
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 11.0,
                 theme.text_dim,
-                l.source_field.x0,
-                l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                Point::new(
+                    l.source_field.x0,
+                    l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                ),
                 120.0,
             );
         } else {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 12.0,
                 theme.text_dim,
-                card.x0 + 16.0,
-                l.source_field.y0,
-                l.source_field.height(),
-                60.0,
+                Rect {
+                    x0: card.x0 + 16.0,
+                    x1: card.x0 + 16.0 + 60.0,
+                    ..l.source_field
+                },
             );
         }
         self.form.source.draw(scene, t, tr, theme, presence);
@@ -4193,6 +4176,23 @@ fn target_color(theme: &Theme, target: Target) -> Color {
 mod tests {
     use super::*;
 
+    /// A demo ruleset is published through the firewall action, not a raw store.
+    #[test]
+    fn a_demo_firewall_is_published_through_the_action() {
+        let mut app = FirewallApp::new_demo();
+        assert!(!app.actions.is_hosted());
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let recorded = app
+            .last_dispatched()
+            .expect("the imported ruleset is submitted through the action sink");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::FIREWALL_ACTION_TYPE
+        );
+        assert!(FirewallDoc::load(&doc).is_some_and(|config| !config.zones.is_empty()));
+    }
+
     fn app_with_rect() -> FirewallApp {
         // Sample-populated build: these tests exercise rule/zone behaviour
         // that needs a ruleset, which only the demo build fabricates.
@@ -4202,230 +4202,327 @@ mod tests {
         a
     }
 
+    /// The painted header controls are reachable through the action door.
     #[test]
-    fn live_new_does_not_fabricate_sample_config() {
-        // The honesty guard: the live constructor must never seed the demo
-        // sample. On a host without firewalld it is empty + unavailable; on
-        // one with firewalld it reflects the real host — either way it is
-        // not the fabricated sample ruleset.
-        let live = FirewallApp::new();
-        assert_ne!(
-            live.config,
-            crate::sample::sample_config(),
-            "live app must not start on the fabricated sample firewall"
+    fn populated_firewall_passes_native_certification() {
+        let driver = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(FirewallApp::new_demo()),
+            (1280, 800),
         );
-    }
-
-    #[test]
-    fn root_accessibility_announces_backend_status() {
-        let mut app = app_with_rect();
-        app.status = "Rules applied".into();
-        let node = app.accessibility().expect("firewall exports a window");
-        assert_eq!(node.role, Role::Window);
+        let audit = driver.native_app_audit();
         assert!(
-            node.children
-                .iter()
-                .any(|child| child.name.as_deref() == Some("Rules applied"))
+            audit.is_certified(),
+            "native={:?}, accessibility={:?}",
+            audit.issues,
+            audit.accessibility.issues
         );
-    }
 
-    #[test]
-    fn zone_list_uses_shared_semantics_and_is_reader_operable() {
         let mut app = app_with_rect();
-        let node = app.accessibility().expect("firewall semantics");
-        let zones = node
-            .children
-            .iter()
-            .find(|child| child.name.as_deref() == Some("Firewall zones"))
-            .expect("zone list");
-        assert_eq!(zones.role, Role::List);
-        assert_eq!(zones.children.len(), ZoneKind::ALL.len());
-        assert!(zones.children.iter().all(|zone| {
-            zone.role == Role::ListItem
-                && zone.bounds.is_some()
-                && zone.pos_in_set.is_some()
-                && zone.set_size == Some(ZoneKind::ALL.len())
-                && zone.action_target.is_some()
-        }));
-
-        let mut doc = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            "firewall.zone:home",
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.selected_zone, ZoneKind::Home);
-    }
-
-    #[test]
-    fn rules_table_uses_shared_semantics_and_rows_select_through_a11y() {
-        let mut app = app_with_rect();
-        let node = app.accessibility().expect("firewall semantics");
-        let table = node
-            .children
-            .iter()
-            .find(|child| child.role == Role::Table)
-            .expect("rules table");
-        assert_eq!(table.children[0].name.as_deref(), Some("Column headers"));
-        assert_eq!(table.children[0].children.len(), 5);
-        let row = &table.children[1];
-        assert_eq!(row.children[0].name.as_deref(), Some("Target"));
-        assert!(row.children[0].value.is_some());
-        let toggle = row
-            .children
-            .iter()
-            .find(|child| child.role == Role::ToggleButton)
-            .expect("rule toggle semantics");
-        assert_eq!(toggle.state.checked, Some(true));
-        let toggle_target = toggle.action_target.clone().expect("toggle action target");
-        let delete_target = row
-            .children
-            .iter()
-            .find(|child| child.role == Role::Button)
-            .and_then(|child| child.action_target.clone())
-            .expect("delete action target");
-        let target = row.action_target.clone().expect("selectable rule row");
-        let id = target
-            .strip_prefix("firewall.rule.select:")
-            .and_then(|id| RuleId::parse_str(id).ok())
-            .expect("rule id target");
-
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
+        let panic = app.config.panic_mode;
         assert!(app.perform_semantic_action(
-            &target,
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.selected_rule, Some(id));
-        let was_enabled = app
-            .selected_zone_ref()
-            .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
-            .is_some_and(|rule| rule.enabled);
-        assert!(app.perform_semantic_action(
-            &toggle_target,
+            "firewall.header.panic",
             &A11yAction::ToggleCheck,
             &mut doc,
             &automerge::ROOT,
         ));
-        assert_ne!(
-            app.selected_zone_ref()
-                .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
-                .is_some_and(|rule| rule.enabled),
-            was_enabled
-        );
-        let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
-        assert!(app.perform_semantic_action(
-            &delete_target,
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.pending_delete, Some(id));
-        assert_eq!(
-            app.selected_zone_ref().map_or(0, |zone| zone.rules.len()),
-            before
-        );
+        assert_ne!(app.config.panic_mode, panic);
     }
 
+    /// Live, unavailable, failed-recovery and demo builds write only honest state to the document and announce backend status.
     #[test]
-    fn unavailable_firewall_writes_nothing_to_doc() {
-        // With no readable firewall the config is empty and `sync` must not
-        // publish a fabricated ruleset into the shared document.
-        let mut a = FirewallApp::from_parts(FirewallConfig::empty(), false);
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(!a.available);
-        assert!(a.config.zones.is_empty());
-        assert!(
-            FirewallDoc::load(&doc).is_none(),
-            "the unavailable state must leave the document empty, not seed a config"
-        );
-    }
+    fn backend_availability_governs_what_is_written_and_announced() {
+        // --- phase: live_new_does_not_fabricate_sample_config ---
+        {
+            // The honesty guard: the live constructor must never seed the demo
+            // sample. On a host without firewalld it is empty + unavailable; on
+            // one with firewalld it reflects the real host — either way it is
+            // not the fabricated sample ruleset.
+            let live = FirewallApp::new();
+            assert_ne!(
+                live.config,
+                crate::sample::sample_config(),
+                "live app must not start on the fabricated sample firewall"
+            );
+        }
 
-    #[test]
-    fn failed_recovery_keeps_rules_unwritten_and_exports_retry_semantics() {
-        let mut app = FirewallApp::from_parts(FirewallConfig::empty(), false);
-        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        app.relayout();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        // --- phase: unavailable_firewall_writes_nothing_to_doc ---
+        {
+            // With no readable firewall the config is empty and `sync` must not
+            // publish a fabricated ruleset into the shared document.
+            let mut a = FirewallApp::from_parts(FirewallConfig::empty(), false);
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(!a.available);
+            assert!(a.config.zones.is_empty());
+            assert!(
+                FirewallDoc::load(&doc).is_none(),
+                "the unavailable state must leave the document empty, not seed a config"
+            );
+        }
 
-        let semantics = app.accessibility().expect("recovery semantics");
-        assert!(semantics.children.iter().any(|child| {
-            child.action_target.as_deref() == Some("firewall.retry")
-                && child.name.as_deref() == Some("Retry connection to firewalld")
-        }));
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources[0].kind, "firewall.recovery");
-        assert!(
-            resources[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "retry")
-        );
-
-        app.recover_from_probe(None, &mut doc);
-        assert!(!app.available);
-        assert!(FirewallDoc::load(&doc).is_none());
-        assert!(app.status.contains("Still unable to reach firewalld"));
-    }
-
-    #[test]
-    fn demo_build_publishes_sample_for_shots() {
-        // The `--shots` build still populates so the screenshot is real.
-        let mut a = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let stored = FirewallDoc::load(&doc).expect("demo build seeds the document");
-        // The demo build publishes the populated sample (so the --shots
-        // screenshot is real) — distinct from the live app, which publishes
-        // nothing. Assert on the sample's zone set (robust to store→load field
-        // normalisation like empty→"0" ports that can break exact equality).
-        let sample = crate::sample::sample_config();
-        assert!(
-            !stored.zones.is_empty(),
-            "demo publishes a populated firewall"
-        );
-        assert_eq!(
-            stored.zones.len(),
-            sample.zones.len(),
-            "demo publishes every sample zone"
-        );
-    }
-
-    #[test]
-    fn relayout_produces_all_nine_zone_rows() {
-        let a = app_with_rect();
-        assert_eq!(a.layout.zone_rows.len(), 9);
-    }
-
-    /// The header captions and the rows read one `RuleColumns`; this pins the
-    /// two places that can still drift: the `ON` caption over the toggles the
-    /// layout actually built, and the target caption starting at the text
-    /// column rather than under the status dot.
-    #[test]
-    fn table_header_columns_follow_the_built_rows() {
-        for width in [1200.0, 480.0] {
-            let mut app = FirewallApp::new_demo();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+        // --- phase: failed_recovery_keeps_rules_unwritten_and_exports_retry_semantics ---
+        {
+            let mut app = FirewallApp::from_parts(FirewallConfig::empty(), false);
+            app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
             app.relayout();
-            let l = &app.layout;
-            let cols = rule_columns(l.table);
-            let first = l.rule_rows.first().expect("demo zone has rules");
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+
+            let semantics = app.accessibility().expect("recovery semantics");
+            assert!(semantics.children.iter().any(|child| {
+                child.action_target.as_deref() == Some("firewall.retry")
+                    && child.name.as_deref() == Some("Retry connection to firewalld")
+            }));
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources[0].kind, "firewall.recovery");
             assert!(
-                (cols.ctrl - first.toggle.x0).abs() < 1e-6,
-                "ON caption must start over the row toggles at width {width}"
+                resources[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "retry")
             );
+
+            app.recover_from_probe(None, &mut doc);
+            assert!(!app.available);
+            assert!(FirewallDoc::load(&doc).is_none());
+            assert!(app.status.contains("Still unable to reach firewalld"));
+        }
+
+        // --- phase: demo_build_publishes_sample_for_shots ---
+        {
+            // The `--shots` build still populates so the screenshot is real.
+            let mut a = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let stored = FirewallDoc::load(&doc).expect("demo build seeds the document");
+            // The demo build publishes the populated sample (so the --shots
+            // screenshot is real) — distinct from the live app, which publishes
+            // nothing. Assert on the sample's zone set (robust to store→load field
+            // normalisation like empty→"0" ports that can break exact equality).
+            let sample = crate::sample::sample_config();
             assert!(
-                cols.text > cols.dot,
-                "target caption sits after the status dot, over the row text"
+                !stored.zones.is_empty(),
+                "demo publishes a populated firewall"
             );
+            assert_eq!(
+                stored.zones.len(),
+                sample.zones.len(),
+                "demo publishes every sample zone"
+            );
+        }
+
+        // --- phase: root_accessibility_announces_backend_status ---
+        {
+            let mut app = app_with_rect();
+            app.status = "Rules applied".into();
+            let node = app.accessibility().expect("firewall exports a window");
+            assert_eq!(node.role, Role::Window);
             assert!(
-                first.rect.x0 <= cols.dot && cols.text < cols.proto,
-                "columns stay inside the row at width {width}"
+                node.children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Rules applied"))
+            );
+        }
+    }
+
+    /// The zone list and rules table use shared semantics and are operable through accessibility.
+    #[test]
+    fn zone_list_and_rules_table_are_reader_operable() {
+        // --- phase: zone_list_uses_shared_semantics_and_is_reader_operable ---
+        {
+            let mut app = app_with_rect();
+            let node = app.accessibility().expect("firewall semantics");
+            let zones = node
+                .children
+                .iter()
+                .find(|child| child.name.as_deref() == Some("Firewall zones"))
+                .expect("zone list");
+            assert_eq!(zones.role, Role::List);
+            assert_eq!(zones.children.len(), ZoneKind::ALL.len());
+            assert!(zones.children.iter().all(|zone| {
+                zone.role == Role::ListItem
+                    && zone.bounds.is_some()
+                    && zone.pos_in_set.is_some()
+                    && zone.set_size == Some(ZoneKind::ALL.len())
+                    && zone.action_target.is_some()
+            }));
+
+            let mut doc = AutoCommit::new();
+            assert!(app.perform_semantic_action(
+                "firewall.zone:home",
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.selected_zone, ZoneKind::Home);
+        }
+
+        // --- phase: rules_table_uses_shared_semantics_and_rows_select_through_a11y ---
+        {
+            let mut app = app_with_rect();
+            let node = app.accessibility().expect("firewall semantics");
+            let table = node
+                .children
+                .iter()
+                .find(|child| child.role == Role::Table)
+                .expect("rules table");
+            assert_eq!(table.children[0].name.as_deref(), Some("Column headers"));
+            assert_eq!(table.children[0].children.len(), 5);
+            let row = &table.children[1];
+            assert_eq!(row.children[0].name.as_deref(), Some("Target"));
+            assert!(row.children[0].value.is_some());
+            let toggle = row
+                .children
+                .iter()
+                .find(|child| child.role == Role::ToggleButton)
+                .expect("rule toggle semantics");
+            assert_eq!(toggle.state.checked, Some(true));
+            let toggle_target = toggle.action_target.clone().expect("toggle action target");
+            let delete_target = row
+                .children
+                .iter()
+                .find(|child| child.role == Role::Button)
+                .and_then(|child| child.action_target.clone())
+                .expect("delete action target");
+            let target = row.action_target.clone().expect("selectable rule row");
+            let id = target
+                .strip_prefix("firewall.rule.select:")
+                .and_then(|id| RuleId::parse_str(id).ok())
+                .expect("rule id target");
+
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.perform_semantic_action(
+                &target,
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.selected_rule, Some(id));
+            let was_enabled = app
+                .selected_zone_ref()
+                .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+                .is_some_and(|rule| rule.enabled);
+            assert!(app.perform_semantic_action(
+                &toggle_target,
+                &A11yAction::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_ne!(
+                app.selected_zone_ref()
+                    .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+                    .is_some_and(|rule| rule.enabled),
+                was_enabled
+            );
+            let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
+            assert!(app.perform_semantic_action(
+                &delete_target,
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.pending_delete, Some(id));
+            assert_eq!(
+                app.selected_zone_ref().map_or(0, |zone| zone.rules.len()),
+                before
+            );
+        }
+    }
+
+    /// Relayout builds every zone row, header columns and service hit rects follow the built rows, and selected rows register on the raised card.
+    #[test]
+    fn table_geometry_follows_the_built_rows() {
+        // --- phase: relayout_produces_all_nine_zone_rows ---
+        {
+            let a = app_with_rect();
+            assert_eq!(a.layout.zone_rows.len(), 9);
+        }
+
+        // --- phase: table_header_columns_follow_the_built_rows ---
+        // The header captions and the rows read one `RuleColumns`; this pins the
+        // two places that can still drift: the `ON` caption over the toggles the
+        // layout actually built, and the target caption starting at the text
+        // column rather than under the status dot.
+        {
+            for width in [1200.0, 480.0] {
+                let mut app = FirewallApp::new_demo();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.relayout();
+                let l = &app.layout;
+                let cols = rule_columns(l.table);
+                let first = l.rule_rows.first().expect("demo zone has rules");
+                assert!(
+                    (cols.ctrl - first.toggle.x0).abs() < 1e-6,
+                    "ON caption must start over the row toggles at width {width}"
+                );
+                assert!(
+                    cols.text > cols.dot,
+                    "target caption sits after the status dot, over the row text"
+                );
+                assert!(
+                    first.rect.x0 <= cols.dot && cols.text < cols.proto,
+                    "columns stay inside the row at width {width}"
+                );
+            }
+        }
+
+        // --- phase: service_selector_hit_rects_are_contiguous ---
+        // The service stepper's three controls hit-test as one contiguous strip
+        // — no dead zone between `<`, the value and `>` — while the painted
+        // value well is inset a token step from each stepper so the controls
+        // never touch (HIG §7). Wide and stacked layouts alike.
+        {
+            for width in [1280.0, 800.0] {
+                let (mut app, _) = measured_app(width, 1.0);
+                app.form.is_service = true;
+                app.relayout();
+                let l = &app.layout;
+                assert!(
+                    (l.service_prev.x1 - l.service_sel.x0).abs() < 1e-6,
+                    "no dead zone after `<` at {width}px"
+                );
+                assert!(
+                    (l.service_sel.x1 - l.service_next.x0).abs() < 1e-6,
+                    "no dead zone before `>` at {width}px"
+                );
+                assert!(
+                    l.service_sel.width() > 2.0 * S1 + 60.0,
+                    "the inset value well still has room for a service name at {width}px"
+                );
+            }
+        }
+
+        // --- phase: selected_rows_register_on_the_raised_card_on_every_preset ---
+        // A selected rule row sits on the raised table card. `selection_tier`'s
+        // lift ends at `raised` — the card's own colour on the light preset —
+        // so the row takes a wash measured against the card instead, and that
+        // wash registers on every preset (HIG §9.5's Δ-luminance bar) with the
+        // ring as the stronger step.
+        {
+            use ui::surface::edge_delta;
+            use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let raised = theme.tokens.colors.surfaces.raised;
+                let (fill, edge) = selected_on(raised);
+                assert!(
+                    edge_delta(fill, raised) >= HAIRLINE_MIN_DELTA,
+                    "the selected fill registers on the card"
+                );
+                assert!(
+                    edge_delta(edge, raised) >= edge_delta(fill, raised),
+                    "the ring is at least as strong a step as the fill"
+                );
+            }
+            // The case the wash exists for: on the light preset the tier's lift
+            // is the card itself, so it would not register at all.
+            let light = Theme::light();
+            let tier = selection_tier(&light, SelectionState::active(true));
+            assert!(
+                edge_delta(tier.fill, light.tokens.colors.surfaces.raised) < HAIRLINE_MIN_DELTA
             );
         }
     }
@@ -4445,474 +4542,447 @@ mod tests {
         (app, tr)
     }
 
-    /// The service stepper's three controls hit-test as one contiguous strip
-    /// — no dead zone between `<`, the value and `>` — while the painted
-    /// value well is inset a token step from each stepper so the controls
-    /// never touch (HIG §7). Wide and stacked layouts alike.
+    /// Summary cards, bands, breakpoints and the compact services route follow the text scale.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn service_selector_hit_rects_are_contiguous() {
-        for width in [1280.0, 800.0] {
-            let (mut app, _) = measured_app(width, 1.0);
-            app.form.is_service = true;
-            app.relayout();
-            let l = &app.layout;
+    fn layout_grows_with_the_text_scale() {
+        // --- phase: summary_card_height_follows_the_wrapped_chip_rows ---
+        // The summary card is as tall as its chip rows need: one row at desktop
+        // width keeps the 134px floor, and the phone width — where the five chips
+        // wrap onto two rows — grows by exactly one chip row instead of reserving
+        // the old fixed 188px band (which left ~60px blank under the chips).
+        {
+            let (wide, _) = measured_app(1280.0, 1.0);
+            let chips = &wide.layout.stat_chips;
+            assert_eq!(chips.len(), 5, "public zone has five stat chips");
             assert!(
-                (l.service_prev.x1 - l.service_sel.x0).abs() < 1e-6,
-                "no dead zone after `<` at {width}px"
+                chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6),
+                "desktop width keeps every chip on one row"
             );
+            assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
             assert!(
-                (l.service_sel.x1 - l.service_next.x0).abs() < 1e-6,
-                "no dead zone before `>` at {width}px"
+                chips
+                    .iter()
+                    .all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
+                "chips stay inside the card"
             );
+
+            // 480px: the five chips still fit one row, so the card keeps the
+            // one-row height instead of the fixed 188px narrow band that
+            // reserved a wrap which never happened.
+            let (narrow, _) = measured_app(480.0, 1.0);
+            let chips = &narrow.layout.stat_chips;
+            assert!(chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6));
+            assert!((narrow.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
+
+            // 360px: they wrap, and the card grows by exactly the rows it needs.
+            let (phone, _) = measured_app(360.0, 1.0);
+            let chips = &phone.layout.stat_chips;
             assert!(
-                l.service_sel.width() > 2.0 * S1 + 60.0,
-                "the inset value well still has room for a service name at {width}px"
+                chips.iter().any(|c| (c.y0 - chips[0].y0).abs() > 1e-6),
+                "five chips wrap onto a second row at 360px"
             );
-        }
-    }
-
-    /// A selected rule row sits on the raised table card. `selection_tier`'s
-    /// lift ends at `raised` — the card's own colour on the light preset —
-    /// so the row takes a wash measured against the card instead, and that
-    /// wash registers on every preset (HIG §9.5's Δ-luminance bar) with the
-    /// ring as the stronger step.
-    #[test]
-    fn selected_rows_register_on_the_raised_card_on_every_preset() {
-        use ui::surface::edge_delta;
-        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let raised = theme.tokens.colors.surfaces.raised;
-            let (fill, edge) = selected_on(raised);
+            let last = chips.last().unwrap();
             assert!(
-                edge_delta(fill, raised) >= HAIRLINE_MIN_DELTA,
-                "the selected fill registers on the card"
+                (phone.layout.summary.y1 - last.y1 - PAD).abs() < 1e-6,
+                "the card ends one padding below the last chip row, not ~60px later"
             );
+            assert!(phone.layout.summary.height() < 188.0);
             assert!(
-                edge_delta(edge, raised) >= edge_delta(fill, raised),
-                "the ring is at least as strong a step as the fill"
+                chips
+                    .iter()
+                    .all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
+                "wrapped chips never run off the card's right edge"
             );
-        }
-        // The case the wash exists for: on the light preset the tier's lift
-        // is the card itself, so it would not register at all.
-        let light = Theme::light();
-        let tier = selection_tier(&light, SelectionState::active(true));
-        assert!(edge_delta(tier.fill, light.tokens.colors.surfaces.raised) < HAIRLINE_MIN_DELTA);
-    }
-
-    /// The summary card is as tall as its chip rows need: one row at desktop
-    /// width keeps the 134px floor, and the phone width — where the five chips
-    /// wrap onto two rows — grows by exactly one chip row instead of reserving
-    /// the old fixed 188px band (which left ~60px blank under the chips).
-    #[test]
-    fn summary_card_height_follows_the_wrapped_chip_rows() {
-        let (wide, _) = measured_app(1280.0, 1.0);
-        let chips = &wide.layout.stat_chips;
-        assert_eq!(chips.len(), 5, "public zone has five stat chips");
-        assert!(
-            chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6),
-            "desktop width keeps every chip on one row"
-        );
-        assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
-        assert!(
-            chips
-                .iter()
-                .all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
-            "chips stay inside the card"
-        );
-
-        // 480px: the five chips still fit one row, so the card keeps the
-        // one-row height instead of the fixed 188px narrow band that
-        // reserved a wrap which never happened.
-        let (narrow, _) = measured_app(480.0, 1.0);
-        let chips = &narrow.layout.stat_chips;
-        assert!(chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6));
-        assert!((narrow.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
-
-        // 360px: they wrap, and the card grows by exactly the rows it needs.
-        let (phone, _) = measured_app(360.0, 1.0);
-        let chips = &phone.layout.stat_chips;
-        assert!(
-            chips.iter().any(|c| (c.y0 - chips[0].y0).abs() > 1e-6),
-            "five chips wrap onto a second row at 360px"
-        );
-        let last = chips.last().unwrap();
-        assert!(
-            (phone.layout.summary.y1 - last.y1 - PAD).abs() < 1e-6,
-            "the card ends one padding below the last chip row, not ~60px later"
-        );
-        assert!(phone.layout.summary.height() < 188.0);
-        assert!(
-            chips
-                .iter()
-                .all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
-            "wrapped chips never run off the card's right edge"
-        );
-        // Everything below the card follows it.
-        assert!(phone.layout.filter_seg[0].y0 >= phone.layout.summary.y1 + PAD - 1e-6);
-    }
-
-    /// At 1× the measured bands are exactly the constants the layout was
-    /// drawn for; at 2× they grow with the type and no control overlaps its
-    /// neighbour or leaves its card.
-    #[test]
-    fn bands_hold_their_1x_floors_and_grow_with_the_text_scale() {
-        let (one, _) = measured_app(1280.0, 1.0);
-        let m = &one.metrics;
-        let floors = Metrics::default();
-        assert!((m.ctrl_h - CTRL_H).abs() < 1e-6);
-        assert!((m.header_h - HEADER_H).abs() < 1e-6);
-        assert!((m.rule_row_h - RULE_ROW_H).abs() < 1e-6);
-        assert!((m.rule_row_h_narrow - RULE_ROW_H_NARROW).abs() < 1e-6);
-        assert!((m.table_head_h - floors.table_head_h).abs() < 1e-6);
-        assert!((m.svc_row_h - SVC_ROW_H).abs() < 1e-6);
-        assert!((m.seg_h - floors.seg_h).abs() < 1e-6);
-        assert!((m.rail_row_h - floors.rail_row_h).abs() < 1e-6);
-        assert!((m.chip_h - floors.chip_h).abs() < 1e-6);
-        assert!((one.layout.form.height() - FORM_H).abs() < 1e-6);
-        assert!((one.layout.header.height() - HEADER_H).abs() < 1e-6);
-        // The first (unmeasured) frame lays out exactly like the measured 1×
-        // frame: no jump on open.
-        let mut unmeasured = FirewallApp::new_demo();
-        unmeasured.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        unmeasured.relayout();
-        assert_eq!(unmeasured.layout.form, one.layout.form);
-        assert_eq!(unmeasured.layout.table, one.layout.table);
-        assert_eq!(unmeasured.layout.header, one.layout.header);
-
-        // 2400px at 2× is the wide layout (the breakpoint scales too).
-        let (two, mut tr) = measured_app(2400.0, 2.0);
-        let m = &two.metrics;
-        assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
-        let l = &two.layout;
-        assert!(!l.narrow);
-        assert!(
-            l.form.height() > FORM_H,
-            "form grows with its control bands"
-        );
-        // Header controls fit their labels and stay inside the header band.
-        for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
-            assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
-        }
-        assert!(
-            l.enable_pill.width() > 92.0,
-            "the enable pill widens for its 2× label"
-        );
-        // Form: line 1 clears the title band, line 2 clears line 1, the status
-        // band clears line 2, and nothing leaves the card.
-        let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
-        assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
-        assert!(l.source_field.y0 >= l.kind_seg[0].y1);
-        assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "two independent containment checks on different controls"
-        )]
-        let action_and_kind_fit =
-            l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0;
-        assert!(action_and_kind_fit);
-        // Rows never overlap and the first clears the caption band.
-        assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
-        for pair in l.rule_rows.windows(2) {
-            assert!(pair[1].rect.y0 >= pair[0].rect.y1);
+            // Everything below the card follows it.
+            assert!(phone.layout.filter_seg[0].y0 >= phone.layout.summary.y1 + PAD - 1e-6);
         }
 
-        // The stacked 2× form: four control lines, the `Source` caption's gap
-        // and the title band all clear each other inside the card.
-        let (stacked, _) = measured_app(800.0, 2.0);
-        let l = &stacked.layout;
-        assert!(l.narrow);
-        assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
-        assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
-        assert!(
-            l.source_field.y0
-                >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap - 1e-6
-        );
-        assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
-    }
+        // --- phase: bands_hold_their_1x_floors_and_grow_with_the_text_scale ---
+        // At 1× the measured bands are exactly the constants the layout was
+        // drawn for; at 2× they grow with the type and no control overlaps its
+        // neighbour or leaves its card.
+        {
+            let (one, _) = measured_app(1280.0, 1.0);
+            let m = &one.metrics;
+            let floors = Metrics::default();
+            assert!((m.ctrl_h - CTRL_H).abs() < 1e-6);
+            assert!((m.header_h - HEADER_H).abs() < 1e-6);
+            assert!((m.rule_row_h - RULE_ROW_H).abs() < 1e-6);
+            assert!((m.rule_row_h_narrow - RULE_ROW_H_NARROW).abs() < 1e-6);
+            assert!((m.table_head_h - floors.table_head_h).abs() < 1e-6);
+            assert!((m.svc_row_h - SVC_ROW_H).abs() < 1e-6);
+            assert!((m.seg_h - floors.seg_h).abs() < 1e-6);
+            assert!((m.rail_row_h - floors.rail_row_h).abs() < 1e-6);
+            assert!((m.chip_h - floors.chip_h).abs() < 1e-6);
+            assert!((one.layout.form.height() - FORM_H).abs() < 1e-6);
+            assert!((one.layout.header.height() - HEADER_H).abs() < 1e-6);
+            // The first (unmeasured) frame lays out exactly like the measured 1×
+            // frame: no jump on open.
+            let mut unmeasured = FirewallApp::new_demo();
+            unmeasured.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            unmeasured.relayout();
+            assert_eq!(unmeasured.layout.form, one.layout.form);
+            assert_eq!(unmeasured.layout.table, one.layout.table);
+            assert_eq!(unmeasured.layout.header, one.layout.header);
 
-    /// The narrow / services breakpoints follow the text scale: an 800px
-    /// window at 2× has the room of a 400px window at 1×, so it stacks the
-    /// form and takes two-line rows instead of crushing five columns.
-    #[test]
-    fn breakpoints_follow_the_text_scale() {
-        let (one, _) = measured_app(800.0, 1.0);
-        assert!(!one.layout.narrow);
-        let (two, _) = measured_app(800.0, 2.0);
-        assert!(two.layout.narrow, "800px at 2× takes the narrow layout");
-        assert!(!two.layout.services_visible);
-        let (wide, _) = measured_app(2400.0, 2.0);
-        assert!(!wide.layout.narrow && wide.layout.services_visible);
-    }
-
-    #[test]
-    fn filter_restricts_rule_rows() {
-        let mut a = app_with_rect();
-        a.filter = Filter::Deny;
-        a.relayout();
-        // public has 3 deny rules in the sample.
-        let denies = a
-            .selected_zone_ref()
-            .unwrap()
-            .rules
-            .iter()
-            .filter(|r| r.action == Action::Deny)
-            .count();
-        assert_eq!(a.layout.rule_rows.len(), denies);
-        assert!(denies > 0);
-    }
-
-    #[test]
-    fn presentation_changes_do_not_create_document_heads() {
-        let mut app = app_with_rect();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let heads = doc.get_heads();
-
-        // Selection, filters, drawer geometry and draft focus are deliberately
-        // per-window presentation state, never collaborative data.
-        app.select_zone(ZoneKind::Home);
-        app.filter = Filter::Allow;
-        app.rail.toggle();
-        app.set_form_focus(Some(FocusField::Port));
-        app.relayout();
-
-        assert_eq!(doc.get_heads(), heads);
-    }
-
-    #[test]
-    fn compact_services_route_keeps_the_entire_catalog_interactive() {
-        for width in [640.0, 900.0] {
-            let mut app = app_with_rect();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
-            app.compact_view = CompactView::Services;
-            app.relayout();
-
-            assert!(app.layout.compact_services);
-            assert_eq!(app.layout.content_seg.len(), 2);
-            assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
-            let semantics = app.accessibility().expect("compact services semantics");
-            let services = semantics
-                .children
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Services in public"))
-                .expect("compact services list");
-            assert_eq!(services.children.len(), ServiceCatalog::ALL.len());
-            assert!(services.children.iter().all(|row| {
-                row.role == Role::ListItem
-                    && row.pos_in_set.is_some()
-                    && row.set_size == Some(ServiceCatalog::ALL.len())
-                    && row.children.iter().any(|control| {
-                        control.role == Role::Switch
-                            && control.action_target.is_some()
-                            && control.state.checked.is_some()
-                    })
-            }));
-
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            let ssh_was_enabled = app
-                .selected_zone_ref()
-                .is_some_and(|zone| zone.has_service("ssh"));
-            assert!(app.perform_semantic_action(
-                "firewall.service.toggle:public:ssh",
-                &A11yAction::ToggleCheck,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_ne!(
-                app.selected_zone_ref()
-                    .is_some_and(|zone| zone.has_service("ssh")),
-                ssh_was_enabled
+            // 2400px at 2× is the wide layout (the breakpoint scales too).
+            let (two, mut tr) = measured_app(2400.0, 2.0);
+            let m = &two.metrics;
+            assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
+            let l = &two.layout;
+            assert!(!l.narrow);
+            assert!(
+                l.form.height() > FORM_H,
+                "form grows with its control bands"
             );
-        }
-    }
-
-    #[test]
-    fn add_rule_from_form_appends_and_selects() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        // Actions read the shared config from the document, so seed it first —
-        // the same publish `sync` does on the app's first frame.
-        a.sync(&mut doc, &automerge::ROOT);
-        let before = a.selected_zone_ref().unwrap().rules.len();
-        a.form.is_service = false;
-        a.form.port.set_text("9000");
-        a.form.action = Action::Allow;
-        a.form.source.set_text("");
-        a.add_rule_from_form(&mut doc);
-        let after = a.selected_zone_ref().unwrap().rules.len();
-        assert_eq!(after, before + 1);
-        assert!(a.selected_rule.is_some());
-        let last = a.selected_zone_ref().unwrap().rules.last().unwrap();
-        assert_eq!(
-            last.matcher,
-            Matcher::Port {
-                port: "9000".into(),
-                proto: Proto::Tcp
+            // Header controls fit their labels and stay inside the header band.
+            for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
+                assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
             }
-        );
+            assert!(
+                l.enable_pill.width() > 92.0,
+                "the enable pill widens for its 2× label"
+            );
+            // Form: line 1 clears the title band, line 2 clears line 1, the status
+            // band clears line 2, and nothing leaves the card.
+            let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
+            assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
+            assert!(l.source_field.y0 >= l.kind_seg[0].y1);
+            assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
+            #[expect(
+                clippy::suspicious_operation_groupings,
+                reason = "two independent containment checks on different controls"
+            )]
+            let action_and_kind_fit =
+                l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0;
+            assert!(action_and_kind_fit);
+            // Rows never overlap and the first clears the caption band.
+            assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
+            for pair in l.rule_rows.windows(2) {
+                assert!(pair[1].rect.y0 >= pair[0].rect.y1);
+            }
+
+            // The stacked 2× form: four control lines, the `Source` caption's gap
+            // and the title band all clear each other inside the card.
+            let (stacked, _) = measured_app(800.0, 2.0);
+            let l = &stacked.layout;
+            assert!(l.narrow);
+            assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
+            assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
+            assert!(
+                l.source_field.y0
+                    >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap
+                        - 1e-6
+            );
+            assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
+        }
+
+        // --- phase: breakpoints_follow_the_text_scale ---
+        // The narrow / services breakpoints follow the text scale: an 800px
+        // window at 2× has the room of a 400px window at 1×, so it stacks the
+        // form and takes two-line rows instead of crushing five columns.
+        {
+            let (one, _) = measured_app(800.0, 1.0);
+            assert!(!one.layout.narrow);
+            let (two, _) = measured_app(800.0, 2.0);
+            assert!(two.layout.narrow, "800px at 2× takes the narrow layout");
+            assert!(!two.layout.services_visible);
+            let (wide, _) = measured_app(2400.0, 2.0);
+            assert!(!wide.layout.narrow && wide.layout.services_visible);
+        }
+
+        // --- phase: compact_services_route_keeps_the_entire_catalog_interactive ---
+        {
+            for width in [640.0, 900.0] {
+                let mut app = app_with_rect();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.compact_view = CompactView::Services;
+                app.relayout();
+
+                assert!(app.layout.compact_services);
+                assert_eq!(app.layout.content_seg.len(), 2);
+                assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
+                let semantics = app.accessibility().expect("compact services semantics");
+                let services = semantics
+                    .children
+                    .iter()
+                    .find(|node| node.name.as_deref() == Some("Services in public"))
+                    .expect("compact services list");
+                assert_eq!(services.children.len(), ServiceCatalog::ALL.len());
+                assert!(services.children.iter().all(|row| {
+                    row.role == Role::ListItem
+                        && row.pos_in_set.is_some()
+                        && row.set_size == Some(ServiceCatalog::ALL.len())
+                        && row.children.iter().any(|control| {
+                            control.role == Role::Switch
+                                && control.action_target.is_some()
+                                && control.state.checked.is_some()
+                        })
+                }));
+
+                let mut doc = AutoCommit::new();
+                app.sync(&mut doc, &automerge::ROOT);
+                let ssh_was_enabled = app
+                    .selected_zone_ref()
+                    .is_some_and(|zone| zone.has_service("ssh"));
+                assert!(app.perform_semantic_action(
+                    "firewall.service.toggle:public:ssh",
+                    &A11yAction::ToggleCheck,
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert_ne!(
+                    app.selected_zone_ref()
+                        .is_some_and(|zone| zone.has_service("ssh")),
+                    ssh_was_enabled
+                );
+            }
+        }
     }
 
+    /// Filtering, adding, toggling, zone switching and deleting rules round-trip through the document; presentation changes create no heads.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn toggle_service_round_trips_through_doc() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // ssh (idx 0) is enabled on public in the sample.
-        let was = a.selected_zone_ref().unwrap().has_service("ssh");
-        a.toggle_service(0, &mut doc);
-        let now = a.selected_zone_ref().unwrap().has_service("ssh");
-        assert_ne!(was, now);
-        // The native shared document reflects the change.
-        let reloaded = FirewallDoc::load(&doc).unwrap();
-        assert_eq!(
-            reloaded.zone(ZoneKind::Public).unwrap().has_service("ssh"),
-            now
-        );
-    }
-
-    #[test]
-    fn set_active_zone_changes_default() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        a.select_zone(ZoneKind::Home);
-        a.set_active_zone(&mut doc);
-        assert_eq!(a.config.default_zone, ZoneKind::Home);
-        // The change lands in the shared document, not just the in-memory view.
-        assert_eq!(
-            FirewallDoc::load(&doc).unwrap().default_zone,
-            ZoneKind::Home
-        );
-    }
-
-    #[test]
-    fn cycle_zone_wraps() {
-        let mut a = app_with_rect();
-        a.select_zone(ZoneKind::ALL[0]);
-        a.cycle_zone(-1);
-        assert_eq!(a.selected_zone, ZoneKind::ALL[8]);
-        a.cycle_zone(1);
-        assert_eq!(a.selected_zone, ZoneKind::ALL[0]);
-    }
-
-    #[test]
-    fn delete_rule_removes_from_zone() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let id = a.selected_zone_ref().unwrap().rules[0].id;
-        let before = a.selected_zone_ref().unwrap().rules.len();
-        a.delete_rule(id, &mut doc);
-        assert_eq!(a.selected_zone_ref().unwrap().rules.len(), before - 1);
-        // …and the shared document agrees.
-        assert!(
-            !FirewallDoc::load(&doc)
-                .unwrap()
-                .zone(a.selected_zone)
+    fn rule_and_zone_edits_round_trip_through_the_document() {
+        // --- phase: filter_restricts_rule_rows ---
+        {
+            let mut a = app_with_rect();
+            a.filter = Filter::Deny;
+            a.relayout();
+            // public has 3 deny rules in the sample.
+            let denies = a
+                .selected_zone_ref()
                 .unwrap()
                 .rules
                 .iter()
-                .any(|r| r.id == id),
-            "the deleted rule is gone from the document too"
-        );
-    }
+                .filter(|r| r.action == Action::Deny)
+                .count();
+            assert_eq!(a.layout.rule_rows.len(), denies);
+            assert!(denies > 0);
+        }
 
-    /// One source of truth: the real trash-button path (`delete_rule`) dispatches
-    /// the byte-identical [`EncodedAction`] the palette's per-rule "delete" spec
-    /// builds. Proven on the production method, not a reconstruction of it.
-    #[test]
-    fn delete_button_dispatches_the_palette_action() {
-        use tilo_actions::ActionInput;
+        // --- phase: presentation_changes_do_not_create_document_heads ---
+        {
+            let mut app = app_with_rect();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let heads = doc.get_heads();
 
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let zone = a.selected_zone;
-        let id = a.selected_zone_ref().unwrap().rules[0].id;
+            // Selection, filters, drawer geometry and draft focus are deliberately
+            // per-window presentation state, never collaborative data.
+            app.select_zone(ZoneKind::Home);
+            app.filter = Filter::Allow;
+            app.rail.toggle();
+            app.set_form_focus(Some(FocusField::Port));
+            app.relayout();
 
-        // The palette's delete spec for this exact rule.
-        let resources = Widget::resources(&a, &doc);
-        let spec_encoded = resources[0]
-            .children
-            .iter()
-            .find(|z| z.id.as_str() == format!("firewall.zone:{}", zone.name()))
-            .and_then(|z| {
-                z.children
+            assert_eq!(doc.get_heads(), heads);
+        }
+
+        // --- phase: add_rule_from_form_appends_and_selects ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            // Actions read the shared config from the document, so seed it first —
+            // the same publish `sync` does on the app's first frame.
+            a.sync(&mut doc, &automerge::ROOT);
+            let before = a.selected_zone_ref().unwrap().rules.len();
+            a.form.is_service = false;
+            a.form.port.set_text("9000");
+            a.form.action = Action::Allow;
+            a.form.source.set_text("");
+            a.add_rule_from_form(&mut doc);
+            let after = a.selected_zone_ref().unwrap().rules.len();
+            assert_eq!(after, before + 1);
+            assert!(a.selected_rule.is_some());
+            let last = a.selected_zone_ref().unwrap().rules.last().unwrap();
+            assert_eq!(
+                last.matcher,
+                Matcher::Port {
+                    port: "9000".into(),
+                    proto: Proto::Tcp
+                }
+            );
+        }
+
+        // --- phase: toggle_service_round_trips_through_doc ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // ssh (idx 0) is enabled on public in the sample.
+            let was = a.selected_zone_ref().unwrap().has_service("ssh");
+            a.toggle_service(0, &mut doc);
+            let now = a.selected_zone_ref().unwrap().has_service("ssh");
+            assert_ne!(was, now);
+            // The native shared document reflects the change.
+            let reloaded = FirewallDoc::load(&doc).unwrap();
+            assert_eq!(
+                reloaded.zone(ZoneKind::Public).unwrap().has_service("ssh"),
+                now
+            );
+        }
+
+        // --- phase: set_active_zone_changes_default ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            a.select_zone(ZoneKind::Home);
+            a.set_active_zone(&mut doc);
+            assert_eq!(a.config.default_zone, ZoneKind::Home);
+            // The change lands in the shared document, not just the in-memory view.
+            assert_eq!(
+                FirewallDoc::load(&doc).unwrap().default_zone,
+                ZoneKind::Home
+            );
+        }
+
+        // --- phase: cycle_zone_wraps ---
+        {
+            let mut a = app_with_rect();
+            a.select_zone(ZoneKind::ALL[0]);
+            a.cycle_zone(-1);
+            assert_eq!(a.selected_zone, ZoneKind::ALL[8]);
+            a.cycle_zone(1);
+            assert_eq!(a.selected_zone, ZoneKind::ALL[0]);
+        }
+
+        // --- phase: delete_rule_removes_from_zone ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let id = a.selected_zone_ref().unwrap().rules[0].id;
+            let before = a.selected_zone_ref().unwrap().rules.len();
+            a.delete_rule(id, &mut doc);
+            assert_eq!(a.selected_zone_ref().unwrap().rules.len(), before - 1);
+            // …and the shared document agrees.
+            assert!(
+                !FirewallDoc::load(&doc)
+                    .unwrap()
+                    .zone(a.selected_zone)
+                    .unwrap()
+                    .rules
                     .iter()
-                    .find(|r| r.id.as_str() == format!("firewall.rule:{id}"))
-            })
-            .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
-            .map(|act| match &act.input {
-                ActionInput::Immediate(enc) => enc.clone(),
-                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
-            })
-            .expect("a delete spec for the rule");
+                    .any(|r| r.id == id),
+                "the deleted rule is gone from the document too"
+            );
+        }
 
-        // The real button path records what it dispatched.
-        a.delete_rule(id, &mut doc);
-        let dispatched = a
-            .last_dispatched()
-            .cloned()
-            .expect("the button dispatched an action");
-        assert_eq!(
-            dispatched, spec_encoded,
-            "button and palette are one action"
-        );
+        // --- phase: delete_button_dispatches_the_palette_action ---
+        // One source of truth: the real trash-button path (`delete_rule`) dispatches
+        // the byte-identical [`EncodedAction`] the palette's per-rule "delete" spec
+        // builds. Proven on the production method, not a reconstruction of it.
+        {
+            use tilo_actions::ActionInput;
+
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let zone = a.selected_zone;
+            let id = a.selected_zone_ref().unwrap().rules[0].id;
+
+            // The palette's delete spec for this exact rule.
+            let resources = ui::resources::resources(&a, &doc);
+            let spec_encoded = resources[0]
+                .children
+                .iter()
+                .find(|z| z.id.as_str() == format!("firewall.zone:{}", zone.name()))
+                .and_then(|z| {
+                    z.children
+                        .iter()
+                        .find(|r| r.id.as_str() == format!("firewall.rule:{id}"))
+                })
+                .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
+                .map(|act| match &act.input {
+                    ActionInput::Immediate(enc) => enc.clone(),
+                    ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                        panic!("delete is an immediate action")
+                    }
+                })
+                .expect("a delete spec for the rule");
+
+            // The real button path records what it dispatched.
+            a.delete_rule(id, &mut doc);
+            let dispatched = a
+                .last_dispatched()
+                .cloned()
+                .expect("the button dispatched an action");
+            assert_eq!(
+                dispatched, spec_encoded,
+                "button and palette are one action"
+            );
+        }
     }
 
+    /// An exported firewall effect is accepted then completes after sync; cancellation before sync prevents it.
     #[test]
-    fn exported_effect_is_accepted_then_completes_after_sync() {
-        let mut app = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        let started = app
-            .start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "firewall.apply",
-                &serde_json::to_vec(&"").unwrap(),
-                &doc,
+    fn exported_effects_complete_only_after_sync() {
+        // --- phase: exported_effect_is_accepted_then_completes_after_sync ---
+        {
+            let mut app = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let invocation = tilo_actions::InvocationId::new();
+            let started = app
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.apply",
+                        &serde_json::to_vec(&"").unwrap(),
+                    ),
+                    &mut doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(
+                started,
+                Some(ui::widget::ResourceOperationStart::Accepted),
+                "queue admission must not be reported as success"
+            );
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none()
+            );
+
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // --- phase: cancellation_before_sync_prevents_firewall_effect ---
+        {
+            let mut app = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let invocation = tilo_actions::InvocationId::new();
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &serde_json::to_vec(&"").unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();
-        assert_eq!(
-            started,
-            Some(ui::widget::ResourceOperationStart::Accepted),
-            "queue admission must not be reported as success"
-        );
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
-        );
-
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn cancellation_before_sync_prevents_firewall_effect() {
-        let mut app = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            "firewall.apply",
-            &serde_json::to_vec(&"").unwrap(),
-            &doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(app.pending_effect.is_none());
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(app.pending_effect.is_none());
+        }
     }
 }

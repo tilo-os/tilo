@@ -3,7 +3,7 @@
 //! Sheets — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default        — framework [`ResourceApp`] (`SheetsShell`).
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!
@@ -83,12 +83,44 @@ fn configure(app: &mut ui::App) {
 extern crate runtime_dylib;
 
 pub fn main() {
+    if room_launch() {
+        ui::launch::run_or_exit(
+            &LaunchSpec::from_definition(sheets::definition())
+                .component_host(prepare_room_workbook)
+                .native_services(),
+        );
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new(APP_ID, sheets::app_root)
             .shot_handler(render_shot)
             .scenarios(SCENARIOS)
             .configure_app(configure),
     );
+}
+
+/// A launch into a room (not a screenshot). There Sheets opens the room's
+/// default record, the workbook every device's first Sheets window opens,
+/// browsers included; standalone it keeps the one workbook it always had.
+fn room_launch() -> bool {
+    std::env::var("TILO_WORKSPACE_ID").is_ok_and(|room| !room.trim().is_empty())
+        && !std::env::args().any(|arg| arg == "--shots" || arg == "--responsive-matrix")
+}
+
+fn prepare_room_workbook(
+    definition: &ui::application::ApplicationDefinition,
+    _args: &LaunchArgs,
+) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    let mut native = ui::application::NativeProcessHost::open(definition)?;
+    let instance_id = native.instance_id();
+    let workbook = ui::record::RecordCheckout::new(
+        ui::record::RecordId::room_default(),
+        definition.record_kind.clone(),
+    );
+    native
+        .host_mut()
+        .prepare_default(definition, instance_id, workbook, None, inputs)
 }
 
 /// Render one `--shots` scenario to a PNG.

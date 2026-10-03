@@ -27,6 +27,8 @@ const SUPPORTED: u32 = LOGOUT | USER_SWITCH | SUSPEND | IDLE;
 
 static SCREENSAVER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
+static SESSION_WAKE: std::sync::LazyLock<crate::idle_wake::IdleWake> =
+    std::sync::LazyLock::new(crate::idle_wake::IdleWake::default);
 
 /// Publish the compositor's authoritative lock state to Inhibit monitors.
 /// This contains no application-controlled data and is safe to call from the
@@ -34,6 +36,7 @@ static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
 pub fn publish_screensaver_state(active: bool) {
     if SCREENSAVER_ACTIVE.swap(active, Ordering::AcqRel) != active {
         SESSION_STATE_REVISION.fetch_add(1, Ordering::AcqRel);
+        SESSION_WAKE.poke();
     }
 }
 
@@ -252,9 +255,8 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
         .spawn(
             async move {
                 let mut seen = SESSION_STATE_REVISION.load(Ordering::Acquire);
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
                 loop {
-                    interval.tick().await;
+                    SESSION_WAKE.wait().await;
                     let revision = SESSION_STATE_REVISION.load(Ordering::Acquire);
                     if revision == seen {
                         continue;
@@ -308,26 +310,27 @@ mod tests {
         )
     }
     #[test]
-    fn handle_close_releases_real_registry_hold() {
-        let registry = InhibitRegistry::new();
-        let backend = InhibitBackend {
-            #[cfg(target_os = "linux")]
-            ctx: context(),
-            registry: registry.clone(),
-            holds: Arc::new(Mutex::new(HashMap::new())),
-            monitors: InhibitMonitorHandle::default(),
-            lifecycle: PortalLifecycle::new(),
-        };
-        backend.holds.lock().unwrap().insert(
-            "/org/freedesktop/portal/desktop/request/x".into(),
-            registry.acquire("test"),
-        );
-        assert!(registry.is_inhibited());
-        assert!(backend.release_handle("/org/freedesktop/portal/desktop/request/x"));
-        assert!(!registry.is_inhibited());
-    }
-    #[test]
-    fn advertises_every_standard_inhibit_scope() {
+    fn inhibit_advertises_standard_scopes_and_close_releases_the_hold() {
+        // Phase `handle_close_releases_real_registry_hold`.
+        {
+            let registry = InhibitRegistry::new();
+            let backend = InhibitBackend {
+                #[cfg(target_os = "linux")]
+                ctx: context(),
+                registry: registry.clone(),
+                holds: Arc::new(Mutex::new(HashMap::new())),
+                monitors: InhibitMonitorHandle::default(),
+                lifecycle: PortalLifecycle::new(),
+            };
+            backend.holds.lock().unwrap().insert(
+                "/org/freedesktop/portal/desktop/request/x".into(),
+                registry.acquire("test"),
+            );
+            assert!(registry.is_inhibited());
+            assert!(backend.release_handle("/org/freedesktop/portal/desktop/request/x"));
+            assert!(!registry.is_inhibited());
+        }
+        // Phase `advertises_every_standard_inhibit_scope`.
         assert_eq!(SUPPORTED, LOGOUT | USER_SWITCH | SUSPEND | IDLE);
     }
 }

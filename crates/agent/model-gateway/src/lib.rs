@@ -2,7 +2,7 @@
 //!
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
-//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
+//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL-GATEWAY_FD`).
 
 #[cfg(unix)]
 use std::io::Write;
@@ -17,8 +17,11 @@ use thiserror::Error;
 #[cfg(unix)]
 use zeroize::Zeroizing;
 
+pub mod openai;
+
 pub const SERVICE_NAME: &str = "model-gateway";
-pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
+// Launcher and runtime-portal uppercase the service name without replacing '-'.
+pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL-GATEWAY_FD";
 pub const RPC_VERSION: u16 = 3;
 /// Every gateway request and response: a little-endian `u32` length, then
 /// JSON.
@@ -65,11 +68,46 @@ pub struct FaceImage {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
+    /// Read-only Agent check of the exact selection's local Plan prerequisites.
+    /// A positive `configured` response does not establish provider reachability,
+    /// accepted credentials, or live local-model availability. Older RPC3
+    /// servers reject this additive verb; callers must treat that as unavailable.
+    SelectionConfigured {
+        profile_id: String,
+        model_id: String,
+        protocol: agent_provider_config::ProviderProtocol,
+    },
     Plan {
         profile_id: String,
         model_id: String,
         body: serde_json::Value,
         timeout_ms: u64,
+        /// Ask for streaming frames: zero or more [`Response`]s with an
+        /// `event` (each a completed tool call), then one final response
+        /// without `event` carrying the assembled, non-streaming-shaped
+        /// provider body. Older gateways ignore the field and send only the
+        /// final response, which a streaming client reads the same way.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stream: bool,
+        /// With `stream`, also ask for coalesced [`EVENT_TOOL_CALL_DELTA`]
+        /// frames carrying the argument text of the call in progress. Older
+        /// gateways ignore it; the client then sees only `tool_call` events.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deltas: bool,
+        /// Opaque, content-free correlation for the gateway's timing log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<PlanTrace>,
+    },
+    /// A content-free timing mark from the agent (whose own stderr a managed
+    /// launch discards), written to the gateway's timing log. Older RPC3
+    /// servers reject this additive verb; callers ignore the refusal.
+    Trace {
+        trace: PlanTrace,
+        event: TraceEvent,
+        /// When the mark happened (Unix ms), if the caller had to hold it
+        /// while a streamed Plan owned the channel. Absent: now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_unix_ms: Option<u64>,
     },
     /// One bounded, single-shot text transformation for tilo-agent: a
     /// system instruction and one input, answered with the model's text. No
@@ -113,6 +151,39 @@ pub enum Request {
     },
 }
 
+/// Correlates the Plan requests (model turns) of one agent decision.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PlanTrace {
+    /// Random per decision; carries no content.
+    pub id: u64,
+    /// Zero-based model turn within the decision, or a step index for marks.
+    pub turn: u32,
+}
+
+/// The closed vocabulary of agent timing marks.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceEvent {
+    /// The model's final plan was read and accepted by the agent.
+    PlanReady,
+    /// The decision failed (fallback, timeout, invalid answer).
+    PlanFailed,
+    /// The agent sent one planned action to the host.
+    ActionSubmitted,
+    /// The host settled that action.
+    ActionSettled,
+}
+
+/// The only streaming event kind: one completed provider tool call, as
+/// `{"id":..,"name":..,"arguments":<JSON string>}` in [`Response::output`].
+pub const EVENT_TOOL_CALL: &str = "tool_call";
+
+/// An intermediate streaming event requested with `deltas`: raw argument text
+/// appended to the tool call in progress, as
+/// `{"index":u32,"id":str|null,"name":str,"delta":str}` in
+/// [`Response::output`]. Every delta of a call precedes its `tool_call`.
+pub const EVENT_TOOL_CALL_DELTA: &str = "tool_call_delta";
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Frame<T> {
     pub version: u16,
@@ -129,6 +200,10 @@ pub struct Response {
     pub configured: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Set only on intermediate streaming frames (see [`EVENT_TOOL_CALL`]).
+    /// A response without an event is the final frame of a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -169,18 +244,7 @@ pub fn available() -> bool {
 /// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
 #[cfg(unix)]
 pub fn request(request: Request) -> Result<Response, ClientError> {
-    let fd = std::env::var(SERVICE_FD_ENV)
-        .ok()
-        .and_then(|value| value.parse::<RawFd>().ok())
-        .filter(|fd| *fd >= 3 && unsafe { libc::fcntl(*fd, libc::F_GETFD) } != -1)
-        .ok_or(ClientError::Unavailable)?;
-    // SAFETY: F_DUPFD_CLOEXEC duplicates a checked open descriptor; ownership
-    // of the duplicate transfers immediately to UnixStream.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if duplicate < 0 {
-        return Err(ClientError::Unavailable);
-    }
-    let mut stream = unsafe { UnixStream::from_raw_fd(duplicate) };
+    let mut stream = service_stream()?;
     write_frame(
         &mut stream,
         &Frame {
@@ -198,6 +262,23 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
                 .unwrap_or_else(|| "request rejected".to_string()),
         ))
     }
+}
+
+/// Duplicate the launcher-issued service descriptor for one RPC.
+#[cfg(unix)]
+fn service_stream() -> Result<UnixStream, ClientError> {
+    let fd = std::env::var(SERVICE_FD_ENV)
+        .ok()
+        .and_then(|value| value.parse::<RawFd>().ok())
+        .filter(|fd| *fd >= 3 && unsafe { libc::fcntl(*fd, libc::F_GETFD) } != -1)
+        .ok_or(ClientError::Unavailable)?;
+    // SAFETY: F_DUPFD_CLOEXEC duplicates a checked open descriptor; ownership
+    // of the duplicate transfers immediately to UnixStream.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(ClientError::Unavailable);
+    }
+    Ok(unsafe { UnixStream::from_raw_fd(duplicate) })
 }
 
 /// Refuse gateway operations when the launcher capability transport is absent.
@@ -229,10 +310,170 @@ pub fn plan(
         model_id: model_id.to_string(),
         body,
         timeout_ms,
+        stream: false,
+        deltas: false,
+        trace: None,
     })?;
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
+}
+
+/// Streaming Plan: `on_event` sees each completed tool call as the provider
+/// streams it; the return value is the final assembled provider body, in the
+/// same shape [`plan`] returns. Every frame of the request is read before
+/// this returns, so the shared service channel stays in step.
+///
+/// # Errors
+///
+/// As [`plan`].
+pub fn plan_streaming(
+    profile_id: &str,
+    model_id: &str,
+    body: serde_json::Value,
+    timeout: Duration,
+    trace: Option<PlanTrace>,
+    on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    stream_plan(profile_id, model_id, body, timeout, trace, false, on_event)
+}
+
+/// [`plan_streaming`] that also asks for [`EVENT_TOOL_CALL_DELTA`] frames:
+/// `on_event` sees both `tool_call_delta` and `tool_call` events. A gateway
+/// that predates deltas sends only `tool_call` events.
+///
+/// # Errors
+///
+/// As [`plan`].
+pub fn plan_streaming_deltas(
+    profile_id: &str,
+    model_id: &str,
+    body: serde_json::Value,
+    timeout: Duration,
+    trace: Option<PlanTrace>,
+    on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    stream_plan(profile_id, model_id, body, timeout, trace, true, on_event)
+}
+
+#[cfg(unix)]
+fn stream_plan(
+    profile_id: &str,
+    model_id: &str,
+    body: serde_json::Value,
+    timeout: Duration,
+    trace: Option<PlanTrace>,
+    deltas: bool,
+    on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let mut stream = service_stream()?;
+    write_frame(
+        &mut stream,
+        &Frame {
+            version: RPC_VERSION,
+            value: Request::Plan {
+                profile_id: profile_id.to_string(),
+                model_id: model_id.to_string(),
+                body,
+                timeout_ms,
+                stream: true,
+                deltas,
+                trace,
+            },
+        },
+    )?;
+    // A bounded number of intermediate frames: one per completed tool call,
+    // and (only when asked for) a separately bounded number of deltas.
+    let mut calls = 0_usize;
+    let mut delta_frames = 0_usize;
+    loop {
+        let response: Response = read_frame(&mut stream)?;
+        if !response.ok {
+            return Err(ClientError::Rejected(
+                response
+                    .error
+                    .unwrap_or_else(|| "request rejected".to_string()),
+            ));
+        }
+        match response.event {
+            Some(event) => {
+                let count = if deltas && event == EVENT_TOOL_CALL_DELTA {
+                    delta_frames = delta_frames.saturating_add(1);
+                    delta_frames > MAX_DELTA_EVENTS
+                } else {
+                    calls = calls.saturating_add(1);
+                    calls > MAX_STREAM_EVENTS
+                };
+                if count {
+                    return Err(ClientError::Protocol(
+                        "gateway sent too many streaming events".into(),
+                    ));
+                }
+                on_event(&event, response.output.as_deref().unwrap_or(""));
+            }
+            None => {
+                return response.output.ok_or_else(|| {
+                    ClientError::Protocol("gateway returned no provider response".into())
+                });
+            }
+        }
+    }
+}
+
+/// No launcher-issued gateway transport exists on this platform.
+///
+/// # Errors
+///
+/// Always [`ClientError::Unavailable`].
+#[cfg(not(unix))]
+fn stream_plan(
+    _profile_id: &str,
+    _model_id: &str,
+    _body: serde_json::Value,
+    _timeout: Duration,
+    _trace: Option<PlanTrace>,
+    _deltas: bool,
+    _on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    Err(ClientError::Unavailable)
+}
+
+/// The most intermediate frames one streaming Plan may carry.
+pub const MAX_STREAM_EVENTS: usize = 64;
+
+/// The most `tool_call_delta` frames one streaming Plan may carry; bounded
+/// separately from [`MAX_STREAM_EVENTS`]. A gateway stops sending deltas at
+/// this count (the completed `tool_call` events still follow).
+pub const MAX_DELTA_EVENTS: usize = 4096;
+
+/// Send a content-free timing mark. Best effort: a gateway that predates the
+/// verb refuses it, and that refusal is ignored by callers.
+///
+/// # Errors
+///
+/// As [`request`].
+pub fn trace(trace: PlanTrace, event: TraceEvent) -> Result<(), ClientError> {
+    trace_at(trace, event, None)
+}
+
+/// [`trace`] for a mark that happened at `at_unix_ms` and was held back while
+/// a streamed Plan used the channel; the gateway logs that time.
+///
+/// # Errors
+///
+/// As [`trace`].
+pub fn trace_at(
+    trace: PlanTrace,
+    event: TraceEvent,
+    at_unix_ms: Option<u64>,
+) -> Result<(), ClientError> {
+    request(Request::Trace {
+        trace,
+        event,
+        at_unix_ms,
+    })
+    .map(|_| ())
 }
 
 /// Run one bounded single-shot transformation through the isolated model
@@ -405,6 +646,7 @@ mod wire_tests {
                 output: Some("x".into()),
                 configured: None,
                 error: None,
+                event: None,
             },
         )
         .unwrap();

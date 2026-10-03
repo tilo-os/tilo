@@ -12,18 +12,30 @@
 //! yields an empty monitor list; that degrades to `Borderless(None)`, placed by
 //! the compositor. Multi-output presentation is activated only after a distinct
 //! monitor is enumerated.
+//!
+//! The ranking behind [`FullscreenTarget::Largest`] is what a presenter
+//! expects from a laptop plugged into a television: the slides go to the
+//! external screen, the physically biggest one if there are several, and
+//! the presenter view stays on the built-in panel ([`select_presenter_output`]).
+//! The compositor runs the same functions, so a client that could not name
+//! an output still lands where the app would have put it.
 
 /// Which output an app wants its fullscreen surface promoted onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FullscreenTarget {
     /// Let the compositor choose (fill whatever output it decides).
     Auto,
-    /// The largest available monitor by pixel area — the presentation default,
-    /// so "Present" / immersive video lands on the big screen.
+    /// The audience-facing screen — the presentation default, so "Present" /
+    /// immersive video lands on the big screen: an external display before
+    /// the built-in panel, then the physically largest, then the most pixels.
     #[default]
     Largest,
     /// The primary monitor (falls back to the first if none is flagged primary).
     Primary,
+    /// The primary *external* display: the flagged primary when it is not the
+    /// built-in panel, else the first external display in enumeration order.
+    /// With no external display it ranks like [`Self::Largest`].
+    PrimaryExternal,
     /// A specific monitor by its index in the enumerated list.
     Output(u32),
 }
@@ -38,13 +50,68 @@ pub struct MonitorInfo {
     pub height: u32,
     pub primary: bool,
     pub scale: f64,
+    /// The laptop's own panel rather than a plugged-in display — see
+    /// [`connector_is_builtin`].
+    pub builtin: bool,
+    /// Physical extent in millimetres, when the display reports one.
+    pub physical_mm: Option<(u32, u32)>,
 }
 
 impl MonitorInfo {
-    /// Pixel area, used to rank monitors for [`FullscreenTarget::Largest`].
+    /// Pixel area, the last tie-break when ranking for [`FullscreenTarget::Largest`].
     pub fn area(&self) -> u64 {
         u64::from(self.width).saturating_mul(u64::from(self.height))
     }
+
+    /// Physical area in square millimetres, when known.
+    pub fn physical_area(&self) -> Option<u64> {
+        self.physical_mm
+            .map(|(width, height)| u64::from(width).saturating_mul(u64::from(height)))
+    }
+}
+
+/// Whether a KMS connector name names a built-in panel: embedded
+/// DisplayPort, LVDS and MIPI-DSI are how laptops, tablets and phones wire
+/// their own screen. Anything else (HDMI, DP, USB-C alt-mode, virtual) is a
+/// display someone plugged in. A collision-qualified name such as
+/// `card1/eDP-1` is judged by its connector part.
+pub fn connector_is_builtin(name: &str) -> bool {
+    let connector = name.rsplit('/').next().unwrap_or(name);
+    ["eDP", "LVDS", "DSI"]
+        .iter()
+        .any(|prefix| connector.starts_with(prefix))
+}
+
+/// Order monitors by how well they suit an audience: external before
+/// built-in, then physically larger (compared only when both sizes are
+/// known, since a projector reports none), then more pixels, then primary.
+/// Callers add their own final tie-breaks so identical displays still
+/// choose deterministically.
+fn audience_rank(a: &MonitorInfo, b: &MonitorInfo) -> std::cmp::Ordering {
+    let physical = match (a.physical_area(), b.physical_area()) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        _ => std::cmp::Ordering::Equal,
+    };
+    b.builtin
+        .cmp(&a.builtin)
+        .then(physical)
+        .then(a.area().cmp(&b.area()))
+        .then(a.primary.cmp(&b.primary))
+}
+
+fn best_for_audience<'a>(monitors: impl Iterator<Item = &'a MonitorInfo>) -> Option<u32> {
+    monitors
+        .max_by(|a, b| audience_rank(a, b).then(b.index.cmp(&a.index)))
+        .map(|m| m.index)
+}
+
+fn primary_external(monitors: &[MonitorInfo]) -> Option<u32> {
+    monitors
+        .iter()
+        .find(|m| m.primary && !m.builtin)
+        .or_else(|| monitors.iter().find(|m| !m.builtin))
+        .map(|m| m.index)
+        .or_else(|| best_for_audience(monitors.iter()))
 }
 
 /// What the fullscreen surface should show.
@@ -116,66 +183,78 @@ pub fn select_output(monitors: &[MonitorInfo], target: FullscreenTarget) -> Opti
     }
     match target {
         FullscreenTarget::Auto => None,
-        FullscreenTarget::Largest => monitors
-            .iter()
-            // Break area ties toward the primary, then the earliest index, so
-            // the choice is deterministic across identical monitors.
-            .max_by(|a, b| {
-                a.area()
-                    .cmp(&b.area())
-                    .then(a.primary.cmp(&b.primary))
-                    .then(b.index.cmp(&a.index))
-            })
-            .map(|m| m.index),
+        FullscreenTarget::Largest => best_for_audience(monitors.iter()),
         FullscreenTarget::Primary => monitors
             .iter()
             .find(|m| m.primary)
             .or_else(|| monitors.first())
             .map(|m| m.index),
+        FullscreenTarget::PrimaryExternal => primary_external(monitors),
         FullscreenTarget::Output(i) => monitors.iter().find(|m| m.index == i).map(|m| m.index),
     }
 }
 
-/// Pick an audience display which is *not* the display containing the
-/// presenter window. `None` means that no second output is available.
+/// Pick the audience display for a two-screen presentation. `None` means
+/// there is no second output, so the caller keeps its single-window
+/// fallback.
 ///
-/// An explicit request for the presenter's own output is rejected rather than
-/// silently putting a second surface on top of the dashboard. For broad
-/// targets, selection is deterministic among the remaining outputs.
+/// The presenter's current output does not disqualify a display: a
+/// compositor that pairs the audience surface moves the presenter view to
+/// [`select_presenter_output`], the way a laptop plugged into a television
+/// is expected to behave. It only breaks ties, so of two identical screens
+/// the one the presenter is not using gets the slides.
 pub fn select_audience_output(
     monitors: &[MonitorInfo],
     target: FullscreenTarget,
     presenter_output: Option<u32>,
 ) -> Option<u32> {
-    let candidates: Vec<MonitorInfo> = monitors
-        .iter()
-        .copied()
-        .filter(|monitor| Some(monitor.index) != presenter_output)
-        .collect();
-    if candidates.is_empty() {
+    if monitors.len() < 2 {
         return None;
     }
+    let broad = || {
+        monitors.iter().max_by(|a, b| {
+            audience_rank(a, b)
+                .then_with(|| {
+                    (Some(b.index) == presenter_output).cmp(&(Some(a.index) == presenter_output))
+                })
+                .then(b.index.cmp(&a.index))
+        })
+    };
     match target {
-        FullscreenTarget::Auto => candidates.first().map(|monitor| monitor.index),
-        FullscreenTarget::Largest => candidates
-            .iter()
-            .max_by(|a, b| {
-                a.area()
-                    .cmp(&b.area())
-                    .then(a.primary.cmp(&b.primary))
-                    .then(b.index.cmp(&a.index))
-            })
-            .map(|monitor| monitor.index),
-        FullscreenTarget::Primary => candidates
+        FullscreenTarget::Auto | FullscreenTarget::Largest => broad().map(|monitor| monitor.index),
+        FullscreenTarget::Primary => monitors
             .iter()
             .find(|monitor| monitor.primary)
-            .or_else(|| candidates.first())
+            .or_else(broad)
             .map(|monitor| monitor.index),
-        FullscreenTarget::Output(index) => candidates
+        FullscreenTarget::PrimaryExternal => primary_external(monitors),
+        FullscreenTarget::Output(index) => monitors
             .iter()
             .find(|monitor| monitor.index == index)
             .map(|monitor| monitor.index),
     }
+}
+
+/// Where the presenter view goes once the audience owns `audience`: the
+/// built-in panel if there is one, else the smallest remaining display
+/// (the laptop-sized screen beside a projector), else the earliest index.
+/// `None` when no other output exists — one screen keeps its ordinary
+/// layout.
+pub fn select_presenter_output(monitors: &[MonitorInfo], audience: u32) -> Option<u32> {
+    monitors
+        .iter()
+        .filter(|monitor| monitor.index != audience)
+        .min_by(|a, b| {
+            b.builtin
+                .cmp(&a.builtin)
+                .then_with(|| match (a.physical_area(), b.physical_area()) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    _ => std::cmp::Ordering::Equal,
+                })
+                .then(a.area().cmp(&b.area()))
+                .then(a.index.cmp(&b.index))
+        })
+        .map(|monitor| monitor.index)
 }
 
 #[cfg(test)]
@@ -189,6 +268,33 @@ mod tests {
             height: h,
             primary,
             scale: 1.0,
+            builtin: false,
+            physical_mm: None,
+        }
+    }
+
+    /// A 14" laptop panel: dense, small, built in.
+    fn laptop(index: u32) -> MonitorInfo {
+        MonitorInfo {
+            builtin: true,
+            physical_mm: Some((302, 189)),
+            ..mon(index, 2880, 1800, false)
+        }
+    }
+
+    /// A 65" television at 1080p — fewer pixels than the laptop.
+    fn television(index: u32) -> MonitorInfo {
+        MonitorInfo {
+            physical_mm: Some((1430, 800)),
+            ..mon(index, 1920, 1080, false)
+        }
+    }
+
+    /// A 27" desk monitor at 4K — more pixels than the television.
+    fn desk_monitor(index: u32) -> MonitorInfo {
+        MonitorInfo {
+            physical_mm: Some((597, 336)),
+            ..mon(index, 3840, 2160, false)
         }
     }
 
@@ -250,28 +356,118 @@ mod tests {
     }
 
     #[test]
-    fn audience_selection_never_reuses_the_presenter_output() {
-        let mons = vec![
-            mon(0, 1920, 1080, true),
-            mon(1, 3840, 2160, false),
-            mon(2, 1280, 720, false),
-        ];
+    fn builtin_connectors_are_the_panels_a_device_ships_with() {
+        for builtin in ["eDP-1", "LVDS-1", "DSI-1", "card1/eDP-2"] {
+            assert!(connector_is_builtin(builtin), "{builtin}");
+        }
+        for external in ["HDMI-A-1", "DP-3", "Tilo-0", "card0/DP-1", "Virtual-1"] {
+            assert!(!connector_is_builtin(external), "{external}");
+        }
+    }
+
+    #[test]
+    fn laptop_and_television_put_slides_on_the_television() {
+        // The television has fewer pixels than the laptop's HiDPI panel;
+        // pixel count alone would keep the slides on the laptop.
+        let mons = [laptop(0), television(1)];
+        for presenter in [None, Some(0), Some(1)] {
+            assert_eq!(
+                select_audience_output(&mons, FullscreenTarget::Largest, presenter),
+                Some(1),
+                "slides go to the external screen wherever the presenter window is ({presenter:?})"
+            );
+        }
+        assert_eq!(select_presenter_output(&mons, 1), Some(0));
+        assert_eq!(select_output(&mons, FullscreenTarget::Largest), Some(1));
+    }
+
+    #[test]
+    fn two_externals_put_slides_on_the_physically_larger_one() {
+        let mons = [desk_monitor(0), television(1)];
         assert_eq!(
             select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
+            Some(1),
+            "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience"
+        );
+        assert_eq!(select_presenter_output(&mons, 1), Some(0));
+    }
+
+    #[test]
+    fn unknown_physical_sizes_fall_back_to_pixels_then_the_free_screen() {
+        let projector = mon(1, 1920, 1080, false);
+        let mons = [desk_monitor(0), projector];
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::Largest, None),
             Some(0),
-            "the largest display is already the local presenter output"
+            "a projector reports no size, so pixel area decides"
+        );
+        let twins = [mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+        assert_eq!(
+            select_audience_output(&twins, FullscreenTarget::Largest, Some(0)),
+            Some(1),
+            "of two identical screens the presenter keeps the one it is on"
+        );
+    }
+
+    #[test]
+    fn laptop_with_desk_monitor_and_television_keeps_presenter_on_the_laptop() {
+        let mons = [laptop(0), desk_monitor(1), television(2)];
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
+            Some(2)
+        );
+        assert_eq!(select_presenter_output(&mons, 2), Some(0));
+    }
+
+    #[test]
+    fn a_single_screen_has_no_audience_output() {
+        for mons in [vec![laptop(0)], vec![television(0)], Vec::new()] {
+            assert_eq!(
+                select_audience_output(&mons, FullscreenTarget::Largest, None),
+                None
+            );
+            assert_eq!(select_presenter_output(&mons, 0), None);
+        }
+    }
+
+    #[test]
+    fn primary_external_skips_the_builtin_panel() {
+        let flagged_laptop = MonitorInfo {
+            primary: true,
+            ..laptop(0)
+        };
+        let mons = [flagged_laptop, desk_monitor(1), television(2)];
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::PrimaryExternal, None),
+            Some(1),
+            "the first external display, not the primary-flagged laptop panel"
+        );
+        let flagged_tv = MonitorInfo {
+            primary: true,
+            ..television(2)
+        };
+        let mons = [laptop(0), desk_monitor(1), flagged_tv];
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::PrimaryExternal, None),
+            Some(2)
         );
         assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Output(1), Some(1)),
-            None,
-            "an explicit self-target must not fake dual display mode"
+            select_output(&mons, FullscreenTarget::PrimaryExternal),
+            Some(2)
         );
+    }
+
+    #[test]
+    fn explicit_audience_output_is_honoured_even_under_the_presenter() {
+        let mons = [laptop(0), television(1)];
         assert_eq!(
-            select_audience_output(
-                &[mon(0, 1920, 1080, true)],
-                FullscreenTarget::Largest,
-                Some(0)
-            ),
+            select_audience_output(&mons, FullscreenTarget::Output(0), Some(0)),
+            Some(0),
+            "the compositor moves the presenter view off an explicitly chosen screen"
+        );
+        assert_eq!(select_presenter_output(&mons, 0), Some(1));
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::Output(9), None),
             None
         );
     }

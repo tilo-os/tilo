@@ -1,0 +1,89 @@
+[package]
+name = "tilo-pdf"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Tilo's PDF engine API: rendering, text layer, selection, search, forms, annotations and export. pdfium in a sandboxed helper on Linux and macOS; the pure-Rust hayro renderer in process on the web and wherever pdfium is missing."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_pdf"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-pdf-helper"
+path = "src/bin/tilo-pdf-helper.rs"
+
+[features]
+default = []
+# `Engine::open_content`: open a document from a content store by its address.
+content = ["dep:tilo-content"]
+# Only for `examples/gen_fixtures.rs`, which typesets the test fixtures.
+fixture-gen = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets"]
+
+[dependencies]
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+thiserror.workspace = true
+blake3.workspace = true
+unicode-normalization = "0.1.25"
+unicode-bidi = "0.3.18"
+hayro-syntax = { version = "0.7.2", default-features = false, features = ["std"] }
+# The portable engine: a memory-safe rasteriser that runs in process. The
+# only engine on the web, and the fallback on Linux and macOS when no pdfium
+# library or helper is available.
+hayro = "0.7.1"
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, optional = true }
+typst = { version = "0.15", optional = true }
+typst-pdf = { version = "0.15", optional = true }
+typst-layout = { version = "0.15", optional = true }
+typst-assets = { version = "0.15", features = ["fonts"], optional = true }
+
+# The sandboxed helper and everything only it and the export pass use.
+[target.'cfg(unix)'.dependencies]
+memmap2 = "0.9.10"
+# The workspace's postcard framing and SCM_RIGHTS transport, shared with the
+# other Tilo services rather than re-implemented here.
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard"] }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
+# The helper's confinement and the shared memory it exchanges with the
+# client (Landlock + seccomp + memfd on Linux, Seatbelt + POSIX shm on macOS).
+tilo-sandbox.workspace = true
+# The system font directories and the home directory, per platform.
+tilo-paths.workspace = true
+# The pinned fonts appearance text is set in, read from the installed catalog.
+tilo-font-catalog = { version = "0.1.0", path = "../../sdk/font-catalog" }
+# The one engine behind the API, loaded dynamically (never bundled). Only the
+# raw C API is used; the high-level wrapper's image support and global lock
+# are not needed.
+pdfium-render = { version = "0.8.37", default-features = false, features = ["pdfium_latest"] }
+# Appearance text: shaping, subset embedding and object writing for the
+# annotations pdfium cannot draw, and reading back its output to finish them
+# — all inside the sandboxed helper.
+harfrust = "0.5.2"
+skrifa = "0.40.0"
+subsetter = { version = "0.2.6", features = ["variable-fonts"] }
+pdf-writer = "0.15.0"
+flate2.workspace = true
+# Decodes images wrapped as pages — inside the sandboxed helper.
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+
+[[example]]
+name = "gen_fixtures"
+required-features = ["fixture-gen"]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+# Signals the helper in the crash-recovery tests.
+libc.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

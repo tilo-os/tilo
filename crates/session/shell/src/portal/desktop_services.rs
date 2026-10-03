@@ -245,7 +245,7 @@ impl ShellDynamicLauncherService {
 
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             records: Arc::new(Mutex::new(records)),
             path: Arc::new(path),
@@ -553,16 +553,16 @@ fn push_mail_field(query: &mut Vec<String>, key: &str, value: &str) {
 }
 
 fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => {
-                vec![char::from(byte)]
-            }
-            other => format!("%{other:02X}").chars().collect(),
-        })
-        .collect()
+    percent_encoding::utf8_percent_encode(value, QUERY_VALUE).to_string()
 }
+
+/// Everything but the RFC 3986 unreserved characters and `@`.
+const QUERY_VALUE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'@');
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenshotTarget {
@@ -774,6 +774,84 @@ impl WallpaperService for NoWallpaper {
     fn discard_staged_wallpaper(&self, _: &WallpaperRequest, _: &StagedWallpaper) {}
 }
 
+/// The `workspace_id` of a wallpaper shown on every workspace that has none of
+/// its own.
+pub const EVERY_WORKSPACE: &str = "*";
+
+/// Which workspaces a newly applied wallpaper covers. A workspace is a unit of
+/// collaboration, so a picture of its own tells at a glance which shared
+/// context is on screen; the Appearance pane stores the choice as
+/// `appearance.wallpaper_scope`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallpaperScope {
+    /// Only the workspace the request came from.
+    Workspace,
+    /// Every workspace, replacing any workspace's own picture.
+    All,
+}
+
+impl WallpaperScope {
+    /// Parse the persisted value; anything but `"all"` is this workspace.
+    pub fn parse(value: Option<&str>) -> Self {
+        if value == Some("all") {
+            Self::All
+        } else {
+            Self::Workspace
+        }
+    }
+
+    /// The scope the user chose in Settings.
+    pub fn configured() -> Self {
+        Self::parse(settings_store::str_at(
+            &settings_store::load(),
+            "appearance",
+            "wallpaper_scope",
+        ))
+    }
+}
+
+/// Record `cache_file` as the wallpaper for `targets`, on `workspace_id` alone
+/// or on every workspace.
+pub fn place_wallpaper(
+    records: &mut Vec<WallpaperRecord>,
+    workspace_id: &str,
+    scope: WallpaperScope,
+    targets: &[&str],
+    cache_file: &str,
+) {
+    let owner = match scope {
+        WallpaperScope::Workspace => workspace_id,
+        WallpaperScope::All => EVERY_WORKSPACE,
+    };
+    records.retain(|old| {
+        let replaced = match scope {
+            WallpaperScope::Workspace => old.workspace_id == workspace_id,
+            WallpaperScope::All => true,
+        };
+        !(replaced && targets.iter().any(|target| old.target == *target))
+    });
+    records.extend(targets.iter().map(|target| WallpaperRecord {
+        workspace_id: owner.to_string(),
+        cache_file: cache_file.to_string(),
+        target: (*target).into(),
+    }));
+}
+
+/// The record a workspace shows for `target`: its own, else the one for every
+/// workspace.
+pub fn wallpaper_record_for<'a>(
+    records: &'a [WallpaperRecord],
+    workspace_id: &str,
+    target: &str,
+) -> Option<&'a WallpaperRecord> {
+    let find = |owner: &str| {
+        records
+            .iter()
+            .find(|record| record.workspace_id == owner && record.target == target)
+    };
+    find(workspace_id).or_else(|| find(EVERY_WORKSPACE))
+}
+
 /// Local-only wallpaper selection.  Collaborative workspace state must never
 /// replicate a private file/document reference to peers.  The renderer reads
 /// this private registry when drawing a workspace backdrop.
@@ -806,7 +884,7 @@ impl ShellWallpaperService {
         path: impl Into<PathBuf>,
     ) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             tree,
             records: Arc::new(Mutex::new(records)),
@@ -878,24 +956,19 @@ impl WallpaperService for ShellWallpaperService {
             "both" => &["background", "lockscreen"],
             _ => return PortalResult::Failed("invalid wallpaper target".into()),
         };
-        let new_records: Vec<WallpaperRecord> = targets
-            .iter()
-            .map(|target| WallpaperRecord {
-                workspace_id: workspace_id.clone(),
-                cache_file: staged.cache_file.clone(),
-                target: (*target).into(),
-            })
-            .collect();
+        let scope = WallpaperScope::configured();
         let Ok(mut records) = self.records.lock() else {
             self.discard_staged_wallpaper(request, staged);
             return PortalResult::Unavailable("Tilo wallpaper registry is unavailable".into());
         };
         let before = records.clone();
-        records.retain(|old| {
-            !(old.workspace_id == workspace_id
-                && targets.iter().any(|target| old.target == *target))
-        });
-        records.extend(new_records);
+        place_wallpaper(
+            &mut records,
+            &workspace_id,
+            scope,
+            targets,
+            &staged.cache_file,
+        );
         if let Err(error) = write_private_json(self.path.as_ref(), &*records) {
             *records = before;
             // We still hold `records`; do cleanup inline rather than calling
@@ -938,8 +1011,7 @@ pub(crate) fn document_portal_path_from_uri(uri: &str) -> Result<PathBuf, String
 }
 
 fn document_portal_root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
+    xdg_paths::xdg::runtime_dir()
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix_uid())))
         .join("doc")
 }
@@ -1132,7 +1204,7 @@ fn normalise_wallpaper(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    atomic_file::write_private(path, bytes).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_private(path, bytes).map_err(|error| error.to_string())
 }
 
 fn cleanup_wallpaper_cache(cache: &Path, records: &[WallpaperRecord]) {
@@ -1167,7 +1239,7 @@ pub(crate) fn wallpaper_state_path() -> PathBuf {
 }
 
 fn write_private_json(path: &Path, value: &(impl Serialize + ?Sized)) -> Result<(), String> {
-    atomic_file::json::write_private(path, value).map_err(|error| error.to_string())
+    tilo_files::native::atomic::json::write_private(path, value).map_err(|error| error.to_string())
 }
 
 /// All application-facing desktop capabilities.  This is cloneable by design:
@@ -1224,173 +1296,226 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn mailto_encoding_cannot_create_an_extra_field() {
-        let uri = mailto_uri(&EmailRequest {
-            addresses: vec!["a@example.test".into()],
-            subject: Some("hello&bcc=other@example.test".into()),
-            body: Some("line one\nline two".into()),
-            ..EmailRequest::default()
-        });
-        assert_eq!(
-            uri,
-            "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
-        );
-    }
-
-    #[test]
-    fn mail_attachment_is_one_opaque_uri_query_value() {
-        let uri = mailto_uri(&EmailRequest {
-            attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
-            ..EmailRequest::default()
-        });
-        assert_eq!(
-            uri,
-            "mailto:?attachment=file%3A%2F%2F%2Frun%2Fuser%2F1000%2Fdoc%2Ftoken%2Fa%2520%2526%2520b.pdf"
-        );
-        assert!(!uri.contains("&b.pdf"));
-    }
-
-    #[test]
-    fn mail_attachments_become_one_shot_read_grants_for_the_handler_only() {
-        let mut capabilities = Vec::new();
-        add_mail_attachment_grants(
-            &mut capabilities,
-            "so.tilo.mail",
-            &[PathBuf::from("/run/user/1000/doc/abc/report.pdf")],
-        );
-        assert_eq!(capabilities.len(), 1);
-        let grant = &capabilities[0];
-        assert_eq!(grant.subject, Subject::app("so.tilo.mail"));
-        assert_eq!(
-            grant.scope,
-            Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
-        );
-        assert_eq!(grant.verb, Verb::Read);
-        assert_eq!(grant.expiry, Expiry::AfterUse);
-        assert!(grant.id.starts_with("portal-email:"));
-    }
-
-    #[test]
-    fn dynamic_library_is_non_executable_and_durable() {
-        let dir = tempfile::tempdir().expect("temporary state directory");
-        let path = dir.path().join("launchers.json");
-        let service = ShellDynamicLauncherService::at_path(&path);
-        let request = LauncherInstallRequest {
-            app_id: "org.example.Caller".into(),
-            name: "Example site".into(),
-            launcher_type: 2,
-            target: Some("https://example.test/".into()),
-            editable_name: true,
-            editable_icon: false,
-            icon_kind: "tilo-web".into(),
-            icon_bytes: None,
-        };
-        assert!(matches!(
-            service.prepare_install(&request),
-            PortalResult::Success(_)
-        ));
-        let records = ShellDynamicLauncherService::at_path(&path).records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].target.as_deref(), Some("https://example.test/"));
-        assert_eq!(records[0].icon_kind, "tilo-web");
-        assert!(records[0].icon_bytes.is_none());
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("Exec="));
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
-            0
-        );
-    }
-
-    #[test]
-    fn supplied_launcher_icon_is_durable_data_not_a_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("launchers.json");
-        let service = ShellDynamicLauncherService::at_path(&path);
-        let icon = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec();
-        let request = LauncherInstallRequest {
-            app_id: "org.example.Caller".into(),
-            name: "Reviewed launcher".into(),
-            launcher_type: 1,
-            target: None,
-            editable_name: false,
-            editable_icon: false,
-            icon_kind: "supplied".into(),
-            icon_bytes: Some(icon.clone()),
-        };
-        assert!(matches!(
-            service.prepare_install(&request),
-            PortalResult::Success(_)
-        ));
-        let restored = ShellDynamicLauncherService::at_path(path).records();
-        assert_eq!(restored[0].icon_bytes.as_deref(), Some(icon.as_slice()));
-        assert!(
-            !std::fs::read_to_string(dir.path().join("launchers.json"))
-                .unwrap()
-                .contains("/home/")
-        );
-    }
-
-    #[test]
-    fn document_uri_is_confined_to_the_document_portal_mount() {
-        let root = tempfile::tempdir().unwrap();
-        let exported = root.path().join("grant/a b.png");
-        fs::create_dir_all(exported.parent().unwrap()).unwrap();
-        fs::write(&exported, b"png").unwrap();
-        let uri = format!("file://{}", exported.display()).replace(' ', "%20");
-        assert_eq!(
-            document_portal_path_from_uri_at(&uri, root.path()).unwrap(),
-            exported.canonicalize().unwrap()
-        );
-        assert!(document_portal_path_from_uri_at("file:///etc/passwd", root.path()).is_err());
-        assert!(document_portal_path_from_uri_at("file://remote/path", root.path()).is_err());
-    }
-
-    #[test]
-    fn imported_wallpaper_is_normalised_and_private() {
-        use image::ImageEncoder as _;
-        let mut original = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut original)
-            .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        let normalized = normalise_wallpaper(&original).unwrap();
-        let decoder =
-            image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
-        assert_eq!(
-            image::ImageDecoder::color_type(&decoder),
-            image::ColorType::Rgba8
-        );
-        assert_eq!(
-            ui::png::decode_rgba8(&normalized).unwrap().rgba,
-            [12, 34, 56, 255]
-        );
-
-        let cache = tempfile::tempdir().unwrap();
-        let file = cache.path().join("private.png");
-        write_private_bytes(&file, b"private").unwrap();
-        assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
-    }
-
-    #[test]
-    fn wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri() {
-        let file = format!("{}.png", "a".repeat(64));
-        set_wallpaper_preview("preview-workspace", &file);
-        assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_some());
-        assert!(wallpaper_preview_file_for_workspace("other-workspace").is_none());
-        clear_wallpaper_preview("preview-workspace", &file);
-        assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
-    }
-
-    #[test]
-    fn wallpaper_normaliser_accepts_common_desktop_formats() {
-        let source = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
-        );
-        for format in [image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
-            let mut encoded = std::io::Cursor::new(Vec::new());
-            source.write_to(&mut encoded, format).unwrap();
-            let normalized = normalise_wallpaper(encoded.get_ref()).unwrap();
-            assert!(normalized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+    fn mail_handoff_encodes_fields_and_grants_attachments_once() {
+        // Phase `mailto_encoding_cannot_create_an_extra_field`.
+        {
+            let uri = mailto_uri(&EmailRequest {
+                addresses: vec!["a@example.test".into()],
+                subject: Some("hello&bcc=other@example.test".into()),
+                body: Some("line one\nline two".into()),
+                ..EmailRequest::default()
+            });
+            assert_eq!(
+                uri,
+                "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
+            );
         }
+        // Phase `mail_attachment_is_one_opaque_uri_query_value`.
+        {
+            let uri = mailto_uri(&EmailRequest {
+                attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
+                ..EmailRequest::default()
+            });
+            assert_eq!(
+                uri,
+                "mailto:?attachment=file%3A%2F%2F%2Frun%2Fuser%2F1000%2Fdoc%2Ftoken%2Fa%2520%2526%2520b.pdf"
+            );
+            assert!(!uri.contains("&b.pdf"));
+        }
+        // Phase `mail_attachments_become_one_shot_read_grants_for_the_handler_only`.
+        {
+            let mut capabilities = Vec::new();
+            add_mail_attachment_grants(
+                &mut capabilities,
+                "so.tilo.mail",
+                &[PathBuf::from("/run/user/1000/doc/abc/report.pdf")],
+            );
+            assert_eq!(capabilities.len(), 1);
+            let grant = &capabilities[0];
+            assert_eq!(grant.subject, Subject::app("so.tilo.mail"));
+            assert_eq!(
+                grant.scope,
+                Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
+            );
+            assert_eq!(grant.verb, Verb::Read);
+            assert_eq!(grant.expiry, Expiry::AfterUse);
+            assert!(grant.id.starts_with("portal-email:"));
+        }
+    }
+
+    #[test]
+    fn launcher_and_document_data_is_durable_and_confined() {
+        // Phase `dynamic_library_is_non_executable_and_durable`.
+        {
+            let dir = tempfile::tempdir().expect("temporary state directory");
+            let path = dir.path().join("launchers.json");
+            let service = ShellDynamicLauncherService::at_path(&path);
+            let request = LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Example site".into(),
+                launcher_type: 2,
+                target: Some("https://example.test/".into()),
+                editable_name: true,
+                editable_icon: false,
+                icon_kind: "tilo-web".into(),
+                icon_bytes: None,
+            };
+            assert!(matches!(
+                service.prepare_install(&request),
+                PortalResult::Success(_)
+            ));
+            let records = ShellDynamicLauncherService::at_path(&path).records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].target.as_deref(), Some("https://example.test/"));
+            assert_eq!(records[0].icon_kind, "tilo-web");
+            assert!(records[0].icon_bytes.is_none());
+            assert!(!std::fs::read_to_string(&path).unwrap().contains("Exec="));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        // Phase `supplied_launcher_icon_is_durable_data_not_a_path`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("launchers.json");
+            let service = ShellDynamicLauncherService::at_path(&path);
+            let icon = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec();
+            let request = LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Reviewed launcher".into(),
+                launcher_type: 1,
+                target: None,
+                editable_name: false,
+                editable_icon: false,
+                icon_kind: "supplied".into(),
+                icon_bytes: Some(icon.clone()),
+            };
+            assert!(matches!(
+                service.prepare_install(&request),
+                PortalResult::Success(_)
+            ));
+            let restored = ShellDynamicLauncherService::at_path(path).records();
+            assert_eq!(restored[0].icon_bytes.as_deref(), Some(icon.as_slice()));
+            assert!(
+                !std::fs::read_to_string(dir.path().join("launchers.json"))
+                    .unwrap()
+                    .contains("/home/")
+            );
+        }
+        // Phase `document_uri_is_confined_to_the_document_portal_mount`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let exported = root.path().join("grant/a b.png");
+            fs::create_dir_all(exported.parent().unwrap()).unwrap();
+            fs::write(&exported, b"png").unwrap();
+            let uri = format!("file://{}", exported.display()).replace(' ', "%20");
+            assert_eq!(
+                document_portal_path_from_uri_at(&uri, root.path()).unwrap(),
+                exported.canonicalize().unwrap()
+            );
+            assert!(document_portal_path_from_uri_at("file:///etc/passwd", root.path()).is_err());
+            assert!(document_portal_path_from_uri_at("file://remote/path", root.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn wallpaper_imports_are_normalised_private_and_scoped() {
+        // Phase `imported_wallpaper_is_normalised_and_private`.
+        {
+            use image::ImageEncoder as _;
+            let mut original = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut original)
+                .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            let normalized = normalise_wallpaper(&original).unwrap();
+            let decoder =
+                image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
+            assert_eq!(
+                image::ImageDecoder::color_type(&decoder),
+                image::ColorType::Rgba8
+            );
+            assert_eq!(
+                ui::png::decode_rgba8(&normalized).unwrap().rgba,
+                [12, 34, 56, 255]
+            );
+
+            let cache = tempfile::tempdir().unwrap();
+            let file = cache.path().join("private.png");
+            write_private_bytes(&file, b"private").unwrap();
+            assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
+        }
+        // Phase `wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri`.
+        {
+            let file = format!("{}.png", "a".repeat(64));
+            set_wallpaper_preview("preview-workspace", &file);
+            assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_some());
+            assert!(wallpaper_preview_file_for_workspace("other-workspace").is_none());
+            clear_wallpaper_preview("preview-workspace", &file);
+            assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
+        }
+        // Phase `wallpaper_normaliser_accepts_common_desktop_formats`.
+        {
+            let source = image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
+            );
+            for format in [image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
+                let mut encoded = std::io::Cursor::new(Vec::new());
+                source.write_to(&mut encoded, format).unwrap();
+                let normalized = normalise_wallpaper(encoded.get_ref()).unwrap();
+                assert!(normalized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+            }
+        }
+    }
+
+    #[test]
+    fn a_wallpaper_for_one_workspace_leaves_the_others_alone() {
+        let hash = |c: char| format!("{}.png", c.to_string().repeat(64));
+        let mut records = Vec::new();
+        place_wallpaper(
+            &mut records,
+            "a",
+            WallpaperScope::All,
+            &["background"],
+            &hash('1'),
+        );
+        place_wallpaper(
+            &mut records,
+            "b",
+            WallpaperScope::Workspace,
+            &["background"],
+            &hash('2'),
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "b", "background").map(|r| r.cache_file.clone()),
+            Some(hash('2')),
+            "a workspace's own picture tells you which shared context you are in"
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "a", "background").map(|r| r.cache_file.clone()),
+            Some(hash('1')),
+            "the rest show the picture chosen for every workspace"
+        );
+        assert!(wallpaper_record_for(&records, "a", "lockscreen").is_none());
+
+        place_wallpaper(
+            &mut records,
+            "c",
+            WallpaperScope::All,
+            &["background"],
+            &hash('3'),
+        );
+        assert_eq!(
+            records.len(),
+            1,
+            "every workspace replaces the per-workspace pictures"
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "b", "background").map(|r| r.cache_file.clone()),
+            Some(hash('3'))
+        );
+        assert_eq!(WallpaperScope::parse(Some("all")), WallpaperScope::All);
+        assert_eq!(WallpaperScope::parse(None), WallpaperScope::Workspace);
     }
 }
 

@@ -14,9 +14,9 @@
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
 
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -276,11 +276,7 @@ impl crate::widget::NativeViewLifecycle for WebView {
 }
 
 impl Widget for WebView {
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
-        Some(self)
-    }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(dyn crate::widget::NativeViewLifecycle);
 
     fn build_layout(
         &mut self,
@@ -413,20 +409,9 @@ impl Widget for WebView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if (f64::from(self.scale_factor) - scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = to_f32(scale_factor);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
+            self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
@@ -434,7 +419,8 @@ impl Widget for WebView {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = logical;
                 if self.rect.contains(logical) {
                     let (x, y) = self.to_engine(logical);
@@ -461,7 +447,7 @@ impl Widget for WebView {
                             _ => MouseButton::Right,
                         };
                         if down && mapped == MouseButton::Left {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
                         crate::webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
@@ -470,19 +456,19 @@ impl Widget for WebView {
                             x,
                             y,
                         });
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     // Mouse side buttons drive history, as in every desktop browser.
                     winit::event::MouseButton::Back => {
                         if down {
                             self.engine.send(WebViewCommand::GoBack);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     winit::event::MouseButton::Forward => {
                         if down {
                             self.engine.send(WebViewCommand::GoForward);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     winit::event::MouseButton::Other(_) => {}
@@ -494,8 +480,8 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        to_f32(f64::from(*x) * WHEEL_LINE_PX * scale_factor),
-                        to_f32(f64::from(*y) * WHEEL_LINE_PX * scale_factor),
+                        to_f32(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
+                        to_f32(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
                     ),
                     // PixelDelta is already physical.
                     MouseScrollDelta::PixelDelta(p) => (to_f32(p.x), to_f32(p.y)),
@@ -503,7 +489,7 @@ impl Widget for WebView {
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -513,7 +499,7 @@ impl Widget for WebView {
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
                     crate::webview::profile::record_input("key");
-                    let m = modifiers.state();
+                    let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
                         key,
                         down: key_event.state == ElementState::Pressed,
@@ -524,7 +510,7 @@ impl Widget for WebView {
                             meta: m.super_key(),
                         },
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -573,8 +559,8 @@ impl Widget for WebView {
     fn on_nav_gesture(
         &mut self,
         dir: NavDirection,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
@@ -608,14 +594,61 @@ mod tests {
     use super::*;
     use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
+    use automerge::AutoCommit;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
 
     #[test]
-    fn focused_page_owns_tab_for_dom_focus_navigation() {
-        let mut page = WebView::new(TestEngine::new());
-        page.set_focus(true);
-        assert!(page.wants_tab_input());
+    fn keyboard_focus_is_forwarded_to_the_page() {
+        // Case `focused_page_owns_tab_for_dom_focus_navigation`.
+        {
+            let mut page = WebView::new(TestEngine::new());
+            page.set_focus(true);
+            assert!(page.wants_tab_input());
+        }
+
+        // Case `focus_change_notifies_engine_once`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, _tree, _node) = laid_out(engine.clone());
+            w.set_focus(true);
+            w.set_focus(true);
+            w.set_focus(false);
+            let focus_cmds: Vec<_> = engine
+                .commands()
+                .into_iter()
+                .filter(|c| matches!(c, WebViewCommand::SetFocused(_)))
+                .collect();
+            assert_eq!(
+                focus_cmds,
+                vec![
+                    WebViewCommand::SetFocused(true),
+                    WebViewCommand::SetFocused(false)
+                ]
+            );
+        }
+
+        // Case `key_mapping_covers_text_and_named_keys`.
+        {
+            assert_eq!(
+                WebView::map_key(&WKey::Character("a".into())),
+                Some(KeyInput::Character("a".into()))
+            );
+            assert_eq!(
+                WebView::map_key(&WKey::Named(WNamedKey::Space)),
+                Some(KeyInput::Character(" ".into()))
+            );
+            assert_eq!(
+                WebView::map_key(&WKey::Named(WNamedKey::Enter)),
+                Some(KeyInput::Named(NamedKey::Enter))
+            );
+            assert_eq!(
+                WebView::map_key(&WKey::Named(WNamedKey::PageDown)),
+                Some(KeyInput::Named(NamedKey::PageDown))
+            );
+            // Modifier keys are not forwarded as page keys.
+            assert_eq!(WebView::map_key(&WKey::Named(WNamedKey::Shift)), None);
+        }
     }
 
     fn laid_out(engine: Arc<TestEngine>) -> (WebView, TaffyTree<()>, NodeId) {
@@ -644,674 +677,645 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         w.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
-        );
-    }
-
-    #[test]
-    fn layout_sends_physical_resize_once() {
-        let engine = TestEngine::new();
-        let (mut w, tree, node) = laid_out(engine.clone());
-        // Re-applying the same layout must not resend.
-        w.apply_layout(&tree, node, Point::ZERO);
-        let resizes: Vec<_> = engine
-            .commands()
-            .into_iter()
-            .filter(|c| matches!(c, WebViewCommand::Resize { .. }))
-            .collect();
-        assert_eq!(
-            resizes,
-            vec![WebViewCommand::Resize {
-                width: 400,
-                height: 300,
-                scale_factor: 1.0
-            }]
-        );
-    }
-
-    #[test]
-    fn first_retina_draw_sets_dpi_without_an_input_event() {
-        let engine = TestEngine::new();
-        let (mut view, _, _) = laid_out(engine.clone());
-        view.draw(
-            &mut Scene::new(),
-            Affine::scale(2.0),
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert_eq!(
-            engine.commands().last(),
-            Some(&WebViewCommand::Resize {
-                width: 800,
-                height: 600,
-                scale_factor: 2.0,
-            })
-        );
-        let count = engine.commands().len();
-        view.draw(
-            &mut Scene::new(),
-            Affine::scale(2.0),
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert_eq!(engine.commands().len(), count);
-    }
-
-    #[test]
-    fn mounting_in_a_retina_window_sets_dpi_before_input() {
-        let engine = TestEngine::new();
-        let (mut view, _, _) = laid_out(engine.clone());
-        crate::widget::mount_native_views(
-            &mut view,
-            &crate::widget::NativeViewHost::headless(
-                crate::platform::PlatformConventions::default(),
-                2.0,
-            ),
-        );
-        assert_eq!(
-            engine.commands().last(),
-            Some(&WebViewCommand::Resize {
-                width: 800,
-                height: 600,
-                scale_factor: 2.0,
-            })
-        );
-    }
-
-    #[test]
-    fn mounting_reissues_physical_size_when_retina_scale_was_preseeded() {
-        let engine = TestEngine::new();
-        let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
-        let mut taffy = TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-            )
-            .unwrap();
-        view.apply_layout(&taffy, node, Point::ORIGIN);
-        let before_mount = engine.commands().len();
-        crate::widget::mount_native_views(
-            &mut view,
-            &crate::widget::NativeViewHost::headless(
-                crate::platform::PlatformConventions::default(),
-                2.0,
-            ),
-        );
-        assert_eq!(
-            engine.commands().len(),
-            before_mount + 1,
-            "native mount must reissue a resize that startup could have missed"
-        );
-        assert_eq!(
-            engine.commands().last(),
-            Some(&WebViewCommand::Resize {
-                width: 800,
-                height: 600,
-                scale_factor: 2.0,
-            })
-        );
-        crate::widget::mount_native_views(
-            &mut view,
-            &crate::widget::NativeViewHost::headless(
-                crate::platform::PlatformConventions::default(),
-                2.0,
-            ),
-        );
-        assert_eq!(
-            engine.commands().len(),
-            before_mount + 1,
-            "repeated mount of the same retained view must be idempotent"
-        );
-    }
-
-    #[test]
-    fn first_mount_does_not_downgrade_a_preseeded_retina_scale() {
-        let engine = TestEngine::new();
-        let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
-        let mut taffy = TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-            )
-            .unwrap();
-        view.apply_layout(&taffy, node, Point::ORIGIN);
-        crate::widget::mount_native_views(
-            &mut view,
-            &crate::widget::NativeViewHost::headless(
-                crate::platform::PlatformConventions::default(),
-                1.0,
-            ),
-        );
-        assert_eq!(
-            engine.commands().last(),
-            Some(&WebViewCommand::Resize {
-                width: 800,
-                height: 600,
-                scale_factor: 2.0,
-            })
-        );
-    }
-
-    #[test]
-    fn stale_frame_dimensions_request_one_bounded_repaint_retry() {
-        let engine = TestEngine::new();
-        let (mut view, _, _) = laid_out(engine.clone());
-        let initial = engine.commands().len();
-        view.retry_resize_for_stale_frame((400, 292));
-        assert_eq!(engine.commands().len(), initial + 1);
-        assert_eq!(
-            engine.commands().last(),
-            Some(&WebViewCommand::Resize {
-                width: 400,
-                height: 300,
+            &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
-            })
-        );
-        view.retry_resize_for_stale_frame((400, 292));
-        assert_eq!(
-            engine.commands().len(),
-            initial + 1,
-            "the same stale paint must not create an invalidation loop"
-        );
-        view.retry_resize_for_stale_frame((399, 300));
-        assert_eq!(
-            engine.commands().len(),
-            initial + 2,
-            "a distinct stale frame gets one retry"
-        );
-        view.retry_resize_for_stale_frame((400, 300));
-        view.retry_resize_for_stale_frame((400, 292));
-        assert_eq!(
-            engine.commands().len(),
-            initial + 3,
-            "a matching frame resets the bounded retry state"
+                modifiers: &mods,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 
     #[test]
-    fn cef_outward_rounding_is_not_treated_as_a_stale_frame() {
-        let engine = TestEngine::new();
-        let (mut view, _, _) = laid_out(engine.clone());
-        view.rect = Rect::new(0.0, 0.0, 400.5, 225.5);
-        view.scale_factor = 2.0;
-        let initial = engine.commands().len();
-        assert!(view.retry_resize_for_stale_frame((802, 452)));
-        assert_eq!(engine.commands().len(), initial);
-    }
-
-    #[test]
-    fn fractional_dpr_accepts_exact_and_cef_rounded_frames() {
-        let engine = TestEngine::new();
-        let (mut view, _, _) = laid_out(engine.clone());
-        view.rect = Rect::new(0.0, 0.0, 802.0 / 1.75, 451.0 / 1.75);
-        view.scale_factor = 1.75;
-        let initial = engine.commands().len();
-        assert!(
-            view.retry_resize_for_stale_frame((804, 452)),
-            "CEF rounds requested physical pixels to integer DIP and back out"
-        );
-        assert_eq!(engine.commands().len(), initial);
-        assert!(
-            view.retry_resize_for_stale_frame((802, 451)),
-            "engines that render the exact physical request are also valid"
-        );
-        assert_eq!(engine.commands().len(), initial);
-    }
-
-    #[test]
-    fn exact_engine_frames_draw_at_fractional_and_odd_physical_sizes() {
-        for (width, height, scale) in [(802, 451, 1.75), (801, 451, 2.0), (800, 600, 2.0)] {
+    fn engine_learns_physical_size_and_retina_scale_before_input() {
+        // Case `layout_sends_physical_resize_once`.
+        {
             let engine = TestEngine::new();
-            let mut view = WebView::new(engine.clone());
-            view.set_viewport(
-                Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(width) / scale,
-                    f64::from(height) / scale,
-                ),
-                scale as f32,
-            );
-            engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
-            let initial = engine.commands().len();
-            let mut scene = Scene::new();
-            view.draw(
-                &mut scene,
-                Affine::scale(scale),
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
-            assert!(
-                scene
-                    .encoding()
-                    .draw_tags
-                    .contains(&vello_encoding::DrawTag::IMAGE),
-                "exact {width}x{height} frame at {scale} must draw"
-            );
-            assert_eq!((view.cached_key.1, view.cached_key.2), (width, height));
+            let (mut w, tree, node) = laid_out(engine.clone());
+            // Re-applying the same layout must not resend.
+            w.apply_layout(&tree, node, Point::ZERO);
+            let resizes: Vec<_> = engine
+                .commands()
+                .into_iter()
+                .filter(|c| matches!(c, WebViewCommand::Resize { .. }))
+                .collect();
             assert_eq!(
-                engine.commands().len(),
-                initial,
-                "valid paint must not retry resize"
+                resizes,
+                vec![WebViewCommand::Resize {
+                    width: 400,
+                    height: 300,
+                    scale_factor: 1.0
+                }]
             );
         }
-    }
 
-    #[test]
-    fn quantized_engine_frames_draw_on_either_side_of_requested_size() {
-        // CEF rounds outward twice; WPE rounds the logical size to nearest.
-        // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
-        for (requested, painted, scale) in [
-            ((802, 451), (804, 452), 1.75),
-            ((802, 451), (801, 450), 3.0),
-            ((801, 451), (802, 452), 2.0),
-        ] {
+        // Case `first_retina_draw_sets_dpi_without_an_input_event`.
+        {
             let engine = TestEngine::new();
-            let mut view = WebView::new(engine.clone());
-            view.set_viewport(
-                Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(requested.0) / scale,
-                    f64::from(requested.1) / scale,
-                ),
-                scale as f32,
-            );
-            *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-                trace_id: None,
-                rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
-                width: painted.0,
-                height: painted.1,
-            });
-            let initial = engine.commands().len();
-            let mut scene = Scene::new();
+            let (mut view, _, _) = laid_out(engine.clone());
             view.draw(
-                &mut scene,
-                Affine::scale(scale),
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
-            assert!(
-                scene
-                    .encoding()
-                    .draw_tags
-                    .contains(&vello_encoding::DrawTag::IMAGE),
-                "{painted:?} paint for {requested:?} at {scale} must draw"
-            );
-            assert_eq!((view.cached_key.1, view.cached_key.2), painted);
-            assert_eq!(engine.commands().len(), initial);
-        }
-    }
-
-    #[test]
-    fn scene_trace_follows_drawn_cached_image_and_excludes_stale_geometry() {
-        let engine = TestEngine::new();
-        let mut view = WebView::new(engine.clone());
-        view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
-        let frame = crate::webview::Frame {
-            trace_id: Some(101),
-            rgba: Arc::new(vec![255; 16 * 16 * 4]),
-            width: 16,
-            height: 16,
-        };
-        crate::webview::frame_trace::take_for_test();
-        for available in [Some(frame), None] {
-            *engine.frames().lock().unwrap() = available;
-            let mut scene = Scene::new();
-            view.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
-            assert!(
-                scene
-                    .encoding()
-                    .draw_tags
-                    .contains(&vello_encoding::DrawTag::IMAGE)
-            );
-            assert_eq!(
-                crate::webview::frame_trace::take_for_test(),
-                (vec![101], false)
-            );
-        }
-        *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-            trace_id: Some(102),
-            rgba: Arc::new(vec![255; 8 * 8 * 4]),
-            width: 8,
-            height: 8,
-        });
-        let mut scene = Scene::new();
-        view.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(
-            !scene
-                .encoding()
-                .draw_tags
-                .contains(&vello_encoding::DrawTag::IMAGE)
-        );
-        assert_eq!(
-            crate::webview::frame_trace::take_for_test(),
-            (vec![], false)
-        );
-    }
-
-    #[test]
-    fn scene_trace_follows_nested_layout_on_repeated_and_new_frames() {
-        let engine = TestEngine::new();
-        let mut view = WebView::new(engine.clone());
-        view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
-        *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-            trace_id: Some(201),
-            rgba: Arc::new(vec![255; 16 * 16 * 4]),
-            width: 16,
-            height: 16,
-        });
-        let mut root = crate::widget::Column::new()
-            .push(Box::new(crate::widget::Row::new().push(Box::new(view))));
-        crate::webview::frame_trace::take_for_test();
-        for pass in 0..3 {
-            if pass == 1 {
-                *engine.frames().lock().unwrap() = None;
-            } else if pass == 2 {
-                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-                    trace_id: Some(202),
-                    rgba: Arc::new(vec![128; 16 * 16 * 4]),
-                    width: 16,
-                    height: 16,
-                });
-            }
-            let mut scene = Scene::new();
-            root.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-                &crate::permissions::PermissionContext::permissive(),
-            );
-            assert!(
-                scene
-                    .encoding()
-                    .draw_tags
-                    .contains(&vello_encoding::DrawTag::IMAGE)
-            );
-            let expected = if pass == 2 { vec![202] } else { vec![201] };
-            assert_eq!(
-                crate::webview::frame_trace::take_for_test(),
-                (expected, false),
-                "pass {pass}"
-            );
-        }
-    }
-
-    #[test]
-    fn old_density_frames_are_not_drawn_and_recovery_is_bounded() {
-        let engine = TestEngine::new();
-        let mut view = WebView::new(engine.clone());
-        view.set_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), 2.0);
-        engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
-        let current = engine.frames().lock().unwrap().clone().unwrap();
-        let stale = crate::webview::Frame {
-            trace_id: None,
-            rgba: Arc::new(vec![255; 400 * 300 * 4]),
-            width: 400,
-            height: 300,
-        };
-        let initial = engine.commands().len();
-        for (frame, should_draw, retries) in [
-            (current.clone(), true, 0),
-            (stale.clone(), false, 1),
-            (stale.clone(), false, 1),
-            (current, true, 1),
-            (stale, false, 2),
-        ] {
-            *engine.frames().lock().unwrap() = Some(frame);
-            let mut scene = Scene::new();
-            view.draw(
-                &mut scene,
+                &mut Scene::new(),
                 Affine::scale(2.0),
                 &mut TextRenderer::new(),
                 &Theme::dark(),
                 &PresenceCtx::default(),
             );
             assert_eq!(
-                scene
-                    .encoding()
-                    .draw_tags
-                    .contains(&vello_encoding::DrawTag::IMAGE),
-                should_draw
+                engine.commands().last(),
+                Some(&WebViewCommand::Resize {
+                    width: 800,
+                    height: 600,
+                    scale_factor: 2.0,
+                })
             );
-            assert_eq!(engine.commands().len(), initial + retries);
+            let count = engine.commands().len();
+            view.draw(
+                &mut Scene::new(),
+                Affine::scale(2.0),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert_eq!(engine.commands().len(), count);
+        }
+
+        // Case `mounting_in_a_retina_window_sets_dpi_before_input`.
+        {
+            let engine = TestEngine::new();
+            let (mut view, _, _) = laid_out(engine.clone());
+            crate::widget::mount_native_views(
+                &mut view,
+                &crate::widget::NativeViewHost::headless(
+                    crate::platform::PlatformConventions::default(),
+                    2.0,
+                ),
+            );
+            assert_eq!(
+                engine.commands().last(),
+                Some(&WebViewCommand::Resize {
+                    width: 800,
+                    height: 600,
+                    scale_factor: 2.0,
+                })
+            );
+        }
+
+        // Case `mounting_reissues_physical_size_when_retina_scale_was_preseeded`.
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
+            let mut taffy = TaffyTree::new();
+            let mut node_map = std::collections::HashMap::new();
+            let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::Definite(300.0),
+                    },
+                )
+                .unwrap();
+            view.apply_layout(&taffy, node, Point::ORIGIN);
+            let before_mount = engine.commands().len();
+            crate::widget::mount_native_views(
+                &mut view,
+                &crate::widget::NativeViewHost::headless(
+                    crate::platform::PlatformConventions::default(),
+                    2.0,
+                ),
+            );
+            assert_eq!(
+                engine.commands().len(),
+                before_mount + 1,
+                "native mount must reissue a resize that startup could have missed"
+            );
+            assert_eq!(
+                engine.commands().last(),
+                Some(&WebViewCommand::Resize {
+                    width: 800,
+                    height: 600,
+                    scale_factor: 2.0,
+                })
+            );
+            crate::widget::mount_native_views(
+                &mut view,
+                &crate::widget::NativeViewHost::headless(
+                    crate::platform::PlatformConventions::default(),
+                    2.0,
+                ),
+            );
+            assert_eq!(
+                engine.commands().len(),
+                before_mount + 1,
+                "repeated mount of the same retained view must be idempotent"
+            );
+        }
+
+        // Case `first_mount_does_not_downgrade_a_preseeded_retina_scale`.
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
+            let mut taffy = TaffyTree::new();
+            let mut node_map = std::collections::HashMap::new();
+            let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::Definite(300.0),
+                    },
+                )
+                .unwrap();
+            view.apply_layout(&taffy, node, Point::ORIGIN);
+            crate::widget::mount_native_views(
+                &mut view,
+                &crate::widget::NativeViewHost::headless(
+                    crate::platform::PlatformConventions::default(),
+                    1.0,
+                ),
+            );
+            assert_eq!(
+                engine.commands().last(),
+                Some(&WebViewCommand::Resize {
+                    width: 800,
+                    height: 600,
+                    scale_factor: 2.0,
+                })
+            );
         }
     }
 
     #[test]
-    fn pointer_inside_forwards_translated_coordinates() {
-        let engine = TestEngine::new();
-        let (mut w, tree, node) = laid_out(engine.clone());
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (50.0, 60.0).into(),
-            },
-        );
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-        );
-        let cmds = engine.commands();
-        assert!(cmds.contains(&WebViewCommand::MouseMove { x: 50.0, y: 60.0 }));
-        assert!(cmds.contains(&WebViewCommand::MouseButton {
-            button: MouseButton::Left,
-            down: true,
-            x: 50.0,
-            y: 60.0
-        }));
+    fn engine_frames_are_accepted_by_size_and_density_with_bounded_repaint_retries() {
+        // Case `stale_frame_dimensions_request_one_bounded_repaint_retry`.
+        {
+            let engine = TestEngine::new();
+            let (mut view, _, _) = laid_out(engine.clone());
+            let initial = engine.commands().len();
+            view.retry_resize_for_stale_frame((400, 292));
+            assert_eq!(engine.commands().len(), initial + 1);
+            assert_eq!(
+                engine.commands().last(),
+                Some(&WebViewCommand::Resize {
+                    width: 400,
+                    height: 300,
+                    scale_factor: 1.0,
+                })
+            );
+            view.retry_resize_for_stale_frame((400, 292));
+            assert_eq!(
+                engine.commands().len(),
+                initial + 1,
+                "the same stale paint must not create an invalidation loop"
+            );
+            view.retry_resize_for_stale_frame((399, 300));
+            assert_eq!(
+                engine.commands().len(),
+                initial + 2,
+                "a distinct stale frame gets one retry"
+            );
+            view.retry_resize_for_stale_frame((400, 300));
+            view.retry_resize_for_stale_frame((400, 292));
+            assert_eq!(
+                engine.commands().len(),
+                initial + 3,
+                "a matching frame resets the bounded retry state"
+            );
+        }
+
+        // Case `cef_outward_rounding_is_not_treated_as_a_stale_frame`.
+        {
+            let engine = TestEngine::new();
+            let (mut view, _, _) = laid_out(engine.clone());
+            view.rect = Rect::new(0.0, 0.0, 400.5, 225.5);
+            view.scale_factor = 2.0;
+            let initial = engine.commands().len();
+            assert!(view.retry_resize_for_stale_frame((802, 452)));
+            assert_eq!(engine.commands().len(), initial);
+        }
+
+        // Case `fractional_dpr_accepts_exact_and_cef_rounded_frames`.
+        {
+            let engine = TestEngine::new();
+            let (mut view, _, _) = laid_out(engine.clone());
+            view.rect = Rect::new(0.0, 0.0, 802.0 / 1.75, 451.0 / 1.75);
+            view.scale_factor = 1.75;
+            let initial = engine.commands().len();
+            assert!(
+                view.retry_resize_for_stale_frame((804, 452)),
+                "CEF rounds requested physical pixels to integer DIP and back out"
+            );
+            assert_eq!(engine.commands().len(), initial);
+            assert!(
+                view.retry_resize_for_stale_frame((802, 451)),
+                "engines that render the exact physical request are also valid"
+            );
+            assert_eq!(engine.commands().len(), initial);
+        }
+
+        // Case `old_density_frames_are_not_drawn_and_recovery_is_bounded`.
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), 2.0);
+            engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
+            let current = engine.frames().lock().unwrap().clone().unwrap();
+            let stale = crate::webview::Frame {
+                trace_id: None,
+                rgba: Arc::new(vec![255; 400 * 300 * 4]),
+                width: 400,
+                height: 300,
+            };
+            let initial = engine.commands().len();
+            for (frame, should_draw, retries) in [
+                (current.clone(), true, 0),
+                (stale.clone(), false, 1),
+                (stale.clone(), false, 1),
+                (current, true, 1),
+                (stale, false, 2),
+            ] {
+                *engine.frames().lock().unwrap() = Some(frame);
+                let mut scene = Scene::new();
+                view.draw(
+                    &mut scene,
+                    Affine::scale(2.0),
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                );
+                assert_eq!(
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .contains(&vello_encoding::DrawTag::IMAGE),
+                    should_draw
+                );
+                assert_eq!(engine.commands().len(), initial + retries);
+            }
+        }
     }
 
     #[test]
-    fn pointer_outside_sends_nothing() {
-        let engine = TestEngine::new();
-        let (mut w, tree, node) = laid_out(engine.clone());
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (900.0, 900.0).into(),
-            },
-        );
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-        );
-        assert!(
-            engine
-                .commands()
-                .iter()
-                .all(|c| matches!(c, WebViewCommand::Resize { .. })),
-            "only the layout resize may reach the engine",
-        );
+    fn engine_frames_draw_at_their_placed_geometry_and_scene_trace() {
+        // Case `exact_engine_frames_draw_at_fractional_and_odd_physical_sizes`.
+        {
+            for (width, height, scale) in [(802, 451, 1.75), (801, 451, 2.0), (800, 600, 2.0)] {
+                let engine = TestEngine::new();
+                let mut view = WebView::new(engine.clone());
+                view.set_viewport(
+                    Rect::new(
+                        0.0,
+                        0.0,
+                        f64::from(width) / scale,
+                        f64::from(height) / scale,
+                    ),
+                    scale as f32,
+                );
+                engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
+                let initial = engine.commands().len();
+                let mut scene = Scene::new();
+                view.draw(
+                    &mut scene,
+                    Affine::scale(scale),
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                );
+                assert!(
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .contains(&vello_encoding::DrawTag::IMAGE),
+                    "exact {width}x{height} frame at {scale} must draw"
+                );
+                assert_eq!((view.cached_key.1, view.cached_key.2), (width, height));
+                assert_eq!(
+                    engine.commands().len(),
+                    initial,
+                    "valid paint must not retry resize"
+                );
+            }
+        }
+
+        // Case `quantized_engine_frames_draw_on_either_side_of_requested_size`.
+        {
+            // CEF rounds outward twice; WPE rounds the logical size to nearest.
+            // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
+            for (requested, painted, scale) in [
+                ((802, 451), (804, 452), 1.75),
+                ((802, 451), (801, 450), 3.0),
+                ((801, 451), (802, 452), 2.0),
+            ] {
+                let engine = TestEngine::new();
+                let mut view = WebView::new(engine.clone());
+                view.set_viewport(
+                    Rect::new(
+                        0.0,
+                        0.0,
+                        f64::from(requested.0) / scale,
+                        f64::from(requested.1) / scale,
+                    ),
+                    scale as f32,
+                );
+                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                    trace_id: None,
+                    rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
+                    width: painted.0,
+                    height: painted.1,
+                });
+                let initial = engine.commands().len();
+                let mut scene = Scene::new();
+                view.draw(
+                    &mut scene,
+                    Affine::scale(scale),
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                );
+                assert!(
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .contains(&vello_encoding::DrawTag::IMAGE),
+                    "{painted:?} paint for {requested:?} at {scale} must draw"
+                );
+                assert_eq!((view.cached_key.1, view.cached_key.2), painted);
+                assert_eq!(engine.commands().len(), initial);
+            }
+        }
+
+        // Case `scene_trace_follows_drawn_cached_image_and_excludes_stale_geometry`.
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
+            let frame = crate::webview::Frame {
+                trace_id: Some(101),
+                rgba: Arc::new(vec![255; 16 * 16 * 4]),
+                width: 16,
+                height: 16,
+            };
+            crate::webview::frame_trace::take_for_test();
+            for available in [Some(frame), None] {
+                *engine.frames().lock().unwrap() = available;
+                let mut scene = Scene::new();
+                view.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                );
+                assert!(
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .contains(&vello_encoding::DrawTag::IMAGE)
+                );
+                assert_eq!(
+                    crate::webview::frame_trace::take_for_test(),
+                    (vec![101], false)
+                );
+            }
+            *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                trace_id: Some(102),
+                rgba: Arc::new(vec![255; 8 * 8 * 4]),
+                width: 8,
+                height: 8,
+            });
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(
+                !scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE)
+            );
+            assert_eq!(
+                crate::webview::frame_trace::take_for_test(),
+                (vec![], false)
+            );
+        }
+
+        // Case `scene_trace_follows_nested_layout_on_repeated_and_new_frames`.
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
+            *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                trace_id: Some(201),
+                rgba: Arc::new(vec![255; 16 * 16 * 4]),
+                width: 16,
+                height: 16,
+            });
+            let mut root = crate::widget::Column::new()
+                .push(Box::new(crate::widget::Row::new().push(Box::new(view))));
+            crate::webview::frame_trace::take_for_test();
+            for pass in 0..3 {
+                if pass == 1 {
+                    *engine.frames().lock().unwrap() = None;
+                } else if pass == 2 {
+                    *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                        trace_id: Some(202),
+                        rgba: Arc::new(vec![128; 16 * 16 * 4]),
+                        width: 16,
+                        height: 16,
+                    });
+                }
+                let mut scene = Scene::new();
+                root.draw_with_presence(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                    &crate::permissions::PermissionContext::permissive(),
+                );
+                assert!(
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .contains(&vello_encoding::DrawTag::IMAGE)
+                );
+                let expected = if pass == 2 { vec![202] } else { vec![201] };
+                assert_eq!(
+                    crate::webview::frame_trace::take_for_test(),
+                    (expected, false),
+                    "pass {pass}"
+                );
+            }
+        }
+
+        // Case `draw_after_navigation_paints_frame_image`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, _tree, _node) = laid_out(engine.clone());
+            engine.send(WebViewCommand::Navigate("https://example.org".into()));
+
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let presence = PresenceCtx::default();
+            w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            assert!(
+                w.cached_image.is_some(),
+                "draw caches the engine frame as a vello image",
+            );
+        }
     }
 
     #[test]
-    fn back_side_button_navigates_history() {
-        let engine = TestEngine::new();
-        let (mut w, tree, node) = laid_out(engine.clone());
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (10.0, 10.0).into(),
-            },
-        );
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Back,
-            },
-        );
-        assert!(engine.commands().contains(&WebViewCommand::GoBack));
-    }
+    fn pointer_input_forwards_inside_only_and_navigates_history() {
+        // Case `pointer_inside_forwards_translated_coordinates`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (50.0, 60.0).into(),
+                },
+            );
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                },
+            );
+            let cmds = engine.commands();
+            assert!(cmds.contains(&WebViewCommand::MouseMove { x: 50.0, y: 60.0 }));
+            assert!(cmds.contains(&WebViewCommand::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+                x: 50.0,
+                y: 60.0
+            }));
+        }
 
-    #[test]
-    fn wheel_scrolls_in_physical_pixels() {
-        let engine = TestEngine::new();
-        let (mut w, tree, node) = laid_out(engine.clone());
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (10.0, 10.0).into(),
-            },
-        );
-        dispatch(
-            &mut w,
-            &tree,
-            node,
-            &WindowEvent::MouseWheel {
-                device_id: device,
-                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
-        assert!(engine.commands().contains(&WebViewCommand::Scroll {
-            dx: 0.0,
-            dy: -80.0,
-            x: 10.0,
-            y: 10.0
-        }));
-    }
+        // Case `pointer_outside_sends_nothing`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (900.0, 900.0).into(),
+                },
+            );
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                },
+            );
+            assert!(
+                engine
+                    .commands()
+                    .iter()
+                    .all(|c| matches!(c, WebViewCommand::Resize { .. })),
+                "only the layout resize may reach the engine",
+            );
+        }
 
-    #[test]
-    fn focus_change_notifies_engine_once() {
-        let engine = TestEngine::new();
-        let (mut w, _tree, _node) = laid_out(engine.clone());
-        w.set_focus(true);
-        w.set_focus(true);
-        w.set_focus(false);
-        let focus_cmds: Vec<_> = engine
-            .commands()
-            .into_iter()
-            .filter(|c| matches!(c, WebViewCommand::SetFocused(_)))
-            .collect();
-        assert_eq!(
-            focus_cmds,
-            vec![
-                WebViewCommand::SetFocused(true),
-                WebViewCommand::SetFocused(false)
-            ]
-        );
-    }
+        // Case `back_side_button_navigates_history`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+            );
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Back,
+                },
+            );
+            assert!(engine.commands().contains(&WebViewCommand::GoBack));
+        }
 
-    #[test]
-    fn key_mapping_covers_text_and_named_keys() {
-        assert_eq!(
-            WebView::map_key(&WKey::Character("a".into())),
-            Some(KeyInput::Character("a".into()))
-        );
-        assert_eq!(
-            WebView::map_key(&WKey::Named(WNamedKey::Space)),
-            Some(KeyInput::Character(" ".into()))
-        );
-        assert_eq!(
-            WebView::map_key(&WKey::Named(WNamedKey::Enter)),
-            Some(KeyInput::Named(NamedKey::Enter))
-        );
-        assert_eq!(
-            WebView::map_key(&WKey::Named(WNamedKey::PageDown)),
-            Some(KeyInput::Named(NamedKey::PageDown))
-        );
-        // Modifier keys are not forwarded as page keys.
-        assert_eq!(WebView::map_key(&WKey::Named(WNamedKey::Shift)), None);
-    }
+        // Case `wheel_scrolls_in_physical_pixels`.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+            );
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::MouseWheel {
+                    device_id: device,
+                    delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+            );
+            assert!(engine.commands().contains(&WebViewCommand::Scroll {
+                dx: 0.0,
+                dy: -80.0,
+                x: 10.0,
+                y: 10.0
+            }));
+        }
 
-    #[test]
-    fn nav_gesture_sends_history_commands() {
-        use crate::gesture::NavDirection;
-        let engine = TestEngine::new();
-        let mut w = WebView::new(engine.clone());
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-        assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
-        let cmds = engine.commands();
-        assert!(cmds.contains(&WebViewCommand::GoBack));
-        assert!(cmds.contains(&WebViewCommand::GoForward));
-    }
-
-    #[test]
-    fn draw_after_navigation_paints_frame_image() {
-        let engine = TestEngine::new();
-        let (mut w, _tree, _node) = laid_out(engine.clone());
-        engine.send(WebViewCommand::Navigate("https://example.org".into()));
-
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let presence = PresenceCtx::default();
-        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert!(
-            w.cached_image.is_some(),
-            "draw caches the engine frame as a vello image",
-        );
+        // Case `nav_gesture_sends_history_commands`.
+        {
+            use crate::gesture::NavDirection;
+            let engine = TestEngine::new();
+            let mut w = WebView::new(engine.clone());
+            let mut state = AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            let cmds = engine.commands();
+            assert!(cmds.contains(&WebViewCommand::GoBack));
+            assert!(cmds.contains(&WebViewCommand::GoForward));
+        }
     }
 }

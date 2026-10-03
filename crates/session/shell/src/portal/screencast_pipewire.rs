@@ -433,13 +433,14 @@ fn ensure_pipewire_initialised() {
 
 #[cfg(target_os = "linux")]
 fn pipewire_socket() -> Result<UnixStream, ProvisioningError> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset".into()))?;
+    let runtime = xdg_paths::xdg::runtime_dir().ok_or_else(|| {
+        ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset or not absolute".into())
+    })?;
     let remote = std::env::var("PIPEWIRE_REMOTE").unwrap_or_else(|_| "pipewire-0".into());
     let path = if remote.starts_with('/') {
         std::path::PathBuf::from(remote)
     } else {
-        std::path::PathBuf::from(runtime).join(remote)
+        runtime.join(remote)
     };
     UnixStream::connect(&path).map_err(|error| {
         ProvisioningError::DaemonUnreachable(format!("connect {}: {error}", path.display()))
@@ -771,143 +772,144 @@ mod tests {
     use crate::shell::state::WorkspaceId;
 
     #[test]
-    fn mock_returns_incrementing_node_ids() {
-        let m = MockScreenCastProvisioner::new_with_node(7, "test");
-        let req = PipewireStreamRequest {
-            caller: PortalCaller::new(WorkspaceId(1), "app"),
-            width: 1920,
-            height: 1080,
-            framerate: 30,
-            source_type: 1,
-            cursor_mode: 2,
-        };
-        let a = m.provision_stream(&req).expect("first stream");
-        let b = m.provision_stream(&req).expect("second stream");
-        assert_eq!(a.node_id, 7);
-        assert_eq!(b.node_id, 8);
-        // size matches the request.
-        assert_eq!(a.size, (1920, 1080));
-        // source_type 1 == monitor — echoed from the request.
-        assert_eq!(a.source_type, 1);
+    fn pipewire_provisioners_are_real_or_recorded_never_synthetic() {
+        // Phase `mock_returns_incrementing_node_ids`.
+        {
+            let m = MockScreenCastProvisioner::new_with_node(7, "test");
+            let req = PipewireStreamRequest {
+                caller: PortalCaller::new(WorkspaceId(1), "app"),
+                width: 1920,
+                height: 1080,
+                framerate: 30,
+                source_type: 1,
+                cursor_mode: 2,
+            };
+            let a = m.provision_stream(&req).expect("first stream");
+            let b = m.provision_stream(&req).expect("second stream");
+            assert_eq!(a.node_id, 7);
+            assert_eq!(b.node_id, 8);
+            // size matches the request.
+            assert_eq!(a.size, (1920, 1080));
+            // source_type 1 == monitor — echoed from the request.
+            assert_eq!(a.source_type, 1);
+        }
+        // Phase `mock_records_requests`.
+        {
+            let m = Arc::new(MockScreenCastProvisioner::new_with_node(1, "test"));
+            let h = ScreenCastStreamProvisionerHandle::new(m.clone());
+            let req = PipewireStreamRequest {
+                caller: PortalCaller::new(WorkspaceId(5), "org.example"),
+                width: 1280,
+                height: 720,
+                framerate: 30,
+                source_type: 1,
+                cursor_mode: 2,
+            };
+            let _ = h.provision(&req).unwrap();
+            let seen = m.requests();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].caller.app_id, "org.example");
+            assert_eq!(seen[0].width, 1280);
+        }
+        // Phase `mock_echoes_requested_source_type`.
+        {
+            let m = MockScreenCastProvisioner::new_with_node(1, "test");
+            let mut req = PipewireStreamRequest {
+                caller: PortalCaller::new(WorkspaceId(1), "app"),
+                width: 100,
+                height: 100,
+                framerate: 30,
+                source_type: 4, // virtual
+                cursor_mode: 4,
+            };
+            let info = m.provision_stream(&req).unwrap();
+            assert_eq!(info.source_type, 4, "virtual selection round-trips");
+            req.source_type = 2; // window
+            let info2 = m.provision_stream(&req).unwrap();
+            assert_eq!(info2.source_type, 2);
+        }
+        // Phase `unavailable_provisioner_never_returns_a_synthetic_stream`.
+        {
+            let p = UnavailableScreenCastProvisioner::new("capture producer missing");
+            let req = PipewireStreamRequest {
+                caller: PortalCaller::new(WorkspaceId(8), "org.example"),
+                width: 1280,
+                height: 720,
+                framerate: 30,
+                source_type: 1,
+                cursor_mode: 2,
+            };
+
+            assert!(matches!(
+                p.provision_stream(&req),
+                Err(ProvisioningError::NotImplemented(reason))
+                    if reason == "capture producer missing"
+            ));
+        }
     }
 
     #[test]
-    fn mock_records_requests() {
-        let m = Arc::new(MockScreenCastProvisioner::new_with_node(1, "test"));
-        let h = ScreenCastStreamProvisionerHandle::new(m.clone());
-        let req = PipewireStreamRequest {
-            caller: PortalCaller::new(WorkspaceId(5), "org.example"),
-            width: 1280,
-            height: 720,
-            framerate: 30,
-            source_type: 1,
-            cursor_mode: 2,
-        };
-        let _ = h.provision(&req).unwrap();
-        let seen = m.requests();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].caller.app_id, "org.example");
-        assert_eq!(seen[0].width, 1280);
-    }
-
-    #[test]
-    fn stream_info_serialises_into_dict_with_required_keys() {
-        let info = PipewireStreamInfo {
-            node_id: 42,
-            source_type: 1,
-            id: 0,
-            size: (640, 480),
-            position: (100, 200),
-        };
-        let (node_id, props) = info.into_stream_tuple();
-        assert_eq!(node_id, 42);
-        // The freedesktop ScreenCast spec requires `size`; `id`/`source_type`
-        // are optional but xdg-desktop-portal's frontends consume them.
-        assert!(props.contains_key("size"));
-        let size: (i32, i32) = props
-            .get("size")
-            .unwrap()
-            .try_clone()
-            .unwrap()
-            .try_into()
-            .unwrap();
-        assert_eq!(size, (640, 480), "wire type must be standard (ii)");
-        assert!(props.contains_key("source_type"));
-        assert!(props.contains_key("id"));
-        // `position` is present for monitor sources.
-        assert!(props.contains_key("position"));
-    }
-
-    #[test]
-    fn stream_info_omits_position_for_window_source() {
-        // Window (2) / virtual (4) sources have no compositor-space position; the spec says `position` is monitor-only.
-        let info = PipewireStreamInfo {
-            node_id: 9,
-            source_type: 2,
-            id: 0,
-            size: (800, 600),
-            position: (5, 5),
-        };
-        let (_node, props) = info.into_stream_tuple();
-        assert!(!props.contains_key("position"));
-        assert!(props.contains_key("size"));
-    }
-
-    #[test]
-    fn unavailable_provisioner_never_returns_a_synthetic_stream() {
-        let p = UnavailableScreenCastProvisioner::new("capture producer missing");
-        let req = PipewireStreamRequest {
-            caller: PortalCaller::new(WorkspaceId(8), "org.example"),
-            width: 1280,
-            height: 720,
-            framerate: 30,
-            source_type: 1,
-            cursor_mode: 2,
-        };
-
-        assert!(matches!(
-            p.provision_stream(&req),
-            Err(ProvisioningError::NotImplemented(reason))
-                if reason == "capture producer missing"
-        ));
-    }
-
-    #[test]
-    fn negotiated_buffer_scaling_is_bounded_and_preserves_corner_pixels() {
-        let frame = ComposedFrame {
-            width: 2,
-            height: 2,
-            rgba: Arc::from([
-                1, 2, 3, 255, // top left
-                4, 5, 6, 255, // top right
-                7, 8, 9, 255, // bottom left
-                10, 11, 12, 255, // bottom right
-            ]),
-        };
-        let mut destination = [0_u8; 4 * 4 * 4];
-        let bytes = copy_rgba_to_negotiated_buffer(&mut destination, &frame, 4, 4);
-        assert_eq!(bytes, destination.len());
-        assert_eq!(&destination[..4], &[1, 2, 3, 255]);
-        assert_eq!(&destination[12..16], &[4, 5, 6, 255]);
-        assert_eq!(&destination[48..52], &[7, 8, 9, 255]);
-        assert_eq!(&destination[60..64], &[10, 11, 12, 255]);
-    }
-
-    #[test]
-    fn mock_echoes_requested_source_type() {
-        let m = MockScreenCastProvisioner::new_with_node(1, "test");
-        let mut req = PipewireStreamRequest {
-            caller: PortalCaller::new(WorkspaceId(1), "app"),
-            width: 100,
-            height: 100,
-            framerate: 30,
-            source_type: 4, // virtual
-            cursor_mode: 4,
-        };
-        let info = m.provision_stream(&req).unwrap();
-        assert_eq!(info.source_type, 4, "virtual selection round-trips");
-        req.source_type = 2; // window
-        let info2 = m.provision_stream(&req).unwrap();
-        assert_eq!(info2.source_type, 2);
+    fn stream_info_serialises_required_keys_and_bounded_scaling() {
+        // Phase `stream_info_serialises_into_dict_with_required_keys`.
+        {
+            let info = PipewireStreamInfo {
+                node_id: 42,
+                source_type: 1,
+                id: 0,
+                size: (640, 480),
+                position: (100, 200),
+            };
+            let (node_id, props) = info.into_stream_tuple();
+            assert_eq!(node_id, 42);
+            // The freedesktop ScreenCast spec requires `size`; `id`/`source_type`
+            // are optional but xdg-desktop-portal's frontends consume them.
+            assert!(props.contains_key("size"));
+            let size: (i32, i32) = props
+                .get("size")
+                .unwrap()
+                .try_clone()
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert_eq!(size, (640, 480), "wire type must be standard (ii)");
+            assert!(props.contains_key("source_type"));
+            assert!(props.contains_key("id"));
+            // `position` is present for monitor sources.
+            assert!(props.contains_key("position"));
+        }
+        // Phase `stream_info_omits_position_for_window_source`.
+        {
+            // Window (2) / virtual (4) sources have no compositor-space position; the spec says `position` is monitor-only.
+            let info = PipewireStreamInfo {
+                node_id: 9,
+                source_type: 2,
+                id: 0,
+                size: (800, 600),
+                position: (5, 5),
+            };
+            let (_node, props) = info.into_stream_tuple();
+            assert!(!props.contains_key("position"));
+            assert!(props.contains_key("size"));
+        }
+        // Phase `negotiated_buffer_scaling_is_bounded_and_preserves_corner_pixels`.
+        {
+            let frame = ComposedFrame {
+                width: 2,
+                height: 2,
+                rgba: Arc::from([
+                    1, 2, 3, 255, // top left
+                    4, 5, 6, 255, // top right
+                    7, 8, 9, 255, // bottom left
+                    10, 11, 12, 255, // bottom right
+                ]),
+            };
+            let mut destination = [0_u8; 4 * 4 * 4];
+            let bytes = copy_rgba_to_negotiated_buffer(&mut destination, &frame, 4, 4);
+            assert_eq!(bytes, destination.len());
+            assert_eq!(&destination[..4], &[1, 2, 3, 255]);
+            assert_eq!(&destination[12..16], &[4, 5, 6, 255]);
+            assert_eq!(&destination[48..52], &[7, 8, 9, 255]);
+            assert_eq!(&destination[60..64], &[10, 11, 12, 255]);
+        }
     }
 }

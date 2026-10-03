@@ -22,9 +22,11 @@
 //!    are chunked with STREAM (START/DATA/END).
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::future::Future;
+use std::io::{self, Read, Write};
+use std::pin::pin;
+use std::task::Poll;
+use ui::time::{Duration, Instant};
 
 use base64::Engine;
 use flate2::Compression;
@@ -218,7 +220,7 @@ struct Reasm {
 /// One connected + handshaked Noise session. Owns the socket and the transport
 /// cipher state. Not `Clone`; drive it from a single thread.
 pub struct GrayjaySession {
-    stream: TcpStream,
+    stream: Stream,
     transport: TransportState,
     remote_public_key: String,
     local_public_key: String,
@@ -246,7 +248,7 @@ impl GrayjaySession {
     // -- handshake ---------------------------------------------------------
 
     /// Raw-socket version exchange that precedes the Noise handshake.
-    fn version_check(stream: &mut TcpStream) -> SyncResult<i32> {
+    fn version_check(stream: &mut Stream) -> SyncResult<i32> {
         stream
             .write_all(&PROTOCOL_VERSION.to_le_bytes())
             .map_err(|error| io_err(&error))?;
@@ -270,7 +272,7 @@ impl GrayjaySession {
     /// Returns an error for invalid peer metadata, a failed Noise handshake, or
     /// a socket read/write failure.
     pub fn connect_initiator(
-        mut stream: TcpStream,
+        stream: impl Into<Stream>,
         device: &DeviceKey,
         remote_public_key_b64: &str,
         pairing_code: Option<&str>,
@@ -278,6 +280,7 @@ impl GrayjaySession {
     ) -> SyncResult<Self> {
         let remote_pub = b64_decode(remote_public_key_b64)?;
 
+        let mut stream: Stream = stream.into();
         let remote_version = Self::version_check(&mut stream)?;
 
         let params = NOISE_PATTERN_MAIN
@@ -369,11 +372,12 @@ impl GrayjaySession {
     /// Returns an error for malformed frames, rejected peers, a failed Noise
     /// handshake, or a socket read/write failure.
     pub fn accept_responder(
-        mut stream: TcpStream,
+        stream: impl Into<Stream>,
         device: &DeviceKey,
         device_name: &str,
         allow: impl Fn(&str, Option<&str>) -> bool,
     ) -> SyncResult<Self> {
+        let mut stream: Stream = stream.into();
         let remote_version = Self::version_check(&mut stream)?;
 
         let params = NOISE_PATTERN_MAIN
@@ -749,7 +753,7 @@ impl GrayjaySession {
     fn complete_authorization(&mut self, deadline: Instant) -> SyncResult<String> {
         self.send_authorized()?;
         loop {
-            if Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err(SyncError::Transport(
                     "timed out waiting for peer authorization".into(),
                 ));
@@ -792,7 +796,104 @@ fn stream_header(payload: &[u8]) -> SyncResult<(i32, usize, &[u8])> {
     ))
 }
 
-fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> SyncResult<()> {
+/// A connected socket for the blocking protocol thread: `tilo_net`'s TCP,
+/// driven through the app runtime, each read and write bounded by the
+/// session's I/O timeout.
+pub struct Stream(Socket);
+
+enum Socket {
+    Net {
+        socket: tilo_net::sockets::TcpStream,
+        timeout: Duration,
+    },
+    /// The in-process test peers' loopback sockets.
+    #[cfg(test)]
+    Std(std::net::TcpStream),
+}
+
+#[cfg(test)]
+impl From<std::net::TcpStream> for Stream {
+    fn from(stream: std::net::TcpStream) -> Self {
+        Self(Socket::Std(stream))
+    }
+}
+
+impl Stream {
+    fn connect(
+        host: &str,
+        port: u16,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> io::Result<Self> {
+        let socket = wait(
+            connect_timeout,
+            tilo_net::sockets::TcpStream::connect_timeout(host, port, connect_timeout),
+        )?;
+        Ok(Self(Socket::Net {
+            socket,
+            timeout: io_timeout,
+        }))
+    }
+}
+
+/// Wait on the app runtime for `future`, at most `timeout`.
+fn wait<T>(
+    timeout: Duration,
+    future: impl Future<Output = Result<T, tilo_net::NetError>>,
+) -> io::Result<T> {
+    let bounded = async move {
+        let mut future = pin!(future);
+        let mut expiry = pin!(ui::rt::sleep(timeout));
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(result) = future.as_mut().poll(cx) {
+                return Poll::Ready(Some(result));
+            }
+            expiry.as_mut().poll(cx).map(|()| None)
+        })
+        .await
+    };
+    match ui::rt::app().block_on(bounded) {
+        Ok(Some(result)) => result.map_err(io::Error::other),
+        Ok(None) => Err(io::ErrorKind::TimedOut.into()),
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Socket::Net { socket, timeout } => {
+                let timeout = *timeout;
+                wait(timeout, socket.read(buf))
+            }
+            #[cfg(test)]
+            Socket::Std(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Socket::Net { socket, timeout } => {
+                let timeout = *timeout;
+                wait(timeout, socket.write_all(buf)).map(|()| buf.len())
+            }
+            #[cfg(test)]
+            Socket::Std(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.0 {
+            Socket::Net { .. } => Ok(()),
+            #[cfg(test)]
+            Socket::Std(stream) => stream.flush(),
+        }
+    }
+}
+
+fn read_exact(stream: &mut Stream, buf: &mut [u8]) -> SyncResult<()> {
     stream.read_exact(buf).map_err(|error| io_err(&error))
 }
 
@@ -939,27 +1040,17 @@ impl GrayjaySyncTransport {
     ) -> SyncResult<GrayjaySession> {
         let mut last_err = SyncError::Transport("no addresses to connect".into());
         for addr in &info.addresses {
-            let target = format!("{addr}:{}", info.port);
-            let sock_addr = match target.to_socket_addrs() {
-                Ok(mut it) => match it.next() {
-                    Some(a) => a,
-                    None => continue,
-                },
-                Err(e) => {
-                    last_err = SyncError::Transport(format!("resolve {target}: {e}"));
-                    continue;
-                }
+            let Ok(port) = u16::try_from(info.port) else {
+                last_err = SyncError::Transport(format!("invalid port {}", info.port));
+                continue;
             };
-            let stream = match TcpStream::connect_timeout(&sock_addr, self.connect_timeout) {
+            let stream = match Stream::connect(addr, port, self.connect_timeout, self.io_timeout) {
                 Ok(s) => s,
                 Err(e) => {
                     last_err = io_err(&e);
                     continue;
                 }
             };
-            stream.set_nodelay(true).ok();
-            stream.set_read_timeout(Some(self.io_timeout)).ok();
-            stream.set_write_timeout(Some(self.io_timeout)).ok();
 
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -968,7 +1059,7 @@ impl GrayjaySyncTransport {
                 pairing_code.or(info.pairing_code.as_deref()),
                 &self.device_name,
             )?;
-            let deadline = Instant::now() + self.sync_deadline;
+            let deadline = ui::time::now() + self.sync_deadline;
             session.complete_authorization(deadline)?;
             return Ok(session);
         }
@@ -1048,9 +1139,9 @@ impl SyncTransport for GrayjaySyncTransport {
         session.send_data(sync_opcode::SYNC_STATE_EXCHANGE, &req_json)?;
 
         let mut out = SyncState::default();
-        let deadline = Instant::now() + self.sync_deadline;
+        let deadline = ui::time::now() + self.sync_deadline;
         let mut got_subs = false;
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             match session.recv() {
                 Ok(Incoming::Data {
                     sub_opcode,
@@ -1080,7 +1171,7 @@ impl SyncTransport for GrayjaySyncTransport {
             }
             // Subscriptions are the primary payload; once we have them, a short
             // grace for history is enough — bail if the peer went quiet.
-            if got_subs && Instant::now() + Duration::from_millis(500) >= deadline {
+            if got_subs && ui::time::now() + Duration::from_millis(500) >= deadline {
                 break;
             }
         }
@@ -1140,19 +1231,276 @@ fn parse_history_urls(payload: &[u8]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
 
-    /// Grayjay peers read these bytes: a little-endian `u32` length, then the
-    /// packet, at most 65535 bytes.
     #[test]
-    fn packet_framing_is_pinned() {
-        let mut wire = Vec::new();
-        write_frame(&mut wire, b"noise").unwrap();
-        assert_eq!(wire, [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
-        assert_eq!(read_frame(&mut wire.as_slice()).unwrap(), b"noise");
-        assert!(read_frame(&mut [0_u8, 0, 1, 0].as_slice()).is_err());
-        assert!(write_frame(&mut Vec::new(), &vec![0; 65_536]).is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn noise_transport_frames_pairs_and_streams_payloads() {
+        // Case `packet_framing_is_pinned`:
+        // Grayjay peers read these bytes: a little-endian `u32` length, then the
+        // packet, at most 65535 bytes.
+        {
+            let mut wire = Vec::new();
+            write_frame(&mut wire, b"noise").unwrap();
+            assert_eq!(wire, [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
+            assert_eq!(read_frame(&mut wire.as_slice()).unwrap(), b"noise");
+            assert!(read_frame(&mut [0_u8, 0, 1, 0].as_slice()).is_err());
+            assert!(write_frame(&mut Vec::new(), &vec![0; 65_536]).is_err());
+        }
+        // Case `noise_round_trip_subscriptions`:
+        // Full in-process round-trip: an initiator and a responder speaking the
+        // SAME pattern/opcodes/framing complete the IK handshake, authorize, and
+        // round-trip a real `SyncSubscriptionsPackage` DATA frame (gzip'd JSON).
+        // This proves Noise + framing + opcodes + gzip + JSON without a phone.
+        {
+            let responder_key = DeviceKey::generate().unwrap();
+            let initiator_key = DeviceKey::generate().unwrap();
+            let responder_pub = responder_key.public_base64();
+            let initiator_pub = initiator_key.public_base64();
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            // Responder thread: accept, handshake, authorize, then reply to the
+            // state-exchange with a known subscriptions package.
+            let rkey = responder_key;
+            let expect_initiator = initiator_pub;
+            let handle = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut session = GrayjaySession::accept_responder(
+                    stream,
+                    &rkey,
+                    "responder",
+                    |peer_key, _code| peer_key == expect_initiator,
+                )
+                .unwrap();
+
+                let deadline = tilo_test_env::hang_deadline();
+                session.complete_authorization(deadline).unwrap();
+
+                // Expect the state-exchange request.
+                let mut asked = false;
+                for _ in 0..8 {
+                    if let Incoming::Data {
+                        sub_opcode,
+                        payload,
+                    } = session.recv().unwrap()
+                        && sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE
+                    {
+                        let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
+                        asked = true;
+                        break;
+                    }
+                }
+                assert!(asked, "responder never received the state-exchange request");
+
+                let pkg = SyncSubscriptionsPackage {
+                    subscriptions: vec![
+                        Subscription {
+                            channel: SerializedChannel::from_url("https://youtube.com/@alice"),
+                            creation_time: 111,
+                        },
+                        Subscription {
+                            channel: SerializedChannel::from_url("https://youtube.com/@bob"),
+                            creation_time: 222,
+                        },
+                    ],
+                    subscription_removals: BTreeMap::new(),
+                };
+                let json = serde_json::to_string(&pkg).unwrap();
+                session
+                    .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
+                    .unwrap();
+                // keep the socket open briefly so the initiator can read the frame
+                thread::sleep(Duration::from_millis(200));
+            });
+
+            // Initiator side.
+            let stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut session = GrayjaySession::connect_initiator(
+                stream,
+                &initiator_key,
+                &responder_pub,
+                None,
+                "initiator",
+            )
+            .unwrap();
+            assert_eq!(session.remote_public_key(), responder_pub);
+            assert_eq!(session.remote_version(), PROTOCOL_VERSION);
+
+            let deadline = tilo_test_env::hang_deadline();
+            let name = session.complete_authorization(deadline).unwrap();
+            assert_eq!(name, "responder");
+
+            // Ask for state, then read the subscriptions package back.
+            request_all_subscriptions(&mut session, &initiator_key);
+
+            let mut urls = Vec::new();
+            for _ in 0..8 {
+                if let Incoming::Data {
+                    sub_opcode,
+                    payload,
+                } = session.recv().unwrap()
+                    && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
+                {
+                    let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
+                    urls = pkg
+                        .subscriptions
+                        .into_iter()
+                        .map(|s| s.channel.url)
+                        .collect();
+                    break;
+                }
+            }
+            handle.join().unwrap();
+            assert_eq!(
+                urls,
+                vec![
+                    "https://youtube.com/@alice".to_string(),
+                    "https://youtube.com/@bob".to_string()
+                ]
+            );
+        }
+        // Case `pairing_code_travels_and_key_is_authenticated`:
+        // The pairing sub-handshake (`Noise_N`) must carry the pairing code to the
+        // responder, and a wrong key must be rejected.
+        {
+            let responder_key = DeviceKey::generate().unwrap();
+            let initiator_key = DeviceKey::generate().unwrap();
+            let responder_pub = responder_key.public_base64();
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            let rkey = responder_key;
+            let handle = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                // Responder only proceeds if the pairing code matches.
+                let mut session =
+                    GrayjaySession::accept_responder(stream, &rkey, "responder", |_peer, code| {
+                        code == Some("SECRET42")
+                    })
+                    .unwrap();
+                let deadline = tilo_test_env::hang_deadline();
+                session.complete_authorization(deadline).unwrap();
+            });
+
+            let stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut session = GrayjaySession::connect_initiator(
+                stream,
+                &initiator_key,
+                &responder_pub,
+                Some("SECRET42"),
+                "initiator",
+            )
+            .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            session.complete_authorization(deadline).unwrap();
+            handle.join().unwrap();
+        }
+        // Case `large_payload_streams_and_reassembles`:
+        // A payload larger than one packet must round-trip via STREAM
+        // segmentation + reassembly through the real send/recv path.
+        {
+            let responder_key = DeviceKey::generate().unwrap();
+            let initiator_key = DeviceKey::generate().unwrap();
+            let responder_pub = responder_key.public_base64();
+            let initiator_pub = initiator_key.public_base64();
+
+            // Build ~200KB of subscriptions so the gzip'd JSON still exceeds one
+            // 64KB packet, forcing the STREAM path.
+            let mut subs = Vec::new();
+            for i in 0..4000 {
+                subs.push(Subscription {
+                    channel: SerializedChannel::from_url(format!(
+                        "https://youtube.com/channel/UC{i:08}xxxxxxxx"
+                    )),
+                    creation_time: i64::from(i),
+                });
+            }
+            let pkg = SyncSubscriptionsPackage {
+                subscriptions: subs,
+                subscription_removals: BTreeMap::new(),
+            };
+            let json = serde_json::to_string(&pkg).unwrap();
+            assert!(
+                json.len() > MAXIMUM_PACKET_SIZE,
+                "test payload must exceed one packet"
+            );
+            let expected_len = pkg.subscriptions.len();
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            let rkey = responder_key;
+            let expect_initiator = initiator_pub;
+            let json_for_thread = json;
+            let handle = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut session =
+                    GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
+                        peer == expect_initiator
+                    })
+                    .unwrap();
+                let deadline = tilo_test_env::hang_deadline();
+                session.complete_authorization(deadline).unwrap();
+                session
+                    .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
+                    .unwrap();
+                thread::sleep(Duration::from_millis(300));
+            });
+
+            let stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut session = GrayjaySession::connect_initiator(
+                stream,
+                &initiator_key,
+                &responder_pub,
+                None,
+                "initiator",
+            )
+            .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            session.complete_authorization(deadline).unwrap();
+
+            let mut got = 0usize;
+            for _ in 0..4 {
+                if let Incoming::Data {
+                    sub_opcode,
+                    payload,
+                } = session.recv().unwrap()
+                    && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
+                {
+                    let received: SyncSubscriptionsPackage =
+                        serde_json::from_slice(&payload).unwrap();
+                    got = received.subscriptions.len();
+                    break;
+                }
+            }
+            handle.join().unwrap();
+            assert_eq!(got, expected_len);
+        }
     }
 
     fn request_all_subscriptions(session: &mut GrayjaySession, device: &DeviceKey) {
@@ -1163,290 +1511,43 @@ mod tests {
             .unwrap();
     }
 
-    /// Full in-process round-trip: an initiator and a responder speaking the
-    /// SAME pattern/opcodes/framing complete the IK handshake, authorize, and
-    /// round-trip a real `SyncSubscriptionsPackage` DATA frame (gzip'd JSON).
-    /// This proves Noise + framing + opcodes + gzip + JSON without a phone.
     #[test]
-    fn noise_round_trip_subscriptions() {
-        let responder_key = DeviceKey::generate().unwrap();
-        let initiator_key = DeviceKey::generate().unwrap();
-        let responder_pub = responder_key.public_base64();
-        let initiator_pub = initiator_key.public_base64();
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        // Responder thread: accept, handshake, authorize, then reply to the
-        // state-exchange with a known subscriptions package.
-        let rkey = responder_key;
-        let expect_initiator = initiator_pub;
-        let handle = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut session =
-                GrayjaySession::accept_responder(stream, &rkey, "responder", |peer_key, _code| {
-                    peer_key == expect_initiator
-                })
-                .unwrap();
-
-            let deadline = Instant::now() + Duration::from_secs(10);
-            session.complete_authorization(deadline).unwrap();
-
-            // Expect the state-exchange request.
-            let mut asked = false;
-            for _ in 0..8 {
-                if let Incoming::Data {
-                    sub_opcode,
-                    payload,
-                } = session.recv().unwrap()
-                    && sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE
-                {
-                    let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
-                    asked = true;
-                    break;
-                }
-            }
-            assert!(asked, "responder never received the state-exchange request");
-
-            let pkg = SyncSubscriptionsPackage {
-                subscriptions: vec![
-                    Subscription {
-                        channel: SerializedChannel::from_url("https://youtube.com/@alice"),
-                        creation_time: 111,
-                    },
-                    Subscription {
-                        channel: SerializedChannel::from_url("https://youtube.com/@bob"),
-                        creation_time: 222,
-                    },
-                ],
-                subscription_removals: BTreeMap::new(),
-            };
-            let json = serde_json::to_string(&pkg).unwrap();
-            session
-                .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
-                .unwrap();
-            // keep the socket open briefly so the initiator can read the frame
-            thread::sleep(Duration::from_millis(200));
-        });
-
-        // Initiator side.
-        let stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+    fn transport_payloads_parse_and_stay_bounded() {
+        // Case `blob_parses_json_and_base64`.
+        {
+            let json = serde_json::to_string(&SyncDeviceInfo {
+                public_key: b64_encode(&[3; 32]),
+                addresses: vec!["10.0.0.2".into()],
+                port: 12315,
+                pairing_code: Some("Xy".into()),
+            })
             .unwrap();
-        let mut session = GrayjaySession::connect_initiator(
-            stream,
-            &initiator_key,
-            &responder_pub,
-            None,
-            "initiator",
-        )
-        .unwrap();
-        assert_eq!(session.remote_public_key(), responder_pub);
-        assert_eq!(session.remote_version(), PROTOCOL_VERSION);
+            let a = GrayjaySyncTransport::parse_blob(&json).unwrap();
+            assert_eq!(a.port, 12315);
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let name = session.complete_authorization(deadline).unwrap();
-        assert_eq!(name, "responder");
-
-        // Ask for state, then read the subscriptions package back.
-        request_all_subscriptions(&mut session, &initiator_key);
-
-        let mut urls = Vec::new();
-        for _ in 0..8 {
-            if let Incoming::Data {
-                sub_opcode,
-                payload,
-            } = session.recv().unwrap()
-                && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
-            {
-                let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
-                urls = pkg
-                    .subscriptions
-                    .into_iter()
-                    .map(|s| s.channel.url)
-                    .collect();
-                break;
-            }
+            let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
+            let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
+            assert_eq!(a, b);
         }
-        handle.join().unwrap();
-        assert_eq!(
-            urls,
-            vec![
-                "https://youtube.com/@alice".to_string(),
-                "https://youtube.com/@bob".to_string()
-            ]
-        );
-    }
-
-    /// The pairing sub-handshake (`Noise_N`) must carry the pairing code to the
-    /// responder, and a wrong key must be rejected.
-    #[test]
-    fn pairing_code_travels_and_key_is_authenticated() {
-        let responder_key = DeviceKey::generate().unwrap();
-        let initiator_key = DeviceKey::generate().unwrap();
-        let responder_pub = responder_key.public_base64();
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let rkey = responder_key;
-        let handle = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            // Responder only proceeds if the pairing code matches.
-            let mut session =
-                GrayjaySession::accept_responder(stream, &rkey, "responder", |_peer, code| {
-                    code == Some("SECRET42")
-                })
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            session.complete_authorization(deadline).unwrap();
-        });
-
-        let stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+        // Case `pairing_metadata_is_bounded_before_network_or_persistence`.
+        {
+            assert!(
+                GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err()
+            );
+            let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
+                public_key: b64_encode(&[4; 32]),
+                addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
+                port: 12315,
+                pairing_code: Some("ok".into()),
+            })
             .unwrap();
-        let mut session = GrayjaySession::connect_initiator(
-            stream,
-            &initiator_key,
-            &responder_pub,
-            Some("SECRET42"),
-            "initiator",
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        session.complete_authorization(deadline).unwrap();
-        handle.join().unwrap();
-    }
-
-    /// A payload larger than one packet must round-trip via STREAM
-    /// segmentation + reassembly through the real send/recv path.
-    #[test]
-    fn large_payload_streams_and_reassembles() {
-        let responder_key = DeviceKey::generate().unwrap();
-        let initiator_key = DeviceKey::generate().unwrap();
-        let responder_pub = responder_key.public_base64();
-        let initiator_pub = initiator_key.public_base64();
-
-        // Build ~200KB of subscriptions so the gzip'd JSON still exceeds one
-        // 64KB packet, forcing the STREAM path.
-        let mut subs = Vec::new();
-        for i in 0..4000 {
-            subs.push(Subscription {
-                channel: SerializedChannel::from_url(format!(
-                    "https://youtube.com/channel/UC{i:08}xxxxxxxx"
-                )),
-                creation_time: i64::from(i),
-            });
+            assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
         }
-        let pkg = SyncSubscriptionsPackage {
-            subscriptions: subs,
-            subscription_removals: BTreeMap::new(),
-        };
-        let json = serde_json::to_string(&pkg).unwrap();
-        assert!(
-            json.len() > MAXIMUM_PACKET_SIZE,
-            "test payload must exceed one packet"
-        );
-        let expected_len = pkg.subscriptions.len();
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let rkey = responder_key;
-        let expect_initiator = initiator_pub;
-        let json_for_thread = json;
-        let handle = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut session =
-                GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
-                    peer == expect_initiator
-                })
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            session.complete_authorization(deadline).unwrap();
-            session
-                .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
-                .unwrap();
-            thread::sleep(Duration::from_millis(300));
-        });
-
-        let stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        let mut session = GrayjaySession::connect_initiator(
-            stream,
-            &initiator_key,
-            &responder_pub,
-            None,
-            "initiator",
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        session.complete_authorization(deadline).unwrap();
-
-        let mut got = 0usize;
-        for _ in 0..4 {
-            if let Incoming::Data {
-                sub_opcode,
-                payload,
-            } = session.recv().unwrap()
-                && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
-            {
-                let received: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
-                got = received.subscriptions.len();
-                break;
-            }
+        // Case `gzip_expansion_is_bounded`.
+        {
+            let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
+            let error = gzip_decompress(&compressed).unwrap_err();
+            assert!(error.to_string().contains("exceeds resource bound"));
         }
-        handle.join().unwrap();
-        assert_eq!(got, expected_len);
-    }
-
-    #[test]
-    fn blob_parses_json_and_base64() {
-        let json = serde_json::to_string(&SyncDeviceInfo {
-            public_key: b64_encode(&[3; 32]),
-            addresses: vec!["10.0.0.2".into()],
-            port: 12315,
-            pairing_code: Some("Xy".into()),
-        })
-        .unwrap();
-        let a = GrayjaySyncTransport::parse_blob(&json).unwrap();
-        assert_eq!(a.port, 12315);
-
-        let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
-        let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn pairing_metadata_is_bounded_before_network_or_persistence() {
-        assert!(GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err());
-        let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
-            public_key: b64_encode(&[4; 32]),
-            addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
-            port: 12315,
-            pairing_code: Some("ok".into()),
-        })
-        .unwrap();
-        assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
-    }
-
-    #[test]
-    fn gzip_expansion_is_bounded() {
-        let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
-        let error = gzip_decompress(&compressed).unwrap_err();
-        assert!(error.to_string().contains("exceeds resource bound"));
     }
 }

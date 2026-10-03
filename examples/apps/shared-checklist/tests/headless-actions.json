@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "draft-input", "action": "set_value", "value": "Milk"}},
+  {"perform": {"target": "add", "action": "activate"}},
+  {"expect": {"target": "progress", "name": "0 of 1 done"}}
+]

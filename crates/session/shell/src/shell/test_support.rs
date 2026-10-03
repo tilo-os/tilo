@@ -84,14 +84,41 @@ impl PopulatedShellFixture {
         let inputs =
             crate::shell::fixture_inputs::ShellFixtureInputs::new(parent.path(), renderer, theme)
                 .expect("owned populated shell fixture files");
-        let frame = crate::shell::frame::FrameBuilder::with_fixture_inputs(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-            viewport,
-            inputs,
-        )
-        .expect("explicit populated shell fixture");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let tab_ids = tree
+            .desktop
+            .active_workspace()
+            .expect("populated fixture has an active workspace")
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        let frame = crate::shell::frame::FrameBuilder::with_fixture_inputs(tree, viewport, inputs)
+            .expect("explicit populated shell fixture");
+        let records = frame.chrome().records().clone();
+        for tab in tab_ids {
+            crate::shell::tab_documents::create_scratch_tab_record(&records, tab)
+                .expect("populated fixture explicitly creates each presented tab record");
+        }
         Self { frame, parent }
     }
+}
+
+/// A collaborator renames the active workspace from their own device: the
+/// kind of change Catch up and the unread badge exist to show, which the
+/// reader's own bootstrap writes are not.
+#[cfg(test)]
+pub(crate) fn collaborator_renames_active_workspace(tree: &mut crate::shell::state::WorkspaceTree) {
+    let reader = tree.doc.get_actor().clone();
+    tree.doc
+        .set_actor(automerge::ActorId::from(b"ada-device".as_slice()));
+    if let Some(workspace) = tree.desktop.active_workspace_mut() {
+        workspace.name = "Board review".to_string();
+    }
+    tree.seed_doc_from_cache();
+    tree.doc.set_actor(reader);
 }
 
 #[cfg(test)]

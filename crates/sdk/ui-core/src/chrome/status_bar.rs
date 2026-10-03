@@ -54,14 +54,17 @@ pub fn draw(
         None,
         &rect,
     );
-    // Bar role (HIG §9.1): one derived top hairline.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::chrome_hairline(theme),
-        None,
-        &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 1.0),
-    );
+    // Bar role (HIG §9.1): one derived top rule. Weight comes from the theme.
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rule),
+        );
+    }
 
     let size = label_size(theme, tr);
     let ink = colors.text_dim;
@@ -113,51 +116,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readouts_sit_on_the_s4_gutter_and_centre_their_measured_line() {
-        let theme = Theme::dark();
-        let rect = Rect::new(0.0, 100.0, 800.0, 100.0 + STATUS_BAR_HEIGHT);
-        let ((lx, ly), (rx, ry)) = text_origins(rect, &theme, 60.0, 16.0);
-        let gutter = f64::from(theme.tokens.spacing.s4);
-        assert_eq!(lx, gutter);
-        assert_eq!(rx, 800.0 - gutter - 60.0);
-        assert_eq!(ly, ry, "left and right share one line box");
-        assert!(
-            (ly + 8.0 - rect.center().y).abs() < 1e-9,
-            "the line box is centred on the bar"
-        );
-    }
+    fn status_bar_readouts_sit_on_the_gutter_scale_and_paint_themed() {
+        // Case `readouts_sit_on_the_s4_gutter_and_centre_their_measured_line`.
+        {
+            let theme = Theme::dark();
+            let rect = Rect::new(0.0, 100.0, 800.0, 100.0 + STATUS_BAR_HEIGHT);
+            let ((lx, ly), (rx, ry)) = text_origins(rect, &theme, 60.0, 16.0);
+            let gutter = f64::from(theme.tokens.spacing.s4);
+            assert_eq!(lx, gutter);
+            assert_eq!(rx, 800.0 - gutter - 60.0);
+            assert_eq!(ly, ry, "left and right share one line box");
+            assert!(
+                (ly + 8.0 - rect.center().y).abs() < 1e-9,
+                "the line box is centred on the bar"
+            );
+        }
 
-    #[test]
-    fn label_size_divides_the_text_scale_back_out() {
-        let base = Theme::dark();
-        let base_tr = TextRenderer::new();
-        let scaled = Theme::dark().with_text_scale(2.0);
-        let mut scaled_tr = TextRenderer::new();
-        scaled_tr.set_text_scale(2.0);
-        assert!((label_size(&base, &base_tr) - label_size(&scaled, &scaled_tr)).abs() < 0.01);
-        assert!(
-            (label_size(&base, &base_tr) - 12.0).abs() < 0.01,
-            "scale.sm at 1×"
-        );
-    }
+        // Case `label_size_divides_the_text_scale_back_out`.
+        {
+            let base = Theme::dark();
+            let base_tr = TextRenderer::new();
+            let scaled = Theme::dark().with_text_scale(2.0);
+            let mut scaled_tr = TextRenderer::new();
+            scaled_tr.set_text_scale(2.0);
+            assert!((label_size(&base, &base_tr) - label_size(&scaled, &scaled_tr)).abs() < 0.01);
+            assert!(
+                (label_size(&base, &base_tr) - 12.0).abs() < 0.01,
+                "scale.sm at 1×"
+            );
+        }
 
-    #[test]
-    fn draw_paints_without_a_literal_colour_and_elides_a_long_left_readout() {
-        let theme = Theme::light();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 160.0, STATUS_BAR_HEIGHT);
-        draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            "a very long left-hand readout that cannot fit",
-            "Ln 12, Col 4",
-        );
-        // Reaching here without a panic is the assertion for the paint path;
-        // the geometry is pinned above and the ink is `text_dim` by
-        // construction (no `Color::from_rgb8` remains in this file).
+        // Case `draw_paints_without_a_literal_colour_and_elides_a_long_left_readout`.
+        {
+            let theme = Theme::light();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 160.0, STATUS_BAR_HEIGHT);
+            draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                "a very long left-hand readout that cannot fit",
+                "Ln 12, Col 4",
+            );
+            // Reaching here without a panic is the assertion for the paint path;
+            // the geometry is pinned above and the ink is `text_dim` by
+            // construction (no `Color::from_rgb8` remains in this file).
+        }
     }
 }

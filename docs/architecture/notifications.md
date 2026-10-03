@@ -17,8 +17,8 @@ it reaches a still-live launcher PID registered with the same kernel start
 time. Direct host callers remain unattributed. Toast labels, per-app policy and
 badge state therefore never use `app_name` as authority.
 
-Sounds use the standard freedesktop sound theme through libcanberra, with a
-PipeWire `pw-play` fallback. Work is coalesced on a bounded session thread and a
+Sounds use the standard freedesktop sound theme, resolved in Tilo and played
+with PipeWire's `pw-play`. Work is coalesced on a bounded session thread and a
 wedged helper is killed after five seconds; the compositor render loop never
 forks or waits. Settings reports the detected backend.
 

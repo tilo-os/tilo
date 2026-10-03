@@ -307,7 +307,12 @@ pub struct Message {
     pub channel: Id,
     pub author: Id,
     pub ts: i64,
+    /// The body's plain text (see [`crate::body`]): what search, agents,
+    /// notifications and edit history read.
     pub text: String,
+    /// The body as written, paragraphs with their marks; empty for a message
+    /// written before bodies were rich, shown from `text` ([`Self::blocks`]).
+    pub body: Vec<ui::widget::BlockContent>,
     pub edited: bool,
     pub history: Vec<EditRecord>,
     /// `Some(parent_id)` when this message is a threaded reply.
@@ -338,6 +343,16 @@ pub struct Message {
 }
 
 impl Message {
+    /// The body to show: as written, or for an older message its text with
+    /// its mentions marked.
+    pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
+        if self.body.is_empty() {
+            crate::body::legacy(&self.id, &self.text, &self.mentions)
+        } else {
+            self.body.clone()
+        }
+    }
+
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
     }
@@ -439,9 +454,7 @@ pub enum AgentRoute {
 pub struct AgentStep {
     /// A UUID minted when the dispatch is authored. Trace rows are keyed by
     /// this id in the CRDT, never by their display position, so concurrent
-    /// appends cannot overwrite each other. Empty only when deserialising a
-    /// pre-id legacy payload; action builders upgrade those before dispatch.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// appends cannot overwrite each other.
     pub id: String,
     /// The author's monotonic position in its trace. Concurrent appends may
     /// share a sequence; readers then tie-break by the stable [`Self::id`].
@@ -540,9 +553,9 @@ impl AgentWork {
         self
     }
 
-    /// Upgrade a legacy/in-process trace at the *authoring* boundary. This is
-    /// intentionally never invoked by CRDT replay: replay receives the ids
-    /// minted here as part of the action payload.
+    /// Mint ids for steps built in-process without one, at the *authoring*
+    /// boundary. This is intentionally never invoked by CRDT replay: replay
+    /// receives the ids minted here as part of the action payload.
     pub fn ensure_trace_ids(&mut self) {
         for (index, step) in self.trace.iter_mut().enumerate() {
             if step.id.is_empty() {
@@ -715,6 +728,7 @@ mod tests {
             author: author.into(),
             ts,
             text: "x".into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: parent.map(std::string::ToString::to_string),
@@ -728,49 +742,49 @@ mod tests {
     }
 
     #[test]
-    fn grouping_merges_same_author_within_window() {
-        let msgs = vec![
-            msg("a", "u1", 0, None),
-            msg("b", "u1", 60, None),
-            msg("c", "u1", 120, None),
-        ];
-        let groups = group_messages(&msgs);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn grouping_splits_on_author_change_and_time_gap() {
-        let msgs = vec![
-            msg("a", "u1", 0, None),
-            msg("b", "u2", 30, None),       // author change
-            msg("c", "u2", 30 + 999, None), // gap > window
-        ];
-        let groups = group_messages(&msgs);
-        assert_eq!(groups.len(), 3);
-    }
-
-    #[test]
-    fn grouping_excludes_thread_replies() {
-        let msgs = vec![
-            msg("a", "u1", 0, None),
-            msg("r", "u1", 10, Some("a")), // reply — not in the timeline
-        ];
-        let groups = group_messages(&msgs);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].message_indices, vec![0]);
-    }
-
-    #[test]
-    fn reply_count_and_participants() {
-        let msgs = vec![
-            msg("a", "u1", 0, None),
-            msg("r1", "u2", 10, Some("a")),
-            msg("r2", "u3", 20, Some("a")),
-            msg("r3", "u2", 30, Some("a")),
-        ];
-        assert_eq!(reply_count(&msgs, "a"), 3);
-        assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
+    fn timeline_groups_top_level_runs_and_counts_thread_replies() {
+        // Phase: grouping_merges_same_author_within_window.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("b", "u1", 60, None),
+                msg("c", "u1", 120, None),
+            ];
+            let groups = group_messages(&msgs);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
+        }
+        // Phase: grouping_splits_on_author_change_and_time_gap.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("b", "u2", 30, None),       // author change
+                msg("c", "u2", 30 + 999, None), // gap > window
+            ];
+            let groups = group_messages(&msgs);
+            assert_eq!(groups.len(), 3);
+        }
+        // Phase: grouping_excludes_thread_replies.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("r", "u1", 10, Some("a")), // reply — not in the timeline
+            ];
+            let groups = group_messages(&msgs);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].message_indices, vec![0]);
+        }
+        // Phase: reply_count_and_participants.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("r1", "u2", 10, Some("a")),
+                msg("r2", "u3", 20, Some("a")),
+                msg("r3", "u2", 30, Some("a")),
+            ];
+            assert_eq!(reply_count(&msgs, "a"), 3);
+            assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
+        }
     }
 
     #[test]
@@ -789,18 +803,20 @@ mod tests {
     }
 
     #[test]
-    fn clock_formats_24h() {
-        assert_eq!(clock(0), "00:00");
-        assert_eq!(clock(14 * 3600 + 32 * 60), "14:32");
-        assert_eq!(clock(23 * 3600 + 59 * 60), "23:59");
-    }
-
-    #[test]
-    fn day_label_relative() {
-        let now = 100 * 86_400 + 3600;
-        assert_eq!(day_label(now, now), "Today");
-        assert_eq!(day_label(now - 86_400, now), "Yesterday");
-        assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+    fn timestamps_format_as_a_24h_clock_and_a_relative_day() {
+        // Phase: clock_formats_24h.
+        {
+            assert_eq!(clock(0), "00:00");
+            assert_eq!(clock(14 * 3600 + 32 * 60), "14:32");
+            assert_eq!(clock(23 * 3600 + 59 * 60), "23:59");
+        }
+        // Phase: day_label_relative.
+        {
+            let now = 100 * 86_400 + 3600;
+            assert_eq!(day_label(now, now), "Today");
+            assert_eq!(day_label(now - 86_400, now), "Yesterday");
+            assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+        }
     }
 
     fn vm(user: &str) -> VoiceMember {
@@ -817,29 +833,31 @@ mod tests {
     }
 
     #[test]
-    fn call_session_promotes_from_p2p_to_host_relay() {
-        // Small calls mesh peer-to-peer; past the threshold they switch to a
-        // host relay so a growing call's upload bandwidth stays flat.
-        assert_eq!(CallSession::select(1), CallSession::Peer);
-        assert_eq!(
-            CallSession::select(CallSession::PEER_MAX),
-            CallSession::Peer
-        );
-        assert_eq!(
-            CallSession::select(CallSession::PEER_MAX + 1),
-            CallSession::Host
-        );
-        assert_eq!(CallSession::Peer.label(), "peer-to-peer");
-        assert_eq!(CallSession::Host.label(), "host relay");
-    }
-
-    #[test]
-    fn call_host_is_the_deterministic_smallest_id() {
-        // Every peer independently agrees on the host (smallest id) with no
-        // extra signalling round-trip.
-        let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
-        assert_eq!(call_host(&members), Some("u_alice".to_string()));
-        assert_eq!(call_host(&[]), None);
+    fn call_topology_and_host_are_chosen_deterministically() {
+        // Phase: call_session_promotes_from_p2p_to_host_relay.
+        {
+            // Small calls mesh peer-to-peer; past the threshold they switch to a
+            // host relay so a growing call's upload bandwidth stays flat.
+            assert_eq!(CallSession::select(1), CallSession::Peer);
+            assert_eq!(
+                CallSession::select(CallSession::PEER_MAX),
+                CallSession::Peer
+            );
+            assert_eq!(
+                CallSession::select(CallSession::PEER_MAX + 1),
+                CallSession::Host
+            );
+            assert_eq!(CallSession::Peer.label(), "peer-to-peer");
+            assert_eq!(CallSession::Host.label(), "host relay");
+        }
+        // Phase: call_host_is_the_deterministic_smallest_id.
+        {
+            // Every peer independently agrees on the host (smallest id) with no
+            // extra signalling round-trip.
+            let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
+            assert_eq!(call_host(&members), Some("u_alice".to_string()));
+            assert_eq!(call_host(&[]), None);
+        }
     }
 }
 
@@ -853,144 +871,135 @@ mod agent_record_tests {
         AgentStep::authored(resource, label, outcome, 0)
     }
 
-    /// A record written by an older agent — one with neither field — still
-    /// reads. The whole record travels as a single JSON scalar in the shared
-    /// document, and a record that will not parse is deliberately read as no
-    /// claim about the agent at all; adding a field must not be what causes
-    /// that.
     #[test]
-    fn a_record_without_reasoning_or_a_trace_still_parses() {
-        let old = r#"{"state":{"state":"taken"},"since":1000}"#;
-        let work: AgentWork = serde_json::from_str(old).expect("an older record still reads");
-        assert_eq!(work.state, AgentWorkState::Taken);
-        assert_eq!(work.since, 1000);
-        assert_eq!(work.reasoning, None);
-        assert!(work.trace.is_empty());
-        // Pinned as a literal, not round-tripped from `to_string`: a test that
-        // generated the input with today's code would go on passing after a
-        // change that stopped yesterday's records from reading at all.
-        assert_eq!(
-            serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).unwrap(),
-            old,
-            "the wire shape of a plain record changed"
-        );
-    }
-
-    /// And a record with nothing to add serialises back to what it was, so an
-    /// agent that never decided anything does not start carrying an empty
-    /// explanation nobody wrote.
-    #[test]
-    fn an_empty_reasoning_and_trace_are_absent_from_the_wire() {
-        let json =
-            serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).expect("serialise");
-        assert!(
-            !json.contains("reasoning"),
-            "empty reasoning leaked: {json}"
-        );
-        assert!(!json.contains("trace"), "empty trace leaked: {json}");
-    }
-
-    #[test]
-    fn a_reasoning_and_a_trace_survive_a_round_trip() {
-        let work = AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42)
-            .because(AgentReasoning {
-                route: AgentRoute::Model,
-                why: "the request named the photograph".into(),
-            })
-            .with_trace(vec![
-                step("photo:1", "Crop", AgentStepOutcome::Applied),
-                step("photo:1", "Rename", AgentStepOutcome::NoChange),
-                step(
-                    "doc:2",
-                    "Insert table",
-                    AgentStepOutcome::Refused {
-                        why: "not allowed here".into(),
-                    },
-                ),
-            ]);
-        let json = serde_json::to_string(&work).expect("serialise");
-        let back: AgentWork = serde_json::from_str(&json).expect("parse");
-        assert_eq!(back, work);
-        // The route is not decoration: a turn decided on the floor has to be
-        // findable as one afterwards.
-        assert!(
-            json.contains("\"route\":\"model\""),
-            "route missing: {json}"
-        );
-    }
-
-    #[test]
-    fn legacy_trace_step_without_an_id_remains_readable() {
-        let step: AgentStep = serde_json::from_str(
-            r#"{"resource":"photo:1","label":"Crop","outcome":{"outcome":"asked"}}"#,
-        )
-        .expect("pre-id step still parses");
-        assert!(step.id.is_empty());
-        assert_eq!(step.sequence, 0);
-        assert_eq!(step.outcome, AgentStepOutcome::Asked);
-    }
-
-    /// A refusal is never counted as work carried out — the difference
-    /// between "it did three things" and "it did two and was stopped once".
-    #[test]
-    fn only_an_applied_or_no_change_outcome_counts_as_carried_out() {
-        assert!(AgentStepOutcome::Applied.succeeded());
-        assert!(AgentStepOutcome::NoChange.succeeded());
-        assert!(!AgentStepOutcome::Refused { why: "no".into() }.succeeded());
-        // An operation that has been handed over and not answered has not
-        // been carried out. Counting it would make a row that exists to say
-        // "no answer yet" read as one of the things that went through.
-        assert!(!AgentStepOutcome::Asked.succeeded());
-    }
-
-    /// A row that is still in flight survives the wire, and says so — what
-    /// one peer wrote when it handed an operation over is what the next one
-    /// reads while it waits. A variant that did not round-trip would arrive
-    /// as whatever `Deserialize` fell back to, which is how "asked" becomes a
-    /// claim about an outcome.
-    #[test]
-    fn a_row_that_has_not_answered_yet_survives_the_wire() {
-        let work = AgentWork::new(
-            AgentWorkState::Waiting {
-                app: "Photos".into(),
-            },
-            42,
-        )
-        .with_trace(vec![step(
-            "photos:app",
-            "Open Photos",
-            AgentStepOutcome::Asked,
-        )]);
-        let json = serde_json::to_string(&work).expect("serialise");
-        assert!(json.contains("\"outcome\":\"asked\""), "wire shape: {json}");
-        let back: AgentWork = serde_json::from_str(&json).expect("parse");
-        assert_eq!(back, work);
-    }
-
-    /// Whether the agent has stopped is read off the state alone.
-    #[test]
-    fn finished_is_true_only_once_the_agent_has_stopped() {
-        assert!(!AgentWork::new(AgentWorkState::Taken, 0).finished());
-        assert!(
-            !AgentWork::new(
+    fn agent_work_records_keep_their_wire_shape_across_versions() {
+        // Phase: a_record_without_reasoning_or_a_trace_still_parses.
+        // A record written by an older agent — one with neither field — still
+        // reads. The whole record travels as a single JSON scalar in the shared
+        // document, and a record that will not parse is deliberately read as no
+        // claim about the agent at all; adding a field must not be what causes
+        // that.
+        {
+            let old = r#"{"state":{"state":"taken"},"since":1000}"#;
+            let work: AgentWork = serde_json::from_str(old).expect("an older record still reads");
+            assert_eq!(work.state, AgentWorkState::Taken);
+            assert_eq!(work.since, 1000);
+            assert_eq!(work.reasoning, None);
+            assert!(work.trace.is_empty());
+            // Pinned as a literal, not round-tripped from `to_string`: a test that
+            // generated the input with today's code would go on passing after a
+            // change that stopped yesterday's records from reading at all.
+            assert_eq!(
+                serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).unwrap(),
+                old,
+                "the wire shape of a plain record changed"
+            );
+        }
+        // Phase: an_empty_reasoning_and_trace_are_absent_from_the_wire.
+        // And a record with nothing to add serialises back to what it was, so an
+        // agent that never decided anything does not start carrying an empty
+        // explanation nobody wrote.
+        {
+            let json = serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000))
+                .expect("serialise");
+            assert!(
+                !json.contains("reasoning"),
+                "empty reasoning leaked: {json}"
+            );
+            assert!(!json.contains("trace"), "empty trace leaked: {json}");
+        }
+        // Phase: a_reasoning_and_a_trace_survive_a_round_trip.
+        {
+            let work = AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42)
+                .because(AgentReasoning {
+                    route: AgentRoute::Model,
+                    why: "the request named the photograph".into(),
+                })
+                .with_trace(vec![
+                    step("photo:1", "Crop", AgentStepOutcome::Applied),
+                    step("photo:1", "Rename", AgentStepOutcome::NoChange),
+                    step(
+                        "doc:2",
+                        "Insert table",
+                        AgentStepOutcome::Refused {
+                            why: "not allowed here".into(),
+                        },
+                    ),
+                ]);
+            let json = serde_json::to_string(&work).expect("serialise");
+            let back: AgentWork = serde_json::from_str(&json).expect("parse");
+            assert_eq!(back, work);
+            // The route is not decoration: a turn decided on the floor has to be
+            // findable as one afterwards.
+            assert!(
+                json.contains("\"route\":\"model\""),
+                "route missing: {json}"
+            );
+        }
+        // Phase: a_row_that_has_not_answered_yet_survives_the_wire.
+        // A row that is still in flight survives the wire, and says so — what
+        // one peer wrote when it handed an operation over is what the next one
+        // reads while it waits. A variant that did not round-trip would arrive
+        // as whatever `Deserialize` fell back to, which is how "asked" becomes a
+        // claim about an outcome.
+        {
+            let work = AgentWork::new(
                 AgentWorkState::Waiting {
-                    app: "Photos".into()
+                    app: "Photos".into(),
                 },
-                0
+                42,
             )
-            .finished()
-        );
-        assert!(
-            !AgentWork::new(
-                AgentWorkState::Doing {
-                    did: "Crop".into(),
-                    about: String::new()
-                },
-                0
-            )
-            .finished()
-        );
-        assert!(AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, 0).finished());
-        assert!(AgentWork::new(AgentWorkState::Refused, 0).finished());
+            .with_trace(vec![step(
+                "photos:app",
+                "Open Photos",
+                AgentStepOutcome::Asked,
+            )]);
+            let json = serde_json::to_string(&work).expect("serialise");
+            assert!(json.contains("\"outcome\":\"asked\""), "wire shape: {json}");
+            let back: AgentWork = serde_json::from_str(&json).expect("parse");
+            assert_eq!(back, work);
+        }
+    }
+
+    #[test]
+    fn agent_progress_counts_only_carried_out_steps_and_finished_states() {
+        // Phase: only_an_applied_or_no_change_outcome_counts_as_carried_out.
+        // A refusal is never counted as work carried out — the difference
+        // between "it did three things" and "it did two and was stopped once".
+        {
+            assert!(AgentStepOutcome::Applied.succeeded());
+            assert!(AgentStepOutcome::NoChange.succeeded());
+            assert!(!AgentStepOutcome::Refused { why: "no".into() }.succeeded());
+            // An operation that has been handed over and not answered has not
+            // been carried out. Counting it would make a row that exists to say
+            // "no answer yet" read as one of the things that went through.
+            assert!(!AgentStepOutcome::Asked.succeeded());
+        }
+        // Phase: finished_is_true_only_once_the_agent_has_stopped.
+        // Whether the agent has stopped is read off the state alone.
+        {
+            assert!(!AgentWork::new(AgentWorkState::Taken, 0).finished());
+            assert!(
+                !AgentWork::new(
+                    AgentWorkState::Waiting {
+                        app: "Photos".into()
+                    },
+                    0
+                )
+                .finished()
+            );
+            assert!(
+                !AgentWork::new(
+                    AgentWorkState::Doing {
+                        did: "Crop".into(),
+                        about: String::new()
+                    },
+                    0
+                )
+                .finished()
+            );
+            assert!(AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, 0).finished());
+            assert!(AgentWork::new(AgentWorkState::Refused, 0).finished());
+        }
     }
 }

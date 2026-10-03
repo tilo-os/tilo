@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::{ApplicationDefinition, HostContext, LaunchTarget};
+use crate::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
 use crate::permissions::{PermissionContext, UserId};
@@ -49,18 +49,21 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         record_kind: RecordKind::new("manual"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |_, _, _| unreachable!(),
     };
     let prepare = |instance| {
         let mut context = HostContext::prepare(
             &definition,
-            records.clone(),
-            views.clone(),
-            "D".into(),
-            instance,
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            UserId("tester".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: "D".into(),
+                instance_id: instance,
+                permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                author: UserId("tester".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();

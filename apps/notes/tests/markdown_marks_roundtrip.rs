@@ -18,44 +18,22 @@
 
 use notes::markdown::{parse, serialize};
 
-fn round_trip(md: &str) {
-    let back = serialize(&parse(md));
-    assert_eq!(back, md, "round-trip failed for {md:?}");
-}
-
 #[test]
-fn bold_in_paragraph() {
-    round_trip("Hello **world** today.\n");
-}
-
-#[test]
-fn italic_in_heading() {
-    round_trip("# A *taste* of\n");
-}
-
-#[test]
-fn code_in_bullet() {
-    round_trip("- run `cargo build` first\n");
-}
-
-#[test]
-fn link_in_paragraph() {
-    round_trip("See [[Welcome]] for details.\n");
-}
-
-#[test]
-fn nested_bold_italic() {
-    round_trip("**bold *italic***\n");
-}
-
-#[test]
-fn multiple_marks_same_paragraph() {
-    round_trip("This has **bold**, *italic*, and `code`.\n");
-}
-
-#[test]
-fn kitchen_sink() {
-    let md = "\
+fn inline_marks_round_trip_byte_stably_in_every_block_kind() {
+    // (case, markdown that must survive parse -> serialize unchanged)
+    let cases = [
+        ("bold in paragraph", "Hello **world** today.\n"),
+        ("italic in heading", "# A *taste* of\n"),
+        ("code in bullet", "- run `cargo build` first\n"),
+        ("link in paragraph", "See [[Welcome]] for details.\n"),
+        ("nested bold italic", "**bold *italic***\n"),
+        (
+            "multiple marks in one paragraph",
+            "This has **bold**, *italic*, and `code`.\n",
+        ),
+        (
+            "kitchen sink",
+            "\
 # Welcome **dear** friend
 
 This paragraph has *italic* and **bold** and `code`.
@@ -65,22 +43,19 @@ This paragraph has *italic* and **bold** and `code`.
 - [ ] todo with **bold**
 
 Last paragraph.
-";
-    round_trip(md);
-}
+",
+        ),
+        ("checklist with inline code", "- [x] run `make` daily\n"),
+        ("heading 3 with link", "### See [[Tips]] for more\n"),
+    ];
+    for (case, md) in cases {
+        assert_eq!(
+            serialize(&parse(md)),
+            md,
+            "round-trip failed for case {case}: {md:?}"
+        );
+    }
 
-#[test]
-fn checklist_with_inline_code() {
-    round_trip("- [x] run `make` daily\n");
-}
-
-#[test]
-fn heading3_with_link() {
-    round_trip("### See [[Tips]] for more\n");
-}
-
-#[test]
-fn empty_input_round_trips_to_empty_paragraph_newline() {
     // Empty input parses to one empty paragraph and serializes to
     // just "\n". `parse(serialize(parse("")))` must equal "\n".
     assert_eq!(serialize(&parse("")), "\n");

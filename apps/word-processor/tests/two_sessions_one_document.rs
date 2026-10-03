@@ -35,8 +35,8 @@ fn temp_path(name: &str) -> PathBuf {
     p.push(format!(
         "wp-two-sessions-{}-{}-{name}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -63,107 +63,143 @@ fn texts(state: &mut ui::State, wp: &mut WordProcessorWidget) -> Vec<String> {
     wp.model().block_texts(&state.doc)
 }
 
-/// Two sessions, two files, one room. Neither side's paragraphs may disappear,
-/// and the outcome may not depend on which actor id sorted higher — repeated
-/// because that's a coin-flip failure a single run would rarely catch.
+/// Two sessions that each opened a file keep both documents, a photograph pasted on one side reaches the
+/// other, and no container is shadowed after a merge.
 #[test]
-fn two_sessions_that_each_opened_a_file_keep_both_documents() {
-    const ROUNDS: usize = 24;
-    for round in 0..ROUNDS {
-        let mine_path = temp_path(&format!("mine-{round}.md"));
-        let theirs_path = temp_path(&format!("theirs-{round}.md"));
-        write_markdown(&mine_path, "the quarterly figures\n");
-        write_markdown(&theirs_path, "notes from the call\n");
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn sessions_keep_their_documents_and_share_content() {
+    // Phase: two_sessions_that_each_opened_a_file_keep_both_documents.
+    // Two sessions, two files, one room. Neither side's paragraphs may disappear,
+    // and the outcome may not depend on which actor id sorted higher — repeated
+    // because that's a coin-flip failure a single run would rarely catch.
+    {
+        const ROUNDS: usize = 24;
+        for round in 0..ROUNDS {
+            let mine_path = temp_path(&format!("mine-{round}.md"));
+            let theirs_path = temp_path(&format!("theirs-{round}.md"));
+            write_markdown(&mine_path, "the quarterly figures\n");
+            write_markdown(&theirs_path, "notes from the call\n");
 
-        let (mut mine, mut mine_wp, _) =
-            open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
-        let (mut theirs, mut theirs_wp, _) =
-            open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
+            let (mut mine, mut mine_wp, _) =
+                open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
+            let (mut theirs, mut theirs_wp, _) =
+                open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
 
-        sync_full_state(&mut mine, &mut theirs);
-        sync_full_state(&mut theirs, &mut mine);
+            sync_full_state(&mut mine, &mut theirs);
+            sync_full_state(&mut theirs, &mut mine);
 
-        let m = texts(&mut mine, &mut mine_wp);
-        let t = texts(&mut theirs, &mut theirs_wp);
+            let m = texts(&mut mine, &mut mine_wp);
+            let t = texts(&mut theirs, &mut theirs_wp);
 
-        for who in ["quarterly figures", "notes from the call"] {
-            assert!(
-                m.iter().any(|s| s.contains(who)),
-                "round {round}: '{who}' is missing from my page after the merge; got {m:?}"
-            );
-            assert!(
-                t.iter().any(|s| s.contains(who)),
-                "round {round}: '{who}' is missing from their page after the merge; got {t:?}"
-            );
+            for who in ["quarterly figures", "notes from the call"] {
+                assert!(
+                    m.iter().any(|s| s.contains(who)),
+                    "round {round}: '{who}' is missing from my page after the merge; got {m:?}"
+                );
+                assert!(
+                    t.iter().any(|s| s.contains(who)),
+                    "round {round}: '{who}' is missing from their page after the merge; got {t:?}"
+                );
+            }
+            assert_eq!(m, t, "round {round}: the two sessions converge");
+
+            let _ = std::fs::remove_file(&mine_path);
+            let _ = std::fs::remove_file(&theirs_path);
         }
-        assert_eq!(m, t, "round {round}: the two sessions converge");
-
-        let _ = std::fs::remove_file(&mine_path);
-        let _ = std::fs::remove_file(&theirs_path);
     }
-}
 
-/// The case that exposed it: only one side has the picture, so if that side
-/// loses the root-key conflict there is no image block left on the far page to
-/// draw — which reads as a transport failure and is not one.
-#[test]
-fn a_photograph_pasted_on_one_side_reaches_the_other() {
-    const ROUNDS: usize = 24;
-    // A 1x1 PNG — real bytes, so the app's own decode path runs and stamps
-    // width/height the way a photograph would.
-    const PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
-        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
-        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
-        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
-        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-    ];
+    // Phase: a_photograph_pasted_on_one_side_reaches_the_other.
+    // The case that exposed it: only one side has the picture, so if that side
+    // loses the root-key conflict there is no image block left on the far page to
+    // draw — which reads as a transport failure and is not one.
+    {
+        const ROUNDS: usize = 24;
+        // A 1x1 PNG — real bytes, so the app's own decode path runs and stamps
+        // width/height the way a photograph would.
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
 
-    for round in 0..ROUNDS {
-        let mine_path = temp_path(&format!("with-photo-{round}.md"));
-        let theirs_path = temp_path(&format!("no-photo-{round}.md"));
-        write_markdown(&mine_path, "the quarterly figures\n");
-        write_markdown(&theirs_path, "nothing here yet\n");
+        for round in 0..ROUNDS {
+            let mine_path = temp_path(&format!("with-photo-{round}.md"));
+            let theirs_path = temp_path(&format!("no-photo-{round}.md"));
+            write_markdown(&mine_path, "the quarterly figures\n");
+            write_markdown(&theirs_path, "nothing here yet\n");
 
-        // Both sessions run on one device, so they share its content store; reaching another
-        // device's store is the store backend's job, not the document's.
-        let content = tilo_content::ContentStore::memory();
-        let (mut mine, mut mine_wp, _) = open_document(&mine_path, content.clone()).unwrap();
-        let (mut theirs, mut theirs_wp, _) = open_document(&theirs_path, content.clone()).unwrap();
+            // Both sessions run on one device, so they share its content store; reaching another
+            // device's store is the store backend's job, not the document's.
+            let content = tilo_content::ContentStore::memory();
+            let (mut mine, mut mine_wp, _) = open_document(&mine_path, content.clone()).unwrap();
+            let (mut theirs, mut theirs_wp, _) =
+                open_document(&theirs_path, content.clone()).unwrap();
 
-        // Paste the photograph through the app's own image path.
-        mine_wp.sync(&mut mine.doc, &mine.root);
-        mine_wp.model_mut().insert_image_bytes(&mut mine.doc, PNG);
+            // Paste the photograph through the app's own image path.
+            mine_wp.sync(&mut mine.doc, &mine.root);
+            mine_wp.model_mut().insert_image_bytes(&mut mine.doc, PNG);
 
-        sync_full_state(&mut mine, &mut theirs);
-        sync_full_state(&mut theirs, &mut mine);
+            sync_full_state(&mut mine, &mut theirs);
+            sync_full_state(&mut theirs, &mut mine);
 
-        theirs_wp.sync(&mut theirs.doc, &theirs.root);
-        let containers = qdoc::model::open(&theirs.doc, &theirs.root).expect("qdoc schema");
-        let snap = qdoc::model::materialize(&theirs.doc, &containers);
-        let image = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .unwrap_or_else(|| {
-                panic!(
-                    "round {round}: the far page has no image block at all — the \
-                     photograph cannot render because it is not in the merged document"
-                )
-            });
-        let hash = match image.attrs.get("blob") {
-            Some(qdoc::AttrVal::Str(h)) => h.clone(),
-            other => panic!("round {round}: image block carries no blob hash: {other:?}"),
-        };
-        assert!(
-            content.read(&hash).is_some(),
-            "round {round}: the far side has the image block but not its bytes"
-        );
-        assert!(
-            texts(&mut theirs, &mut theirs_wp)
+            theirs_wp.sync(&mut theirs.doc, &theirs.root);
+            let containers = tilo_doc::model::open(&theirs.doc, &theirs.root).expect("qdoc schema");
+            let snap = tilo_doc::model::materialize(&theirs.doc, &containers);
+            let image = snap
+                .blocks
                 .iter()
-                .any(|s| s.contains("nothing here yet")),
-            "round {round}: the far side kept its own paragraph too"
+                .find(|b| b.kind == "image")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "round {round}: the far page has no image block at all — the \
+                         photograph cannot render because it is not in the merged document"
+                    )
+                });
+            let hash = match image.attrs.get("blob") {
+                Some(tilo_doc::AttrVal::Str(h)) => h.clone(),
+                other => panic!("round {round}: image block carries no blob hash: {other:?}"),
+            };
+            assert!(
+                content.read(&hash).is_some(),
+                "round {round}: the far side has the image block but not its bytes"
+            );
+            assert!(
+                texts(&mut theirs, &mut theirs_wp)
+                    .iter()
+                    .any(|s| s.contains("nothing here yet")),
+                "round {round}: the far side kept its own paragraph too"
+            );
+
+            let _ = std::fs::remove_file(&mine_path);
+            let _ = std::fs::remove_file(&theirs_path);
+        }
+    }
+
+    // Phase: no_container_is_shadowed_after_a_merge.
+    // The schema must be reached through exactly one object. More than one
+    // candidate at a container key means content is sitting in the change graph
+    // that no read will ever return — the shape of the silent loss.
+    {
+        let mine_path = temp_path("shadow-mine.md");
+        let theirs_path = temp_path("shadow-theirs.md");
+        write_markdown(&mine_path, "mine\n");
+        write_markdown(&theirs_path, "theirs\n");
+
+        let (mut mine, _, _) =
+            open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
+        let (mut theirs, _, _) =
+            open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
+        sync_full_state(&mut mine, &mut theirs);
+
+        assert_eq!(
+            tilo_doc::model::shadowed_containers(&mine.doc, &mine.root),
+            Vec::<String>::new(),
+            "every schema container is reached through one object after a merge"
         );
 
         let _ = std::fs::remove_file(&mine_path);
@@ -221,29 +257,4 @@ fn a_third_session_joining_late_displaces_nobody() {
             let _ = std::fs::remove_file(p);
         }
     }
-}
-
-/// The schema must be reached through exactly one object. More than one
-/// candidate at a container key means content is sitting in the change graph
-/// that no read will ever return — the shape of the silent loss.
-#[test]
-fn no_container_is_shadowed_after_a_merge() {
-    let mine_path = temp_path("shadow-mine.md");
-    let theirs_path = temp_path("shadow-theirs.md");
-    write_markdown(&mine_path, "mine\n");
-    write_markdown(&theirs_path, "theirs\n");
-
-    let (mut mine, _, _) = open_document(&mine_path, tilo_content::ContentStore::memory()).unwrap();
-    let (mut theirs, _, _) =
-        open_document(&theirs_path, tilo_content::ContentStore::memory()).unwrap();
-    sync_full_state(&mut mine, &mut theirs);
-
-    assert_eq!(
-        qdoc::model::shadowed_containers(&mine.doc, &mine.root),
-        Vec::<String>::new(),
-        "every schema container is reached through one object after a merge"
-    );
-
-    let _ = std::fs::remove_file(&mine_path);
-    let _ = std::fs::remove_file(&theirs_path);
 }

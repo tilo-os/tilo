@@ -20,7 +20,7 @@ SEED="$ROOT/seed" LOGS="$ROOT/logs"
 die() { echo "FATAL: $*" >&2; exit 1; }
 
 ensure_bin() {
-    [ -x "$BIN" ] || cargo build -p fs --manifest-path "$REPO/Cargo.toml" || die "build failed"
+    [ -x "$BIN" ] || cargo build -p tilo-fs --manifest-path "$REPO/Cargo.toml" || die "build failed"
 }
 
 ensure_fuse_conf() {

@@ -9,7 +9,7 @@ Type=notify
 # read and write; the daemon keeps no store of its own. Packages the daemon
 # once kept in its own state directory move into it at startup.
 ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/tilo-apps
-ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %h/.local/share/tilo-apps --migrate-from %S/tilo-app-host
+ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %h/.local/share/tilo-apps
 Restart=on-failure
 RestartSec=1
 RuntimeDirectory=tilo/services

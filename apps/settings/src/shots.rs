@@ -586,42 +586,37 @@ pub fn render_to_path_with_text_scale(
 mod tests {
     use super::*;
 
+    /// Shot scenarios derive from the file name, and each scenario (and each
+    /// exact capture width) opens the navigation mode and pane it shows.
     #[test]
-    fn scenario_derives_narrow_from_filename() {
-        assert_eq!(
-            Scenario::from_shots_path(Path::new("/x/settings-narrow.png")),
-            Scenario::Narrow
-        );
-        assert_eq!(
-            Scenario::from_shots_path(Path::new("/x/settings.png")),
-            Scenario::Wide
-        );
-    }
+    fn shot_scenarios_select_their_layout_and_pane() {
+        for (path, want) in [
+            ("/x/settings-narrow.png", Scenario::Narrow),
+            ("/x/settings.png", Scenario::Wide),
+        ] {
+            assert_eq!(Scenario::from_shots_path(Path::new(path)), want, "{path}");
+        }
 
-    #[test]
-    fn narrow_app_selects_region_formats() {
-        let _config = crate::prefs::test_env::ConfigGuard::new();
-        // The width hint + shot flag are applied; the resolved
-        // narrow/overlay layout is asserted in the layout-driven tests once a
-        // frame is laid out (see settings_app tests).
-        assert_eq!(Scenario::Narrow.app().selected(), Category::RegionFormats);
-    }
+        // The width hint + shot flag are applied; the resolved narrow/overlay
+        // layout is asserted in the layout-driven tests once a frame is laid
+        // out (see settings_app tests). Each case gets its own config dir.
+        for (scenario, want) in [
+            (Scenario::Narrow, Category::RegionFormats),
+            (Scenario::Wide, Category::Appearance),
+        ] {
+            let _config = crate::prefs::test_env::ConfigGuard::new();
+            assert_eq!(scenario.app().selected(), want, "{scenario:?}");
+        }
 
-    #[test]
-    fn wide_app_selects_visible_appearance_row() {
-        let _config = crate::prefs::test_env::ConfigGuard::new();
-        assert_eq!(Scenario::Wide.app().selected(), Category::Appearance);
-    }
-
-    #[test]
-    fn responsive_capture_uses_exact_width_to_select_navigation_mode() {
-        let _config = crate::prefs::test_env::ConfigGuard::new();
-        let phone = responsive_app((390, 844), 1.0);
-        assert!(phone.is_narrow());
-        assert_eq!(phone.selected(), Category::RegionFormats);
-
-        let desktop = responsive_app((1920, 1080), 1.0);
-        assert!(!desktop.is_narrow());
-        assert_eq!(desktop.selected(), Category::Appearance);
+        // (capture size, narrow, selected pane)
+        for (size, narrow, want) in [
+            ((390, 844), true, Category::RegionFormats),
+            ((1920, 1080), false, Category::Appearance),
+        ] {
+            let _config = crate::prefs::test_env::ConfigGuard::new();
+            let app = responsive_app(size, 1.0);
+            assert_eq!(app.is_narrow(), narrow, "{size:?}");
+            assert_eq!(app.selected(), want, "{size:?}");
+        }
     }
 }

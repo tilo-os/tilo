@@ -43,23 +43,6 @@ runs:
         command -v llvm-lib
         rustup target add aarch64-pc-windows-msvc
 
-    # The runner image has no compiler cache client. Install the same
-    # checksum-pinned sccache the builder images carry; the runner already
-    # provides its backend configuration.
-    - name: Materialize the pinned compiler-cache client
-      uses: ./.forgejo/actions/cache-github-assets
-      with:
-        key: sccache-client-v1-aarch64
-        assets: sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
-    - name: Enable the shared compiler cache
-      shell: bash
-      run: |
-        set -euo pipefail
-        name=sccache-v0.17.0-aarch64-unknown-linux-musl
-        tar -xzf "os/external-assets/cache/$name.tar.gz" -C "$RUNNER_TEMP"
-        printf '%s\n' "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
-        PATH="$RUNNER_TEMP/$name:$PATH" bash tools/ci/sccache.sh prepare
-
     - id: xwin
       uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       continue-on-error: true

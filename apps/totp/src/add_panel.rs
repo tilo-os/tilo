@@ -22,8 +22,7 @@
 //! among them itself, forwarding key/pointer events to the focused field.
 //! Results surface as an [`AddPanelEvent`] drained by the app.
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
+use taffy::NodeId;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -33,11 +32,12 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::color_compat::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Widget,
+    Button, ButtonFace, EventCtx, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::model::{self, Account, Algorithm};
@@ -1249,41 +1249,9 @@ impl AddAccountPanel {
         // follows the text scale so 200% text picks the short form instead of
         // running under the chevron.
         let tight = self.modal.width() < 400.0 * self.metrics().scale;
-        let t = crate::i18n::t;
-        let img_hover = self.image_card_rect.contains(self.last_mouse);
-        Self::draw_method_card(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.image_card_rect,
-            Glyph::Image,
-            &t("totp-add-card-scan-title"),
-            &t(if tight {
-                "totp-add-card-scan-short"
-            } else {
-                "totp-add-card-scan-long"
-            }),
-            img_hover,
-            true,
-        );
-        let link_hover = self.link_card_rect.contains(self.last_mouse);
-        Self::draw_method_card(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.link_card_rect,
-            Glyph::Link,
-            &t("totp-add-card-link-title"),
-            &t(if tight {
-                "totp-add-card-link-short"
-            } else {
-                "totp-add-card-link-long"
-            }),
-            link_hover,
-            false,
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_method_card(&mut ctx, ImportMethod::Image, tight);
+        self.draw_method_card(&mut ctx, ImportMethod::Link, tight);
 
         // Paste-link field (disclosed).
         if self.uri_expanded {
@@ -1498,24 +1466,21 @@ impl AddAccountPanel {
     }
 
     /// One big, tappable method row: an icon tile, a bold title, and a calm
-    /// one-line description. The primary card (QR) gets the accent tint so
-    /// the recommended path reads first.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a card is glyph + title + subtitle + hover/primary state; grouping into a struct would only move the fields, not reduce them"
-    )]
-    fn draw_method_card(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        glyph: Glyph,
-        title: &str,
-        subtitle: &str,
-        hovered: bool,
-        primary: bool,
-    ) {
+    /// one-line description (the short one when `tight`). The primary card
+    /// (QR) gets the accent tint so the recommended path reads first.
+    fn draw_method_card(&self, ctx: &mut PaintCtx<'_>, method: ImportMethod, tight: bool) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let (rect, primary) = match method {
+            ImportMethod::Image => (self.image_card_rect, true),
+            ImportMethod::Link => (self.link_card_rect, false),
+        };
+        let hovered = rect.contains(self.last_mouse);
+        let (title, subtitle) = method.copy(tight);
         let radius = f64::from(theme.tokens.radii.lg);
         let bg = if primary {
             if hovered {
@@ -1574,7 +1539,7 @@ impl AddAccountPanel {
             rect.center().y + tile_side / 2.0,
         );
         let tile_bg = if on_primary {
-            Color::WHITE.with_alpha_factor(0.18)
+            on_accent.ink.with_alpha_factor(0.18)
         } else {
             theme.accent_primary.with_alpha_factor(0.14)
         };
@@ -1585,7 +1550,7 @@ impl AddAccountPanel {
             None,
             &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.md)),
         );
-        draw_glyph(scene, transform, icon_tile, glyph, icon_color);
+        draw_glyph(scene, transform, icon_tile, method, icon_color);
 
         // Title + description as one block centred on the card, from their
         // measured line boxes, so at a larger text scale the description sits
@@ -1596,8 +1561,8 @@ impl AddAccountPanel {
         // description when the scaled text is tight).
         let text_x = icon_tile.x1 + 14.0;
         let text_w = (rect.x1 - text_x - 28.0).max(20.0) as f32;
-        let title = text_renderer.elide_to_width(title, CARD_TITLE_SIZE, text_w);
-        let subtitle = text_renderer.elide_to_width(subtitle, CARD_SUB_SIZE, text_w);
+        let title = text_renderer.elide_to_width(&title, CARD_TITLE_SIZE, text_w);
+        let subtitle = text_renderer.elide_to_width(&subtitle, CARD_SUB_SIZE, text_w);
         let (_, th) =
             text_renderer.measure_weighted(&title, CARD_TITLE_SIZE, None, TextWeight::Semibold);
         let (_, sh) = text_renderer.measure(&subtitle, CARD_SUB_SIZE, None);
@@ -1619,20 +1584,7 @@ impl AddAccountPanel {
             transform * Affine::translate((text_x, title_y + f64::from(th))),
             None,
         );
-
-        // Chevron affordance on the right.
-        let cx = rect.x1 - 22.0;
-        let cy = rect.center().y;
-        let mut chev = BezPath::new();
-        chev.move_to((cx - 4.0, cy - 6.0));
-        chev.line_to((cx + 4.0, cy));
-        chev.line_to((cx - 4.0, cy + 6.0));
-        let chev_color = if on_primary {
-            Color::WHITE.with_alpha_factor(0.8)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+        draw_card_chevron(scene, transform, theme, rect, on_primary);
     }
 
     /// A subtle downward chevron at the bottom of the scroll body, shown
@@ -1772,10 +1724,6 @@ impl AddAccountPanel {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,
@@ -1797,10 +1745,6 @@ impl AddAccountPanel {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_primary_button(
         scene: &mut Scene,
         transform: Affine,
@@ -1825,45 +1769,22 @@ impl AddAccountPanel {
 
     // ---- events ------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    pub fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if !self.open {
             return;
         }
         // The modal is fully blocking — every event is consumed.
-        *handled = true;
+        *ctx.handled = true;
 
         if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.handle_cursor_moved(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.handle_cursor_moved(event, ctx);
             return;
         }
 
         // Wheel scrolls the body when the form is taller than the window.
         // The next layout pass re-offsets every rect from the new scroll.
         if let WindowEvent::MouseWheel { delta, .. } = event {
-            self.handle_wheel(delta, scale_factor);
+            self.handle_wheel(delta, ctx.scale_factor);
             return;
         }
 
@@ -1879,7 +1800,7 @@ impl AddAccountPanel {
                 },
             ..
         } = event
-            && self.handle_key(logical_key, modifiers.state().shift_key())
+            && self.handle_key(logical_key, ctx.modifiers.state().shift_key())
         {
             return;
         }
@@ -1891,33 +1812,15 @@ impl AddAccountPanel {
             ..
         } = event
         {
-            self.handle_mouse_press(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.handle_mouse_press(event, ctx);
             return;
         }
 
         // Forward remaining events (chars, drag) to the focused field.
         if let Some(f) = self.focused {
             let mut throwaway = None;
-            self.field_mut(f).handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                &mut throwaway,
-                node_id,
-                taffy,
-            );
+            self.field_mut(f)
+                .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
         }
     }
 
@@ -1925,25 +1828,11 @@ impl AddAccountPanel {
     /// reach every text field so their `is_hovered` is set before a click
     /// lands. Split out of [`Self::handle_event`] to keep that function's
     /// line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    fn handle_cursor_moved(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_cursor_moved(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return;
         };
-        self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_mouse = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         for field in [
             Field::Uri,
             Field::Issuer,
@@ -1952,17 +1841,8 @@ impl AddAccountPanel {
             Field::Period,
         ] {
             let mut throwaway = None;
-            self.field_mut(field).handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                &mut throwaway,
-                node_id,
-                taffy,
-            );
+            self.field_mut(field)
+                .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
         }
     }
 
@@ -2005,21 +1885,7 @@ impl AddAccountPanel {
     /// A left click: method cards, disclosures, chips, footer buttons, and
     /// focusing a text field. Split out of [`Self::handle_event`] to keep
     /// that function's line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    fn handle_mouse_press(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_mouse_press(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let p = self.last_mouse;
 
         // Method cards.
@@ -2071,17 +1937,9 @@ impl AddAccountPanel {
             let r = self.field_rect(field);
             if r.contains(p) {
                 self.set_focus(Some(field));
-                self.field_mut(field).handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    &mut None,
-                    node_id,
-                    taffy,
-                );
+                let mut throwaway = None;
+                self.field_mut(field)
+                    .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
                 return;
             }
         }
@@ -2116,20 +1974,61 @@ impl AddAccountPanel {
     }
 }
 
-/// The small set of glyphs the method cards draw, rendered as vector paths
-/// (no font/icon dependency) so they track the accent colour the theme
-/// hands us.
+/// The two ways to add an account, each drawn as a method card. Their glyphs
+/// are vector paths (no font/icon dependency) so they track the accent colour
+/// the theme hands us.
 #[derive(Clone, Copy)]
-enum Glyph {
+enum ImportMethod {
+    /// Scan a QR image — the recommended path, so its card is accented.
     Image,
+    /// Paste a setup link.
     Link,
 }
 
+impl ImportMethod {
+    /// The card's title and description; `tight` picks the short description.
+    fn copy(self, tight: bool) -> (String, String) {
+        let (title, description) = match (self, tight) {
+            (Self::Image, false) => ("totp-add-card-scan-title", "totp-add-card-scan-long"),
+            (Self::Image, true) => ("totp-add-card-scan-title", "totp-add-card-scan-short"),
+            (Self::Link, false) => ("totp-add-card-link-title", "totp-add-card-link-long"),
+            (Self::Link, true) => ("totp-add-card-link-title", "totp-add-card-link-short"),
+        };
+        (crate::i18n::t(title), crate::i18n::t(description))
+    }
+}
+
+/// The chevron affordance at the right of a method card; `on_primary` inks it
+/// for the accent card.
+fn draw_card_chevron(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    on_primary: bool,
+) {
+    let cx = rect.x1 - 22.0;
+    let cy = rect.center().y;
+    let mut chev = BezPath::new();
+    chev.move_to((cx - 4.0, cy - 6.0));
+    chev.line_to((cx + 4.0, cy));
+    chev.line_to((cx - 4.0, cy + 6.0));
+    let chev_color = if on_primary {
+        theme
+            .tokens
+            .colors
+            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+    } else {
+        theme.tokens.colors.text_dim
+    };
+    scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+}
+
 /// Draw a method-card glyph centred in `tile`, in `color`.
-fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, color: Color) {
+fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: ImportMethod, color: Color) {
     let c = tile.center();
     match glyph {
-        Glyph::Image => {
+        ImportMethod::Image => {
             // Picture frame + sun + mountain.
             let frame = RoundedRect::new(c.x - 8.0, c.y - 7.0, c.x + 8.0, c.y + 7.0, 2.0);
             scene.stroke(&Stroke::new(1.6), transform, color, None, &frame);
@@ -2143,7 +2042,7 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
             mtn.line_to((c.x + 7.0, c.y + 6.0));
             scene.stroke(&Stroke::new(1.6), transform, color, None, &mtn);
         }
-        Glyph::Link => {
+        ImportMethod::Link => {
             // Two interlocking link halves.
             let stroke = Stroke::new(1.8);
             let mut a = BezPath::new();
@@ -2168,10 +2067,26 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
     }
 }
 
+/// `ctx` for one of the panel's text fields. The modal decides focus itself,
+/// so a field's focus request lands in `focus` and goes no further.
+fn field_ctx<'b>(ctx: &'b mut EventCtx<'_>, focus: &'b mut Option<NodeId>) -> EventCtx<'b> {
+    EventCtx {
+        scale_factor: ctx.scale_factor,
+        modifiers: ctx.modifiers,
+        state: &mut *ctx.state,
+        path: ctx.path,
+        handled: &mut *ctx.handled,
+        focus_target: focus,
+        node_id: ctx.node_id,
+        taffy: ctx.taffy,
+    }
+}
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use taffy::TaffyTree;
 
     fn opened() -> AddAccountPanel {
         let mut p = AddAccountPanel::new();
@@ -2180,284 +2095,302 @@ mod tests {
         p
     }
 
+    /// Add-panel metrics at 1x and scaled text.
     #[test]
-    fn one_x_metrics_reproduce_the_authored_bands() {
-        // The pre-paint rule set (also what these tests lay out with) keeps
-        // every 1× band at its authored size, so nothing moves at 1×.
-        let m = PanelMetrics::default();
-        assert_eq!(m.input_h(12.0), INPUT_H);
-        assert_eq!(m.card_h(8.0), CARD_MIN_H);
-        assert_eq!(m.adv_header_h(4.0), ADV_HEADER_MIN_H);
-        assert_eq!(m.footer_h(12.0), FOOTER_MIN_H);
-        assert_eq!(m.divider_block_h(8.0), DIVIDER_BLOCK_MIN_H);
-        // The label band is its 15 px line plus `s1`; the title block is
-        // `s6` + title + subtitle + `s2` (one and two pixels over the old
-        // fixed bands, so the labels no longer touch their fields).
-        assert_eq!(m.label_gap(4.0), 19.0);
-        assert!((m.title_block_h(24.0, 8.0) - 75.75).abs() < 1e-9);
-        // The 1× footer is the authored one: two equal 140 px buttons.
-        let p = opened();
-        assert_eq!(p.save_rect.width(), BUTTON_MAX_W);
-        assert_eq!(p.cancel_rect.width(), BUTTON_MAX_W);
-        assert_eq!(p.cancel_rect.x1 + 12.0, p.save_rect.x0);
+    fn add_panel_metrics_reproduce_and_scale_the_authored_bands() {
+        // Case `one_x_metrics_reproduce_the_authored_bands`.
+        {
+            // The pre-paint rule set (also what these tests lay out with) keeps
+            // every 1× band at its authored size, so nothing moves at 1×.
+            let m = PanelMetrics::default();
+            assert_eq!(m.input_h(12.0), INPUT_H);
+            assert_eq!(m.card_h(8.0), CARD_MIN_H);
+            assert_eq!(m.adv_header_h(4.0), ADV_HEADER_MIN_H);
+            assert_eq!(m.footer_h(12.0), FOOTER_MIN_H);
+            assert_eq!(m.divider_block_h(8.0), DIVIDER_BLOCK_MIN_H);
+            // The label band is its 15 px line plus `s1`; the title block is
+            // `s6` + title + subtitle + `s2` (one and two pixels over the old
+            // fixed bands, so the labels no longer touch their fields).
+            assert_eq!(m.label_gap(4.0), 19.0);
+            assert!((m.title_block_h(24.0, 8.0) - 75.75).abs() < 1e-9);
+            // The 1× footer is the authored one: two equal 140 px buttons.
+            let p = opened();
+            assert_eq!(p.save_rect.width(), BUTTON_MAX_W);
+            assert_eq!(p.cancel_rect.width(), BUTTON_MAX_W);
+            assert_eq!(p.cancel_rect.x1 + 12.0, p.save_rect.x0);
+        }
+
+        // Case `scaled_metrics_grow_every_band_and_the_form_still_lays_out`.
+        {
+            // 200% text: every line box doubles; the bands follow instead of the
+            // labels painting over the fields (the defect at 200% before).
+            let m = PanelMetrics {
+                scale: 2.0,
+                title_h: 55.0,
+                subtitle_h: 65.0, // wrapped onto two lines
+                label_h: 30.0,
+                card_title_h: 37.5,
+                card_sub_h: 30.0,
+                divider_h: 27.5,
+                adv_h: 32.5,
+                input_line_h: 35.0,
+                button_label_h: 35.0,
+                cancel_label_w: 92.0,
+                save_label_w: 168.0,
+                fill_label_w: 40.0,
+                ..PanelMetrics::default()
+            };
+            assert!(m.input_h(12.0) > INPUT_H);
+            assert!(m.card_h(8.0) > CARD_MIN_H);
+            assert!(
+                m.label_gap(4.0) > m.label_h,
+                "a label never overlaps its field"
+            );
+            assert!(m.title_block_h(24.0, 8.0) >= 24.0 + m.title_h + m.subtitle_h + 8.0);
+
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.metrics = Some(m);
+            p.layout(Rect::new(0.0, 0.0, 800.0, 900.0));
+            // Fields stack below their label bands without overlapping.
+            assert!(p.label_rect.y0 >= p.issuer_rect.y1 + m.label_gap(4.0));
+            assert!(p.secret_rect.y0 >= p.label_rect.y1 + m.label_gap(4.0));
+            // The footer pair shares one width, grown past the authored 140 px
+            // for the wider label (168 + 2 × 24 = 216), and stays inside.
+            assert_eq!(p.save_rect.width(), p.cancel_rect.width());
+            assert!(
+                p.save_rect.width() >= (m.save_label_w + 48.0).min((p.modal.width() - 68.0) / 2.0)
+            );
+            assert!(p.save_rect.width() > BUTTON_MAX_W);
+            assert!(p.cancel_rect.x1 <= p.save_rect.x0);
+            assert!(p.save_rect.y1 <= p.modal.y1);
+            // The body scrolls instead of the modal overflowing the window.
+            assert!(p.modal.y1 <= 900.0);
+        }
     }
 
+    /// Advanced and paste-link disclosures: default state, reveal, scroll-into-view and field order.
     #[test]
-    fn scaled_metrics_grow_every_band_and_the_form_still_lays_out() {
-        // 200% text: every line box doubles; the bands follow instead of the
-        // labels painting over the fields (the defect at 200% before).
-        let m = PanelMetrics {
-            scale: 2.0,
-            title_h: 55.0,
-            subtitle_h: 65.0, // wrapped onto two lines
-            label_h: 30.0,
-            card_title_h: 37.5,
-            card_sub_h: 30.0,
-            divider_h: 27.5,
-            adv_h: 32.5,
-            input_line_h: 35.0,
-            button_label_h: 35.0,
-            cancel_label_w: 92.0,
-            save_label_w: 168.0,
-            fill_label_w: 40.0,
-            ..PanelMetrics::default()
-        };
-        assert!(m.input_h(12.0) > INPUT_H);
-        assert!(m.card_h(8.0) > CARD_MIN_H);
-        assert!(
-            m.label_gap(4.0) > m.label_h,
-            "a label never overlaps its field"
-        );
-        assert!(m.title_block_h(24.0, 8.0) >= 24.0 + m.title_h + m.subtitle_h + 8.0);
+    fn add_panel_disclosures_start_collapsed_and_reveal_on_demand() {
+        // Case `advanced_is_collapsed_by_default`.
+        {
+            let p = opened();
+            assert!(!p.advanced_open, "advanced options must start hidden");
+            // Advanced rects are not laid out while collapsed.
+            assert_eq!(p.period_rect, Rect::ZERO);
+            assert_eq!(p.alg_rects[0], Rect::ZERO);
+        }
 
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.metrics = Some(m);
-        p.layout(Rect::new(0.0, 0.0, 800.0, 900.0));
-        // Fields stack below their label bands without overlapping.
-        assert!(p.label_rect.y0 >= p.issuer_rect.y1 + m.label_gap(4.0));
-        assert!(p.secret_rect.y0 >= p.label_rect.y1 + m.label_gap(4.0));
-        // The footer pair shares one width, grown past the authored 140 px
-        // for the wider label (168 + 2 × 24 = 216), and stays inside.
-        assert_eq!(p.save_rect.width(), p.cancel_rect.width());
-        assert!(p.save_rect.width() >= (m.save_label_w + 48.0).min((p.modal.width() - 68.0) / 2.0));
-        assert!(p.save_rect.width() > BUTTON_MAX_W);
-        assert!(p.cancel_rect.x1 <= p.save_rect.x0);
-        assert!(p.save_rect.y1 <= p.modal.y1);
-        // The body scrolls instead of the modal overflowing the window.
-        assert!(p.modal.y1 <= 900.0);
+        // Case `paste_link_is_collapsed_until_chosen`.
+        {
+            let mut p = opened();
+            assert!(!p.uri_expanded);
+            assert_eq!(p.uri_rect, Rect::ZERO);
+            p.expand_uri();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert!(p.uri_expanded);
+            assert_ne!(p.uri_rect, Rect::ZERO, "uri field lays out once disclosed");
+        }
+
+        // Case `toggling_advanced_lays_out_the_fields`.
+        {
+            let mut p = opened();
+            p.toggle_advanced();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert!(p.advanced_open);
+            assert_ne!(p.period_rect, Rect::ZERO);
+            assert_ne!(p.alg_rects[0], Rect::ZERO);
+        }
+
+        // Case `revealing_advanced_scrolls_its_fields_into_view`.
+        {
+            // In a short window the expanded Advanced section is taller than the
+            // fold; toggling it open must auto-scroll so the last field lands
+            // inside the visible body band instead of below it.
+            let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.layout(win);
+            p.toggle_advanced();
+            p.layout(win);
+            assert!(p.advanced_open);
+            assert!(p.max_scroll > 0.0, "advanced form overflows a 600px window");
+            assert_eq!(
+                p.scroll, p.max_scroll,
+                "toggle scrolls the new fields into view"
+            );
+            assert_ne!(p.period_rect, Rect::ZERO, "period field is laid out");
+            assert!(
+                p.period_rect.y1 <= p.body_clip.y1 + 1.0,
+                "the last advanced field is within the visible body, not below the fold"
+            );
+            assert!(
+                p.period_rect.y0 >= p.body_clip.y0 - 1.0,
+                "the period field is not clipped above the body top"
+            );
+        }
+
+        // Case `revealing_advanced_is_a_one_shot_that_survives_resize`.
+        {
+            // After the reveal-scroll, a later relayout (e.g. a resize) must not
+            // re-force the scroll — the user keeps control of their position.
+            let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.toggle_advanced();
+            p.layout(win);
+            assert!(!p.reveal_advanced, "the reveal flag is consumed by layout");
+            // Scroll back up, then relayout: the position is preserved.
+            p.scroll = 0.0;
+            p.layout(win);
+            assert_eq!(
+                p.scroll, 0.0,
+                "a plain relayout does not re-trigger the reveal"
+            );
+        }
+
+        // Case `field_order_tracks_disclosure_state`.
+        {
+            let mut p = opened();
+            // Collapsed: just the three manual fields.
+            assert_eq!(
+                p.field_order(),
+                vec![Field::Issuer, Field::Label, Field::Secret]
+            );
+            p.expand_uri();
+            p.toggle_advanced();
+            assert_eq!(
+                p.field_order(),
+                vec![
+                    Field::Uri,
+                    Field::Issuer,
+                    Field::Label,
+                    Field::Secret,
+                    Field::Period
+                ]
+            );
+        }
     }
 
+    /// The modal fits tall windows, scrolls in short ones and reflows on every layout.
     #[test]
-    fn advanced_is_collapsed_by_default() {
-        let p = opened();
-        assert!(!p.advanced_open, "advanced options must start hidden");
-        // Advanced rects are not laid out while collapsed.
-        assert_eq!(p.period_rect, Rect::ZERO);
-        assert_eq!(p.alg_rects[0], Rect::ZERO);
+    fn add_panel_fits_scrolls_and_reflows_with_the_window() {
+        // Case `default_form_fits_a_tall_window_without_scrolling`.
+        {
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert_eq!(
+                p.max_scroll, 0.0,
+                "the calm default form fits without scrolling"
+            );
+            assert!(
+                p.save_rect.y1 <= p.modal.y1,
+                "footer stays inside the modal"
+            );
+            assert!(p.modal.y1 <= 800.0 - 16.0, "modal fits inside the window");
+        }
+
+        // Case `tall_form_scrolls_in_a_short_window_without_overflowing`.
+        {
+            let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.toggle_advanced(); // makes the form taller than a 600px window
+            p.layout(win);
+            assert!(
+                p.max_scroll > 0.0,
+                "advanced form must scroll in a short window"
+            );
+            // The footer is pinned inside the modal, never off-screen.
+            assert!(p.save_rect.y1 <= p.modal.y1);
+            assert!(p.modal.y1 <= 600.0);
+            // Reset to the top of the body (revealing Advanced auto-scrolled to
+            // the bottom), so we can prove the scroll mechanic independently.
+            p.scroll = 0.0;
+            p.layout(win);
+            let period_top_before = p.period_rect.y0;
+            // Scrolling to the bottom brings the period field up into the body.
+            p.scroll = p.max_scroll;
+            p.layout(win);
+            assert!(
+                p.period_rect.y0 < period_top_before,
+                "scrolling moves body content upward into view"
+            );
+            // Fully scrolled, the last field sits within the visible body band.
+            assert!(
+                p.period_rect.y1 <= p.body_clip.y1 + 1.0,
+                "bottom of form reachable"
+            );
+        }
+
+        // Case `modal_reflows_from_the_current_window_on_every_layout`.
+        {
+            // Guards against caching the size from the first frame: the same
+            // instance must re-derive width + scroll when the window changes.
+            let mut p = AddAccountPanel::new();
+            p.open();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            let wide_w = p.modal.width();
+            assert_eq!(p.max_scroll, 0.0, "roomy window needs no scroll");
+            p.layout(Rect::new(0.0, 0.0, 400.0, 420.0));
+            assert!(
+                p.modal.width() < wide_w,
+                "modal narrows to the smaller window"
+            );
+            assert!(p.max_scroll > 0.0, "a short window enables scrolling");
+            // And back to roomy — it must recover, not stay narrow.
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert!((p.modal.width() - wide_w).abs() < 0.5, "modal widens back");
+            assert_eq!(p.max_scroll, 0.0);
+        }
     }
 
+    /// Applying an otpauth URI, validating the secret, and saving.
     #[test]
-    fn paste_link_is_collapsed_until_chosen() {
-        let mut p = opened();
-        assert!(!p.uri_expanded);
-        assert_eq!(p.uri_rect, Rect::ZERO);
-        p.expand_uri();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert!(p.uri_expanded);
-        assert_ne!(p.uri_rect, Rect::ZERO, "uri field lays out once disclosed");
-    }
-
-    #[test]
-    fn toggling_advanced_lays_out_the_fields() {
-        let mut p = opened();
-        p.toggle_advanced();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert!(p.advanced_open);
-        assert_ne!(p.period_rect, Rect::ZERO);
-        assert_ne!(p.alg_rects[0], Rect::ZERO);
-    }
-
-    #[test]
-    fn default_form_fits_a_tall_window_without_scrolling() {
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert_eq!(
-            p.max_scroll, 0.0,
-            "the calm default form fits without scrolling"
-        );
-        assert!(
-            p.save_rect.y1 <= p.modal.y1,
-            "footer stays inside the modal"
-        );
-        assert!(p.modal.y1 <= 800.0 - 16.0, "modal fits inside the window");
-    }
-
-    #[test]
-    fn tall_form_scrolls_in_a_short_window_without_overflowing() {
-        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.toggle_advanced(); // makes the form taller than a 600px window
-        p.layout(win);
-        assert!(
-            p.max_scroll > 0.0,
-            "advanced form must scroll in a short window"
-        );
-        // The footer is pinned inside the modal, never off-screen.
-        assert!(p.save_rect.y1 <= p.modal.y1);
-        assert!(p.modal.y1 <= 600.0);
-        // Reset to the top of the body (revealing Advanced auto-scrolled to
-        // the bottom), so we can prove the scroll mechanic independently.
-        p.scroll = 0.0;
-        p.layout(win);
-        let period_top_before = p.period_rect.y0;
-        // Scrolling to the bottom brings the period field up into the body.
-        p.scroll = p.max_scroll;
-        p.layout(win);
-        assert!(
-            p.period_rect.y0 < period_top_before,
-            "scrolling moves body content upward into view"
-        );
-        // Fully scrolled, the last field sits within the visible body band.
-        assert!(
-            p.period_rect.y1 <= p.body_clip.y1 + 1.0,
-            "bottom of form reachable"
-        );
-    }
-
-    #[test]
-    fn modal_reflows_from_the_current_window_on_every_layout() {
-        // Guards against caching the size from the first frame: the same
-        // instance must re-derive width + scroll when the window changes.
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let wide_w = p.modal.width();
-        assert_eq!(p.max_scroll, 0.0, "roomy window needs no scroll");
-        p.layout(Rect::new(0.0, 0.0, 400.0, 420.0));
-        assert!(
-            p.modal.width() < wide_w,
-            "modal narrows to the smaller window"
-        );
-        assert!(p.max_scroll > 0.0, "a short window enables scrolling");
-        // And back to roomy — it must recover, not stay narrow.
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert!((p.modal.width() - wide_w).abs() < 0.5, "modal widens back");
-        assert_eq!(p.max_scroll, 0.0);
-    }
-
-    #[test]
-    fn revealing_advanced_scrolls_its_fields_into_view() {
-        // In a short window the expanded Advanced section is taller than the
-        // fold; toggling it open must auto-scroll so the last field lands
-        // inside the visible body band instead of below it.
-        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.layout(win);
-        p.toggle_advanced();
-        p.layout(win);
-        assert!(p.advanced_open);
-        assert!(p.max_scroll > 0.0, "advanced form overflows a 600px window");
-        assert_eq!(
-            p.scroll, p.max_scroll,
-            "toggle scrolls the new fields into view"
-        );
-        assert_ne!(p.period_rect, Rect::ZERO, "period field is laid out");
-        assert!(
-            p.period_rect.y1 <= p.body_clip.y1 + 1.0,
-            "the last advanced field is within the visible body, not below the fold"
-        );
-        assert!(
-            p.period_rect.y0 >= p.body_clip.y0 - 1.0,
-            "the period field is not clipped above the body top"
-        );
-    }
-
-    #[test]
-    fn revealing_advanced_is_a_one_shot_that_survives_resize() {
-        // After the reveal-scroll, a later relayout (e.g. a resize) must not
-        // re-force the scroll — the user keeps control of their position.
-        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut p = AddAccountPanel::new();
-        p.open();
-        p.toggle_advanced();
-        p.layout(win);
-        assert!(!p.reveal_advanced, "the reveal flag is consumed by layout");
-        // Scroll back up, then relayout: the position is preserved.
-        p.scroll = 0.0;
-        p.layout(win);
-        assert_eq!(
-            p.scroll, 0.0,
-            "a plain relayout does not re-trigger the reveal"
-        );
-    }
-
-    #[test]
-    fn apply_uri_fills_fields_and_reveals_nondefault_params() {
-        let mut p = opened();
-        p.apply_uri(
+    fn add_panel_uri_build_and_save_fill_and_validate_the_form() {
+        // Case `apply_uri_fills_fields_and_reveals_nondefault_params`.
+        {
+            let mut p = opened();
+            p.apply_uri(
             "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45",
         );
-        assert_eq!(p.issuer.value(), "Acme");
-        assert_eq!(p.label.value(), "bob");
-        assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP");
-        assert_eq!(p.algorithm, Algorithm::Sha256);
-        assert_eq!(p.digits, 8);
-        assert_eq!(p.period.value(), "45");
-        // Non-default crypto params should auto-reveal Advanced for review.
-        assert!(p.advanced_open, "non-default params reveal advanced");
-    }
+            assert_eq!(p.issuer.value(), "Acme");
+            assert_eq!(p.label.value(), "bob");
+            assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP");
+            assert_eq!(p.algorithm, Algorithm::Sha256);
+            assert_eq!(p.digits, 8);
+            assert_eq!(p.period.value(), "45");
+            // Non-default crypto params should auto-reveal Advanced for review.
+            assert!(p.advanced_open, "non-default params reveal advanced");
+        }
 
-    #[test]
-    fn apply_uri_keeps_advanced_collapsed_for_plain_accounts() {
-        let mut p = opened();
-        p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
-        assert!(!p.advanced_open, "spec-default account stays calm");
-    }
+        // Case `apply_uri_keeps_advanced_collapsed_for_plain_accounts`.
+        {
+            let mut p = opened();
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+            assert!(!p.advanced_open, "spec-default account stays calm");
+        }
 
-    #[test]
-    fn build_account_validates_secret() {
-        let mut p = opened();
-        p.issuer.set_text("Acme");
-        p.secret.set_text("not base32 !!");
-        assert!(p.build_account().is_err());
-        p.secret.set_text("JBSWY3DPEHPK3PXP");
-        assert!(p.build_account().is_ok());
-    }
+        // Case `build_account_validates_secret`.
+        {
+            let mut p = opened();
+            p.issuer.set_text("Acme");
+            p.secret.set_text("not base32 !!");
+            assert!(p.build_account().is_err());
+            p.secret.set_text("JBSWY3DPEHPK3PXP");
+            assert!(p.build_account().is_ok());
+        }
 
-    #[test]
-    fn save_emits_event_and_closes() {
-        let mut p = opened();
-        p.issuer.set_text("Acme");
-        p.secret.set_text("JBSWY3DPEHPK3PXP");
-        p.try_save();
-        assert!(!p.is_open());
-        assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
-    }
-
-    #[test]
-    fn field_order_tracks_disclosure_state() {
-        let mut p = opened();
-        // Collapsed: just the three manual fields.
-        assert_eq!(
-            p.field_order(),
-            vec![Field::Issuer, Field::Label, Field::Secret]
-        );
-        p.expand_uri();
-        p.toggle_advanced();
-        assert_eq!(
-            p.field_order(),
-            vec![
-                Field::Uri,
-                Field::Issuer,
-                Field::Label,
-                Field::Secret,
-                Field::Period
-            ]
-        );
+        // Case `save_emits_event_and_closes`.
+        {
+            let mut p = opened();
+            p.issuer.set_text("Acme");
+            p.secret.set_text("JBSWY3DPEHPK3PXP");
+            p.try_save();
+            assert!(!p.is_open());
+            assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
+        }
     }
 
     // ---- pointer clicks through the real `handle_event` -----------------
@@ -2475,96 +2408,112 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mut handled = false;
-        p.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, node, &taffy);
-    }
-
-    #[test]
-    fn clicking_the_scan_qr_card_emits_pick_image() {
-        let mut p = opened();
-        let at = p.image_card_rect.center();
-        dispatch(&mut p, &cursor_at(at));
-        dispatch(&mut p, &left_press());
-        assert!(
-            matches!(p.take_event(), Some(AddPanelEvent::PickImageForQr)),
-            "the QR card routes to the host image picker"
+        p.handle_event(
+            ev,
+            &mut EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
+    /// Pointer clicks on the add panel's cards, chips and buttons emit the right events.
     #[test]
-    fn clicking_the_paste_link_card_discloses_the_uri_field() {
-        let mut p = opened();
-        assert!(!p.uri_expanded);
-        let at = p.link_card_rect.center();
-        dispatch(&mut p, &cursor_at(at));
-        dispatch(&mut p, &left_press());
-        assert!(p.uri_expanded, "the paste-link card discloses the uri row");
-        assert_eq!(p.focused, Some(Field::Uri), "and focuses it");
-    }
+    fn add_panel_clicks_drive_cards_chips_fill_cancel_and_save() {
+        // Case `clicking_the_scan_qr_card_emits_pick_image`.
+        {
+            let mut p = opened();
+            let at = p.image_card_rect.center();
+            dispatch(&mut p, &cursor_at(at));
+            dispatch(&mut p, &left_press());
+            assert!(
+                matches!(p.take_event(), Some(AddPanelEvent::PickImageForQr)),
+                "the QR card routes to the host image picker"
+            );
+        }
 
-    #[test]
-    fn clicking_algorithm_and_digit_chips_selects_them() {
-        let mut p = opened();
-        p.toggle_advanced();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert_eq!(p.algorithm, Algorithm::Sha1, "defaults to SHA1");
-        assert_eq!(p.digits, 6, "defaults to 6 digits");
-        // Click the SHA512 chip (index 2).
-        let alg = p.alg_rects[2].center();
-        dispatch(&mut p, &cursor_at(alg));
-        dispatch(&mut p, &left_press());
-        assert_eq!(
-            p.algorithm,
-            Algorithm::Sha512,
-            "clicking a chip selects the algorithm"
-        );
-        // Click the 8-digit chip (index 1).
-        let dig = p.digit_rects[1].center();
-        dispatch(&mut p, &cursor_at(dig));
-        dispatch(&mut p, &left_press());
-        assert_eq!(p.digits, 8, "clicking a chip selects the digit count");
-    }
+        // Case `clicking_the_paste_link_card_discloses_the_uri_field`.
+        {
+            let mut p = opened();
+            assert!(!p.uri_expanded);
+            let at = p.link_card_rect.center();
+            dispatch(&mut p, &cursor_at(at));
+            dispatch(&mut p, &left_press());
+            assert!(p.uri_expanded, "the paste-link card discloses the uri row");
+            assert_eq!(p.focused, Some(Field::Uri), "and focuses it");
+        }
 
-    #[test]
-    fn clicking_the_fill_button_parses_the_uri_field() {
-        let mut p = opened();
-        p.expand_uri();
-        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        p.uri
-            .set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
-        let at = p.parse_rect.center();
-        dispatch(&mut p, &cursor_at(at));
-        dispatch(&mut p, &left_press());
-        assert_eq!(
-            p.issuer.value(),
-            "Acme",
-            "Fill parses the issuer out of the link"
-        );
-        assert_eq!(
-            p.secret.value(),
-            "JBSWY3DPEHPK3PXP",
-            "Fill parses the secret"
-        );
-    }
+        // Case `clicking_algorithm_and_digit_chips_selects_them`.
+        {
+            let mut p = opened();
+            p.toggle_advanced();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert_eq!(p.algorithm, Algorithm::Sha1, "defaults to SHA1");
+            assert_eq!(p.digits, 6, "defaults to 6 digits");
+            // Click the SHA512 chip (index 2).
+            let alg = p.alg_rects[2].center();
+            dispatch(&mut p, &cursor_at(alg));
+            dispatch(&mut p, &left_press());
+            assert_eq!(
+                p.algorithm,
+                Algorithm::Sha512,
+                "clicking a chip selects the algorithm"
+            );
+            // Click the 8-digit chip (index 1).
+            let dig = p.digit_rects[1].center();
+            dispatch(&mut p, &cursor_at(dig));
+            dispatch(&mut p, &left_press());
+            assert_eq!(p.digits, 8, "clicking a chip selects the digit count");
+        }
 
-    #[test]
-    fn clicking_cancel_emits_cancel_and_closes() {
-        let mut p = opened();
-        let at = p.cancel_rect.center();
-        dispatch(&mut p, &cursor_at(at));
-        dispatch(&mut p, &left_press());
-        assert!(!p.is_open(), "Cancel closes the modal");
-        assert!(matches!(p.take_event(), Some(AddPanelEvent::Cancel)));
-    }
+        // Case `clicking_the_fill_button_parses_the_uri_field`.
+        {
+            let mut p = opened();
+            p.expand_uri();
+            p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            p.uri
+                .set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+            let at = p.parse_rect.center();
+            dispatch(&mut p, &cursor_at(at));
+            dispatch(&mut p, &left_press());
+            assert_eq!(
+                p.issuer.value(),
+                "Acme",
+                "Fill parses the issuer out of the link"
+            );
+            assert_eq!(
+                p.secret.value(),
+                "JBSWY3DPEHPK3PXP",
+                "Fill parses the secret"
+            );
+        }
 
-    #[test]
-    fn clicking_save_with_valid_fields_emits_save() {
-        let mut p = opened();
-        p.issuer.set_text("Acme");
-        p.secret.set_text("JBSWY3DPEHPK3PXP");
-        let at = p.save_rect.center();
-        dispatch(&mut p, &cursor_at(at));
-        dispatch(&mut p, &left_press());
-        assert!(!p.is_open(), "a valid Save closes the modal");
-        assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
+        // Case `clicking_cancel_emits_cancel_and_closes`.
+        {
+            let mut p = opened();
+            let at = p.cancel_rect.center();
+            dispatch(&mut p, &cursor_at(at));
+            dispatch(&mut p, &left_press());
+            assert!(!p.is_open(), "Cancel closes the modal");
+            assert!(matches!(p.take_event(), Some(AddPanelEvent::Cancel)));
+        }
+
+        // Case `clicking_save_with_valid_fields_emits_save`.
+        {
+            let mut p = opened();
+            p.issuer.set_text("Acme");
+            p.secret.set_text("JBSWY3DPEHPK3PXP");
+            let at = p.save_rect.center();
+            dispatch(&mut p, &cursor_at(at));
+            dispatch(&mut p, &left_press());
+            assert!(!p.is_open(), "a valid Save closes the modal");
+            assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
+        }
     }
 }

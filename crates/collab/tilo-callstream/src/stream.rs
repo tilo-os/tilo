@@ -575,7 +575,17 @@ impl Default for SurfaceStreamReceiver {
 mod tests {
     use super::*;
 
+    /// H.264 keeps its byte format, other codecs carry id and display size, an unknown codec id is
+    /// refused, and a single frame round-trips.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn wire_frames_carry_their_codec_and_round_trip() {
+        h264_frames_keep_the_original_byte_format();
+        other_codecs_carry_their_id_and_display_size();
+        a_codec_id_this_build_does_not_know_is_refused();
+        round_trip_single_frame();
+    }
+
     fn h264_frames_keep_the_original_byte_format() {
         let bytes = SurfaceFrame::h264(5, true, vec![0, 0, 1, 0x65])
             .encode()
@@ -605,7 +615,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn other_codecs_carry_their_id_and_display_size() {
         for codec in [StreamCodec::Vp9, StreamCodec::Av1, StreamCodec::HevcMain10] {
             let frame = SurfaceFrame {
@@ -625,7 +634,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_codec_id_this_build_does_not_know_is_refused() {
         let mut bytes = SurfaceFrame::h264(0, false, vec![1]).encode().unwrap();
         bytes[12] = 7 << 1;
@@ -635,7 +643,10 @@ mod tests {
         );
     }
 
-    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn round_trip_single_frame() {
         let frame = SurfaceFrame {
             sequence: 42,
@@ -653,7 +664,17 @@ mod tests {
         assert_eq!(consumed, bytes.len());
     }
 
+    /// Partial bytes wait, frames reassemble across split buffers, oversized or invalid wire
+    /// frames are rejected before payload copy, and malformed partial input is bounded and cleared.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_receiver_reassembles_split_input_and_rejects_malformed_frames() {
+        partial_bytes_return_none();
+        receiver_frames_across_split_buffers();
+        oversized_or_invalid_wire_frame_is_rejected_before_payload_copy();
+        receiver_bounds_and_clears_malformed_partial_input();
+    }
+
     fn partial_bytes_return_none() {
         let frame = SurfaceFrame {
             sequence: 1,
@@ -671,7 +692,19 @@ mod tests {
         assert!(SurfaceFrame::decode(&bytes[..5]).expect("decode").is_none());
     }
 
+    /// Drop-oldest backpressure counts drops, each subscriber has its own queue, an unknown
+    /// subscriber never stalls publish, unsubscribe stops delivery and clears drops, and an
+    /// oversized payload is never encoded or queued.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn subscriber_queues_are_independent_bounded_and_never_stall_publish() {
+        drop_oldest_backpressure_and_drop_counter();
+        each_subscriber_has_independent_queue();
+        unknown_subscriber_never_stalls_publish();
+        unsubscribe_stops_delivery_and_clears_drops();
+        oversized_payload_is_never_encoded_or_queued();
+    }
+
     fn drop_oldest_backpressure_and_drop_counter() {
         let sender = SurfaceStreamSender::with_queue_cap(1, 100, 2);
         sender.subscribe(200);
@@ -687,7 +720,6 @@ mod tests {
         assert!(sender.poll(200).is_none());
     }
 
-    #[test]
     fn each_subscriber_has_independent_queue() {
         let sender = SurfaceStreamSender::with_queue_cap(1, 100, 3);
         sender.subscribe(200);
@@ -701,7 +733,6 @@ mod tests {
         assert_eq!(sender.drops_for(200), 2);
     }
 
-    #[test]
     fn unknown_subscriber_never_stalls_publish() {
         let sender = SurfaceStreamSender::new(1, 100);
         let s0 = sender.publish(true, vec![0; 4]).expect("publish");
@@ -711,7 +742,17 @@ mod tests {
         assert_eq!(sender.subscriber_count(), 0);
     }
 
+    /// Gaps surface on the receiver; sender exhaustion fails closed without queuing or wrapping;
+    /// the receiver rejects a wrap and a stale sequence without emitting or counting a huge gap.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn sequence_numbers_surface_gaps_and_fail_closed_on_wrap_or_staleness() {
+        sequence_gap_surfaces_on_receiver();
+        sequence_exhaustion_fails_closed_without_queuing_or_wrapping();
+        receiver_rejects_sequence_wrap_instead_of_treating_it_as_continuous();
+        receiver_rejects_stale_sequence_without_emitting_or_counting_a_huge_gap();
+    }
+
     fn sequence_gap_surfaces_on_receiver() {
         let mut rx = SurfaceStreamReceiver::new();
         rx.push_bytes(
@@ -765,7 +806,6 @@ mod tests {
         assert_eq!(rx.dropped_count(), 3);
     }
 
-    #[test]
     fn receiver_frames_across_split_buffers() {
         let f0 = SurfaceFrame {
             sequence: 0,
@@ -805,7 +845,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn unsubscribe_stops_delivery_and_clears_drops() {
         let sender = SurfaceStreamSender::with_queue_cap(1, 100, 3);
         sender.subscribe(200);
@@ -820,7 +859,6 @@ mod tests {
         assert_eq!(sender.drops_for(200), 0);
     }
 
-    #[test]
     fn oversized_payload_is_never_encoded_or_queued() {
         let frame = SurfaceFrame {
             sequence: 0,
@@ -843,7 +881,6 @@ mod tests {
         assert_eq!(sender.pending_for(2), 0);
     }
 
-    #[test]
     fn oversized_or_invalid_wire_frame_is_rejected_before_payload_copy() {
         let mut oversized = Vec::with_capacity(FRAME_HEADER_LEN);
         oversized.extend_from_slice(&7u64.to_be_bytes());
@@ -874,7 +911,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn receiver_bounds_and_clears_malformed_partial_input() {
         let mut rx = SurfaceStreamReceiver::new();
         rx.push_bytes(&vec![0; MAX_BUFFERED_STREAM_LEN + 1])
@@ -911,7 +947,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn sequence_exhaustion_fails_closed_without_queuing_or_wrapping() {
         let sender = SurfaceStreamSender::new(1, 1);
         sender.subscribe(2);
@@ -928,7 +963,6 @@ mod tests {
         assert!(sender.poll(2).is_none());
     }
 
-    #[test]
     fn receiver_rejects_sequence_wrap_instead_of_treating_it_as_continuous() {
         let mut rx = SurfaceStreamReceiver::new();
         let max = SurfaceFrame {
@@ -972,7 +1006,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn receiver_rejects_stale_sequence_without_emitting_or_counting_a_huge_gap() {
         let mut rx = SurfaceStreamReceiver::new();
         let first = SurfaceFrame {

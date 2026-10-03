@@ -473,11 +473,18 @@ pub fn parse_inline(line: &str) -> InlineText {
 }
 
 fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
-    match (bytes.get(at), bytes.get(at + 1)) {
-        (Some(b'_'), Some(b'_')) => Some((b'_', Mark::Underline)),
-        (Some(b'~'), Some(b'~')) => Some((b'~', Mark::Strikethrough)),
-        _ => None,
+    // Double-character toggles whose open delimiter is two identical ASCII
+    // bytes (driven by [`mark_chrome`], not a second table).
+    for mark in [Mark::Underline, Mark::Strikethrough] {
+        let open = open_marker(&mark).as_bytes();
+        let (Some(&a), Some(&b)) = (open.first(), open.get(1)) else {
+            continue;
+        };
+        if open.len() == 2 && a == b && bytes.get(at) == Some(&a) && bytes.get(at + 1) == Some(&b) {
+            return Some((a, mark));
+        }
     }
+    None
 }
 
 fn parse_external_link(
@@ -568,6 +575,45 @@ pub fn safe_external_url(value: &str) -> bool {
         .is_some_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
 }
 
+/// Open/close delimiters and emission priority for a mark kind.
+///
+/// One table feeds parse ([`paired_mark_at`]) and serialize
+/// ([`open_marker`] / [`close_marker`] / [`priority`]). External-link
+/// closes are value-dependent and handled in [`close_marker`].
+fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
+    match mark {
+        Mark::Bold => ("**", Some("**"), 0),
+        Mark::Italic => ("*", Some("*"), 1),
+        Mark::Underline => ("__", Some("__"), 2),
+        Mark::Strikethrough => ("~~", Some("~~"), 3),
+        Mark::Code => ("`", Some("`"), 4),
+        Mark::Link(_) => ("[[", Some("]]"), 5),
+        Mark::Transclusion(_) => ("![[", Some("]]"), 6),
+        Mark::ExternalLink(_) => ("[", None, 7),
+        // Markdown has no mention syntax: the label is the text.
+        Mark::Mention(_) => ("", Some(""), 8),
+    }
+}
+
+fn open_marker(mark: &Mark) -> &'static str {
+    mark_chrome(mark).0
+}
+
+fn close_marker(mark: &Mark) -> std::borrow::Cow<'_, str> {
+    match mark {
+        Mark::ExternalLink(url) => format!("]({url})").into(),
+        mark => match mark_chrome(mark) {
+            (_, Some(close), _) => close.into(),
+            // Only [`Mark::ExternalLink`] omits a static close; handled above.
+            _ => "".into(),
+        },
+    }
+}
+
+fn priority(m: &Mark) -> u8 {
+    mark_chrome(m).2
+}
+
 /// Serialise an [`InlineText`] back to a markdown string, weaving
 /// the inline markers back over the plain bytes. Output is
 /// byte-stable for any text+marks that came out of [`parse_inline`].
@@ -575,49 +621,8 @@ pub fn safe_external_url(value: &str) -> bool {
 /// Algorithm: walk `text` byte-by-byte; at each byte, open any mark
 /// span whose `range.start == i`, append the byte, then close any
 /// span whose `range.end == i+1`. Marks are emitted in this order
-/// (most-nested last on open, first on close):
-///
-/// 1. Bold (outermost)
-/// 2. Italic
-/// 3. Code / Link (innermost — exclusive with one another)
-fn open_marker(mark: &Mark) -> &'static str {
-    match mark {
-        Mark::Bold => "**",
-        Mark::Italic => "*",
-        Mark::Code => "`",
-        Mark::Link(_) => "[[",
-        Mark::Transclusion(_) => "![[",
-        Mark::Underline => "__",
-        Mark::Strikethrough => "~~",
-        Mark::ExternalLink(_) => "[",
-    }
-}
-fn close_marker(mark: &Mark) -> std::borrow::Cow<'_, str> {
-    match mark {
-        Mark::Bold => "**".into(),
-        Mark::Italic => "*".into(),
-        Mark::Code => "`".into(),
-        Mark::Link(_) | Mark::Transclusion(_) => "]]".into(),
-        Mark::Underline => "__".into(),
-        Mark::Strikethrough => "~~".into(),
-        Mark::ExternalLink(url) => format!("]({url})").into(),
-    }
-}
-// Sort marks for deterministic emission: by start ascending, then
-// by priority (Bold < Italic < Underline < Strikethrough < Code < Link).
-fn priority(m: &Mark) -> u8 {
-    match m {
-        Mark::Bold => 0,
-        Mark::Italic => 1,
-        Mark::Underline => 2,
-        Mark::Strikethrough => 3,
-        Mark::Code => 4,
-        Mark::Link(_) => 5,
-        Mark::Transclusion(_) => 6,
-        Mark::ExternalLink(_) => 7,
-    }
-}
-
+/// (most-nested last on open, first on close): bold outermost, then
+/// italic, then code/link innermost.
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
@@ -965,29 +970,65 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
     out
 }
 
+/// Build a [`ui::widget::Block`] from a kind and plain text. Shared by
+/// [`specs_to_blocks`]; marks/nesting/code-group are applied by the caller.
+fn block_from_kind(kind: ui::widget::BlockKind, text: &str) -> ui::widget::Block {
+    use ui::widget::{Block, BlockKind};
+    match kind {
+        BlockKind::Paragraph => Block::paragraph(text),
+        BlockKind::Quote => Block::quote(text),
+        BlockKind::Heading(level) => Block::heading(level, text),
+        BlockKind::Bullet { indent } => Block::bullet(indent, text),
+        BlockKind::Numbered { indent } => Block::numbered(indent, text),
+        BlockKind::Checklist { indent, done } => Block::checklist(indent, done, text),
+        BlockKind::CodeBlock { lang } => Block::code_block(lang, text),
+        BlockKind::Table { visual } => Block::table(text, visual),
+        BlockKind::Divider => Block::divider(),
+    }
+}
+
+/// Map a simple (non-fence) editor kind + inline text back to a [`BlockSpec`].
+/// Fence rows need multi-line reassembly in [`blocks_to_specs`].
+fn spec_from_kind(kind: &ui::widget::BlockKind, inline: InlineText) -> Option<BlockSpec> {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => Some(BlockSpec::Paragraph(inline)),
+        BlockKind::Quote => Some(BlockSpec::Quote(inline)),
+        BlockKind::Heading(level) => Some(BlockSpec::Heading {
+            level: *level,
+            text: inline,
+        }),
+        BlockKind::Bullet { indent } => Some(BlockSpec::Bullet {
+            indent: *indent,
+            text: inline,
+        }),
+        BlockKind::Numbered { indent } => Some(BlockSpec::Numbered {
+            indent: *indent,
+            text: inline,
+        }),
+        BlockKind::Checklist { indent, done } => Some(BlockSpec::Checklist {
+            indent: *indent,
+            done: *done,
+            text: inline,
+        }),
+        BlockKind::Table { .. } => Some(BlockSpec::Table {
+            source: inline.text,
+        }),
+        BlockKind::Divider => Some(BlockSpec::Divider),
+        BlockKind::CodeBlock { .. } => None,
+    }
+}
+
 /// Convert a list of [`BlockSpec`]s into a list of
 /// [`ui::widget::Block`]s suitable for handing to
 /// [`ui::widget::BlockEditor::set_blocks`]. Mark spans on each block
 /// land on the inner `RichTextLine`'s mark list.
 pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
-    use ui::widget::{Block, BlockKind};
     let mut groups = std::collections::HashMap::new();
     expanded_rows(specs)
         .into_iter()
         .map(|(kind, inline, fence, nesting)| {
-            let mut block = match kind {
-                BlockKind::Paragraph => Block::paragraph(&inline.text),
-                BlockKind::Quote => Block::quote(&inline.text),
-                BlockKind::Heading(level) => Block::heading(level, &inline.text),
-                BlockKind::Bullet { indent } => Block::bullet(indent, &inline.text),
-                BlockKind::Numbered { indent } => Block::numbered(indent, &inline.text),
-                BlockKind::Checklist { indent, done } => {
-                    Block::checklist(indent, done, &inline.text)
-                }
-                BlockKind::CodeBlock { lang } => Block::code_block(lang, &inline.text),
-                BlockKind::Table { visual } => Block::table(&inline.text, visual),
-                BlockKind::Divider => Block::divider(),
-            };
+            let mut block = block_from_kind(kind, &inline.text);
             block.line.set_marks(inline.marks);
             block.nesting = nesting;
             block.code_group = fence.map(|fence| {
@@ -1069,23 +1110,6 @@ pub(crate) fn expanded_rows(
     rows
 }
 
-pub(crate) fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Quote => "quote".into(),
-        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
-        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
-        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
-        BlockKind::Checklist { indent, done } => {
-            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
-        }
-        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
-        BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
-        BlockKind::Divider => "divider".into(),
-    }
-}
-
 /// Inverse of [`specs_to_blocks`] — convert the editor's block list
 /// back into the spec representation so [`serialize`] can emit
 /// markdown that round-trips through the inline-marks layer.
@@ -1094,79 +1118,30 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut i = 0usize;
     while let Some(b) = blocks.get(i) {
-        match &b.kind {
-            BlockKind::Paragraph => {
-                out.push(BlockSpec::Paragraph(InlineText::new(
-                    b.text(),
-                    b.line.marks().to_vec(),
-                )));
-                i += 1;
-            }
-            BlockKind::Quote => {
-                out.push(BlockSpec::Quote(InlineText::new(
-                    b.text(),
-                    b.line.marks().to_vec(),
-                )));
-                i += 1;
-            }
-            BlockKind::Heading(level) => {
-                out.push(BlockSpec::Heading {
-                    level: *level,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Bullet { indent } => {
-                out.push(BlockSpec::Bullet {
-                    indent: *indent,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Numbered { indent } => {
-                out.push(BlockSpec::Numbered {
-                    indent: *indent,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Checklist { indent, done } => {
-                out.push(BlockSpec::Checklist {
-                    indent: *indent,
-                    done: *done,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::CodeBlock { lang } => {
-                // Reassemble the rows of one authored fence. Language alone
-                // cannot distinguish adjacent fences using the same syntax.
-                let mut lines: Vec<String> = vec![b.text().to_string()];
-                let run_lang = lang.clone();
-                i += 1;
-                while let Some(next) = blocks.get(i) {
-                    if b.same_code_group(next) {
-                        lines.push(next.text().to_string());
-                        i += 1;
-                        continue;
-                    }
-                    break;
+        if let BlockKind::CodeBlock { lang } = &b.kind {
+            // Reassemble the rows of one authored fence. Language alone
+            // cannot distinguish adjacent fences using the same syntax.
+            let mut lines: Vec<String> = vec![b.text().to_string()];
+            let run_lang = lang.clone();
+            i += 1;
+            while let Some(next) = blocks.get(i) {
+                if b.same_code_group(next) {
+                    lines.push(next.text().to_string());
+                    i += 1;
+                    continue;
                 }
-                out.push(BlockSpec::CodeBlock {
-                    lang: run_lang,
-                    text: lines.join("\n"),
-                });
+                break;
             }
-            BlockKind::Table { .. } => {
-                out.push(BlockSpec::Table {
-                    source: b.text().to_string(),
-                });
-                i += 1;
+            out.push(BlockSpec::CodeBlock {
+                lang: run_lang,
+                text: lines.join("\n"),
+            });
+        } else {
+            let inline = InlineText::new(b.text(), b.line.marks().to_vec());
+            if let Some(spec) = spec_from_kind(&b.kind, inline) {
+                out.push(spec);
             }
-            BlockKind::Divider => {
-                out.push(BlockSpec::Divider);
-                i += 1;
-            }
+            i += 1;
         }
         if b.nesting > 0
             && let Some(spec) = out.pop()
@@ -1225,13 +1200,122 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn parse_empty_yields_single_empty_paragraph() {
-        let blocks = parse("");
-        assert_eq!(blocks, vec![BlockSpec::paragraph("")]);
+    fn document_markdown_round_trips_byte_stably_and_normalises_on_save() {
+        // (case, markdown that must survive parse -> serialize unchanged)
+        let round_trips = [
+            (
+                "typical document",
+                "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n",
+            ),
+            ("paragraphs only", "alpha\n\nbeta\n\ngamma\n"),
+            ("paragraph with bold", "Hello **world** today.\n"),
+            ("heading with italic", "# A *taste* of\n"),
+            ("bullet with code", "- run `cargo build` first\n"),
+            ("paragraph with link", "See [[Welcome]] for details.\n"),
+            ("nested bold italic", "**bold *italic***\n"),
+            (
+                "mixed corpus",
+                "\
+# Welcome **dear** friend
+
+This paragraph has *italic* and **bold** and `code`.
+
+- bullet with [[Welcome]] link
+
+- [ ] todo with **bold**
+
+Last paragraph.
+",
+            ),
+            ("numbered list", "1. first\n\n2. second\n\n3. third\n"),
+            // A nested level restarts at 1; returning to the outer level
+            // continues its own count.
+            (
+                "nested numbered list",
+                "1. one\n\n  1. inner a\n\n  2. inner b\n\n2. two\n",
+            ),
+            // A paragraph between two numbered lists breaks the run: the
+            // second list restarts at 1.
+            (
+                "numbered run resets after a paragraph",
+                "1. a\n\n2. b\n\nbreak\n\n1. c\n",
+            ),
+            (
+                "numbered with inline marks",
+                "1. run `cargo build` and **ship**\n",
+            ),
+            (
+                "gfm table",
+                "| Name | Status |\n| :--- | ---: |\n| Search | Done |\n",
+            ),
+        ];
+        for (case, md) in round_trips {
+            assert_eq!(serialize(&parse(md)), md, "case {case}");
+        }
+
+        // Source that numbers everything `1.` is normalised to 1, 2, 3 on
+        // save — ordinals track list position, not the literal digits.
+        assert_eq!(
+            serialize(&parse("1. a\n\n1. b\n\n1. c\n")),
+            "1. a\n\n2. b\n\n3. c\n"
+        );
+        let blocks = vec![BlockSpec::Heading {
+            level: 99,
+            text: InlineText::plain("x"),
+        }];
+        assert_eq!(serialize(&blocks), "### x\n", "heading level clamps");
+
+        // A matching import heading is not duplicated below the note title.
+        assert_eq!(
+            strip_matching_title_heading("# Project brief\n\nFirst paragraph\n", "Project brief"),
+            "First paragraph\n"
+        );
+        assert_eq!(
+            strip_matching_title_heading("# Different\n\nFirst paragraph\n", "Project brief"),
+            "# Different\n\nFirst paragraph\n"
+        );
     }
 
     #[test]
-    fn parse_heading_levels() {
+    fn block_parsing_recognises_each_block_kind() {
+        // (case, markdown, exactly the parsed blocks)
+        let exact = [
+            (
+                "empty yields one empty paragraph",
+                "",
+                vec![BlockSpec::paragraph("")],
+            ),
+            (
+                "punctuation stays paragraph text",
+                "Hello, world.\n",
+                vec![BlockSpec::paragraph("Hello, world.")],
+            ),
+            (
+                "a lone hash is a paragraph, not a heading",
+                "#\n",
+                vec![BlockSpec::paragraph("#")],
+            ),
+            (
+                "numbered list items",
+                "1. first\n\n2. second\n\n3. third\n",
+                vec![
+                    BlockSpec::numbered(0, "first"),
+                    BlockSpec::numbered(0, "second"),
+                    BlockSpec::numbered(0, "third"),
+                ],
+            ),
+            // `7) ` is a valid ordered marker; the stored spec drops the
+            // number (it's recomputed), so it round-trips to `1. `.
+            (
+                "paren marker with an arbitrary start",
+                "7) lucky\n",
+                vec![BlockSpec::numbered(0, "lucky")],
+            ),
+        ];
+        for (case, md, want) in exact {
+            assert_eq!(parse(md), want, "case {case}");
+        }
+
         let blocks = parse("# H1\n\n## H2\n\n### H3\n");
         match &blocks[0] {
             BlockSpec::Heading { level, text } => {
@@ -1241,130 +1325,133 @@ mod tests {
             _ => panic!("expected heading"),
         }
         assert_eq!(blocks.len(), 3);
-    }
 
-    #[test]
-    fn blockquote_round_trips_with_inline_formatting() {
-        let markdown = "> A **useful** quotation\n";
-        let parsed = parse(markdown);
-        let BlockSpec::Quote(text) = &parsed[0] else {
-            panic!("expected quote");
+        let parsed = parse("A | B | C\n:--- | ---: | :---:\nx | y | z\n");
+        assert!(
+            matches!(parsed.as_slice(), [BlockSpec::Table { .. }]),
+            "every alignment separator is a table"
+        );
+        let parsed = parse("Use A | B when discussing alternatives.\n");
+        assert!(
+            matches!(parsed.as_slice(), [BlockSpec::Paragraph(_)]),
+            "ordinary pipe text is not promoted to a table"
+        );
+
+        let md = "![Architecture diagram](diagram.png)\n";
+        let parsed = parse(md);
+        assert_eq!(serialize(&parsed), md);
+        let [BlockSpec::Paragraph(inline)] = parsed.as_slice() else {
+            panic!("standalone image remains one paragraph-backed image block");
         };
-        assert_eq!(text.text, "A useful quotation");
-        assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
-        assert_eq!(serialize(&parsed), markdown);
-
-        let editor_blocks = specs_to_blocks(&parsed);
-        assert!(matches!(
-            editor_blocks[0].kind,
-            ui::widget::BlockKind::Quote
-        ));
-        assert_eq!(serialize(&blocks_to_specs(&editor_blocks)), markdown);
+        assert!(
+            inline.marks.is_empty(),
+            "a standalone image is not a link mark"
+        );
     }
 
     #[test]
-    fn parse_paragraph_with_punctuation() {
-        let blocks = parse("Hello, world.\n");
-        assert_eq!(blocks, vec![BlockSpec::paragraph("Hello, world.")]);
-    }
-
-    #[test]
-    fn round_trip_typical_document() {
-        let md = "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_paragraphs_only() {
-        let md = "alpha\n\nbeta\n\ngamma\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn lone_hash_is_paragraph_not_heading() {
-        let blocks = parse("#\n");
-        assert_eq!(blocks, vec![BlockSpec::paragraph("#")]);
-    }
-
-    #[test]
-    fn parse_inline_bold() {
-        let inline = parse_inline("**hello**");
-        assert_eq!(inline.text, "hello");
-        assert_eq!(inline.marks.len(), 1);
-        assert_eq!(inline.marks[0].range, 0..5);
-        assert_eq!(inline.marks[0].mark, Mark::Bold);
-    }
-
-    #[test]
-    fn parse_inline_italic() {
-        let inline = parse_inline("*hi*");
-        assert_eq!(inline.text, "hi");
-        assert_eq!(inline.marks.len(), 1);
-        assert_eq!(inline.marks[0].mark, Mark::Italic);
-    }
-
-    #[test]
-    fn parse_inline_code() {
-        let inline = parse_inline("`foo`");
-        assert_eq!(inline.text, "foo");
-        assert_eq!(inline.marks[0].mark, Mark::Code);
-    }
-
-    #[test]
-    fn parse_inline_underline_and_strikethrough() {
-        let inline = parse_inline("__under__ and ~~gone~~");
-        assert_eq!(inline.text, "under and gone");
-        assert_eq!(inline.marks.len(), 2);
-        assert_eq!(inline.marks[0], MarkSpan::new(0..5, Mark::Underline));
-        assert_eq!(inline.marks[1], MarkSpan::new(10..14, Mark::Strikethrough));
-    }
-
-    #[test]
-    fn underline_and_strikethrough_round_trip_with_nesting() {
-        for md in ["__under__", "~~gone~~", "__under ~~and gone~~__"] {
-            assert_eq!(serialize_inline(&parse_inline(md)), md);
+    fn inline_markdown_parses_marks_and_round_trips() {
+        // (source, visible text, exactly the marks)
+        let cases = [
+            ("**hello**", "hello", vec![MarkSpan::new(0..5, Mark::Bold)]),
+            ("*hi*", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
+            ("`foo`", "foo", vec![MarkSpan::new(0..3, Mark::Code)]),
+            (
+                "__under__ and ~~gone~~",
+                "under and gone",
+                vec![
+                    MarkSpan::new(0..5, Mark::Underline),
+                    MarkSpan::new(10..14, Mark::Strikethrough),
+                ],
+            ),
+            (
+                "hello **world** bye",
+                "hello world bye",
+                vec![MarkSpan::new(6..11, Mark::Bold)],
+            ),
+            (
+                "Read [the guide](https://example.test/docs?q=notes).",
+                "Read the guide.",
+                vec![MarkSpan::new(
+                    5..14,
+                    Mark::ExternalLink("https://example.test/docs?q=notes".into()),
+                )],
+            ),
+            // A lone `*` with no partner stays as plain text.
+            ("*hello world", "*hello world", vec![]),
+            // Unsafe or relative external destinations stay literal.
+            (
+                "[script](javascript:alert(1))",
+                "[script](javascript:alert(1))",
+                vec![],
+            ),
+            ("[local](../private)", "[local](../private)", vec![]),
+            (
+                "[file](file:///etc/passwd)",
+                "[file](file:///etc/passwd)",
+                vec![],
+            ),
+        ];
+        for (md, text, marks) in cases {
+            let inline = parse_inline(md);
+            assert_eq!(inline.text, text, "text of {md:?}");
+            assert_eq!(inline.marks, marks, "marks of {md:?}");
         }
-    }
+        assert_eq!(
+            serialize_inline(&parse_inline(
+                "Read [the guide](https://example.test/docs?q=notes)."
+            )),
+            "Read [the guide](https://example.test/docs?q=notes).",
+            "an external link round-trips as a durable mark"
+        );
 
-    #[test]
-    fn parse_inline_link() {
         let inline = parse_inline("hello [[Welcome]] there");
         assert_eq!(inline.text, "hello Welcome there");
         let m = &inline.marks[0];
         assert!(matches!(m.mark, Mark::Link(_)));
         assert_eq!(inline.text.get(m.range.clone()), Some("Welcome"));
-    }
 
-    #[test]
-    fn standard_external_link_round_trips_as_a_durable_mark() {
-        let markdown = "Read [the guide](https://example.test/docs?q=notes).";
-        let inline = parse_inline(markdown);
-        assert_eq!(inline.text, "Read the guide.");
-        assert_eq!(
-            inline.marks,
-            vec![MarkSpan::new(
-                5..14,
-                Mark::ExternalLink("https://example.test/docs?q=notes".into())
-            )]
-        );
-        assert_eq!(serialize_inline(&inline), markdown);
-    }
-
-    #[test]
-    fn unsafe_or_relative_external_destinations_stay_literal() {
-        for markdown in [
-            "[script](javascript:alert(1))",
-            "[local](../private)",
-            "[file](file:///etc/passwd)",
+        for md in [
+            "plain text",
+            "**bold**",
+            "*italic*",
+            "`code`",
+            "__underline__",
+            "~~strikethrough~~",
+            "__under__",
+            "~~gone~~",
+            "__under ~~and gone~~__",
+            "hello **world** bye",
+            "hello [[Page]] there",
+            "[guide](https://example.test/guide)",
+            "![[Page]]",
+            "**bold *italic***",
+            "a `b` c **d** e",
         ] {
-            let inline = parse_inline(markdown);
-            assert_eq!(inline.text, markdown);
-            assert!(inline.marks.is_empty());
+            assert_eq!(
+                serialize_inline(&parse_inline(md)),
+                md,
+                "round-trip failed for {md:?}"
+            );
         }
     }
 
     #[test]
-    fn transclusion_round_trips_and_resolves_to_a_stable_page_id() {
+    fn links_and_transclusions_resolve_to_stable_page_ids() {
+        let mut blocks = parse("See [[Welcome]] please.\n");
+        let target = Uuid::from_u128(42);
+        resolve_link_ids(&mut blocks, |title| (title == "Welcome").then_some(target));
+        match &blocks[0] {
+            BlockSpec::Paragraph(t) => {
+                assert_eq!(t.marks.len(), 1);
+                match &t.marks[0].mark {
+                    Mark::Link(id) => assert_eq!(*id, target),
+                    _ => panic!("expected Link"),
+                }
+            }
+            _ => panic!("expected paragraph"),
+        }
+
         let mut blocks = parse("![[Roadmap]]\n");
         assert_eq!(serialize(&blocks), "![[Roadmap]]\n");
         let target = Uuid::from_u128(0xfeed);
@@ -1380,123 +1467,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_inline_unmatched_star_falls_through() {
-        let inline = parse_inline("*hello world");
-        // Lone `*` with no partner stays as plain text.
-        assert_eq!(inline.text, "*hello world");
-        assert!(inline.marks.is_empty());
-    }
-
-    #[test]
-    fn parse_inline_bold_inside_paragraph() {
-        let inline = parse_inline("hello **world** bye");
-        assert_eq!(inline.text, "hello world bye");
-        assert_eq!(inline.marks.len(), 1);
-        assert_eq!(inline.marks[0].range, 6..11);
-        assert_eq!(inline.marks[0].mark, Mark::Bold);
-    }
-
-    #[test]
-    fn serialize_inline_round_trip() {
-        let cases = [
-            "plain text",
-            "**bold**",
-            "*italic*",
-            "`code`",
-            "__underline__",
-            "~~strikethrough~~",
-            "hello **world** bye",
-            "hello [[Page]] there",
-            "[guide](https://example.test/guide)",
-            "![[Page]]",
-            "**bold *italic***",
-            "a `b` c **d** e",
-        ];
-        for md in cases {
-            let inline = parse_inline(md);
-            let re = serialize_inline(&inline);
-            assert_eq!(re, md, "round-trip failed for {md:?}");
-        }
-    }
-
-    #[test]
-    fn round_trip_paragraph_with_bold() {
-        let md = "Hello **world** today.\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_heading_with_italic() {
-        let md = "# A *taste* of\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_bullet_with_code() {
-        let md = "- run `cargo build` first\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_paragraph_with_link() {
-        let md = "See [[Welcome]] for details.\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_nested_bold_italic() {
-        let md = "**bold *italic***\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_mixed_corpus() {
-        let md = "\
-# Welcome **dear** friend
-
-This paragraph has *italic* and **bold** and `code`.
-
-- bullet with [[Welcome]] link
-
-- [ ] todo with **bold**
-
-Last paragraph.
-";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn resolve_link_ids_replaces_placeholders() {
-        let mut blocks = parse("See [[Welcome]] please.\n");
-        let target = Uuid::from_u128(42);
-        resolve_link_ids(&mut blocks, |title| {
-            if title == "Welcome" {
-                Some(target)
-            } else {
-                None
-            }
-        });
-        match &blocks[0] {
-            BlockSpec::Paragraph(t) => {
-                assert_eq!(t.marks.len(), 1);
-                match &t.marks[0].mark {
-                    Mark::Link(id) => assert_eq!(*id, target),
-                    _ => panic!("expected Link"),
-                }
-            }
-            _ => panic!("expected paragraph"),
-        }
-    }
-
-    #[test]
-    fn multiline_code_fence_splits_into_one_cell_per_line() {
+    fn editor_blocks_round_trip_quotes_code_formulas_numbered_lists_and_tables() {
         use ui::widget::BlockKind;
+        let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
+
+        let markdown = "> A **useful** quotation\n";
+        let parsed = parse(markdown);
+        let BlockSpec::Quote(text) = &parsed[0] else {
+            panic!("expected quote");
+        };
+        assert_eq!(text.text, "A useful quotation");
+        assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
+        assert_eq!(serialize(&parsed), markdown);
+        assert!(matches!(specs_to_blocks(&parsed)[0].kind, BlockKind::Quote));
+        assert_eq!(through_blocks(markdown), markdown);
+
+        // One fenced spec, three source lines -> three single-line code cells
+        // so the editor's single-line substrate and the contiguous renderer
+        // see one row per line.
         let specs = parse("```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n");
-        // One spec, three source lines.
         assert_eq!(specs.len(), 1);
         let blocks = specs_to_blocks(&specs);
-        // Three single-line code cells so the editor's single-line substrate
-        // and the contiguous renderer see one row per line.
         assert_eq!(blocks.len(), 3);
         for b in &blocks {
             assert!(matches!(b.kind, BlockKind::CodeBlock { .. }));
@@ -1504,35 +1495,23 @@ Last paragraph.
         assert_eq!(blocks[0].text(), "let a = 1;");
         assert_eq!(blocks[1].text(), "let b = 2;");
         assert_eq!(blocks[2].text(), "let c = 3;");
-    }
-
-    #[test]
-    fn code_cells_coalesce_back_into_one_fence() {
-        let specs = parse("```sh\nfoo\nbar\nbaz\n```\n");
-        let blocks = specs_to_blocks(&specs);
-        let round = blocks_to_specs(&blocks);
         assert_eq!(
-            round,
+            blocks_to_specs(&specs_to_blocks(&parse("```sh\nfoo\nbar\nbaz\n```\n"))),
             vec![BlockSpec::CodeBlock {
                 lang: Some("sh".into()),
                 text: "foo\nbar\nbaz".into(),
             }],
             "consecutive code cells coalesce back into a single fenced block"
         );
-    }
-
-    #[test]
-    fn multiline_code_block_round_trips_byte_stably() {
         // Full loop through the block layer (the notes save/load path) must
         // reproduce the source markdown exactly.
         let md = "# Title\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n";
-        let blocks = specs_to_blocks(&parse(md));
-        let re = serialize(&blocks_to_specs(&blocks));
-        assert_eq!(re, md, "multi-line code block must round-trip byte-stably");
-    }
+        assert_eq!(
+            through_blocks(md),
+            md,
+            "multi-line code block must round-trip byte-stably"
+        );
 
-    #[test]
-    fn tex_and_typst_formula_fences_round_trip_as_editable_source() {
         let source = r"```tex
 \frac{x^2+1}{\sqrt{y}}
 ```
@@ -1554,153 +1533,35 @@ sum_(i=1)^n frac(1, i^2)
                 if lang == "typst visual" && text.contains("sum_")
         ));
         assert_eq!(serialize(&specs), source);
-
         let blocks = specs_to_blocks(&specs);
+        let lang = |kind: &BlockKind| match kind {
+            BlockKind::CodeBlock { lang } => lang.clone(),
+            _ => None,
+        };
         assert_eq!(
-            ui::math::FormulaSyntax::from_fence_language(match &blocks[0].kind {
-                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
-                _ => None,
-            }),
+            ui::math::FormulaSyntax::from_fence_language(lang(&blocks[0].kind).as_deref()),
             Some(ui::math::FormulaSyntax::Tex)
         );
         assert_eq!(
-            ui::math::FormulaDescriptor::from_fence_language(match &blocks[1].kind {
-                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
-                _ => None,
-            })
-            .map(|descriptor| descriptor.mode),
+            ui::math::FormulaDescriptor::from_fence_language(lang(&blocks[1].kind).as_deref())
+                .map(|descriptor| descriptor.mode),
             Some(ui::math::FormulaMode::Visual)
         );
         assert_eq!(serialize(&blocks_to_specs(&blocks)), source);
-    }
 
-    #[test]
-    fn parse_numbered_list_items() {
-        let blocks = parse("1. first\n\n2. second\n\n3. third\n");
-        assert_eq!(
-            blocks,
-            vec![
-                BlockSpec::numbered(0, "first"),
-                BlockSpec::numbered(0, "second"),
-                BlockSpec::numbered(0, "third"),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_numbered_accepts_paren_and_arbitrary_start() {
-        // `7) ` is a valid ordered marker; the stored spec drops the
-        // number (it's recomputed), so it round-trips to `1. `.
-        let blocks = parse("7) lucky\n");
-        assert_eq!(blocks, vec![BlockSpec::numbered(0, "lucky")]);
-    }
-
-    #[test]
-    fn round_trip_numbered_list() {
-        let md = "1. first\n\n2. second\n\n3. third\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn serialize_renumbers_sequentially() {
-        // Source that numbers everything `1.` is normalised to 1, 2, 3 on
-        // save — ordinals track list position, not the literal digits.
-        let blocks = parse("1. a\n\n1. b\n\n1. c\n");
-        assert_eq!(serialize(&blocks), "1. a\n\n2. b\n\n3. c\n");
-    }
-
-    #[test]
-    fn round_trip_nested_numbered_list() {
-        // A nested level restarts at 1; returning to the outer level
-        // continues its own count.
-        let md = "1. one\n\n  1. inner a\n\n  2. inner b\n\n2. two\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn numbered_run_resets_after_paragraph() {
-        // A paragraph between two numbered lists breaks the run: the
-        // second list restarts at 1.
-        let md = "1. a\n\n2. b\n\nbreak\n\n1. c\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn round_trip_numbered_with_inline_marks() {
-        let md = "1. run `cargo build` and **ship**\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn numbered_block_survives_editor_block_round_trip() {
-        use ui::widget::BlockKind;
-        let specs = parse("1. alpha\n\n2. beta\n");
-        let blocks = specs_to_blocks(&specs);
+        let blocks = specs_to_blocks(&parse("1. alpha\n\n2. beta\n"));
         assert!(matches!(blocks[0].kind, BlockKind::Numbered { indent: 0 }));
         assert!(matches!(blocks[1].kind, BlockKind::Numbered { indent: 0 }));
-        // Round-trips back through the block layer byte-stably.
-        let re = serialize(&blocks_to_specs(&blocks));
-        assert_eq!(re, "1. alpha\n\n2. beta\n");
-    }
+        assert_eq!(
+            serialize(&blocks_to_specs(&blocks)),
+            "1. alpha\n\n2. beta\n"
+        );
 
-    #[test]
-    fn serialize_clamps_heading_level() {
-        let blocks = vec![BlockSpec::Heading {
-            level: 99,
-            text: InlineText::plain("x"),
-        }];
-        assert_eq!(serialize(&blocks), "### x\n");
-    }
-
-    #[test]
-    fn gfm_table_round_trips_byte_stably() {
-        let md = "| Name | Status |\n| :--- | ---: |\n| Search | Done |\n";
-        assert_eq!(serialize(&parse(md)), md);
-    }
-
-    #[test]
-    fn gfm_table_accepts_all_alignment_separators() {
-        let parsed = parse("A | B | C\n:--- | ---: | :---:\nx | y | z\n");
-        assert!(matches!(parsed.as_slice(), [BlockSpec::Table { .. }]));
-    }
-
-    #[test]
-    fn ordinary_pipe_text_is_not_promoted_to_table() {
-        let parsed = parse("Use A | B when discussing alternatives.\n");
-        assert!(matches!(parsed.as_slice(), [BlockSpec::Paragraph(_)]));
-    }
-
-    #[test]
-    fn table_survives_editor_block_round_trip() {
         let md = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
-        let blocks = specs_to_blocks(&parse(md));
         assert!(matches!(
-            blocks[0].kind,
-            ui::widget::BlockKind::Table { visual: true }
+            specs_to_blocks(&parse(md))[0].kind,
+            BlockKind::Table { visual: true }
         ));
-        assert_eq!(serialize(&blocks_to_specs(&blocks)), md);
-    }
-
-    #[test]
-    fn standalone_markdown_image_round_trips_without_becoming_a_link_mark() {
-        let md = "![Architecture diagram](diagram.png)\n";
-        let parsed = parse(md);
-        assert_eq!(serialize(&parsed), md);
-        let [BlockSpec::Paragraph(inline)] = parsed.as_slice() else {
-            panic!("standalone image remains one paragraph-backed image block");
-        };
-        assert!(inline.marks.is_empty());
-    }
-
-    #[test]
-    fn matching_import_heading_is_not_duplicated_below_the_note_title() {
-        assert_eq!(
-            strip_matching_title_heading("# Project brief\n\nFirst paragraph\n", "Project brief"),
-            "First paragraph\n"
-        );
-        assert_eq!(
-            strip_matching_title_heading("# Different\n\nFirst paragraph\n", "Project brief"),
-            "# Different\n\nFirst paragraph\n"
-        );
+        assert_eq!(through_blocks(md), md);
     }
 }

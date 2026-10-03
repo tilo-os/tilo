@@ -16,7 +16,7 @@
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
 # Same digest-pinned snapshot and same mirrored Fedora bootc base the desktop
-# image uses (see os/Containerfile's comment, os/rpms-snapshot.env and
+# image uses (see os/Containerfile's comment, resolve-rpm-snapshot.sh and
 # os/base-snapshot.env). Every `dnf install` in this file pulls from the frozen
 # repo, never live Fedora mirrors. Both ARGs go before the first FROM so
 # they're global — an ARG between two FROMs belongs to the previous stage.
@@ -61,7 +61,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
     && cargo build --release \
-        -p tilo-relay -p fs \
+        -p tilo-relay -p tilo-fs \
     && mkdir -p /out \
     && cp target/release/tilo-relay \
           target/release/tilo-relay-admin \

@@ -36,8 +36,9 @@ REQUIRED_MODULES = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo
 OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi',
     'nvmf', 'nbd', 'fcoe', 'fcoe-uefi', 'nbde', 'clevis', 'clevis-pin-null',
     'clevis-pin-sss', 'clevis-pin-tang', 'clevis-pin-tpm2', 'crypt-ssh'}
-BOARD_OMITTED_DRIVERS = {'lenovo-83ed': {'nouveau', 'amdgpu', 'xe'}}
+OMITTED_KERNEL_DRIVERS = {'amdgpu', 'nouveau', 'xe', 'xfs'}
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
+OMITTED_DRIVERS = Path('usr/lib/tilo/initramfs-omitted-drivers.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
                   'Volumes', 'ExposedPorts', 'Healthcheck', 'Shell', 'OnBuild')
 DIAGNOSTIC_LIMIT = 2048
@@ -81,6 +82,21 @@ def sanitized_diagnostic(value, limit=DIAGNOSTIC_LIMIT):
     if len(text) > limit:
         text = '[truncated] ' + text[-(limit - len('[truncated] ')):]
     return text
+
+
+def dracut_failure_diagnostic(log):
+    safe_log = sanitized_diagnostic(log, limit=8 * 1024 * 1024)
+    errors = '\n'.join(line for line in safe_log.splitlines()
+                       if re.search(r'dracut\[[EW]\]|\b(?:error|failed|cannot)\b|ldconfig:',
+                                    line, re.IGNORECASE))
+    return ('warnings=' + sanitized_diagnostic(errors, limit=1024)
+            + '\nstart=' + safe_log[:1024]
+            + '\ntail=' + safe_log[-1024:])
+
+
+def dracut_succeeded(state):
+    return (state.get('Status') in ('exited', 'stopped')
+            and type(state.get('ExitCode')) is int and state['ExitCode'] == 0)
 
 
 def failure_diagnostic(error):
@@ -151,8 +167,11 @@ def mounted(container):
         command(['unmount', container])
 
 
-def omitted_drivers(profile):
-    return sorted({'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
+def omitted_drivers(profile=None):
+    # Match the production image dracut policy (os/scripts/build-initramfs.sh),
+    # one list for every profile: Ext4 is a supported root, XFS remains
+    # rescue-only, and the large-firmware GPU drivers load after switch-root.
+    return sorted(OMITTED_KERNEL_DRIVERS)
 
 
 def create_arguments(image_id, kver, epoch, hooks, profile=None):
@@ -212,7 +231,7 @@ def payload_paths(root, kver):
               Path('etc/containers/policy.json'),
               Path('etc/containers/registries.d/tilo-development.yaml'),
               Path('etc/containers/registries.conf.d/99-tilo-development.conf'),
-              completion.VERIFIED, MODULES, Path('usr/lib/modules') / kver / 'initramfs.img']
+              completion.VERIFIED, MODULES, OMITTED_DRIVERS, Path('usr/lib/modules') / kver / 'initramfs.img']
     if hardware.read_profile(root) is not None:
         paths.append(hardware.PROFILE_PATH)
     return paths
@@ -263,8 +282,10 @@ def transform(args):
                         architecture=args.architecture, generation=args.generation)
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
-                if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
-                    raise ValueError('dracut did not exit successfully')
+                if not dracut_succeeded(state):
+                    raise ValueError(f"dracut status={state.get('Status')!r} "
+                                     f"exit={state.get('ExitCode')!r}: "
+                                     + dracut_failure_diagnostic(log))
                 modules = module_evidence(log)
                 context = work / 'context'
                 context.mkdir()
@@ -283,8 +304,7 @@ def transform(args):
                         staged_path.replace(module_path)
                     finally:
                         staged_path.unlink(missing_ok=True)
-                    omitted_path = hardware.trusted_path(
-                        root, Path('usr/lib/tilo/initramfs-omitted-drivers.txt'), regular=True)
+                    omitted_path = hardware.trusted_path(root, OMITTED_DRIVERS, regular=True)
                     with tempfile.NamedTemporaryFile(dir=omitted_path.parent, delete=False) as staged:
                         staged.write(('\n'.join(omitted_drivers(
                             imported.receipt.get('hardware_profile'))) + '\n').encode())

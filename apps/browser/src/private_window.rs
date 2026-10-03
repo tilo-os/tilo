@@ -80,6 +80,12 @@ mod tests {
                 String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr),
             );
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                String::from_utf8_lossy(&result.stdout).contains("test result: ok. 1 passed"),
+                "the child ran no test: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
             return;
         }
         let fixture = tempfile::tempdir().unwrap();
@@ -95,8 +101,8 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         launch_executable(&executable).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !capture.exists() && std::time::Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        while !capture.exists() && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let lines = std::fs::read_to_string(capture).unwrap();

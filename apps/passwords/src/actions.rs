@@ -1,9 +1,20 @@
+//! Local vault Effects and the live item catalogue.
+//!
+//! Shared filter/search/selection preferences are document actions on
+//! [`crate::resource::Passwords`]. Add / import / export are Effects with no
+//! document delta. Item rows expose edit / copy / reveal / delete for agents;
+//! the widget also commits selection into the shared document when focusing.
+
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource};
 
 use accounts::SecretItem;
 
+use crate::resource::{Passwords, VaultState};
+use crate::showcase::ShowcaseMode;
+
 pub const OPERATION_TYPE: &str = "tilo.passwords.operation";
+pub const VAULT_RESOURCE_ID: &str = "passwords:vault";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PasswordOperation {
@@ -33,48 +44,52 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: &PasswordOperati
     })
 }
 
-pub fn vault_resource(form_open: bool) -> Resource {
-    let mut resource = Resource::new("passwords:vault", "passwords.vault", "Password vault")
-        .with_action(operation(
+/// Vault-level Effects / Views with no document delta (always published).
+pub fn vault_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        operation(
             "add",
             "New item",
             OperationKind::View,
             &PasswordOperation::Add,
-        ))
-        .with_action(operation(
+        ),
+        operation(
             "import",
             "Import passwords",
             OperationKind::Effect,
             &PasswordOperation::ImportCsv,
-        ))
-        .with_action(operation(
+        ),
+        operation(
             "export",
             "Export CSV…",
             OperationKind::Effect,
             &PasswordOperation::ExportCsv,
-        ));
-    if form_open {
-        resource = resource
-            .with_action(operation(
-                "save",
-                "Save",
-                OperationKind::Effect,
-                &PasswordOperation::SaveDraft,
-            ))
-            .with_action(operation(
-                "cancel",
-                "Cancel editing",
-                OperationKind::View,
-                &PasswordOperation::CancelDraft,
-            ))
-            .with_action(operation(
-                "generate",
-                "Generate strong password",
-                OperationKind::Effect,
-                &PasswordOperation::GeneratePassword,
-            ));
-    }
-    resource
+        ),
+    ]
+}
+
+/// Editor-session Effects / Views overlaid when a draft is open.
+pub fn editor_session_specs() -> Vec<ActionSpec> {
+    vec![
+        operation(
+            "save",
+            "Save",
+            OperationKind::Effect,
+            &PasswordOperation::SaveDraft,
+        ),
+        operation(
+            "cancel",
+            "Cancel editing",
+            OperationKind::View,
+            &PasswordOperation::CancelDraft,
+        ),
+        operation(
+            "generate",
+            "Generate strong password",
+            OperationKind::Effect,
+            &PasswordOperation::GeneratePassword,
+        ),
+    ]
 }
 
 pub fn item_resource(item: &SecretItem) -> Resource {
@@ -142,9 +157,34 @@ pub fn item_resource(item: &SecretItem) -> Resource {
         ))
 }
 
+/// Live vault item rows (no `passwords.vault` root).
+pub fn live_item_resources(items: &[SecretItem]) -> Vec<Resource> {
+    items.iter().map(item_resource).collect()
+}
+
+/// Standalone / `--shots` overlay: [`tilo_resource::publish`] root plus live
+/// item children, with editor-session ops when drafting.
+pub fn standalone_resources(
+    items: &[SecretItem],
+    mode: ShowcaseMode,
+    state: &VaultState,
+) -> Vec<Resource> {
+    let mut root =
+        ui::tilo_resource::publish::<Passwords>(VAULT_RESOURCE_ID, "Password vault", state);
+    if matches!(mode, ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm) {
+        for spec in editor_session_specs() {
+            root = root.with_action(spec);
+        }
+    }
+    root.children = live_item_resources(items);
+    vec![root]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use accounts::SecretItem;
+    use ui::tilo_actions::ActionRegistry;
 
     #[test]
     fn item_resources_keep_encrypted_metadata_out_of_public_descriptors() {
@@ -172,15 +212,18 @@ mod tests {
         assert!(public.contains("Reveal"));
     }
 
-    // The vault is device-local and encrypted: Passwords publishes only view
-    // and effect operations, never document actions, so its registry is empty.
+    // Shared filter declarations plus Effects form the palette door; item
+    // ops ride the standalone overlay's live children.
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::widget::Widget::resources(
-            &crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor),
-            doc,
-        ),
-        palette: ["New item", "Import passwords", "Generate strong password", "Copy password"],
+        registry: {
+            let mut registry = ActionRegistry::new();
+            <Passwords as ui::tilo_resource::Resource>::register(&mut registry);
+            registry
+        },
+        resources: |doc| {
+            crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor).publish_resources(doc)
+        },
+        palette: ["New item", "Import passwords", "Generate strong password", "Copy password", "Search vault"],
     }
 }

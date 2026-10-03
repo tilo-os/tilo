@@ -206,15 +206,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn u16_identifier_round_trip() {
+    fn share_index_identifiers_round_trip_and_zero_is_rejected() {
         for n in [1u16, 2, 3, 7, 255, 256, 1024, u16::MAX] {
             let id = u16_to_identifier(n).unwrap();
-            assert_eq!(identifier_to_u16(&id), n);
+            assert_eq!(identifier_to_u16(&id), n, "case {n}");
         }
-    }
 
-    #[test]
-    fn zero_identifier_rejected() {
+        // Case: zero identifier rejected (FROST forbids the zero scalar).
         let err = u16_to_identifier(0).unwrap_err();
         assert!(matches!(err, ThresholdError::InvalidShareIndex(0)));
     }

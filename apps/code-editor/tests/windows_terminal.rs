@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 use ui::widget::Widget;
 
 #[test]
@@ -11,7 +11,7 @@ fn embedded_windows_terminal_runs_a_command_and_receives_its_output() {
     // The echoed command contains the prompt and `echo`; only its output is
     // an entire line equal to the marker.
     app.shots_terminal_input("echo TILO_CODE_CONPTY_READY\r");
-    let start = Instant::now();
+    let start = ui::time::now();
     loop {
         app.sync(&mut state.doc, &state.root);
         let output = app.shots_terminal_grid_text().unwrap_or_default();

@@ -15,15 +15,15 @@ REBUILD_PATHS = {
     "os/dev/install-cached-cosign.sh",
     "os/dev/install-aws-cli.sh",
     "os/dev/promote-native-index.py",
-    "os/dev/replicate-builder-index.py",
     "rust-toolchain.toml",
     "tools/ci/check-build-env.sh",
+    "tools/ci/install-android-ndk.sh",
     "tools/ci/install-pdfium.sh",
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",
 }
 REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/")
-WORKFLOW = ".forgejo/workflows/build-builder-image.yml"
+WORKFLOW = ".forgejo/workflows/build-ci-builder.yml"
 
 
 def job(text, name):

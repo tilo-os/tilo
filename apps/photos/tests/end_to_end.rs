@@ -16,100 +16,73 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use taffy::prelude::*;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
-use ui::presence::PresenceCtx;
+use ui::headless::{Framed, viewport};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Rect;
 
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
 use photos::model::{Album, Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
-use tilo_actions::ResourceProvider;
 
-/// A laid-out app, ready to assert on.
+/// A laid-out app, ready to assert on. It is mounted in the production frame
+/// host on its first frame; until then the app and its document are driven
+/// directly, exactly as before any frame ran.
 struct Harness {
-    app: PhotosApp,
-    state: ui::State,
+    unmounted: Option<(PhotosApp, ui::State)>,
+    mounted: Option<Framed<PhotosApp>>,
     theme: Theme,
-    text: TextRenderer,
     size: (f32, f32),
 }
 
 impl Harness {
     fn new(w: f32, h: f32) -> Self {
         Self {
-            app: PhotosApp::new(),
-            state: ui::State::new(),
+            unmounted: Some((PhotosApp::new(), ui::State::new())),
+            mounted: None,
             theme: Theme::dark(),
-            text: TextRenderer::new(),
             size: (w, h),
         }
+    }
+
+    fn parts(&mut self) -> (&mut PhotosApp, &mut ui::State) {
+        if let Some(framed) = self.mounted.as_mut() {
+            Framed::split(framed)
+        } else {
+            let (app, state) = self.unmounted.as_mut().expect("harness owns its app");
+            (app, state)
+        }
+    }
+
+    fn app(&mut self) -> &mut PhotosApp {
+        self.parts().0
+    }
+
+    fn state(&mut self) -> &mut ui::State {
+        self.parts().1
     }
 
     /// One full frame, exactly as `ui::App` runs it. Returns the drawn scene
     /// so a caller can prove drawing happened at all.
     fn frame(&mut self) -> Scene {
-        let (w, h) = self.size;
-        self.text.set_text_scale(self.theme.text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-        self.app.sync(&mut self.state.doc, &self.state.root);
-        let child = self
-            .app
-            .build_layout(&mut taffy, &self.theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut self.text;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
+        let viewport = viewport(self.size);
+        if let Some(framed) = self.mounted.as_mut() {
+            Framed::harness_mut(framed)
+                .relayout_themed(viewport, self.theme.clone())
+                .expect("photos frame lays out");
+        } else {
+            let (app, state) = self.unmounted.take().expect("harness owns its app");
+            self.mounted = Some(Framed::new(state, app, viewport, self.theme.clone()));
         }
-        self.app.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = Scene::new();
-        self.app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &PresenceCtx::empty(),
-        );
-        scene
+        let framed = self.mounted.as_ref().expect("mounted above");
+        Framed::harness(framed).scene().clone()
     }
 
     fn window_rect(&self) -> Rect {
@@ -127,412 +100,457 @@ fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
 }
 
 #[test]
-fn populated_large_text_library_passes_native_accessibility_certification() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 1200, 800);
-    let mut state = ui::State::new();
-    let mut app = PhotosApp::new();
-    app.open_path(&mut state.doc, &path);
-    app.show_library();
-    let theme = Theme::high_contrast()
-        .with_text_scale(2.0)
-        .with_reduce_motion(true);
-    let mut driver = ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
-    register(driver.action_registry_mut());
-    let audit = driver.native_app_audit();
-    assert!(
-        audit.is_certified(),
-        "populated large-text library native audit: native={:?}, accessibility={:?}",
-        audit.issues,
-        audit.accessibility.issues
-    );
-    assert!(driver.accessibility_audit().is_clean());
-}
-
-/// The destination picker is an overlay, but its controls still have to be
-/// individually routable through the same stable album ids an agent or screen
-/// reader uses.  In particular, the shared modal close control must not
-/// duplicate Cancel's semantic identity.
-#[test]
-fn destination_album_chooser_keeps_native_actions_unique_and_canonical() {
-    fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
-        if let Some(target) = &node.action_target {
-            targets.push(target.clone());
-        }
-        for child in &node.children {
-            collect_targets(child, targets);
-        }
+fn library_accessibility_is_certified_and_album_actions_are_canonical() {
+    eprintln!("phase populated_large_text_library_passes_native_accessibility_certification");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 1200, 800);
+        let mut state = ui::State::new();
+        let mut app = PhotosApp::new();
+        app.open_path(&mut state.doc, &path);
+        app.show_library();
+        let theme = Theme::high_contrast()
+            .with_text_scale(2.0)
+            .with_reduce_motion(true);
+        let mut driver =
+            ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
+        register(driver.action_registry_mut());
+        let audit = driver.native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "populated large-text library native audit: native={:?}, accessibility={:?}",
+            audit.issues,
+            audit.accessibility.issues
+        );
+        assert!(driver.accessibility_audit().is_clean());
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 320, 240);
-    let mut hz = Harness::new(960.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    let photo_id = PhotosDoc::library(&hz.state.doc).photos[0].id.clone();
-    let mut library = PhotosDoc::library(&hz.state.doc);
-    library.albums.extend([
-        Album {
-            id: "photos.album:destination-a".into(),
-            name: "Weekend plans".into(),
-            photo_ids: vec![photo_id.clone()],
-        },
-        Album {
-            id: "photos.album:destination-b".into(),
-            name: "Home projects".into(),
-            photo_ids: vec![photo_id],
-        },
-    ]);
-    PhotosDoc::set_library(&mut hz.state.doc, &library);
-    hz.app.show_selection_for_shot(&hz.state.doc);
-    hz.app
-        .show_selection_destination_chooser_for_shot(&hz.state.doc);
-    hz.frame();
+    // The destination picker is an overlay, but its controls still have to be
+    // individually routable through the same stable album ids an agent or screen
+    // reader uses.  In particular, the shared modal close control must not
+    // duplicate Cancel's semantic identity.
+    eprintln!("phase destination_album_chooser_keeps_native_actions_unique_and_canonical");
+    {
+        fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
+            if let Some(target) = &node.action_target {
+                targets.push(target.clone());
+            }
+            for child in &node.children {
+                collect_targets(child, targets);
+            }
+        }
 
-    let tree = hz
-        .app
-        .accessibility()
-        .expect("Photos publishes accessibility");
-    let mut targets = Vec::new();
-    collect_targets(&tree, &mut targets);
-    for target in [
-        "photos:selection:destination:photos.album:destination-a",
-        "photos:selection:destination:photos.album:destination-b",
-        "photos:selection:destination-cancel",
-        "photos:selection:destination-close",
-    ] {
-        assert_eq!(
-            targets
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 320, 240);
+        let mut hz = Harness::new(960.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        let photo_id = PhotosDoc::library(&hz.state().doc).photos[0].id.clone();
+        let mut library = PhotosDoc::library(&hz.state().doc);
+        library.albums.extend([
+            Album {
+                id: "photos.album:destination-a".into(),
+                name: "Weekend plans".into(),
+                photo_ids: vec![photo_id.clone()],
+            },
+            Album {
+                id: "photos.album:destination-b".into(),
+                name: "Home projects".into(),
+                photo_ids: vec![photo_id],
+            },
+        ]);
+        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        let (app, state) = hz.parts();
+        app.show_selection_for_shot(&state.doc);
+        app.show_selection_destination_chooser_for_shot(&state.doc);
+        hz.frame();
+
+        let tree = hz
+            .app()
+            .accessibility()
+            .expect("Photos publishes accessibility");
+        let mut targets = Vec::new();
+        collect_targets(&tree, &mut targets);
+        for target in [
+            "photos:selection:destination:photos.album:destination-a",
+            "photos:selection:destination:photos.album:destination-b",
+            "photos:selection:destination-cancel",
+            "photos:selection:destination-close",
+        ] {
+            assert_eq!(
+                targets
+                    .iter()
+                    .filter(|candidate| candidate.as_str() == target)
+                    .count(),
+                1,
+                "chooser action `{target}` must be present exactly once: {targets:?}"
+            );
+        }
+        assert!(
+            !targets
                 .iter()
-                .filter(|candidate| candidate.as_str() == target)
-                .count(),
-            1,
-            "chooser action `{target}` must be present exactly once: {targets:?}"
+                .any(|target| target == "photos:selection:destination-apply"),
+            "Use album must remain unavailable until a destination is selected"
         );
     }
-    assert!(
-        !targets
-            .iter()
-            .any(|target| target == "photos:selection:destination-apply"),
-        "Use album must remain unavailable until a destination is selected"
-    );
 }
 
 // ---------------------------------------------------------------------------
 // 1. An image loads and lays out inside its viewport.
 // ---------------------------------------------------------------------------
 
-/// The anti-clipping assertion, at a spread of window sizes including ones far
-/// narrower and far shorter than the photograph.
-///
-/// Two things are checked at each size. The chrome must tile the window
-/// exactly — a toolbar, a canvas and a status line that together overflow the
-/// frame is how content gets cut off with no scrollbar and no warning. And the
-/// canvas must be showing the *whole* photograph: `visible_image_rect` is the
-/// unit square only when every image pixel maps inside the canvas rect, so
-/// anything less than the full rect means part of the picture is off-screen.
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn the_whole_photograph_is_inside_the_canvas_at_every_window_size() {
-    let dir = tempfile::tempdir().unwrap();
-    // Deliberately much larger than any of the viewports below.
-    let (path, _) = staged(dir.path(), 2400, 1600);
+fn photographs_fit_the_canvas_and_non_images_open_nothing() {
+    // The anti-clipping assertion, at a spread of window sizes including ones far
+    // narrower and far shorter than the photograph.
+    //
+    // Two things are checked at each size. The chrome must tile the window
+    // exactly — a toolbar, a canvas and a status line that together overflow the
+    // frame is how content gets cut off with no scrollbar and no warning. And the
+    // canvas must be showing the *whole* photograph: `visible_image_rect` is the
+    // unit square only when every image pixel maps inside the canvas rect, so
+    // anything less than the full rect means part of the picture is off-screen.
+    eprintln!("phase the_whole_photograph_is_inside_the_canvas_at_every_window_size");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        // Deliberately much larger than any of the viewports below.
+        let (path, _) = staged(dir.path(), 2400, 1600);
 
-    for (w, h) in [
-        (1280.0, 800.0),
-        (640.0, 480.0),
-        (400.0, 900.0),  // taller than wide: the photograph is not
-        (1600.0, 300.0), // a letterbox strip
-        (320.0, 240.0),  // small enough that chrome dominates
-    ] {
-        let mut hz = Harness::new(w, h);
-        hz.app.open_path(&mut hz.state.doc, &path);
-        hz.frame();
+        for (w, h) in [
+            (1280.0, 800.0),
+            (640.0, 480.0),
+            (400.0, 900.0),  // taller than wide: the photograph is not
+            (1600.0, 300.0), // a letterbox strip
+            (320.0, 240.0),  // small enough that chrome dominates
+        ] {
+            let mut hz = Harness::new(w, h);
+            let (app, state) = hz.parts();
+            app.open_path(&mut state.doc, &path);
+            hz.frame();
 
-        assert!(hz.app.has_image(), "{w}x{h}: the photograph did not load");
+            assert!(hz.app().has_image(), "{w}x{h}: the photograph did not load");
 
-        let window = hz.window_rect();
-        let canvas = hz.app.canvas_rect();
-        let toolbar = hz.app.toolbar_rect();
-        let status = hz.app.status_rect();
+            let window = hz.window_rect();
+            let canvas = hz.app().canvas_rect();
+            let toolbar = hz.app().toolbar_rect();
+            let status = hz.app().status_rect();
 
-        // Chrome and canvas stay inside the window.
-        for (name, r) in [("toolbar", toolbar), ("canvas", canvas), ("status", status)] {
+            // Chrome and canvas stay inside the window.
+            for (name, r) in [("toolbar", toolbar), ("canvas", canvas), ("status", status)] {
+                assert!(
+                    r.x0 >= window.x0 - 0.5
+                        && r.y0 >= window.y0 - 0.5
+                        && r.x1 <= window.x1 + 0.5
+                        && r.y1 <= window.y1 + 0.5,
+                    "{w}x{h}: the {name} ({r:?}) escapes the window ({window:?})"
+                );
+            }
             assert!(
-                r.x0 >= window.x0 - 0.5
-                    && r.y0 >= window.y0 - 0.5
-                    && r.x1 <= window.x1 + 0.5
-                    && r.y1 <= window.y1 + 0.5,
-                "{w}x{h}: the {name} ({r:?}) escapes the window ({window:?})"
+                canvas.width() > 0.0 && canvas.height() > 0.0,
+                "{w}x{h}: the canvas was squeezed to nothing: {canvas:?}"
+            );
+
+            // And the photograph fits inside that canvas, entirely.
+            let visible = hz.app().visible_rect();
+            let (x, y, vw, vh) = (visible.x, visible.y, visible.w, visible.h);
+            assert!(
+                x.abs() < 1e-6 && y.abs() < 1e-6,
+                "{w}x{h}: the photograph starts clipped at ({x}, {y})"
+            );
+            assert!(
+                (vw - 1.0).abs() < 1e-6 && (vh - 1.0).abs() < 1e-6,
+                "{w}x{h}: only {:.1}% x {:.1}% of the photograph is on screen",
+                vw * 100.0,
+                vh * 100.0
             );
         }
-        assert!(
-            canvas.width() > 0.0 && canvas.height() > 0.0,
-            "{w}x{h}: the canvas was squeezed to nothing: {canvas:?}"
-        );
+    }
 
-        // And the photograph fits inside that canvas, entirely.
-        let visible = hz.app.visible_rect();
-        let (x, y, vw, vh) = (visible.x, visible.y, visible.w, visible.h);
+    // A portrait source is the stress case for a narrow portrait window: its
+    // initial view must still be contain-fit rather than inheriting an inspection
+    // zoom or presenting a cropped corner as though it were the whole image.
+    eprintln!("phase a_portrait_photograph_initially_fits_a_narrow_portrait_window");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 800, 1200);
+        let mut hz = Harness::new(390.0, 844.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
+
+        let visible = hz.app().visible_rect();
         assert!(
-            x.abs() < 1e-6 && y.abs() < 1e-6,
-            "{w}x{h}: the photograph starts clipped at ({x}, {y})"
-        );
-        assert!(
-            (vw - 1.0).abs() < 1e-6 && (vh - 1.0).abs() < 1e-6,
-            "{w}x{h}: only {:.1}% x {:.1}% of the photograph is on screen",
-            vw * 100.0,
-            vh * 100.0
+            visible.is_full(),
+            "a newly opened portrait photograph was clipped instead of fitted: {visible:?}"
         );
     }
-}
 
-/// A portrait source is the stress case for a narrow portrait window: its
-/// initial view must still be contain-fit rather than inheriting an inspection
-/// zoom or presenting a cropped corner as though it were the whole image.
-#[test]
-fn a_portrait_photograph_initially_fits_a_narrow_portrait_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 800, 1200);
-    let mut hz = Harness::new(390.0, 844.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+    // A frame with a photograph loaded must actually put something in the scene.
+    // A layout that is correct while nothing is drawn would pass every geometry
+    // assertion above.
+    eprintln!("phase a_loaded_photograph_produces_a_non_empty_scene");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 300, 200);
+        let mut hz = Harness::new(1000.0, 700.0);
 
-    let visible = hz.app.visible_rect();
-    assert!(
-        visible.is_full(),
-        "a newly opened portrait photograph was clipped instead of fitted: {visible:?}"
-    );
-}
+        let images = |scene: &Scene| {
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == vello_encoding::DrawTag::IMAGE)
+                .count()
+        };
 
-/// A frame with a photograph loaded must actually put something in the scene.
-/// A layout that is correct while nothing is drawn would pass every geometry
-/// assertion above.
-#[test]
-fn a_loaded_photograph_produces_a_non_empty_scene() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 300, 200);
-    let mut hz = Harness::new(1000.0, 700.0);
+        // With nothing open the scene is chrome and an empty state — no image.
+        let empty = hz.frame();
+        assert_eq!(
+            images(&empty),
+            0,
+            "an empty app drew an image from somewhere"
+        );
 
-    let images = |scene: &Scene| {
-        scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == vello_encoding::DrawTag::IMAGE)
-            .count()
-    };
+        // Path count is deliberately not the metric: the empty state is an icon
+        // plus two runs of text, so opening a photograph *reduces* the path count
+        // while adding the one draw that matters.
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        let loaded = hz.frame();
+        assert_eq!(
+            images(&loaded),
+            1,
+            "the photograph was not drawn into the scene"
+        );
+    }
 
-    // With nothing open the scene is chrome and an empty state — no image.
-    let empty = hz.frame();
-    assert_eq!(
-        images(&empty),
-        0,
-        "an empty app drew an image from somewhere"
-    );
+    // With nothing open, the resource tree still exports the library's open
+    // operation so agents, scripts, and search can enter the app; a full frame in
+    // that state renders the empty view.
+    eprintln!("phase nothing_open_publishes_open_and_still_draws");
+    {
+        let mut hz = Harness::new(900.0, 600.0);
+        let scene = hz.frame();
+        let resources = PhotosResources.publish_resources(&hz.state().doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id.0, "photos.library");
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "open"),
+            "the empty app must remain driveable through its published open action"
+        );
+        assert!(
+            scene.encoding().n_paths > 0,
+            "the empty state drew nothing at all"
+        );
+        assert!(!hz.app().has_image());
+    }
 
-    // Path count is deliberately not the metric: the empty state is an icon
-    // plus two runs of text, so opening a photograph *reduces* the path count
-    // while adding the one draw that matters.
-    hz.app.open_path(&mut hz.state.doc, &path);
-    let loaded = hz.frame();
-    assert_eq!(
-        images(&loaded),
-        1,
-        "the photograph was not drawn into the scene"
-    );
-}
+    // Opening something that is not an image must fail honestly rather than
+    // leaving a blank canvas that claims to hold a picture.
+    eprintln!("phase opening_a_non_image_says_so_and_opens_nothing");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"not a picture").unwrap();
 
-/// Opening something that is not an image must fail honestly rather than
-/// leaving a blank canvas that claims to hold a picture.
-#[test]
-fn opening_a_non_image_says_so_and_opens_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("notes.txt");
-    std::fs::write(&path, b"not a picture").unwrap();
+        let mut hz = Harness::new(900.0, 600.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path.to_string_lossy());
+        hz.frame();
 
-    let mut hz = Harness::new(900.0, 600.0);
-    hz.app.open_path(&mut hz.state.doc, &path.to_string_lossy());
-    hz.frame();
-
-    assert!(!hz.app.has_image());
-    assert!(PhotosDoc::image(&hz.state.doc).is_none());
+        assert!(!hz.app().has_image());
+        assert!(PhotosDoc::image(&hz.state().doc).is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
 // 2. The edits change the pixels.
 // ---------------------------------------------------------------------------
 
-/// Rotating must move the pixels the app would export — asserted on the output
-/// buffer and on a sampled corner, not on the quarter-turn counter.
-#[test]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
 )]
-fn rotating_changes_the_exported_pixels() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 300, 200);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+#[test]
+fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
+    // Rotating must move the pixels the app would export — asserted on the output
+    // buffer and on a sampled corner, not on the quarter-turn counter.
+    eprintln!("phase rotating_changes_the_exported_pixels");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 300, 200);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-    let before = hz.app.edited_pixels().expect("rendered").clone();
-    assert_eq!((before.w, before.h), (300, 200));
+        let before = hz.app().edited_pixels().expect("rendered").clone();
+        assert_eq!((before.w, before.h), (300, 200));
 
-    let turned = PhotosDoc::edits(&hz.state.doc).rotated_right();
-    PhotosDoc::set_edits(&mut hz.state.doc, &turned);
-    hz.frame();
+        let turned = PhotosDoc::edits(&hz.state().doc).rotated_right();
+        PhotosDoc::set_edits(&mut hz.state().doc, &turned);
+        hz.frame();
 
-    let after = hz.app.edited_pixels().expect("re-rendered").clone();
-    assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
-    assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
+        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
+        assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
 
-    // One clockwise turn sends source (sx, sy) to destination
-    // (sh - 1 - sy, sx). Assert that exact mapping on a spread of pixels
-    // rather than sampling by fraction: the two buffers have different aspect
-    // ratios, so the same fraction lands on different pixels of a smooth
-    // gradient and would compare near-equal colours that are not the same
-    // pixel at all.
-    let (sw, sh) = (before.w, before.h);
-    let mut checked = 0;
-    for (sx, sy) in [(0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1), (37, 61)] {
-        let want = before.pixel(sx, sy).unwrap();
-        let got = after.pixel(sh - 1 - sy, sx).unwrap();
-        assert_eq!(
-            got,
-            want,
-            "source ({sx}, {sy}) did not land at ({}, {sx}) after a clockwise turn",
-            sh - 1 - sy
+        // One clockwise turn sends source (sx, sy) to destination
+        // (sh - 1 - sy, sx). Assert that exact mapping on a spread of pixels
+        // rather than sampling by fraction: the two buffers have different aspect
+        // ratios, so the same fraction lands on different pixels of a smooth
+        // gradient and would compare near-equal colours that are not the same
+        // pixel at all.
+        let (sw, sh) = (before.w, before.h);
+        let mut checked = 0;
+        for (sx, sy) in [(0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1), (37, 61)] {
+            let want = before.pixel(sx, sy).unwrap();
+            let got = after.pixel(sh - 1 - sy, sx).unwrap();
+            assert_eq!(
+                got,
+                want,
+                "source ({sx}, {sy}) did not land at ({}, {sx}) after a clockwise turn",
+                sh - 1 - sy
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 5);
+
+        // And the sun, which sits left-of-centre and high, must now be high on the
+        // right — a coarse check that the turn went clockwise rather than the
+        // other way, which the corner mapping alone would not catch if both the
+        // rotation and this expectation were mirrored together.
+        let brightness = |img: &Rgba, fx: f64, fy: f64| {
+            let p = img
+                .pixel(
+                    ((f64::from(img.w) - 1.0) * fx) as u32,
+                    ((f64::from(img.h) - 1.0) * fy) as u32,
+                )
+                .unwrap();
+            u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+        };
+        assert!(
+            brightness(&after, 0.72, 0.28) > brightness(&after, 0.28, 0.72),
+            "the sun is not where a clockwise turn puts it"
         );
-        checked += 1;
     }
-    assert_eq!(checked, 5);
 
-    // And the sun, which sits left-of-centre and high, must now be high on the
-    // right — a coarse check that the turn went clockwise rather than the
-    // other way, which the corner mapping alone would not catch if both the
-    // rotation and this expectation were mirrored together.
-    let brightness = |img: &Rgba, fx: f64, fy: f64| {
-        let p = img
-            .pixel(
-                ((f64::from(img.w) - 1.0) * fx) as u32,
-                ((f64::from(img.h) - 1.0) * fy) as u32,
-            )
-            .unwrap();
-        u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
-    };
-    assert!(
-        brightness(&after, 0.72, 0.28) > brightness(&after, 0.28, 0.72),
-        "the sun is not where a clockwise turn puts it"
-    );
-}
+    // Cropping must genuinely shrink the exported buffer and keep the region that
+    // was asked for.
+    eprintln!("phase cropping_changes_the_exported_pixels");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, original) = staged(dir.path(), 400, 400);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-/// Cropping must genuinely shrink the exported buffer and keep the region that
-/// was asked for.
-#[test]
-fn cropping_changes_the_exported_pixels() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, original) = staged(dir.path(), 400, 400);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+        let before = hz.app().edited_pixels().expect("rendered").clone();
+        assert_eq!((before.w, before.h), (400, 400));
 
-    let before = hz.app.edited_pixels().expect("rendered").clone();
-    assert_eq!((before.w, before.h), (400, 400));
+        // Keep the bottom-right quarter.
+        let e = Edits::default().cropped_from_view(Rect01 {
+            x: 0.5,
+            y: 0.5,
+            w: 0.5,
+            h: 0.5,
+        });
+        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.frame();
 
-    // Keep the bottom-right quarter.
-    let e = Edits::default().cropped_from_view(Rect01 {
-        x: 0.5,
-        y: 0.5,
-        w: 0.5,
-        h: 0.5,
-    });
-    PhotosDoc::set_edits(&mut hz.state.doc, &e);
-    hz.frame();
+        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        assert_eq!((after.w, after.h), (200, 200), "the crop did not resize");
+        assert!(
+            after.bytes.len() < before.bytes.len(),
+            "the cropped buffer is not smaller"
+        );
+        // Pixel (0,0) of the crop is pixel (200,200) of the original.
+        assert_eq!(
+            after.pixel(0, 0).unwrap(),
+            original.pixel(200, 200).unwrap()
+        );
+        assert_eq!(
+            after.pixel(5, 7).unwrap(),
+            original.pixel(205, 207).unwrap()
+        );
+    }
 
-    let after = hz.app.edited_pixels().expect("re-rendered").clone();
-    assert_eq!((after.w, after.h), (200, 200), "the crop did not resize");
-    assert!(
-        after.bytes.len() < before.bytes.len(),
-        "the cropped buffer is not smaller"
-    );
-    // Pixel (0,0) of the crop is pixel (200,200) of the original.
-    assert_eq!(
-        after.pixel(0, 0).unwrap(),
-        original.pixel(200, 200).unwrap()
-    );
-    assert_eq!(
-        after.pixel(5, 7).unwrap(),
-        original.pixel(205, 207).unwrap()
-    );
-}
+    // Reset must return the exported pixels to exactly the original — byte for
+    // byte, so a "reset" that merely re-crops to something near-full fails.
+    eprintln!("phase reset_restores_the_original_pixels_exactly");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, original) = staged(dir.path(), 240, 160);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-/// Reset must return the exported pixels to exactly the original — byte for
-/// byte, so a "reset" that merely re-crops to something near-full fails.
-#[test]
-fn reset_restores_the_original_pixels_exactly() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, original) = staged(dir.path(), 240, 160);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+        let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
+            x: 0.1,
+            y: 0.1,
+            w: 0.5,
+            h: 0.5,
+        });
+        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.frame();
+        assert_ne!(hz.app().edited_pixels().unwrap().bytes, original.bytes);
 
-    let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
-        x: 0.1,
-        y: 0.1,
-        w: 0.5,
-        h: 0.5,
-    });
-    PhotosDoc::set_edits(&mut hz.state.doc, &e);
-    hz.frame();
-    assert_ne!(hz.app.edited_pixels().unwrap().bytes, original.bytes);
+        PhotosDoc::set_edits(&mut hz.state().doc, &Edits::default());
+        hz.frame();
+        assert_eq!(
+            hz.app().edited_pixels().unwrap().bytes,
+            original.bytes,
+            "reset did not restore the original"
+        );
+    }
 
-    PhotosDoc::set_edits(&mut hz.state.doc, &Edits::default());
-    hz.frame();
-    assert_eq!(
-        hz.app.edited_pixels().unwrap().bytes,
-        original.bytes,
-        "reset did not restore the original"
-    );
-}
+    // Cropping to what the viewport frames, through the real geometry: zoom in,
+    // then crop, and the exported image must be the zoomed region.
+    eprintln!("phase cropping_to_the_view_keeps_what_the_viewport_frames");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 400, 400);
+        // A square window over a square photograph, so the fit is exact and the
+        // arithmetic below is not fighting a letterbox.
+        let mut hz = Harness::new(600.0, 600.0 + 48.0 + 28.8);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-/// Cropping to what the viewport frames, through the real geometry: zoom in,
-/// then crop, and the exported image must be the zoomed region.
-#[test]
-fn cropping_to_the_view_keeps_what_the_viewport_frames() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 400, 400);
-    // A square window over a square photograph, so the fit is exact and the
-    // arithmetic below is not fighting a letterbox.
-    let mut hz = Harness::new(600.0, 600.0 + 48.0 + 28.8);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+        hz.app().set_zoom(2.0);
+        hz.frame();
 
-    hz.app.set_zoom(2.0);
-    hz.frame();
+        let view = hz.app().visible_rect();
+        assert!(
+            (view.w - 0.5).abs() < 0.05,
+            "a 2x zoom should frame about half the width, got {view:?}"
+        );
 
-    let view = hz.app.visible_rect();
-    assert!(
-        (view.w - 0.5).abs() < 0.05,
-        "a 2x zoom should frame about half the width, got {view:?}"
-    );
+        let e = PhotosDoc::edits(&hz.state().doc).cropped_from_view(view);
+        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.frame();
 
-    let e = PhotosDoc::edits(&hz.state.doc).cropped_from_view(view);
-    PhotosDoc::set_edits(&mut hz.state.doc, &e);
-    hz.frame();
-
-    let after = hz.app.edited_pixels().expect("re-rendered");
-    assert!(
-        after.w < 400 && after.h < 400,
-        "cropping to a 2x view did not shrink the image: {}x{}",
-        after.w,
-        after.h
-    );
-    assert!(
-        (i64::from(after.w) - 200).abs() <= 12,
-        "expected about half the width, got {}",
-        after.w
-    );
+        let after = hz.app().edited_pixels().expect("re-rendered");
+        assert!(
+            after.w < 400 && after.h < 400,
+            "cropping to a 2x view did not shrink the image: {}x{}",
+            after.w,
+            after.h
+        );
+        assert!(
+            (i64::from(after.w) - 200).abs() <= 12,
+            "expected about half the width, got {}",
+            after.w
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -562,405 +580,595 @@ impl ClipboardBackend for RecordingClipboard {
     }
 }
 
-/// Copy must put the *edited* pixels on the clipboard — the bytes the user is
-/// looking at, not the file that was opened — and must refuse when there is
-/// nothing open.
-///
 #[test]
-fn copy_puts_the_edited_pixels_on_the_clipboard() {
-    let recorder = Arc::new(RecordingClipboard::default());
-    let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
-    let _host = ui::host::enter(&services);
-
-    // Nothing open: the copy is refused and nothing is offered.
+fn copy_and_save_export_what_was_shown_without_overwriting() {
+    // Copy must put the *edited* pixels on the clipboard — the bytes the user is
+    // looking at, not the file that was opened — and must refuse when there is
+    // nothing open.
+    //
+    eprintln!("phase copy_puts_the_edited_pixels_on_the_clipboard");
     {
-        let mut empty = Harness::new(900.0, 600.0);
-        empty.frame();
-        assert!(!empty.app.copy_to_clipboard(), "copied with nothing open");
-        assert!(
-            recorder.image.lock().unwrap().is_none(),
-            "a refused copy still offered something"
+        let recorder = Arc::new(RecordingClipboard::default());
+        let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
+        let _host = ui::host::enter(&services);
+
+        // Nothing open: the copy is refused and nothing is offered.
+        {
+            let mut empty = Harness::new(900.0, 600.0);
+            empty.frame();
+            assert!(!empty.app().copy_to_clipboard(), "copied with nothing open");
+            assert!(
+                recorder.image.lock().unwrap().is_none(),
+                "a refused copy still offered something"
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let (path, original) = staged(dir.path(), 400, 300);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
+
+        // Turn it, then crop to the bottom-right quarter of what is shown.
+        let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
+            x: 0.5,
+            y: 0.5,
+            w: 0.5,
+            h: 0.5,
+        });
+        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.frame();
+
+        let shown = hz.app().edited_pixels().expect("rendered").clone();
+        assert!(hz.app().copy_to_clipboard(), "the copy was refused");
+
+        let got = recorder
+            .image
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("nothing was copied");
+        assert_eq!(
+            (got.0, got.1),
+            (shown.w as usize, shown.h as usize),
+            "the clipboard got a different size from what is on screen"
+        );
+        assert_eq!(got.2, shown.bytes, "the clipboard got different pixels");
+        assert_ne!(
+            got.2, original.bytes,
+            "the clipboard got the unedited original"
+        );
+        assert_eq!(
+            got.2.len(),
+            got.0 * got.1 * 4,
+            "the buffer does not match its declared size"
         );
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let (path, original) = staged(dir.path(), 400, 300);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+    // Save must write a real PNG that decodes back to exactly what was shown.
+    eprintln!("phase save_writes_a_png_that_decodes_to_what_was_shown");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 320, 240);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-    // Turn it, then crop to the bottom-right quarter of what is shown.
-    let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
-        x: 0.5,
-        y: 0.5,
-        w: 0.5,
-        h: 0.5,
-    });
-    PhotosDoc::set_edits(&mut hz.state.doc, &e);
-    hz.frame();
+        let turned = PhotosDoc::edits(&hz.state().doc).rotated_left();
+        PhotosDoc::set_edits(&mut hz.state().doc, &turned);
+        hz.frame();
+        let shown = hz.app().edited_pixels().expect("rendered").clone();
 
-    let shown = hz.app.edited_pixels().expect("rendered").clone();
-    assert!(hz.app.copy_to_clipboard(), "the copy was refused");
+        let out = dir.path().join("out.png");
+        assert!(hz.app().save_to(&out.to_string_lossy()), "save failed");
 
-    let got = recorder
-        .image
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("nothing was copied");
-    assert_eq!(
-        (got.0, got.1),
-        (shown.w as usize, shown.h as usize),
-        "the clipboard got a different size from what is on screen"
-    );
-    assert_eq!(got.2, shown.bytes, "the clipboard got different pixels");
-    assert_ne!(
-        got.2, original.bytes,
-        "the clipboard got the unedited original"
-    );
-    assert_eq!(
-        got.2.len(),
-        got.0 * got.1 * 4,
-        "the buffer does not match its declared size"
-    );
-}
+        let written = std::fs::read(&out).unwrap();
+        assert_eq!(&written[1..4], b"PNG", "that is not a PNG");
+        let back = pixels::decode(&written).expect("the saved file does not decode");
+        assert_eq!((back.w, back.h), (shown.w, shown.h));
+        assert_eq!(
+            back.bytes, shown.bytes,
+            "the saved pixels differ from the shown ones"
+        );
+    }
 
-/// Save must write a real PNG that decodes back to exactly what was shown.
-#[test]
-fn save_writes_a_png_that_decodes_to_what_was_shown() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 320, 240);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
-
-    let turned = PhotosDoc::edits(&hz.state.doc).rotated_left();
-    PhotosDoc::set_edits(&mut hz.state.doc, &turned);
-    hz.frame();
-    let shown = hz.app.edited_pixels().expect("rendered").clone();
-
-    let out = dir.path().join("out.png");
-    assert!(hz.app.save_to(&out.to_string_lossy()), "save failed");
-
-    let written = std::fs::read(&out).unwrap();
-    assert_eq!(&written[1..4], b"PNG", "that is not a PNG");
-    let back = pixels::decode(&written).expect("the saved file does not decode");
-    assert_eq!((back.w, back.h), (shown.w, shown.h));
-    assert_eq!(
-        back.bytes, shown.bytes,
-        "the saved pixels differ from the shown ones"
-    );
-}
-
-/// The default destination must not be the file that was opened.
-#[test]
-fn save_does_not_default_to_overwriting_the_original() {
-    let open = photos::OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 10, 10);
-    let suggested = PhotosApp::suggested_save_path(&open);
-    assert_ne!(suggested, open.path);
-    assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
+    // The default destination must not be the file that was opened.
+    eprintln!("phase save_does_not_default_to_overwriting_the_original");
+    {
+        let open = photos::OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 10, 10);
+        let suggested = PhotosApp::suggested_save_path(&open);
+        assert_ne!(suggested, open.path);
+        assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
+    }
 }
 
 // ---------------------------------------------------------------------------
 // 4. The resource surface.
 // ---------------------------------------------------------------------------
 
-/// The open photograph is enumerable by id and title, its actions invoke, and
-/// listing them changes nothing.
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
-    use tilo_actions::{ActionRegistry, flatten};
+fn resource_surface_acts_on_the_open_photograph_without_a_display() {
+    // The open photograph is enumerable by id and title, its actions invoke, and
+    // listing them changes nothing.
+    eprintln!("phase the_resource_surface_enumerates_the_open_photograph_and_acts_on_it");
+    {
+        use tilo_actions::{ActionRegistry, flatten};
 
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 400, 200);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 400, 200);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-    // Enumerating is a pure read.
-    let before = hz.state.doc.save();
-    let resources = PhotosResources.resources(&hz.state.doc);
-    let flat = flatten(&resources);
-    assert_eq!(
-        hz.state.doc.save(),
-        before,
-        "enumeration mutated the document"
-    );
+        // Enumerating is a pure read.
+        let before = hz.state().doc.save();
+        let resources = PhotosResources.publish_resources(&hz.state().doc);
+        let flat = flatten(&resources);
+        assert_eq!(
+            hz.state().doc.save(),
+            before,
+            "enumeration mutated the document"
+        );
 
-    assert_eq!(resources.len(), 2, "active photograph plus durable library");
-    assert_eq!(resources[0].label, "harbour.png");
-    // The size is legible from titles alone — no display needed.
-    assert_eq!(resources[0].children[0].label, "400 x 200 pixels");
+        assert_eq!(resources.len(), 2, "active photograph plus durable library");
+        assert_eq!(resources[0].label, "harbour.png");
+        // The size is legible from titles alone — no display needed.
+        assert_eq!(resources[0].children[0].label, "400 x 200 pixels");
 
-    // Every row is addressable by a composite key with no coordinate in it.
-    for row in &flat {
-        assert!(!row.key.is_empty());
-        assert!(
-            !row.key.contains("px") && !row.key.chars().any(|c| c == '@'),
-            "an action key looks positional: {}",
-            row.key
+        // Every row is addressable by a composite key with no coordinate in it.
+        for row in &flat {
+            assert!(!row.key.is_empty());
+            assert!(
+                !row.key.contains("px") && !row.key.chars().any(|c| c == '@'),
+                "an action key looks positional: {}",
+                row.key
+            );
+        }
+
+        // Invoke rotate-right by id, and the pixels must follow.
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "rotate-right")
+            .expect("rotate-right is published");
+        let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
+            panic!("rotate-right fires immediately");
+        };
+        registry
+            .decode(encoded)
+            .unwrap()
+            .apply(&mut hz.state().doc)
+            .unwrap();
+        hz.frame();
+
+        let after = hz.app().edited_pixels().expect("re-rendered");
+        assert_eq!(
+            (after.w, after.h),
+            (200, 400),
+            "invoking the published action did not rotate the pixels"
         );
     }
 
-    // Invoke rotate-right by id, and the pixels must follow.
-    let mut registry = ActionRegistry::new();
-    register(&mut registry);
-    let spec = resources[0]
-        .actions
-        .iter()
-        .find(|a| a.id == "rotate-right")
-        .expect("rotate-right is published");
-    let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
-        panic!("rotate-right fires immediately");
-    };
-    registry
-        .decode(encoded)
-        .unwrap()
-        .apply(&mut hz.state.doc)
-        .unwrap();
-    hz.frame();
+    // A caller with no display crops the photograph by address, and the pixels
+    // that come back are the region it asked for.
+    //
+    // The pieces of this were each covered — the resource surface publishes a
+    // `crop` spec, `parse_crop_arg` reads a string, `Edits::cropped_from_view`
+    // composes a rect — but nothing joined them to the rendered buffer. This
+    // walks the whole way an out-of-process caller does: find the action by its
+    // id, hand it a string, decode it through the registry, apply it, and check
+    // the exported pixels against the original by identity rather than by size.
+    eprintln!("phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels");
+    {
+        use tilo_actions::{ActionInput, ActionRegistry};
 
-    let after = hz.app.edited_pixels().expect("re-rendered");
-    assert_eq!(
-        (after.w, after.h),
-        (200, 400),
-        "invoking the published action did not rotate the pixels"
-    );
-}
+        let dir = tempfile::tempdir().unwrap();
+        let (path, original) = staged(dir.path(), 400, 400);
+        let mut hz = Harness::new(1000.0, 700.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
 
-/// A caller with no display crops the photograph by address, and the pixels
-/// that come back are the region it asked for.
-///
-/// The pieces of this were each covered — the resource surface publishes a
-/// `crop` spec, `parse_crop_arg` reads a string, `Edits::cropped_from_view`
-/// composes a rect — but nothing joined them to the rendered buffer. This
-/// walks the whole way an out-of-process caller does: find the action by its
-/// id, hand it a string, decode it through the registry, apply it, and check
-/// the exported pixels against the original by identity rather than by size.
-#[test]
-fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
-    use tilo_actions::{ActionInput, ActionRegistry};
+        // Address the photograph by the id derived from its content — no
+        // enumeration, no coordinate, nothing that needs a screen.
+        let resources = PhotosResources.publish_resources(&hz.state().doc);
+        let open = photos::doc::PhotosDoc::image(&hz.state().doc).expect("the harness opened one");
+        assert_eq!(
+            resources[0].id.0,
+            photos::actions::resource_id(&open),
+            "the published id is not the one derived from the photograph"
+        );
 
-    let dir = tempfile::tempdir().unwrap();
-    let (path, original) = staged(dir.path(), 400, 400);
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
-
-    // Address the photograph by the id derived from its content — no
-    // enumeration, no coordinate, nothing that needs a screen.
-    let resources = PhotosResources.resources(&hz.state.doc);
-    let open = photos::doc::PhotosDoc::image(&hz.state.doc).expect("the harness opened one");
-    assert_eq!(
-        resources[0].id.0,
-        photos::actions::resource_id(&open),
-        "the published id is not the one derived from the photograph"
-    );
-
-    let ActionInput::Prompted { build, .. } = &resources[0]
-        .actions
-        .iter()
-        .find(|a| a.id == "crop")
-        .expect("crop is published")
-        .input
-    else {
-        panic!("crop collects an argument");
-    };
-
-    let mut registry = ActionRegistry::new();
-    register(&mut registry);
-    registry
-        .decode(&build("0.5,0.5,0.5,0.5"))
-        .expect("the envelope decodes")
-        .apply(&mut hz.state.doc)
-        .expect("the crop applies");
-    hz.frame();
-
-    let after = hz.app.edited_pixels().expect("re-rendered").clone();
-    assert_eq!(
-        (after.w, after.h),
-        (200, 200),
-        "cropping by address did not resize the exported pixels"
-    );
-    // The bottom-right quarter, by identity — a crop of the right *size*
-    // taken from the wrong *place* would pass a dimensions-only check.
-    assert_eq!(
-        after.pixel(0, 0).unwrap(),
-        original.pixel(200, 200).unwrap()
-    );
-    assert_eq!(
-        after.pixel(9, 3).unwrap(),
-        original.pixel(209, 203).unwrap()
-    );
-
-    // And the document still carries only the decision, never the pixels.
-    let saved = hz.state.doc.save().len();
-    assert!(
-        saved < 4096,
-        "the document grew to {saved} bytes after a crop by address"
-    );
-}
-
-/// With nothing open, the resource tree still exports the library's open
-/// operation so agents, scripts, and search can enter the app; a full frame in
-/// that state renders the empty view.
-#[test]
-fn nothing_open_publishes_open_and_still_draws() {
-    let mut hz = Harness::new(900.0, 600.0);
-    let scene = hz.frame();
-    let resources = PhotosResources.resources(&hz.state.doc);
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].id.0, "photos.library");
-    assert!(
-        resources[0]
+        let ActionInput::Prompted { build, .. } = &resources[0]
             .actions
             .iter()
-            .any(|action| action.id == "open"),
-        "the empty app must remain driveable through its published open action"
-    );
-    assert!(
-        scene.encoding().n_paths > 0,
-        "the empty state drew nothing at all"
-    );
-    assert!(!hz.app.has_image());
+            .find(|a| a.id == "crop")
+            .expect("crop is published")
+            .input
+        else {
+            panic!("crop collects an argument");
+        };
+
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+            .decode(&build("0.5,0.5,0.5,0.5"))
+            .expect("the envelope decodes")
+            .apply(&mut hz.state().doc)
+            .expect("the crop applies");
+        hz.frame();
+
+        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        assert_eq!(
+            (after.w, after.h),
+            (200, 200),
+            "cropping by address did not resize the exported pixels"
+        );
+        // The bottom-right quarter, by identity — a crop of the right *size*
+        // taken from the wrong *place* would pass a dimensions-only check.
+        assert_eq!(
+            after.pixel(0, 0).unwrap(),
+            original.pixel(200, 200).unwrap()
+        );
+        assert_eq!(
+            after.pixel(9, 3).unwrap(),
+            original.pixel(209, 203).unwrap()
+        );
+
+        // And the document still carries only the decision, never the pixels.
+        let saved = hz.state().doc.save().len();
+        assert!(
+            saved < 4096,
+            "the document grew to {saved} bytes after a crop by address"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
 // 5. Contrast, measured rather than eyeballed.
 // ---------------------------------------------------------------------------
 
-/// Every colour this app chooses for itself, measured in every theme it can be
-/// rendered under.
-///
-/// Only the pairs *this crate* picks are checked: the status line's text, and
-/// the boundary that separates the toolbar and the status bar from the canvas.
-/// The buttons and the empty state draw themselves from the toolkit and are
-/// the toolkit's contract, not this app's.
-///
-/// Measured as of writing:
-///
-/// ```text
-///                  text/base   text/raised   raised/base   border/base
-///   Dark              15.30        13.89          1.10          1.29
-///   Light             15.35        17.05          1.11          1.21
-///   High Contrast     21.00        21.00          1.00         21.00
-/// ```
-///
-/// Two different floors, because they are two different requirements.
-///
-/// Text carries the 4.5:1 body floor and clears it by a wide margin in all
-/// three palettes.
-///
-/// The chrome boundary does *not* carry the 3.0:1 non-text floor: that floor
-/// governs controls and meaningful state, not a decorative division between a
-/// toolbar and the content under it, and the house palette deliberately draws
-/// such divisions as hairlines — 1.29:1 in dark, 1.21:1 in light. Holding this
-/// app to 3.0 there would put it out of step with every other app in the fleet
-/// while fixing nothing a user could perceive as a defect.
-///
-/// What is asserted instead is that the boundary *exists*: whichever of the
-/// two carriers is doing the work in a given theme must be non-degenerate.
-/// That is the real bug this test was written after finding — under
-/// high-contrast, `surfaces.raised` and `surfaces.base` are both pure black,
-/// so a toolbar defined only by its plate had a separation of exactly 1.00:1
-/// and no edge whatsoever. The rule the app now draws carries it there at
-/// 21.00:1. A regression that removed the rule puts high-contrast back to 1.00
-/// and fails this.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
+)]
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn the_colours_this_app_chooses_are_legible_in_every_theme() {
-    use ui::a11y::contrast_ratio;
+fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
+    // Every toolbar control must be reachable at every window size the app can
+    // be given.
+    //
+    // The strip used to be seven fixed 120 px buttons, so it was always 912 px
+    // wide and simply overflowed anything narrower: at 720 px Copy was cut in
+    // half and Save was entirely off-screen, with no overflow affordance to
+    // reach it. `the_whole_photograph_is_inside_the_canvas_at_every_window_size`
+    // passed throughout, because the canvas was fine — it was the chrome above
+    // it that had escaped.
+    //
+    // Two frames per size on purpose: the strip refits from the width the last
+    // layout measured, the same way the shared `ui::widget::Toolbar` recomputes
+    // from an extent its host passes in. `ui::App` redraws continuously, so the
+    // settled frame is the one anybody sees.
+    eprintln!("phase every_toolbar_control_is_inside_the_window_at_every_size");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 1200, 800);
 
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let surface = theme.tokens.colors.surfaces.base;
-        let raised = theme.tokens.colors.surfaces.raised;
+        for (w, h) in [
+            (1600.0, 900.0),
+            (1280.0, 800.0),
+            (960.0, 700.0), // half of a 1920 display
+            (800.0, 600.0), // half of a 1600 display
+            (720.0, 560.0), // where Save used to vanish
+            (480.0, 640.0),
+            (360.0, 520.0),
+        ] {
+            let mut hz = Harness::new(w, h);
+            let (app, state) = hz.parts();
+            app.open_path(&mut state.doc, &path);
+            hz.frame();
+            hz.frame();
 
-        // Body text against both surfaces it can sit on: 4.5:1.
-        for (what, against) in [("the canvas", surface), ("the raised plate", raised)] {
-            let ratio = contrast_ratio(theme.text_primary, against);
+            let window = hz.window_rect();
+            let items = hz.app().toolbar_item_rects();
+            let expected_visible = if w < 600.0 { 5 } else { 9 };
+            assert_eq!(
+                items.len(),
+                expected_visible,
+                "{w}x{h}: the toolbar lost a visible control entirely"
+            );
+
+            for (name, r) in items {
+                assert!(
+                    r.width() > 0.0 && r.height() > 0.0,
+                    "{w}x{h}: `{name}` was squeezed to nothing: {r:?}"
+                );
+                assert!(
+                    r.x0 >= window.x0 - 0.5 && r.x1 <= window.x1 + 0.5,
+                    "{w}x{h}: `{name}` ({:.1}..{:.1}) is outside the window (0..{w}) \
+                     — it cannot be clicked",
+                    r.x0,
+                    r.x1
+                );
+            }
+        }
+    }
+
+    // The per-character estimate `build_layout` sizes buttons with must be
+    // generous enough for the glyphs `draw` actually lays down.
+    //
+    // `build_layout` gets a `Theme` but no `TextRenderer`, so it approximates a
+    // label's width at 7 px a character — the same constant the shared
+    // `ui::widget::Toolbar` uses. This measures the real shaped text against
+    // that estimate, so a label that outgrows it fails here rather than
+    // silently rendering clipped or overlapping its neighbour.
+    eprintln!("phase toolbar_labels_fit_inside_the_buttons_they_are_sized_for");
+    {
+        // Mirrors `Button::paint`: 14 px, Medium, an icon derived from the
+        // button height, and a 6 px gap between the two.
+        const TEXT_PX: f32 = 14.0;
+        const BTN_H: f32 = 34.0;
+        const ICON_W: f32 = BTN_H - 14.0;
+        const ICON_GAP: f32 = 6.0;
+        const LABEL_PAD_X: f32 = 12.0;
+
+        photos::strings::install();
+        let mut text = TextRenderer::new();
+
+        for key in ["photos-open", "photos-copy", "photos-save"] {
+            let label = ui::i18n::I18nManager::lookup(key, None);
+            let (measured, _) =
+                text.measure_weighted(&label, TEXT_PX, None, ui::text_render::TextWeight::Medium);
+            let estimated = label.chars().count() as f32 * photos::app::APPROX_CHAR_W;
+            let budget = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + estimated;
+            let needed = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + measured;
+            println!(
+                "{label}: {} chars, shaped {measured:.1} px ({:.2} px/char), budget {estimated:.1} px",
+                label.chars().count(),
+                measured / label.chars().count() as f32,
+            );
             assert!(
-                ratio >= 4.5,
-                "{}: the status line reads at {ratio:.2}:1 on {what}, below the 4.5 body floor",
+                needed <= budget,
+                "`{label}` shapes to {measured:.1} px but is budgeted {estimated:.1} px \
+                 ({needed:.1} px needed in a {budget:.1} px button)"
+            );
+        }
+    }
+
+    // With nothing open there is no status line, so no band is reserved for one.
+    //
+    // A zero-height strip is the point: the app used to keep a 29 px plate and a
+    // rule under the empty state with not one glyph in it, which reads as a
+    // control that failed to draw rather than as one with nothing to say.
+    eprintln!("phase an_empty_app_reserves_no_status_band");
+    {
+        let mut hz = Harness::new(1000.0, 700.0);
+        hz.frame();
+
+        assert!(!hz.app().has_image(), "nothing should be open");
+        assert_eq!(
+            hz.app().status(),
+            "",
+            "an app with no photograph open has nothing to report"
+        );
+        assert_eq!(
+            hz.app().status_rect().height(),
+            0.0,
+            "an empty status line still reserved a band: {:?}",
+            hz.app().status_rect()
+        );
+
+        // And once a photograph is open the band comes back with text in it.
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 200, 150);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        hz.frame();
+        assert!(
+            hz.app().status_rect().height() > 0.0,
+            "an open photograph must get a status line"
+        );
+        assert!(
+            hz.app().status().contains("200"),
+            "got `{}`",
+            hz.app().status()
+        );
+    }
+
+    // Every colour this app chooses for itself, measured in every theme it can be
+    // rendered under.
+    //
+    // Only the pairs *this crate* picks are checked: the status line's text, and
+    // the boundary that separates the toolbar and the status bar from the canvas.
+    // The buttons and the empty state draw themselves from the toolkit and are
+    // the toolkit's contract, not this app's.
+    //
+    // Measured as of writing:
+    //
+    // ```text
+    //                  text/base   text/raised   raised/base   border/base
+    //   Dark              15.30        13.89          1.10          1.29
+    //   Light             15.35        17.05          1.11          1.21
+    //   High Contrast     21.00        21.00          1.00         21.00
+    // ```
+    //
+    // Two different floors, because they are two different requirements.
+    //
+    // Text carries the 4.5:1 body floor and clears it by a wide margin in all
+    // three palettes.
+    //
+    // The chrome boundary does *not* carry the 3.0:1 non-text floor: that floor
+    // governs controls and meaningful state, not a decorative division between a
+    // toolbar and the content under it, and the house palette deliberately draws
+    // such divisions as hairlines — 1.29:1 in dark, 1.21:1 in light. Holding this
+    // app to 3.0 there would put it out of step with every other app in the fleet
+    // while fixing nothing a user could perceive as a defect.
+    //
+    // What is asserted instead is that the boundary *exists*: whichever of the
+    // two carriers is doing the work in a given theme must be non-degenerate.
+    // That is the real bug this test was written after finding — under
+    // high-contrast, `surfaces.raised` and `surfaces.base` are both pure black,
+    // so a toolbar defined only by its plate had a separation of exactly 1.00:1
+    // and no edge whatsoever. The rule the app now draws carries it there at
+    // 21.00:1. A regression that removed the rule puts high-contrast back to 1.00
+    // and fails this.
+    eprintln!("phase the_colours_this_app_chooses_are_legible_in_every_theme");
+    {
+        use ui::a11y::contrast_ratio;
+
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let surface = theme.tokens.colors.surfaces.base;
+            let raised = theme.tokens.colors.surfaces.raised;
+
+            // Body text against both surfaces it can sit on: 4.5:1.
+            for (what, against) in [("the canvas", surface), ("the raised plate", raised)] {
+                let ratio = contrast_ratio(theme.text_primary, against);
+                assert!(
+                    ratio >= 4.5,
+                    "{}: the status line reads at {ratio:.2}:1 on {what}, below the 4.5 body floor",
+                    theme.name
+                );
+            }
+
+            // The toolbar/canvas boundary must be carried by something.
+            let plate = contrast_ratio(raised, surface);
+            let rule = contrast_ratio(theme.border_standard, surface);
+            assert!(
+                plate.max(rule) >= 1.15,
+                "{}: nothing separates the toolbar from the canvas (plate {plate:.2}:1, rule {rule:.2}:1)",
                 theme.name
             );
         }
-
-        // The toolbar/canvas boundary must be carried by something.
-        let plate = contrast_ratio(raised, surface);
-        let rule = contrast_ratio(theme.border_standard, surface);
-        assert!(
-            plate.max(rule) >= 1.15,
-            "{}: nothing separates the toolbar from the canvas (plate {plate:.2}:1, rule {rule:.2}:1)",
-            theme.name
-        );
     }
 }
 
-/// Every toolbar control must be reachable at every window size the app can
-/// be given.
-///
-/// The strip used to be seven fixed 120 px buttons, so it was always 912 px
-/// wide and simply overflowed anything narrower: at 720 px Copy was cut in
-/// half and Save was entirely off-screen, with no overflow affordance to
-/// reach it. `the_whole_photograph_is_inside_the_canvas_at_every_window_size`
-/// passed throughout, because the canvas was fine — it was the chrome above
-/// it that had escaped.
-///
-/// Two frames per size on purpose: the strip refits from the width the last
-/// layout measured, the same way the shared `ui::widget::Toolbar` recomputes
-/// from an extent its host passes in. `ui::App` redraws continuously, so the
-/// settled frame is the one anybody sees.
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn every_toolbar_control_is_inside_the_window_at_every_size() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 1200, 800);
+fn library_cards_lay_out_inside_the_canvas_at_every_size() {
+    eprintln!("phase library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 1200, 800);
+        for (w, h) in [(1280.0, 800.0), (390.0, 844.0)] {
+            let mut hz = Harness::new(w, h);
+            let (app, state) = hz.parts();
+            app.open_path(&mut state.doc, &path);
+            let mut library = PhotosDoc::library(&hz.state().doc);
+            let seed = library.photos[0].clone();
+            for suffix in ["dusk", "trail", "museum", "market"] {
+                let mut extra = seed.clone();
+                extra.id = format!("{}:{suffix}", seed.id);
+                extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
+                extra.tags = vec!["a deliberately long but bounded metadata label".into()];
+                library.add_photo(extra);
+            }
+            PhotosDoc::set_library(&mut hz.state().doc, &library);
+            hz.app().show_library();
+            hz.frame();
+            hz.frame();
 
-    for (w, h) in [
-        (1600.0, 900.0),
-        (1280.0, 800.0),
-        (960.0, 700.0), // half of a 1920 display
-        (800.0, 600.0), // half of a 1600 display
-        (720.0, 560.0), // where Save used to vanish
-        (480.0, 640.0),
-        (360.0, 520.0),
-    ] {
-        let mut hz = Harness::new(w, h);
-        hz.app.open_path(&mut hz.state.doc, &path);
-        hz.frame();
-        hz.frame();
-
-        let window = hz.window_rect();
-        let items = hz.app.toolbar_item_rects();
-        let expected_visible = if w < 600.0 { 5 } else { 9 };
-        assert_eq!(
-            items.len(),
-            expected_visible,
-            "{w}x{h}: the toolbar lost a visible control entirely"
-        );
-
-        for (name, r) in items {
+            let layouts = hz.app().library_card_action_rects();
             assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "{w}x{h}: `{name}` was squeezed to nothing: {r:?}"
+                !layouts.is_empty(),
+                "{w}x{h}: no library cards were measured"
             );
-            assert!(
-                r.x0 >= window.x0 - 0.5 && r.x1 <= window.x1 + 0.5,
-                "{w}x{h}: `{name}` ({:.1}..{:.1}) is outside the window (0..{w}) \
-                 — it cannot be clicked",
-                r.x0,
-                r.x1
-            );
+            for (card, details, remove, favorite) in &layouts {
+                for (name, control) in [
+                    ("details", details),
+                    ("remove", remove),
+                    ("favorite", favorite),
+                ] {
+                    assert!(
+                        control.x0 >= card.x0
+                            && control.y0 >= card.y0
+                            && control.x1 <= card.x1
+                            && control.y1 <= card.y1,
+                        "{w}x{h}: {name} control {control:?} escapes card {card:?}"
+                    );
+                    assert!(
+                        control.height() >= 44.0 - f64::EPSILON,
+                        "{w}x{h}: {name} is below the 44px target minimum: {control:?}"
+                    );
+                }
+            }
+            for (index, (card, ..)) in layouts.iter().enumerate() {
+                for (other, ..) in layouts.iter().skip(index + 1) {
+                    assert!(
+                        card.x1 <= other.x0
+                            || other.x1 <= card.x0
+                            || card.y1 <= other.y0
+                            || other.y1 <= card.y0,
+                        "{w}x{h}: neighboring cards overlap: {card:?} and {other:?}"
+                    );
+                }
+            }
         }
     }
-}
 
-#[test]
-fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 1200, 800);
-    for (w, h) in [(1280.0, 800.0), (390.0, 844.0)] {
-        let mut hz = Harness::new(w, h);
-        hz.app.open_path(&mut hz.state.doc, &path);
-        let mut library = PhotosDoc::library(&hz.state.doc);
+    eprintln!("phase desktop_library_uses_two_complete_rows_before_leaving_canvas_space");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 1200, 800);
+        let mut hz = Harness::new(1440.0, 900.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        let mut library = PhotosDoc::library(&hz.state().doc);
+        let seed = library.photos[0].clone();
+        for suffix in ["dusk", "trail", "museum", "market"] {
+            let mut extra = seed.clone();
+            extra.id = format!("{}:{suffix}", seed.id);
+            extra.image.name = format!("{suffix}.png");
+            library.add_photo(extra);
+        }
+        library.albums.push(Album {
+            id: "photos.album:layout".into(),
+            name: "Layout coverage".into(),
+            photo_ids: library
+                .photos
+                .iter()
+                .map(|photo| photo.id.clone())
+                .collect(),
+        });
+        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        hz.app().show_library();
+        hz.frame();
+        hz.frame();
+
+        let cards = hz.app().library_card_action_rects();
+        assert_eq!(
+            cards.len(),
+            5,
+            "a five-photo desktop library should use the second row, not a large blank canvas"
+        );
+        assert!(
+            cards.iter().all(|(card, ..)| card.width() >= 220.0),
+            "the image-forward desktop timeline should fill a useful row rather than retain the old sparse file-card measure: {cards:?}"
+        );
+        assert!(
+            cards.iter().all(|(card, ..)| card.y1 <= 900.0),
+            "every rendered desktop card must remain fully pointer and AT reachable: {cards:?}"
+        );
+    }
+
+    // 200% text has a deliberately compact overflow toolbar and a two-row
+    // library shelf.  Keep both the actual touch targets and their measured card
+    // bounds honest: screenshot review alone cannot catch a later geometry tweak
+    // that puts a scaled label back through a neighboring card action.
+    eprintln!("phase large_text_library_keeps_toolbar_and_card_actions_separate");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 1200, 800);
+        let mut hz = Harness::new(1440.0, 900.0);
+        hz.theme = Theme::high_contrast().with_text_scale(2.0);
+        let (app, state) = hz.parts();
+        app.open_path(&mut state.doc, &path);
+        let mut library = PhotosDoc::library(&hz.state().doc);
         let seed = library.photos[0].clone();
         for suffix in ["dusk", "trail", "museum", "market"] {
             let mut extra = seed.clone();
@@ -969,241 +1177,55 @@ fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
             extra.tags = vec!["a deliberately long but bounded metadata label".into()];
             library.add_photo(extra);
         }
-        PhotosDoc::set_library(&mut hz.state.doc, &library);
-        hz.app.show_library();
+        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        hz.app().show_library();
         hz.frame();
         hz.frame();
 
-        let layouts = hz.app.library_card_action_rects();
-        assert!(
-            !layouts.is_empty(),
-            "{w}x{h}: no library cards were measured"
+        let toolbar = hz.app().toolbar_item_rects();
+        assert_eq!(
+            toolbar.len(),
+            5,
+            "large text must use its labelled More menu"
         );
-        for (card, details, remove, favorite) in &layouts {
-            for (name, control) in [
-                ("details", details),
-                ("remove", remove),
-                ("favorite", favorite),
-            ] {
+        for (name, rect) in toolbar {
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= 1440.0 && rect.y0 >= 0.0 && rect.y1 <= 900.0,
+                "large-text toolbar control `{name}` escaped the viewport: {rect:?}"
+            );
+        }
+        let cards = hz.app().library_card_action_rects();
+        assert_eq!(
+            cards.len(),
+            2,
+            "large-text layout must keep two readable cards per row"
+        );
+        assert!(
+            cards.iter().all(|(card, ..)| card.width() >= 600.0),
+            "large-text cards lost the minimum reading measure: {cards:?}"
+        );
+        for (card, details, remove, favorite) in &cards {
+            for control in [details, remove, favorite] {
                 assert!(
                     control.x0 >= card.x0
-                        && control.y0 >= card.y0
                         && control.x1 <= card.x1
-                        && control.y1 <= card.y1,
-                    "{w}x{h}: {name} control {control:?} escapes card {card:?}"
-                );
-                assert!(
-                    control.height() >= 44.0 - f64::EPSILON,
-                    "{w}x{h}: {name} is below the 44px target minimum: {control:?}"
+                        && control.y0 >= card.y0
+                        && control.y1 <= card.y1
+                        && control.height() >= 44.0,
+                    "large-text action {control:?} is not a contained 44px target in {card:?}"
                 );
             }
         }
-        for (index, (card, ..)) in layouts.iter().enumerate() {
-            for (other, ..) in layouts.iter().skip(index + 1) {
+        for (index, (card, ..)) in cards.iter().enumerate() {
+            for (other, ..) in cards.iter().skip(index + 1) {
                 assert!(
                     card.x1 <= other.x0
                         || other.x1 <= card.x0
                         || card.y1 <= other.y0
                         || other.y1 <= card.y0,
-                    "{w}x{h}: neighboring cards overlap: {card:?} and {other:?}"
+                    "large-text cards overlap: {card:?} and {other:?}"
                 );
             }
         }
     }
-}
-
-#[test]
-fn desktop_library_uses_two_complete_rows_before_leaving_canvas_space() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 1200, 800);
-    let mut hz = Harness::new(1440.0, 900.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    let mut library = PhotosDoc::library(&hz.state.doc);
-    let seed = library.photos[0].clone();
-    for suffix in ["dusk", "trail", "museum", "market"] {
-        let mut extra = seed.clone();
-        extra.id = format!("{}:{suffix}", seed.id);
-        extra.image.name = format!("{suffix}.png");
-        library.add_photo(extra);
-    }
-    library.albums.push(Album {
-        id: "photos.album:layout".into(),
-        name: "Layout coverage".into(),
-        photo_ids: library
-            .photos
-            .iter()
-            .map(|photo| photo.id.clone())
-            .collect(),
-    });
-    PhotosDoc::set_library(&mut hz.state.doc, &library);
-    hz.app.show_library();
-    hz.frame();
-    hz.frame();
-
-    let cards = hz.app.library_card_action_rects();
-    assert_eq!(
-        cards.len(),
-        5,
-        "a five-photo desktop library should use the second row, not a large blank canvas"
-    );
-    assert!(
-        cards.iter().all(|(card, ..)| card.width() >= 220.0),
-        "the image-forward desktop timeline should fill a useful row rather than retain the old sparse file-card measure: {cards:?}"
-    );
-    assert!(
-        cards.iter().all(|(card, ..)| card.y1 <= 900.0),
-        "every rendered desktop card must remain fully pointer and AT reachable: {cards:?}"
-    );
-}
-
-/// 200% text has a deliberately compact overflow toolbar and a two-row
-/// library shelf.  Keep both the actual touch targets and their measured card
-/// bounds honest: screenshot review alone cannot catch a later geometry tweak
-/// that puts a scaled label back through a neighboring card action.
-#[test]
-fn large_text_library_keeps_toolbar_and_card_actions_separate() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 1200, 800);
-    let mut hz = Harness::new(1440.0, 900.0);
-    hz.theme = Theme::high_contrast().with_text_scale(2.0);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    let mut library = PhotosDoc::library(&hz.state.doc);
-    let seed = library.photos[0].clone();
-    for suffix in ["dusk", "trail", "museum", "market"] {
-        let mut extra = seed.clone();
-        extra.id = format!("{}:{suffix}", seed.id);
-        extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
-        extra.tags = vec!["a deliberately long but bounded metadata label".into()];
-        library.add_photo(extra);
-    }
-    PhotosDoc::set_library(&mut hz.state.doc, &library);
-    hz.app.show_library();
-    hz.frame();
-    hz.frame();
-
-    let toolbar = hz.app.toolbar_item_rects();
-    assert_eq!(
-        toolbar.len(),
-        5,
-        "large text must use its labelled More menu"
-    );
-    for (name, rect) in toolbar {
-        assert!(
-            rect.x0 >= 0.0 && rect.x1 <= 1440.0 && rect.y0 >= 0.0 && rect.y1 <= 900.0,
-            "large-text toolbar control `{name}` escaped the viewport: {rect:?}"
-        );
-    }
-    let cards = hz.app.library_card_action_rects();
-    assert_eq!(
-        cards.len(),
-        2,
-        "large-text layout must keep two readable cards per row"
-    );
-    assert!(
-        cards.iter().all(|(card, ..)| card.width() >= 600.0),
-        "large-text cards lost the minimum reading measure: {cards:?}"
-    );
-    for (card, details, remove, favorite) in &cards {
-        for control in [details, remove, favorite] {
-            assert!(
-                control.x0 >= card.x0
-                    && control.x1 <= card.x1
-                    && control.y0 >= card.y0
-                    && control.y1 <= card.y1
-                    && control.height() >= 44.0,
-                "large-text action {control:?} is not a contained 44px target in {card:?}"
-            );
-        }
-    }
-    for (index, (card, ..)) in cards.iter().enumerate() {
-        for (other, ..) in cards.iter().skip(index + 1) {
-            assert!(
-                card.x1 <= other.x0
-                    || other.x1 <= card.x0
-                    || card.y1 <= other.y0
-                    || other.y1 <= card.y0,
-                "large-text cards overlap: {card:?} and {other:?}"
-            );
-        }
-    }
-}
-
-/// The per-character estimate `build_layout` sizes buttons with must be
-/// generous enough for the glyphs `draw` actually lays down.
-///
-/// `build_layout` gets a `Theme` but no `TextRenderer`, so it approximates a
-/// label's width at 7 px a character — the same constant the shared
-/// `ui::widget::Toolbar` uses. This measures the real shaped text against
-/// that estimate, so a label that outgrows it fails here rather than
-/// silently rendering clipped or overlapping its neighbour.
-#[test]
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
-)]
-fn toolbar_labels_fit_inside_the_buttons_they_are_sized_for() {
-    // Mirrors `Button::paint`: 14 px, Medium, an icon derived from the
-    // button height, and a 6 px gap between the two.
-    const TEXT_PX: f32 = 14.0;
-    const BTN_H: f32 = 34.0;
-    const ICON_W: f32 = BTN_H - 14.0;
-    const ICON_GAP: f32 = 6.0;
-    const LABEL_PAD_X: f32 = 12.0;
-
-    photos::strings::install();
-    let mut text = TextRenderer::new();
-
-    for key in ["photos-open", "photos-copy", "photos-save"] {
-        let label = ui::i18n::I18nManager::lookup(key, None);
-        let (measured, _) =
-            text.measure_weighted(&label, TEXT_PX, None, ui::text_render::TextWeight::Medium);
-        let estimated = label.chars().count() as f32 * photos::app::APPROX_CHAR_W;
-        let budget = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + estimated;
-        let needed = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + measured;
-        println!(
-            "{label}: {} chars, shaped {measured:.1} px ({:.2} px/char), budget {estimated:.1} px",
-            label.chars().count(),
-            measured / label.chars().count() as f32,
-        );
-        assert!(
-            needed <= budget,
-            "`{label}` shapes to {measured:.1} px but is budgeted {estimated:.1} px \
-             ({needed:.1} px needed in a {budget:.1} px button)"
-        );
-    }
-}
-
-/// With nothing open there is no status line, so no band is reserved for one.
-///
-/// A zero-height strip is the point: the app used to keep a 29 px plate and a
-/// rule under the empty state with not one glyph in it, which reads as a
-/// control that failed to draw rather than as one with nothing to say.
-#[test]
-fn an_empty_app_reserves_no_status_band() {
-    let mut hz = Harness::new(1000.0, 700.0);
-    hz.frame();
-
-    assert!(!hz.app.has_image(), "nothing should be open");
-    assert_eq!(
-        hz.app.status(),
-        "",
-        "an app with no photograph open has nothing to report"
-    );
-    assert_eq!(
-        hz.app.status_rect().height(),
-        0.0,
-        "an empty status line still reserved a band: {:?}",
-        hz.app.status_rect()
-    );
-
-    // And once a photograph is open the band comes back with text in it.
-    let dir = tempfile::tempdir().unwrap();
-    let (path, _) = staged(dir.path(), 200, 150);
-    hz.app.open_path(&mut hz.state.doc, &path);
-    hz.frame();
-    assert!(
-        hz.app.status_rect().height() > 0.0,
-        "an open photograph must get a status line"
-    );
-    assert!(hz.app.status().contains("200"), "got `{}`", hz.app.status());
 }

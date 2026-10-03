@@ -1335,63 +1335,110 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
+    /// Metadata v2 round-trips rich properties and migrates v1; rich properties enforce strict
+    /// bounds; metadata is versioned, bounded and canonical; a content revision is one canonical
+    /// bounded pointer.
     #[test]
-    fn metadata_v2_round_trips_rich_properties_and_v1_migrates() {
-        let mut metadata = FileMetadataV1 {
-            schema_version: FILE_METADATA_VERSION,
-            record_id: FileRecordId::new(),
-            content_hash: None,
-            byte_len: 12,
-            mime: Some("image/png".into()),
-            previews: Vec::new(),
-            latest_actor: None,
-            observed_at_ms: 1,
-            index_status: IndexStatus::Indexed,
-            properties: Some(FilePropertiesV1 {
+    fn file_metadata_is_versioned_bounded_and_canonical() {
+        // Phase: metadata_v2_round_trips_rich_properties_and_v1_migrates.
+        {
+            let mut metadata = FileMetadataV1 {
+                schema_version: FILE_METADATA_VERSION,
+                record_id: FileRecordId::new(),
+                content_hash: None,
+                byte_len: 12,
+                mime: Some("image/png".into()),
+                previews: Vec::new(),
+                latest_actor: None,
+                observed_at_ms: 1,
+                index_status: IndexStatus::Indexed,
+                properties: Some(FilePropertiesV1 {
+                    schema_version: FILE_PROPERTIES_VERSION,
+                    image_width: Some(640),
+                    image_height: Some(480),
+                    duration_ms: None,
+                    page_count: None,
+                    codec: Some("png".into()),
+                    container: Some("png".into()),
+                }),
+            };
+            let encoded = postcard::to_allocvec(&metadata).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<FileMetadataV1>(&encoded).unwrap(),
+                metadata
+            );
+            let json = serde_json::to_vec(&metadata).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<FileMetadataV1>(&json).unwrap(),
+                metadata
+            );
+
+            metadata.schema_version = FILE_METADATA_LEGACY_VERSION;
+            metadata.properties = None;
+            let legacy = postcard::to_allocvec(&metadata).unwrap();
+            let migrated: FileMetadataV1 = postcard::from_bytes(&legacy).unwrap();
+            assert_eq!(migrated.schema_version, FILE_METADATA_LEGACY_VERSION);
+            assert_eq!(migrated.properties, None);
+            migrated.validate().unwrap();
+        }
+
+        // Phase: rich_properties_enforce_strict_bounds.
+        {
+            let invalid = FilePropertiesV1 {
                 schema_version: FILE_PROPERTIES_VERSION,
-                image_width: Some(640),
-                image_height: Some(480),
+                image_width: Some(MAX_IMAGE_DIMENSION + 1),
+                image_height: Some(1),
                 duration_ms: None,
                 page_count: None,
                 codec: Some("png".into()),
-                container: Some("png".into()),
-            }),
-        };
-        let encoded = postcard::to_allocvec(&metadata).unwrap();
-        assert_eq!(
-            postcard::from_bytes::<FileMetadataV1>(&encoded).unwrap(),
-            metadata
-        );
-        let json = serde_json::to_vec(&metadata).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<FileMetadataV1>(&json).unwrap(),
-            metadata
-        );
+                container: None,
+            };
+            assert_eq!(
+                invalid.validate(),
+                Err(FileRecordError::InvalidImageDimensions)
+            );
+        }
 
-        metadata.schema_version = FILE_METADATA_LEGACY_VERSION;
-        metadata.properties = None;
-        let legacy = postcard::to_allocvec(&metadata).unwrap();
-        let migrated: FileMetadataV1 = postcard::from_bytes(&legacy).unwrap();
-        assert_eq!(migrated.schema_version, FILE_METADATA_LEGACY_VERSION);
-        assert_eq!(migrated.properties, None);
-        migrated.validate().unwrap();
-    }
+        // Phase: metadata_is_versioned_bounded_and_canonical.
+        {
+            let metadata = FileMetadataV1 {
+                schema_version: FILE_METADATA_VERSION,
+                record_id: FileRecordId::new(),
+                content_hash: Some(ContentHash([3; 32])),
+                byte_len: 42,
+                mime: Some("image/png".into()),
+                previews: vec![PreviewVariant {
+                    max_edge: 256,
+                    hash: Some(ContentHash([4; 32])),
+                    status: PreviewStatus::Ready,
+                }],
+                latest_actor: Some(actor()),
+                observed_at_ms: 9,
+                index_status: IndexStatus::Indexed,
+                properties: None,
+            };
+            metadata.validate().unwrap();
+            let bytes = crate::canonical::canonical_bytes(&metadata).unwrap();
+            let decoded: FileMetadataV1 = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(decoded, metadata);
+        }
 
-    #[test]
-    fn rich_properties_enforce_strict_bounds() {
-        let invalid = FilePropertiesV1 {
-            schema_version: FILE_PROPERTIES_VERSION,
-            image_width: Some(MAX_IMAGE_DIMENSION + 1),
-            image_height: Some(1),
-            duration_ms: None,
-            page_count: None,
-            codec: Some("png".into()),
-            container: None,
-        };
-        assert_eq!(
-            invalid.validate(),
-            Err(FileRecordError::InvalidImageDimensions)
-        );
+        // Phase: content_revision_is_one_canonical_bounded_pointer.
+        {
+            let revision = ContentRevisionV1 {
+                schema_version: CONTENT_REVISION_VERSION,
+                record_id: FileRecordId::new(),
+                version_id: FileVersionId::new(),
+                content_hash: Some(ContentHash([8; 32])),
+                byte_len: 4096,
+                metadata_hash: ContentHash([9; 32]),
+            };
+            revision.validate().unwrap();
+            let bytes = crate::canonical::canonical_bytes(&revision).unwrap();
+            let decoded: ContentRevisionV1 =
+                crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(decoded, revision);
+        }
     }
 
     fn actor() -> FileActor {
@@ -1401,183 +1448,155 @@ mod tests {
         }
     }
 
+    /// Byte-name encoding migrates old UTF-8 bindings without changing bytes; bindings accept non-UTF-8
+    /// but reject unix and control separators; structural bindings are bounded and cannot forge roots
+    /// or self-parent; a record scope survives paths and matches only its record.
     #[test]
-    fn byte_name_encoding_migrates_old_utf8_binding_without_changing_bytes() {
-        #[derive(Serialize)]
-        struct LegacyBinding {
-            schema_version: u16,
-            record_id: FileRecordId,
-            parent: Option<FileRecordId>,
-            name: String,
-            kind: FileNodeKind,
-            tombstoned: bool,
-            actor: FileActor,
-            observed_at_ms: u64,
+    fn file_bindings_keep_exact_bytes_and_cannot_forge_structure() {
+        // Phase: byte_name_encoding_migrates_old_utf8_binding_without_changing_bytes.
+        {
+            #[derive(Serialize)]
+            struct LegacyBinding {
+                schema_version: u16,
+                record_id: FileRecordId,
+                parent: Option<FileRecordId>,
+                name: String,
+                kind: FileNodeKind,
+                tombstoned: bool,
+                actor: FileActor,
+                observed_at_ms: u64,
+            }
+            let record_id = FileRecordId::new();
+            let parent = FileRecordId::new();
+            let legacy = LegacyBinding {
+                schema_version: FILE_BINDING_VERSION,
+                record_id,
+                parent: Some(parent),
+                name: "Grüße.png".into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor: actor(),
+                observed_at_ms: 7,
+            };
+            let old_bytes = canonical_bytes(&legacy).unwrap();
+            let migrated: FileBindingV1 =
+                crate::canonical::from_canonical_bytes(&old_bytes).unwrap();
+            assert_eq!(migrated.name.as_bytes(), "Grüße.png".as_bytes());
+            assert_eq!(canonical_bytes(&migrated).unwrap(), old_bytes);
         }
-        let record_id = FileRecordId::new();
-        let parent = FileRecordId::new();
-        let legacy = LegacyBinding {
-            schema_version: FILE_BINDING_VERSION,
-            record_id,
-            parent: Some(parent),
-            name: "Grüße.png".into(),
-            kind: FileNodeKind::File,
-            tombstoned: false,
-            actor: actor(),
-            observed_at_ms: 7,
-        };
-        let old_bytes = canonical_bytes(&legacy).unwrap();
-        let migrated: FileBindingV1 = crate::canonical::from_canonical_bytes(&old_bytes).unwrap();
-        assert_eq!(migrated.name.as_bytes(), "Grüße.png".as_bytes());
-        assert_eq!(canonical_bytes(&migrated).unwrap(), old_bytes);
+
+        // Phase: binding_accepts_non_utf8_but_rejects_unix_and_control_separators.
+        {
+            let binding = |name: Vec<u8>| FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id: FileRecordId::new(),
+                parent: Some(FileRecordId::new()),
+                name: name.into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor: actor(),
+                observed_at_ms: 1,
+            };
+            assert!(binding(b"raw-\xFF".to_vec()).validate().is_ok());
+            assert_eq!(
+                binding(b"bad/name".to_vec()).validate(),
+                Err(FileRecordError::InvalidBindingName)
+            );
+            assert_eq!(
+                binding(b"bad\0name".to_vec()).validate(),
+                Err(FileRecordError::InvalidBindingName)
+            );
+        }
+
+        // Phase: structural_bindings_are_bounded_and_cannot_forge_roots_or_self_parent.
+        {
+            let record_id = FileRecordId::new();
+            let parent = FileRecordId::new();
+            let mut binding = FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id,
+                parent: Some(parent),
+                name: "report.txt".into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor: actor(),
+                observed_at_ms: 7,
+            };
+            binding.validate().unwrap();
+            let bytes = crate::canonical::canonical_bytes(&binding).unwrap();
+            assert_eq!(
+                crate::canonical::from_canonical_bytes::<FileBindingV1>(&bytes).unwrap(),
+                binding
+            );
+            binding.parent = Some(record_id);
+            assert_eq!(binding.validate(), Err(FileRecordError::BindingSelfParent));
+            binding.parent = None;
+            assert_eq!(binding.validate(), Err(FileRecordError::InvalidRootBinding));
+            binding.parent = Some(parent);
+            binding.name = "../escape".into();
+            assert_eq!(binding.validate(), Err(FileRecordError::InvalidBindingName));
+        }
+
+        // Phase: record_scope_survives_paths_and_matches_only_its_record.
+        {
+            let record = FileRecordId::new();
+            let other = FileRecordId::new();
+            let scope = crate::Scope::FsRecord(record.0.to_string());
+            assert!(scope.matches_resource(&crate::ResourceRef::FsRecord(record.0.to_string())));
+            assert!(!scope.matches_resource(&crate::ResourceRef::FsRecord(other.0.to_string())));
+            assert!(!scope.matches_resource(&crate::ResourceRef::FsPath("/renamed.txt".into())));
+        }
     }
 
+    /// History rejects cycles and unbounded parent sets; conflicts are bounded, unique and have a
+    /// consistent status.
     #[test]
-    fn binding_accepts_non_utf8_but_rejects_unix_and_control_separators() {
-        let binding = |name: Vec<u8>| FileBindingV1 {
-            schema_version: FILE_BINDING_VERSION,
-            record_id: FileRecordId::new(),
-            parent: Some(FileRecordId::new()),
-            name: name.into(),
-            kind: FileNodeKind::File,
-            tombstoned: false,
-            actor: actor(),
-            observed_at_ms: 1,
-        };
-        assert!(binding(b"raw-\xFF".to_vec()).validate().is_ok());
-        assert_eq!(
-            binding(b"bad/name".to_vec()).validate(),
-            Err(FileRecordError::InvalidBindingName)
-        );
-        assert_eq!(
-            binding(b"bad\0name".to_vec()).validate(),
-            Err(FileRecordError::InvalidBindingName)
-        );
-    }
+    fn file_history_and_conflicts_are_acyclic_bounded_and_consistent() {
+        // Phase: history_rejects_cycles_and_unbounded_parent_sets.
+        {
+            let id = FileVersionId::new();
+            let mut version = FileVersionV1 {
+                id,
+                record_id: FileRecordId::new(),
+                parents: vec![id],
+                actor: actor(),
+                timestamp_ms: 1,
+                content_hash: None,
+                metadata_hash: ContentHash([0; 32]),
+                provenance: FileProvenance::Create,
+            };
+            assert_eq!(version.validate(), Err(FileRecordError::SelfParent));
+            version.parents = (0..=MAX_VERSION_PARENTS)
+                .map(|_| FileVersionId::new())
+                .collect();
+            assert_eq!(version.validate(), Err(FileRecordError::TooManyParents));
+        }
 
-    #[test]
-    fn metadata_is_versioned_bounded_and_canonical() {
-        let metadata = FileMetadataV1 {
-            schema_version: FILE_METADATA_VERSION,
-            record_id: FileRecordId::new(),
-            content_hash: Some(ContentHash([3; 32])),
-            byte_len: 42,
-            mime: Some("image/png".into()),
-            previews: vec![PreviewVariant {
-                max_edge: 256,
-                hash: Some(ContentHash([4; 32])),
-                status: PreviewStatus::Ready,
-            }],
-            latest_actor: Some(actor()),
-            observed_at_ms: 9,
-            index_status: IndexStatus::Indexed,
-            properties: None,
-        };
-        metadata.validate().unwrap();
-        let bytes = crate::canonical::canonical_bytes(&metadata).unwrap();
-        let decoded: FileMetadataV1 = crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(decoded, metadata);
-    }
+        // Phase: conflicts_are_bounded_unique_and_have_consistent_status.
+        {
+            let first = FileVersionId::new();
+            let second = FileVersionId::new();
+            let mut conflict = FileConflictV1 {
+                id: Uuid::new_v4(),
+                record_id: FileRecordId::new(),
+                versions: vec![first, second],
+                status: ConflictStatus::Open,
+                resolution: None,
+            };
+            conflict.validate().unwrap();
 
-    #[test]
-    fn content_revision_is_one_canonical_bounded_pointer() {
-        let revision = ContentRevisionV1 {
-            schema_version: CONTENT_REVISION_VERSION,
-            record_id: FileRecordId::new(),
-            version_id: FileVersionId::new(),
-            content_hash: Some(ContentHash([8; 32])),
-            byte_len: 4096,
-            metadata_hash: ContentHash([9; 32]),
-        };
-        revision.validate().unwrap();
-        let bytes = crate::canonical::canonical_bytes(&revision).unwrap();
-        let decoded: ContentRevisionV1 = crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(decoded, revision);
-    }
-
-    #[test]
-    fn structural_bindings_are_bounded_and_cannot_forge_roots_or_self_parent() {
-        let record_id = FileRecordId::new();
-        let parent = FileRecordId::new();
-        let mut binding = FileBindingV1 {
-            schema_version: FILE_BINDING_VERSION,
-            record_id,
-            parent: Some(parent),
-            name: "report.txt".into(),
-            kind: FileNodeKind::File,
-            tombstoned: false,
-            actor: actor(),
-            observed_at_ms: 7,
-        };
-        binding.validate().unwrap();
-        let bytes = crate::canonical::canonical_bytes(&binding).unwrap();
-        assert_eq!(
-            crate::canonical::from_canonical_bytes::<FileBindingV1>(&bytes).unwrap(),
-            binding
-        );
-        binding.parent = Some(record_id);
-        assert_eq!(binding.validate(), Err(FileRecordError::BindingSelfParent));
-        binding.parent = None;
-        assert_eq!(binding.validate(), Err(FileRecordError::InvalidRootBinding));
-        binding.parent = Some(parent);
-        binding.name = "../escape".into();
-        assert_eq!(binding.validate(), Err(FileRecordError::InvalidBindingName));
-    }
-
-    #[test]
-    fn history_rejects_cycles_and_unbounded_parent_sets() {
-        let id = FileVersionId::new();
-        let mut version = FileVersionV1 {
-            id,
-            record_id: FileRecordId::new(),
-            parents: vec![id],
-            actor: actor(),
-            timestamp_ms: 1,
-            content_hash: None,
-            metadata_hash: ContentHash([0; 32]),
-            provenance: FileProvenance::Create,
-        };
-        assert_eq!(version.validate(), Err(FileRecordError::SelfParent));
-        version.parents = (0..=MAX_VERSION_PARENTS)
-            .map(|_| FileVersionId::new())
-            .collect();
-        assert_eq!(version.validate(), Err(FileRecordError::TooManyParents));
-    }
-
-    #[test]
-    fn record_scope_survives_paths_and_matches_only_its_record() {
-        let record = FileRecordId::new();
-        let other = FileRecordId::new();
-        let scope = crate::Scope::FsRecord(record.0.to_string());
-        assert!(scope.matches_resource(&crate::ResourceRef::FsRecord(record.0.to_string())));
-        assert!(!scope.matches_resource(&crate::ResourceRef::FsRecord(other.0.to_string())));
-        assert!(!scope.matches_resource(&crate::ResourceRef::FsPath("/renamed.txt".into())));
-    }
-
-    #[test]
-    fn conflicts_are_bounded_unique_and_have_consistent_status() {
-        let first = FileVersionId::new();
-        let second = FileVersionId::new();
-        let mut conflict = FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id: FileRecordId::new(),
-            versions: vec![first, second],
-            status: ConflictStatus::Open,
-            resolution: None,
-        };
-        conflict.validate().unwrap();
-
-        conflict.versions = vec![first, first];
-        assert_eq!(
-            conflict.validate(),
-            Err(FileRecordError::DuplicateConflictVersion)
-        );
-        conflict.versions = vec![first, second];
-        conflict.status = ConflictStatus::Resolved;
-        assert_eq!(
-            conflict.validate(),
-            Err(FileRecordError::ResolvedConflictNeedsResolution)
-        );
+            conflict.versions = vec![first, first];
+            assert_eq!(
+                conflict.validate(),
+                Err(FileRecordError::DuplicateConflictVersion)
+            );
+            conflict.versions = vec![first, second];
+            conflict.status = ConflictStatus::Resolved;
+            assert_eq!(
+                conflict.validate(),
+                Err(FileRecordError::ResolvedConflictNeedsResolution)
+            );
+        }
     }
 
     fn transaction_participant(
@@ -1631,65 +1650,179 @@ mod tests {
         participant
     }
 
+    /// Replacement transactions are signed, sorted and projection-bound; checked-restore manifests
+    /// bind the review selection and exact result; merge manifests bind the exact conflict, current
+    /// base and codec requirements.
     #[test]
-    fn replacement_transaction_is_signed_sorted_and_projection_bound() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let actor = FileActor {
-            person: Ed25519PublicKey([9; 32]),
-            device: Ed25519PublicKey(key.verifying_key().to_bytes()),
-        };
-        let source_parent = FileRecordId::new();
-        let destination_parent = FileRecordId::new();
-        let source_record = FileRecordId::new();
-        let replaced_record = FileRecordId::new();
-        let mut participants = vec![
-            transaction_participant(
-                source_record,
-                FileMutationParticipantRole::Source,
-                destination_parent,
-                "destination.txt",
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn file_manifests_bind_exactly_what_was_reviewed() {
+        // Phase: replacement_transaction_is_signed_sorted_and_projection_bound.
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let actor = FileActor {
+                person: Ed25519PublicKey([9; 32]),
+                device: Ed25519PublicKey(key.verifying_key().to_bytes()),
+            };
+            let source_parent = FileRecordId::new();
+            let destination_parent = FileRecordId::new();
+            let source_record = FileRecordId::new();
+            let replaced_record = FileRecordId::new();
+            let mut participants = vec![
+                transaction_participant(
+                    source_record,
+                    FileMutationParticipantRole::Source,
+                    destination_parent,
+                    "destination.txt",
+                    actor,
+                ),
+                transaction_participant(
+                    replaced_record,
+                    FileMutationParticipantRole::Replaced,
+                    destination_parent,
+                    "destination.txt",
+                    actor,
+                ),
+            ];
+            participants.sort_by_key(|participant| participant.record_id);
+            let manifest = FileMutationTransactionManifest {
+                schema_version: FILE_MUTATION_TRANSACTION_VERSION,
+                transaction_id: Uuid::new_v4(),
+                workspace_id: Uuid::new_v4(),
                 actor,
-            ),
-            transaction_participant(
-                replaced_record,
-                FileMutationParticipantRole::Replaced,
-                destination_parent,
-                "destination.txt",
-                actor,
-            ),
-        ];
-        participants.sort_by_key(|participant| participant.record_id);
-        let manifest = FileMutationTransactionManifest {
-            schema_version: FILE_MUTATION_TRANSACTION_VERSION,
-            transaction_id: Uuid::new_v4(),
-            workspace_id: Uuid::new_v4(),
-            actor,
-            timestamp_ms: 44,
-            operation: FileMutationOperation::ReplacementRename {
-                source_parent,
-                source_name: "source.txt".into(),
-                destination_parent,
-                destination_name: "destination.txt".into(),
-                source_record,
-                replaced_record,
-            },
-            participants,
-        };
-        let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
-        signed.verify().unwrap();
+                timestamp_ms: 44,
+                operation: FileMutationOperation::ReplacementRename {
+                    source_parent,
+                    source_name: "source.txt".into(),
+                    destination_parent,
+                    destination_name: "destination.txt".into(),
+                    source_record,
+                    replaced_record,
+                },
+                participants,
+            };
+            let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
+            signed.verify().unwrap();
 
-        let mut reordered = signed.clone();
-        reordered.manifest.participants.reverse();
-        assert!(matches!(
-            reordered.verify(),
-            Err(FileMutationTransactionError::InvalidManifest(
-                FileRecordError::InvalidTransactionParticipants
-            ))
-        ));
+            let mut reordered = signed.clone();
+            reordered.manifest.participants.reverse();
+            assert!(matches!(
+                reordered.verify(),
+                Err(FileMutationTransactionError::InvalidManifest(
+                    FileRecordError::InvalidTransactionParticipants
+                ))
+            ));
 
-        let mut forged = signed;
-        forged.manifest.participants[0].proposed_binding.name = "other.txt".into();
-        assert!(forged.verify().is_err());
+            let mut forged = signed;
+            forged.manifest.participants[0].proposed_binding.name = "other.txt".into();
+            assert!(forged.verify().is_err());
+        }
+
+        // Phase: checked_restore_manifest_binds_review_selection_and_exact_result.
+        {
+            let mut manifest = merge_manifest();
+            manifest.schema_version = 3;
+            let selected = FileVersionId::new();
+            let participant = &mut manifest.participants[0];
+            participant.role = FileMutationParticipantRole::RestoreContent;
+            participant.proposed_version.provenance = FileProvenance::Restore { from: selected };
+            participant.projection_hash = participant.computed_projection_hash().unwrap();
+            let prior = ContentRevisionV1 {
+                version_id: participant.expected_version,
+                ..participant.proposed_content_revision.unwrap()
+            };
+            manifest.operation = FileMutationOperation::RestoreContent {
+                request: CheckedHistoryRequestV1 {
+                    schema_version: 1,
+                    intent_id: manifest.transaction_id,
+                    review: FileRestoreReviewV1 {
+                        schema_version: 1,
+                        workspace_id: manifest.workspace_id,
+                        record_id: participant.record_id,
+                        mount_lifetime: Uuid::new_v4(),
+                        frontier: [9; 32],
+                    },
+                    operation: CheckedHistoryOperationV1::Restore {
+                        version_id: selected,
+                    },
+                },
+                selected_version: selected,
+                prior_revision: prior,
+                compensates: None,
+            };
+            let mut mislabeled_v1 = manifest.clone();
+            mislabeled_v1.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
+            assert_eq!(
+                mislabeled_v1.validate(),
+                Err(FileRecordError::InvalidTransactionParticipant)
+            );
+            manifest.validate().unwrap();
+            let mut forged = manifest.clone();
+            if let FileMutationOperation::RestoreContent { request, .. } = &mut forged.operation {
+                request.review.record_id = FileRecordId::new();
+            }
+            assert!(forged.validate().is_err());
+            let key = SigningKey::from_bytes(&[42; 32]);
+            let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
+            signed.verify().unwrap();
+        }
+
+        // Phase: merge_manifest_binds_exact_conflict_current_base_and_codec_requirements.
+        {
+            let valid = merge_manifest();
+            valid.validate().unwrap();
+
+            let mut qdoc = valid.clone();
+            if let FileMutationOperation::MergeContentConflict {
+                base_version,
+                codec,
+                ..
+            } = &mut qdoc.operation
+            {
+                *base_version = None;
+                *codec = ConflictMergeCodecV1::QdocAutomergeV1;
+            }
+            qdoc.validate().unwrap();
+
+            let mut stale_current = valid.clone();
+            if let FileMutationOperation::MergeContentConflict {
+                current_version, ..
+            } = &mut stale_current.operation
+            {
+                *current_version = FileVersionId::new();
+            }
+            assert_eq!(
+                stale_current.validate(),
+                Err(FileRecordError::InvalidMergeTransaction)
+            );
+
+            let mut missing_base = valid.clone();
+            if let FileMutationOperation::MergeContentConflict { base_version, .. } =
+                &mut missing_base.operation
+            {
+                *base_version = None;
+            }
+            assert_eq!(
+                missing_base.validate(),
+                Err(FileRecordError::InvalidMergeTransaction)
+            );
+
+            let mut member_as_base = valid;
+            if let FileMutationOperation::MergeContentConflict {
+                conflict_versions,
+                base_version,
+                ..
+            } = &mut member_as_base.operation
+            {
+                *base_version = Some(conflict_versions[0]);
+            }
+            assert_eq!(
+                member_as_base.validate(),
+                Err(FileRecordError::InvalidMergeTransaction)
+            );
+        }
     }
 
     fn merge_manifest() -> FileMutationTransactionManifest {
@@ -1757,109 +1890,5 @@ mod tests {
             },
             participants: vec![participant],
         }
-    }
-
-    #[test]
-    fn checked_restore_manifest_binds_review_selection_and_exact_result() {
-        let mut manifest = merge_manifest();
-        manifest.schema_version = 3;
-        let selected = FileVersionId::new();
-        let participant = &mut manifest.participants[0];
-        participant.role = FileMutationParticipantRole::RestoreContent;
-        participant.proposed_version.provenance = FileProvenance::Restore { from: selected };
-        participant.projection_hash = participant.computed_projection_hash().unwrap();
-        let prior = ContentRevisionV1 {
-            version_id: participant.expected_version,
-            ..participant.proposed_content_revision.unwrap()
-        };
-        manifest.operation = FileMutationOperation::RestoreContent {
-            request: CheckedHistoryRequestV1 {
-                schema_version: 1,
-                intent_id: manifest.transaction_id,
-                review: FileRestoreReviewV1 {
-                    schema_version: 1,
-                    workspace_id: manifest.workspace_id,
-                    record_id: participant.record_id,
-                    mount_lifetime: Uuid::new_v4(),
-                    frontier: [9; 32],
-                },
-                operation: CheckedHistoryOperationV1::Restore {
-                    version_id: selected,
-                },
-            },
-            selected_version: selected,
-            prior_revision: prior,
-            compensates: None,
-        };
-        let mut mislabeled_v1 = manifest.clone();
-        mislabeled_v1.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
-        assert_eq!(
-            mislabeled_v1.validate(),
-            Err(FileRecordError::InvalidTransactionParticipant)
-        );
-        manifest.validate().unwrap();
-        let mut forged = manifest.clone();
-        if let FileMutationOperation::RestoreContent { request, .. } = &mut forged.operation {
-            request.review.record_id = FileRecordId::new();
-        }
-        assert!(forged.validate().is_err());
-        let key = SigningKey::from_bytes(&[42; 32]);
-        let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
-        signed.verify().unwrap();
-    }
-
-    #[test]
-    fn merge_manifest_binds_exact_conflict_current_base_and_codec_requirements() {
-        let valid = merge_manifest();
-        valid.validate().unwrap();
-
-        let mut qdoc = valid.clone();
-        if let FileMutationOperation::MergeContentConflict {
-            base_version,
-            codec,
-            ..
-        } = &mut qdoc.operation
-        {
-            *base_version = None;
-            *codec = ConflictMergeCodecV1::QdocAutomergeV1;
-        }
-        qdoc.validate().unwrap();
-
-        let mut stale_current = valid.clone();
-        if let FileMutationOperation::MergeContentConflict {
-            current_version, ..
-        } = &mut stale_current.operation
-        {
-            *current_version = FileVersionId::new();
-        }
-        assert_eq!(
-            stale_current.validate(),
-            Err(FileRecordError::InvalidMergeTransaction)
-        );
-
-        let mut missing_base = valid.clone();
-        if let FileMutationOperation::MergeContentConflict { base_version, .. } =
-            &mut missing_base.operation
-        {
-            *base_version = None;
-        }
-        assert_eq!(
-            missing_base.validate(),
-            Err(FileRecordError::InvalidMergeTransaction)
-        );
-
-        let mut member_as_base = valid;
-        if let FileMutationOperation::MergeContentConflict {
-            conflict_versions,
-            base_version,
-            ..
-        } = &mut member_as_base.operation
-        {
-            *base_version = Some(conflict_versions[0]);
-        }
-        assert_eq!(
-            member_as_base.validate(),
-            Err(FileRecordError::InvalidMergeTransaction)
-        );
     }
 }

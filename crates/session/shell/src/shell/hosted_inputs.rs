@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use super::state::{AppKind, TabId};
 
+/// The Files widget is the Files package; it registers under that id.
+pub const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
+
 /// An application the native shell can construct in-process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeAppRegistration {
@@ -76,16 +79,19 @@ impl HostedTileInputs {
                 remote_accounts: Vec::new(),
                 trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
             }),
+            file_services: Some(
+                file_explorer::files_app::HostedFileServices::deferred_document_open(),
+            ),
             native_apps: Arc::from([
                 NativeAppRegistration {
-                    package_id: "org.tilo.Files",
+                    package_id: FILES_PACKAGE_ID,
                     display_name: "Files",
                     kind: AppKind::FileExplorer,
                     opens_extensions: &[],
                     opens_mime_types: &[],
                 },
                 NativeAppRegistration {
-                    package_id: "org.tilo.Editor",
+                    package_id: "org.nirios.Editor",
                     display_name: "Editor",
                     kind: AppKind::Other("Editor".into()),
                     opens_extensions: &["txt"],
@@ -121,7 +127,8 @@ impl HostedTileInputs {
             parent,
             Some(file_explorer::files_app::HostedFileServices {
                 thumbnails: None,
-                document_opener: None,
+                document_opener: file_explorer::files_app::DocumentOpenRoute::Unavailable,
+                open_with: None,
             }),
         )
     }
@@ -156,6 +163,18 @@ impl HostedTileInputs {
 
     pub(crate) fn file_services(&self) -> Option<&file_explorer::files_app::HostedFileServices> {
         self.file_services.as_ref()
+    }
+
+    /// Accept only the opaque deferred-open capability installed with this
+    /// host's real Files services. Other mounted apps can construct the public
+    /// intent shape, but cannot authorize a native document read/publication.
+    pub(crate) fn accepts_document_open_capability(
+        &self,
+        capability: &ui::widget::DocumentOpenCapability,
+    ) -> bool {
+        self.file_services
+            .as_ref()
+            .is_some_and(|services| services.accepts_document_open_capability(capability))
     }
 
     pub(crate) fn is_fixture(&self) -> bool {
@@ -213,12 +232,12 @@ impl HostedTileInputs {
 
     /// Release launch data once its tab leaves any workspace, without rereading files.
     /// Returns whether persisted references changed.
-    #[cfg(target_os = "macos")]
     pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
         if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
             return false;
         }
         let live: std::collections::HashSet<_> = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -241,10 +260,11 @@ impl HostedTileInputs {
         self.prune_documents(tree);
         let references = &tree.native_document_tabs;
         for (&tab, reference) in references {
+            let provider_id = reference.provider_id.as_str();
             let Some(app) = self
                 .native_apps
                 .iter()
-                .find(|app| app.package_id == reference.provider_id)
+                .find(|app| app.package_id == provider_id)
             else {
                 continue;
             };
@@ -261,7 +281,13 @@ impl HostedTileInputs {
                 Err(error) => HostedDocumentState::Unavailable {
                     provider_id: app.package_id,
                     path: reference.path.clone(),
-                    reason: format!("{} is unavailable: {error}", reference.path.display()),
+                    reason: crate::shell::i18n::t_args(
+                        "hosted-document-unavailable",
+                        &[
+                            ("path", reference.path.display().to_string().into()),
+                            ("error", error.to_string().into()),
+                        ],
+                    ),
                 },
             };
             self.documents.borrow_mut().insert(tab, state);
@@ -316,63 +342,68 @@ mod tests {
     }
 
     #[test]
-    fn fixture_directory_lives_through_last_input_clone() {
-        let parent = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        let child = inputs.files.as_ref().unwrap().initial_dir.clone();
-        assert_eq!(child.parent(), Some(parent.path()));
-        assert_eq!(
-            std::fs::read(child.join("Welcome.txt")).unwrap(),
-            b"Shell capture fixture\n"
-        );
-        let last = inputs.clone();
-        drop(inputs);
-        assert!(child.is_dir());
-        let tile = crate::shell::try_to_ui_tile(
-            &files_tile(),
-            terminal::HostedProcessServices::default(),
-            &last,
-        )
-        .unwrap();
-        assert!(matches!(tile, ui::widget::TileContent::App(_)));
-        drop(tile);
-        assert!(child.is_dir());
-        drop(last);
-        assert!(!child.exists());
-        assert!(parent.path().is_dir());
-    }
+    fn hosted_file_inputs_live_through_clones_and_never_fall_back() {
+        fn fixture_directory_lives_through_last_input_clone() {
+            let parent = tempfile::tempdir().unwrap();
+            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            let child = inputs.files.as_ref().unwrap().initial_dir.clone();
+            assert_eq!(child.parent(), Some(parent.path()));
+            assert_eq!(
+                std::fs::read(child.join("Welcome.txt")).unwrap(),
+                b"Shell capture fixture\n"
+            );
+            let last = inputs.clone();
+            drop(inputs);
+            assert!(child.is_dir());
+            let tile = crate::shell::try_to_ui_tile(
+                &files_tile(),
+                terminal::HostedProcessServices::default(),
+                &last,
+            )
+            .unwrap();
+            assert!(matches!(tile, ui::widget::TileContent::App(_)));
+            drop(tile);
+            assert!(child.is_dir());
+            drop(last);
+            assert!(!child.exists());
+            assert!(parent.path().is_dir());
+        }
 
-    #[test]
-    fn fixture_missing_files_input_does_not_fall_back_on_linux() {
-        let parent = tempfile::tempdir().unwrap();
-        let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        inputs.files = None;
-        let result = crate::shell::try_to_ui_tile(
-            &files_tile(),
-            terminal::HostedProcessServices::default(),
-            &inputs,
-        );
-        assert!(matches!(
-            result,
-            Err(HostedTileError::RequiredServiceMissing("Files startup"))
-        ));
-    }
+        fn fixture_missing_files_input_does_not_fall_back_on_linux() {
+            let parent = tempfile::tempdir().unwrap();
+            let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            inputs.files = None;
+            let result = crate::shell::try_to_ui_tile(
+                &files_tile(),
+                terminal::HostedProcessServices::default(),
+                &inputs,
+            );
+            assert!(matches!(
+                result,
+                Err(HostedTileError::RequiredServiceMissing("Files startup"))
+            ));
+        }
 
-    #[test]
-    fn a_files_tab_can_start_in_its_dropped_directory() {
-        let parent = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        let dropped = parent.path().join("dropped");
-        std::fs::create_dir(&dropped).unwrap();
-        inputs.bind_files_directory(42, dropped.clone());
-        assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
-        assert!(inputs.files_for_tab(43).is_none());
+        fn a_files_tab_can_start_in_its_dropped_directory() {
+            let parent = tempfile::tempdir().unwrap();
+            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            let dropped = parent.path().join("dropped");
+            std::fs::create_dir(&dropped).unwrap();
+            inputs.bind_files_directory(42, dropped.clone());
+            assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
+            assert!(inputs.files_for_tab(43).is_none());
+        }
+
+        fixture_directory_lives_through_last_input_clone();
+        fixture_missing_files_input_does_not_fall_back_on_linux();
+        a_files_tab_can_start_in_its_dropped_directory();
     }
 }
 
 #[cfg(test)]
 mod desktop_catalog_tests {
     use super::*;
+
     #[test]
     fn desktop_native_catalog_includes_constructible_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -407,7 +438,7 @@ mod document_lifecycle_tests {
             let session = prepare(&options).unwrap();
             let inputs = session.chrome.borrow().hosted_inputs.clone();
             let reference = NativeDocumentReference {
-                provider_id: "org.tilo.Editor".into(),
+                provider_id: "org.nirios.Editor".into(),
                 path: path.canonicalize().unwrap(),
             };
             let mut tabs = Vec::new();
@@ -426,7 +457,7 @@ mod document_lifecycle_tests {
                 inputs.bind_document(
                     tab,
                     HostedDocument {
-                        provider_id: "org.tilo.Editor",
+                        provider_id: "org.nirios.Editor",
                         path: reference.path.clone(),
                         text: "live document\n".into(),
                     },
@@ -481,7 +512,7 @@ mod document_lifecycle_tests {
             "stale references must be filtered before restoration"
         );
         assert!(
-            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.text == "live document\n")
+            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.text == "live document\n")
         );
         let mut driver =
             ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));

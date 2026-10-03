@@ -11,6 +11,7 @@ name = "tilo-collab-link"
 path = "src/main.rs"
 
 [dependencies]
+workspace-hack = { version = "0.1" }
 # Plain stdlib. The proxy is just threads + UnixStream + sleep.
 
 [lints]

@@ -1,38 +1,18 @@
 //! Small filesystem helpers: atomic writes and a symlink-preserving walk.
 
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 
-/// Write via a sibling temporary file and rename, so readers see the old or
-/// the new content and never a torn file.
+/// Replace `path` durably, creating its parent when missing, so readers see
+/// the old or the new content and never a torn file.
 ///
 /// # Errors
 /// I/O failures.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
-    let context = || format!("write {}", path.display());
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(DaemonError::io(context()))?;
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = parent.join(format!(
-        ".{file_name}.{}.tmp",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let result = (|| {
-        let mut file = fs::File::create(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.map_err(DaemonError::io(context()))
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
+        .map_err(DaemonError::io(format!("write {}", path.display())))
 }
 
 /// Collect every path below `root` (relative, depth-first), not following symlinks.

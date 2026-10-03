@@ -10,7 +10,7 @@ import json
 import math
 import re
 
-ALL_CATEGORIES = ('network','bluetooth','devices_sync','sound','displays','mouse_keyboard',
+ALL_CATEGORIES = ('network','bluetooth','devices_sync','sound','speakers','displays','mouse_keyboard',
     'keyboard_shortcuts','printers','appearance','accessibility','notifications','default-apps',
     'storage','power','time_date','users','region_formats','external_accounts','agent_models',
     'permissions','updates','about')

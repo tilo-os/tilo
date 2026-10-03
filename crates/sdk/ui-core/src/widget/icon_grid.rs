@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -272,8 +271,6 @@ fn floor_to_usize(v: f64) -> usize {
 }
 
 impl Widget for IconGrid {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -434,26 +431,15 @@ impl Widget for IconGrid {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 let new_hover = self.item_at(pt);
                 if new_hover != self.hover {
                     self.hover = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -462,10 +448,11 @@ impl Widget for IconGrid {
                 ..
             } => {
                 if let Some(i) = self.item_at(self.last_cursor) {
-                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    let shift = modifiers.state().shift_key();
+                    let ctrl =
+                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+                    let shift = ctx.modifiers.state().shift_key();
                     self.selection.apply_click(i, ctrl, shift);
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     if let Some(cb) = &mut self.on_item_click {
                         cb(i, ctrl, shift);
                     }
@@ -482,14 +469,14 @@ impl Widget for IconGrid {
                     } else {
                         self.last_click = Some((i, now));
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.is_focused && ke.state == ElementState::Pressed =>
             {
                 use winit::keyboard::{Key, NamedKey};
-                let shift = modifiers.state().shift_key();
+                let shift = ctx.modifiers.state().shift_key();
                 let len = self.items.len();
                 if len == 0 {
                     return;
@@ -511,21 +498,21 @@ impl Widget for IconGrid {
                         if let (Some(c), Some(cb)) = (cur, self.on_activate.as_mut()) {
                             cb(c);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         None
                     }
                     Key::Character(s)
-                        if (s == "a" || s == "A") && modifiers.state().control_key() =>
+                        if (s == "a" || s == "A") && ctx.modifiers.state().control_key() =>
                     {
                         self.selection.select_all(len);
-                        *handled = true;
+                        *ctx.handled = true;
                         None
                     }
                     _ => None,
                 };
                 if let Some(t) = target {
                     self.selection.move_to(t, shift);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -584,6 +571,7 @@ impl Widget for IconGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
@@ -593,96 +581,137 @@ mod tests {
     }
 
     #[test]
-    fn columns_scale_with_width() {
-        let g = IconGrid::new(items(10)); // 96px cell + 12px gap = 108 stride
-        // (width + gap) / stride, floored.
-        assert_eq!(g.columns_for_width(108.0), 1);
-        assert_eq!(g.columns_for_width(216.0), 2);
-        assert_eq!(g.columns_for_width(700.0), 6);
-        // Never zero, even for an absurdly narrow box.
-        assert_eq!(g.columns_for_width(10.0), 1);
+    fn icon_grid_columns_rows_and_hit_mapping() {
+        fn columns_scale_with_width() {
+            let g = IconGrid::new(items(10)); // 96px cell + 12px gap = 108 stride
+            // (width + gap) / stride, floored.
+            assert_eq!(g.columns_for_width(108.0), 1);
+            assert_eq!(g.columns_for_width(216.0), 2);
+            assert_eq!(g.columns_for_width(700.0), 6);
+            // Never zero, even for an absurdly narrow box.
+            assert_eq!(g.columns_for_width(10.0), 1);
+        }
+
+        fn content_height_rounds_up_rows() {
+            let g = IconGrid::new(items(7));
+            // 3 columns → 3 rows (3,3,1). height = 3*88 + 2*12 = 288.
+            assert!((g.content_height(3) - 288.0).abs() < 0.01);
+            // Empty grid is zero-height.
+            assert_eq!(IconGrid::new(items(0)).content_height(4), 0.0);
+        }
+
+        fn item_at_maps_points_and_rejects_gaps() {
+            let mut g = IconGrid::new(items(6));
+            g.rect = Rect::new(0.0, 0.0, 324.0, 200.0); // 3 columns (324 = 3*108)
+            g.columns = 3;
+            // Cell 0 centre (~48,44).
+            assert_eq!(g.item_at(Point::new(48.0, 44.0)), Some(0));
+            // Cell 4 = row 1, col 1 → origin x=108,y=100; centre ~156,144.
+            assert_eq!(g.item_at(Point::new(156.0, 144.0)), Some(4));
+            // A point in the horizontal gap between col 0 and col 1 (x≈100).
+            assert_eq!(g.item_at(Point::new(100.0, 44.0)), None);
+            // Row 2 is empty (6 items fill rows 0–1), so it maps to nothing.
+            assert_eq!(g.item_at(Point::new(48.0, 244.0)), None);
+        }
+
+        columns_scale_with_width();
+        content_height_rounds_up_rows();
+        item_at_maps_points_and_rejects_gaps();
     }
 
     #[test]
-    fn content_height_rounds_up_rows() {
-        let g = IconGrid::new(items(7));
-        // 3 columns → 3 rows (3,3,1). height = 3*88 + 2*12 = 288.
-        assert!((g.content_height(3) - 288.0).abs() < 0.01);
-        // Empty grid is zero-height.
-        assert_eq!(IconGrid::new(items(0)).content_height(4), 0.0);
-    }
+    fn icon_grid_selection_semantics_and_focus() {
+        fn click_selects_and_reports() {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let log = Rc::new(RefCell::new(Vec::<(usize, bool, bool)>::new()));
+            let mut g = {
+                let log = log.clone();
+                IconGrid::new(items(6))
+                    .on_item_click(move |i, c, s| log.borrow_mut().push((i, c, s)))
+            };
+            g.rect = Rect::new(0.0, 0.0, 324.0, 200.0);
+            g.columns = 3;
 
-    #[test]
-    fn item_at_maps_points_and_rejects_gaps() {
-        let mut g = IconGrid::new(items(6));
-        g.rect = Rect::new(0.0, 0.0, 324.0, 200.0); // 3 columns (324 = 3*108)
-        g.columns = 3;
-        // Cell 0 centre (~48,44).
-        assert_eq!(g.item_at(Point::new(48.0, 44.0)), Some(0));
-        // Cell 4 = row 1, col 1 → origin x=108,y=100; centre ~156,144.
-        assert_eq!(g.item_at(Point::new(156.0, 144.0)), Some(4));
-        // A point in the horizontal gap between col 0 and col 1 (x≈100).
-        assert_eq!(g.item_at(Point::new(100.0, 44.0)), None);
-        // Row 2 is empty (6 items fill rows 0–1), so it maps to nothing.
-        assert_eq!(g.item_at(Point::new(48.0, 244.0)), None);
-    }
-
-    #[test]
-    fn click_selects_and_reports() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let log = Rc::new(RefCell::new(Vec::<(usize, bool, bool)>::new()));
-        let mut g = {
-            let log = log.clone();
-            IconGrid::new(items(6)).on_item_click(move |i, c, s| log.borrow_mut().push((i, c, s)))
-        };
-        g.rect = Rect::new(0.0, 0.0, 324.0, 200.0);
-        g.columns = 3;
-
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mods = winit::event::Modifiers::default();
-        let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
-            let mut h = false;
-            let mut f = None;
-            g.handle_event(
-                &ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree,
+            let mut tree = TaffyTree::<()>::new();
+            let node = tree.leaf_node(Style::default());
+            let mods = winit::event::Modifiers::default();
+            let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
+                let mut h = false;
+                let mut f = None;
+                g.handle_event(
+                    &ev,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut h,
+                        focus_target: &mut f,
+                        node_id: node,
+                        taffy: &tree,
+                    },
+                );
+            };
+            feed(
+                &mut g,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (156.0, 144.0).into(),
+                },
             );
-        };
-        feed(
-            &mut g,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (156.0, 144.0).into(),
-            },
-        );
-        feed(
-            &mut g,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert!(g.selection().is_selected(4));
-        assert_eq!(*log.borrow(), vec![(4, false, false)]);
-    }
+            feed(
+                &mut g,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert!(g.selection().is_selected(4));
+            assert_eq!(*log.borrow(), vec![(4, false, false)]);
+        }
 
-    #[test]
-    fn accessibility_reports_list_role_and_selected_label() {
-        use crate::a11y::Role;
-        let mut g = IconGrid::new(items(6));
-        let node = Widget::accessibility(&g).expect("grid is not presentational");
-        assert_eq!(node.role, Role::List);
-        assert!(node.state.focusable);
-        assert_eq!(node.value, None, "no selection → no value");
+        fn accessibility_reports_list_role_and_selected_label() {
+            use crate::a11y::Role;
+            let mut g = IconGrid::new(items(6));
+            let node = Widget::accessibility(&g).expect("grid is not presentational");
+            assert_eq!(node.role, Role::List);
+            assert!(node.state.focusable);
+            assert_eq!(node.value, None, "no selection → no value");
 
-        g.selection.select_only(4);
-        let node = Widget::accessibility(&g).unwrap();
-        assert_eq!(node.value.as_deref(), Some("f4"));
+            g.selection.select_only(4);
+            let node = Widget::accessibility(&g).unwrap();
+            assert_eq!(node.value.as_deref(), Some("f4"));
+        }
+
+        /// Asserts on the production `draw` path via the scene encoding.
+        fn focused_grid_paints_a_focus_ring() {
+            let theme = Theme::dark();
+
+            let mut unfocused = IconGrid::new(items(6));
+            unfocused.selection.select_only(2);
+            unfocused.set_focus(false);
+            let without = color_fill_count(&mut unfocused, &theme);
+
+            let mut focused = IconGrid::new(items(6));
+            focused.selection.select_only(2);
+            focused.set_focus(true);
+            let with = color_fill_count(&mut focused, &theme);
+
+            assert_eq!(
+                with,
+                without + 1,
+                "a focused grid must add exactly one focus-ring stroke ({with} vs {without})",
+            );
+        }
+
+        click_selects_and_reports();
+        accessibility_reports_list_role_and_selected_label();
+        focused_grid_paints_a_focus_ring();
     }
 
     /// Lay the grid out, render against `theme`, and count COLOR draw-tags.
@@ -715,27 +744,5 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
-    }
-
-    /// Asserts on the production `draw` path via the scene encoding.
-    #[test]
-    fn focused_grid_paints_a_focus_ring() {
-        let theme = Theme::dark();
-
-        let mut unfocused = IconGrid::new(items(6));
-        unfocused.selection.select_only(2);
-        unfocused.set_focus(false);
-        let without = color_fill_count(&mut unfocused, &theme);
-
-        let mut focused = IconGrid::new(items(6));
-        focused.selection.select_only(2);
-        focused.set_focus(true);
-        let with = color_fill_count(&mut focused, &theme);
-
-        assert_eq!(
-            with,
-            without + 1,
-            "a focused grid must add exactly one focus-ring stroke ({with} vs {without})",
-        );
     }
 }

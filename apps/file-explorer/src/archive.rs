@@ -447,61 +447,65 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// Archive paths reject traversal and resolve root and nested locations, listings synthesise parents, and zips round-trip.
     #[test]
-    fn traversal_is_rejected() {
-        assert!(safe_relative(Path::new("../secret")).is_err());
-        assert!(safe_relative(Path::new("/etc/passwd")).is_err());
-    }
+    fn archive_paths_listings_and_round_trip() {
+        // --- phase: traversal_is_rejected ---
+        {
+            assert!(safe_relative(Path::new("../secret")).is_err());
+            assert!(safe_relative(Path::new("/etc/passwd")).is_err());
+        }
 
-    #[test]
-    fn zip_round_trip() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("hello.txt"), b"hello").unwrap();
-        let archive = temp.path().join("bundle.zip");
-        create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
-        assert_eq!(list(&archive).unwrap()[0].path, Path::new("hello.txt"));
-        let out = temp.path().join("out");
-        extract(&archive, &out).unwrap();
-        assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"hello");
-    }
+        // --- phase: zip_round_trip ---
+        {
+            let temp = tempfile::tempdir().unwrap();
+            fs::write(temp.path().join("hello.txt"), b"hello").unwrap();
+            let archive = temp.path().join("bundle.zip");
+            create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
+            assert_eq!(list(&archive).unwrap()[0].path, Path::new("hello.txt"));
+            let out = temp.path().join("out");
+            extract(&archive, &out).unwrap();
+            assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"hello");
+        }
 
-    #[test]
-    fn archive_paths_resolve_root_and_nested_locations() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("bundle.zip");
-        fs::write(&archive, b"").unwrap();
-        assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
-        assert_eq!(
-            location(&archive.join("Photos/Trips")),
-            Some((archive, PathBuf::from("Photos/Trips")))
-        );
-        assert_eq!(location(&temp.path().join("ordinary")), None);
-    }
+        // --- phase: archive_paths_resolve_root_and_nested_locations ---
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let archive = temp.path().join("bundle.zip");
+            fs::write(&archive, b"").unwrap();
+            assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
+            assert_eq!(
+                location(&archive.join("Photos/Trips")),
+                Some((archive, PathBuf::from("Photos/Trips")))
+            );
+            assert_eq!(location(&temp.path().join("ordinary")), None);
+        }
 
-    #[test]
-    fn archive_directory_listing_synthesizes_missing_parent_rows() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
-        fs::create_dir(source.join("Photos")).unwrap();
-        fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
-        fs::write(source.join("root.txt"), b"root").unwrap();
-        let archive = temp.path().join("bundle.zip");
-        create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
+        // --- phase: archive_directory_listing_synthesizes_missing_parent_rows ---
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir(source.join("Photos")).unwrap();
+            fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
+            fs::write(source.join("root.txt"), b"root").unwrap();
+            let archive = temp.path().join("bundle.zip");
+            create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
 
-        let root = list_directory(&archive, Path::new("")).unwrap();
-        assert_eq!(root.len(), 2);
-        assert!(
-            root.iter()
-                .any(|entry| entry.path == Path::new("Photos") && entry.is_dir)
-        );
-        assert!(
-            root.iter()
-                .any(|entry| entry.path == Path::new("root.txt") && !entry.is_dir)
-        );
-        let photos = list_directory(&archive, Path::new("Photos")).unwrap();
-        assert_eq!(photos.len(), 1);
-        assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
+            let root = list_directory(&archive, Path::new("")).unwrap();
+            assert_eq!(root.len(), 2);
+            assert!(
+                root.iter()
+                    .any(|entry| entry.path == Path::new("Photos") && entry.is_dir)
+            );
+            assert!(
+                root.iter()
+                    .any(|entry| entry.path == Path::new("root.txt") && !entry.is_dir)
+            );
+            let photos = list_directory(&archive, Path::new("Photos")).unwrap();
+            assert_eq!(photos.len(), 1);
+            assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
+        }
     }
 
     #[test]
@@ -524,74 +528,78 @@ mod tests {
         assert!(!names.contains(&PathBuf::from("Folder/unsafe-link")));
     }
 
+    /// Extraction never escapes, merges or overwrites, leaves no partial destination, and classifies zip links before materialising.
     #[test]
-    fn malicious_zip_never_writes_outside_destination() {
-        let mut bytes = Cursor::new(Vec::new());
+    fn extraction_is_confined_atomic_and_link_aware() {
+        // --- phase: malicious_zip_never_writes_outside_destination ---
         {
-            let mut writer = zip::ZipWriter::new(&mut bytes);
-            writer
-                .start_file("../escape", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            writer.write_all(b"bad").unwrap();
-            writer.finish().unwrap();
+            let mut bytes = Cursor::new(Vec::new());
+            {
+                let mut writer = zip::ZipWriter::new(&mut bytes);
+                writer
+                    .start_file("../escape", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(b"bad").unwrap();
+                writer.finish().unwrap();
+            }
+            bytes.set_position(0);
+            let temp = tempfile::tempdir().unwrap();
+            assert!(extract_zip(bytes, temp.path()).is_err());
+            assert!(!temp.path().parent().unwrap().join("escape").exists());
         }
-        bytes.set_position(0);
-        let temp = tempfile::tempdir().unwrap();
-        assert!(extract_zip(bytes, temp.path()).is_err());
-        assert!(!temp.path().parent().unwrap().join("escape").exists());
-    }
 
-    #[test]
-    fn extraction_never_merges_with_or_overwrites_an_existing_folder() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("hello.txt"), b"new").unwrap();
-        let archive = temp.path().join("bundle.zip");
-        create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
-        let out = temp.path().join("bundle");
-        fs::create_dir(&out).unwrap();
-        fs::write(out.join("hello.txt"), b"keep").unwrap();
-
-        let error = extract(&archive, &out).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"keep");
-    }
-
-    #[test]
-    fn failed_extraction_leaves_no_partial_destination() {
-        let mut bytes = Cursor::new(Vec::new());
+        // --- phase: extraction_never_merges_with_or_overwrites_an_existing_folder ---
         {
-            let mut writer = zip::ZipWriter::new(&mut bytes);
-            writer
-                .start_file("good.txt", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            writer.write_all(b"good").unwrap();
-            writer
-                .start_file("../escape", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            writer.write_all(b"bad").unwrap();
-            writer.finish().unwrap();
+            let temp = tempfile::tempdir().unwrap();
+            fs::write(temp.path().join("hello.txt"), b"new").unwrap();
+            let archive = temp.path().join("bundle.zip");
+            create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
+            let out = temp.path().join("bundle");
+            fs::create_dir(&out).unwrap();
+            fs::write(out.join("hello.txt"), b"keep").unwrap();
+
+            let error = extract(&archive, &out).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"keep");
         }
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("bad.zip");
-        fs::write(&archive, bytes.into_inner()).unwrap();
-        let out = temp.path().join("bad");
 
-        assert!(extract(&archive, &out).is_err());
-        assert!(!out.exists());
-        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains("extracting")
-        }));
-    }
+        // --- phase: failed_extraction_leaves_no_partial_destination ---
+        {
+            let mut bytes = Cursor::new(Vec::new());
+            {
+                let mut writer = zip::ZipWriter::new(&mut bytes);
+                writer
+                    .start_file("good.txt", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(b"good").unwrap();
+                writer
+                    .start_file("../escape", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(b"bad").unwrap();
+                writer.finish().unwrap();
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let archive = temp.path().join("bad.zip");
+            fs::write(&archive, bytes.into_inner()).unwrap();
+            let out = temp.path().join("bad");
 
-    #[test]
-    fn zip_unix_modes_classify_links_before_materialization() {
-        assert!(zip_mode_is_symlink(Some(0o120_777)));
-        assert!(!zip_mode_is_symlink(Some(0o100_644)));
-        assert!(!zip_mode_is_symlink(Some(0o040_755)));
-        assert!(!zip_mode_is_symlink(None));
+            assert!(extract(&archive, &out).is_err());
+            assert!(!out.exists());
+            assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("extracting")
+            }));
+        }
+
+        // --- phase: zip_unix_modes_classify_links_before_materialization ---
+        {
+            assert!(zip_mode_is_symlink(Some(0o120_777)));
+            assert!(!zip_mode_is_symlink(Some(0o100_644)));
+            assert!(!zip_mode_is_symlink(Some(0o040_755)));
+            assert!(!zip_mode_is_symlink(None));
+        }
     }
 }

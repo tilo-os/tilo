@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily self-update of Tilo.app, shipped beside so.tilo.runtime.plist and
+     registered the same way. tilo-runtime-update installs only a release
+     signed by the key in Info.plist and by the bundle's own Developer ID
+     team; a build without a feed key exits at once. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>so.tilo.runtime.update</string>
+  <key>BundleProgram</key><string>Contents/MacOS/tilo-runtime-update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Tilo.app/Contents/MacOS/tilo-runtime-update</string>
+  </array>
+  <key>AssociatedBundleIdentifiers</key>
+  <array><string>so.tilo.runtime</string></array>
+  <key>StartInterval</key><integer>86400</integer>
+  <key>ProcessType</key><string>Background</string>
+</dict></plist>

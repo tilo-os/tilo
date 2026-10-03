@@ -16,7 +16,6 @@
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -892,10 +891,6 @@ impl HistoryScrubber {
     }
 
     /// Used for every button so styling stays uniform.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Scrubber button painting combines render context, bounds and label, hover state, and primary/neutral styling."
-    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,
@@ -1097,12 +1092,16 @@ impl HistoryScrubber {
             return;
         };
         let now = self.now();
-        let detail = format!(
-            "{} by {} \u{00b7} {}",
-            entry.summary,
-            entry.author.name,
-            format_relative_time(entry.timestamp, now)
-        );
+        let detail = if entry.is_genesis() {
+            entry.summary.clone()
+        } else {
+            format!(
+                "{} by {} \u{00b7} {}",
+                entry.summary,
+                entry.author.name,
+                format_relative_time(entry.timestamp, now)
+            )
+        };
         // An unnamed segment of one change derives its title *from* that
         // change, so a two-line popover would print the same words twice —
         // once as the version and once as the change. Say it once.
@@ -1231,8 +1230,6 @@ impl HistoryScrubber {
 }
 
 impl Widget for HistoryScrubber {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1301,19 +1298,8 @@ impl Widget for HistoryScrubber {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_naming_event(event, *modifiers, handled) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_naming_event(event, *ctx.modifiers, ctx.handled) {
             return;
         }
 
@@ -1324,7 +1310,7 @@ impl Widget for HistoryScrubber {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -1332,11 +1318,11 @@ impl Widget for HistoryScrubber {
                 ..
             } => {
                 if *element_state == ElementState::Pressed {
-                    self.handle_mouse_press(focus_target, node_id, handled);
+                    self.handle_mouse_press(ctx.focus_target, ctx.node_id, ctx.handled);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -1585,6 +1571,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1626,18 +1613,134 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_slider_role_and_revision_value() {
-        use crate::a11y::Role;
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 5);
-        let node = Widget::accessibility(&s).expect("scrubber is not presentational");
-        assert_eq!(node.role, Role::Slider);
-        assert_eq!(node.name.as_deref(), Some("History scrubber"));
-        assert_eq!(node.value.as_deref(), Some("revision 5 of 5"));
-        assert!(node.state.focusable);
+    fn scrubber_track_drag_click_and_buttons_move_and_fire() {
+        fn accessibility_reports_slider_role_and_revision_value() {
+            use crate::a11y::Role;
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 5);
+            let node = Widget::accessibility(&s).expect("scrubber is not presentational");
+            assert_eq!(node.role, Role::Slider);
+            assert_eq!(node.name.as_deref(), Some("History scrubber"));
+            assert_eq!(node.value.as_deref(), Some("revision 5 of 5"));
+            assert!(node.state.focusable);
 
-        s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.value.as_deref(), Some("empty"));
+            s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(node.value.as_deref(), Some("empty"));
+        }
+
+        fn handle_drag_advances_tick() {
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
+            s.set_current_tick(0);
+            let track = s.track_rect();
+            let start_x = s.tick_x(0);
+
+            let handle_y = track.center().y;
+            dispatch(&mut s, &cursor_moved(start_x, handle_y));
+            dispatch(&mut s, &mouse_press());
+            assert!(s.is_dragging, "press on handle must start drag");
+
+            let target_x = s.tick_x(5);
+            dispatch(&mut s, &cursor_moved(target_x, handle_y));
+            assert_eq!(
+                s.current_tick(),
+                5,
+                "drag must advance tick (got {})",
+                s.current_tick()
+            );
+
+            dispatch(&mut s, &mouse_release());
+            assert!(!s.is_dragging, "release must end drag");
+        }
+
+        fn click_on_track_jumps_to_tick() {
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
+            s.set_current_tick(0);
+            let track = s.track_rect();
+            let target = s.tick_x(7);
+
+            dispatch(&mut s, &cursor_moved(target, track.center().y));
+            dispatch(&mut s, &mouse_press());
+            assert_eq!(s.current_tick(), 7);
+            dispatch(&mut s, &mouse_release());
+        }
+
+        fn restore_callback_fires_on_button_click() {
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 5);
+            s.set_current_tick(2);
+            let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
+            let captured_clone = captured.clone();
+            s.on_restore = Some(Box::new(move |id| {
+                *captured_clone.borrow_mut() = Some(*id);
+            }));
+
+            let btn = s.restore_button_rect();
+            dispatch(&mut s, &cursor_moved(btn.center().x, btn.center().y));
+            dispatch(&mut s, &mouse_press());
+
+            let mut id_bytes = [0u8; 16];
+            id_bytes[0] = 2;
+            assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
+        }
+
+        fn preview_callback_fires_on_button_click() {
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 5);
+            s.set_current_tick(3);
+            let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
+            let captured_clone = captured.clone();
+            s.on_preview = Some(Box::new(move |id| {
+                *captured_clone.borrow_mut() = Some(*id);
+            }));
+
+            let btn = s.preview_button_rect();
+            dispatch(&mut s, &cursor_moved(btn.center().x, btn.center().y));
+            dispatch(&mut s, &mouse_press());
+
+            let mut id_bytes = [0u8; 16];
+            id_bytes[0] = 3;
+            assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
+        }
+
+        fn scrubber_with_no_entries_is_a_no_op() {
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 0);
+            assert_eq!(s.tick_count(), 0);
+            assert_eq!(s.current_tick(), 0);
+            dispatch(&mut s, &cursor_moved(100.0, 60.0));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &mouse_release());
+            assert_eq!(s.current_tick(), 0);
+            s.set_current_tick(999);
+            assert_eq!(s.current_tick(), 0);
+        }
+
+        fn drag_saturates_at_endpoints() {
+            // Important so a fast cursor swipe doesn't bypass the rightmost entry.
+            let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
+            s.set_current_tick(5);
+            let track = s.track_rect();
+            let start_x = s.tick_x(5);
+            dispatch(&mut s, &cursor_moved(start_x, track.center().y));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(10_000.0, track.center().y));
+            assert_eq!(
+                s.current_tick(),
+                10,
+                "drag past right must saturate at last tick"
+            );
+            dispatch(&mut s, &cursor_moved(-10_000.0, track.center().y));
+            assert_eq!(
+                s.current_tick(),
+                0,
+                "drag past left must saturate at tick 0"
+            );
+        }
+
+        accessibility_reports_slider_role_and_revision_value();
+        handle_drag_advances_tick();
+        click_on_track_jumps_to_tick();
+        restore_callback_fires_on_button_click();
+        preview_callback_fires_on_button_click();
+        scrubber_with_no_entries_is_a_no_op();
+        drag_saturates_at_endpoints();
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -1672,126 +1775,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-    }
-
-    #[test]
-    fn handle_drag_advances_tick() {
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
-        s.set_current_tick(0);
-        let track = s.track_rect();
-        let start_x = s.tick_x(0);
-
-        let handle_y = track.center().y;
-        dispatch(&mut s, &cursor_moved(start_x, handle_y));
-        dispatch(&mut s, &mouse_press());
-        assert!(s.is_dragging, "press on handle must start drag");
-
-        let target_x = s.tick_x(5);
-        dispatch(&mut s, &cursor_moved(target_x, handle_y));
-        assert_eq!(
-            s.current_tick(),
-            5,
-            "drag must advance tick (got {})",
-            s.current_tick()
-        );
-
-        dispatch(&mut s, &mouse_release());
-        assert!(!s.is_dragging, "release must end drag");
-    }
-
-    #[test]
-    fn click_on_track_jumps_to_tick() {
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
-        s.set_current_tick(0);
-        let track = s.track_rect();
-        let target = s.tick_x(7);
-
-        dispatch(&mut s, &cursor_moved(target, track.center().y));
-        dispatch(&mut s, &mouse_press());
-        assert_eq!(s.current_tick(), 7);
-        dispatch(&mut s, &mouse_release());
-    }
-
-    #[test]
-    fn restore_callback_fires_on_button_click() {
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 5);
-        s.set_current_tick(2);
-        let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
-        let captured_clone = captured.clone();
-        s.on_restore = Some(Box::new(move |id| {
-            *captured_clone.borrow_mut() = Some(*id);
-        }));
-
-        let btn = s.restore_button_rect();
-        dispatch(&mut s, &cursor_moved(btn.center().x, btn.center().y));
-        dispatch(&mut s, &mouse_press());
-
-        let mut id_bytes = [0u8; 16];
-        id_bytes[0] = 2;
-        assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
-    }
-
-    #[test]
-    fn preview_callback_fires_on_button_click() {
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 5);
-        s.set_current_tick(3);
-        let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
-        let captured_clone = captured.clone();
-        s.on_preview = Some(Box::new(move |id| {
-            *captured_clone.borrow_mut() = Some(*id);
-        }));
-
-        let btn = s.preview_button_rect();
-        dispatch(&mut s, &cursor_moved(btn.center().x, btn.center().y));
-        dispatch(&mut s, &mouse_press());
-
-        let mut id_bytes = [0u8; 16];
-        id_bytes[0] = 3;
-        assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
-    }
-
-    #[test]
-    fn scrubber_with_no_entries_is_a_no_op() {
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 0);
-        assert_eq!(s.tick_count(), 0);
-        assert_eq!(s.current_tick(), 0);
-        dispatch(&mut s, &cursor_moved(100.0, 60.0));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &mouse_release());
-        assert_eq!(s.current_tick(), 0);
-        s.set_current_tick(999);
-        assert_eq!(s.current_tick(), 0);
-    }
-
-    #[test]
-    fn drag_saturates_at_endpoints() {
-        // Important so a fast cursor swipe doesn't bypass the rightmost entry.
-        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 140.0), 11);
-        s.set_current_tick(5);
-        let track = s.track_rect();
-        let start_x = s.tick_x(5);
-        dispatch(&mut s, &cursor_moved(start_x, track.center().y));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(10_000.0, track.center().y));
-        assert_eq!(
-            s.current_tick(),
-            10,
-            "drag past right must saturate at last tick"
-        );
-        dispatch(&mut s, &cursor_moved(-10_000.0, track.center().y));
-        assert_eq!(
-            s.current_tick(),
-            0,
-            "drag past left must saturate at tick 0"
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 }
@@ -1805,6 +1798,7 @@ mod version_tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1881,108 +1875,230 @@ mod version_tests {
         Some(dir.join(name))
     }
 
-    /// The strip, its neutral buttons and its track keep a **visible derived
-    /// edge** at 1× on both presets (HIG §9.5). Before, the strip wore
-    /// `border_standard` (three shades from the dark raised surface), the
-    /// buttons and segments literal white veneers, the track `neutral[3]`.
-    ///
-    /// Writes `$UX1X_F4_OUT/<theme>/history_scrubber.png` plus the harness
-    /// inspection when that variable is set; asserts regardless.
     #[test]
-    fn ux1x_strip_buttons_and_track_edges_register_on_both_presets() {
-        use crate::offscreen::OffscreenRenderer;
-        const EDGE_MIN: f64 = 0.008;
-        let margin = 16.0;
-        // Evidence first, for both presets, so a failing assertion on one
-        // preset still leaves the other's PNG and inspection on disk.
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            if let Some(png) = ux1x_out(&theme, "history_scrubber.png") {
-                let mut mounted = with_versions(1000.0);
-                mounted.set_current_tick(19);
-                let h = mounted.natural_height() + 2.0 * margin;
+    fn version_strip_installs_snaps_and_navigates_versions() {
+        /// The strip, its neutral buttons and its track keep a **visible derived
+        /// edge** at 1× on both presets (HIG §9.5). Before, the strip wore
+        /// `border_standard` (three shades from the dark raised surface), the
+        /// buttons and segments literal white veneers, the track `neutral[3]`.
+        ///
+        /// Writes `$UX1X_F4_OUT/<theme>/history_scrubber.png` plus the harness
+        /// inspection when that variable is set; asserts regardless.
+        fn ux1x_strip_buttons_and_track_edges_register_on_both_presets() {
+            use crate::offscreen::OffscreenRenderer;
+            const EDGE_MIN: f64 = 0.008;
+            let margin = 16.0;
+            // Evidence first, for both presets, so a failing assertion on one
+            // preset still leaves the other's PNG and inspection on disk.
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                if let Some(png) = ux1x_out(&theme, "history_scrubber.png") {
+                    let mut mounted = with_versions(1000.0);
+                    mounted.set_current_tick(19);
+                    let h = mounted.natural_height() + 2.0 * margin;
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a small test viewport"
+                    )]
+                    let harness = crate::headless::FrameHarness::new_with_theme(
+                        crate::State::new(),
+                        Box::new(mounted),
+                        (1000, h as u32),
+                        theme.clone(),
+                    );
+                    harness.render_window_png(&png);
+                    if let Ok(json) = harness.inspection_json() {
+                        std::fs::write(png.with_extension("inspection.json"), json)
+                            .expect("write inspection");
+                    }
+                }
+            }
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                let mut s = with_versions(1000.0);
+                s.set_current_tick(19);
+                let strip = Rect::new(margin, margin, margin + 1000.0, margin + s.natural_height());
+                s.set_rect(strip);
+                let (w, h) = (strip.x1 + margin, strip.y1 + margin);
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                s.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
-                    reason = "a small test viewport"
+                    reason = "a small test surface"
                 )]
-                let harness = crate::headless::FrameHarness::new_with_theme(
-                    crate::State::new(),
-                    Box::new(mounted),
-                    (1000, h as u32),
-                    theme.clone(),
+                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test surface"
+                )]
+                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+                // Strip edge against its own fill, on the track's centre line
+                // (clear of the corner arcs; the track starts one `TRACK_INSET`
+                // in, so the columns beside the edge are bare fill).
+                let y = s.track_rect().center().y;
+                let edge = lum(strip.x0, y);
+                let fill = lum(strip.x0 + 3.0, y);
+                assert!(
+                    (edge - fill).abs() >= EDGE_MIN,
+                    "{}: strip edge {edge:.4} vs fill {fill:.4} did not register",
+                    theme.name
                 );
-                harness.render_window_png(&png);
-                if let Ok(json) = harness.inspection_json() {
-                    std::fs::write(png.with_extension("inspection.json"), json)
-                        .expect("write inspection");
-                }
+
+                // Neutral button (Preview): its left edge against its face.
+                let preview = s
+                    .button_rect(ScrubButton::Preview)
+                    .expect("the wide strip offers Preview");
+                let bedge = lum(preview.x0, preview.center().y);
+                let face = lum(preview.x0 + 3.0, preview.center().y);
+                assert!(
+                    (bedge - face).abs() >= EDGE_MIN,
+                    "{}: button edge {bedge:.4} vs face {face:.4} did not register",
+                    theme.name
+                );
+
+                // Track: the unfilled track does not exist at tick 19 (fully
+                // played), so probe the band's odd segment against the strip.
+                let band = s.band_rect();
+                let seg = lum(band.x0 + 8.0, band.center().y + 6.0);
+                let beside = lum(band.x0 + 8.0, band.y1 + 3.0);
+                assert!(
+                    (seg - beside).abs() >= EDGE_MIN,
+                    "{}: band segment {seg:.4} vs strip {beside:.4} did not register",
+                    theme.name
+                );
             }
         }
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            let mut s = with_versions(1000.0);
-            s.set_current_tick(19);
-            let strip = Rect::new(margin, margin, margin + 1000.0, margin + s.natural_height());
-            s.set_rect(strip);
-            let (w, h) = (strip.x1 + margin, strip.y1 + margin);
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            s.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a small test surface"
-            )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a small test surface"
-            )]
-            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
 
-            // Strip edge against its own fill, on the track's centre line
-            // (clear of the corner arcs; the track starts one `TRACK_INSET`
-            // in, so the columns beside the edge are bare fill).
-            let y = s.track_rect().center().y;
-            let edge = lum(strip.x0, y);
-            let fill = lum(strip.x0 + 3.0, y);
-            assert!(
-                (edge - fill).abs() >= EDGE_MIN,
-                "{}: strip edge {edge:.4} vs fill {fill:.4} did not register",
-                theme.name
-            );
+        fn installing_versions_grows_the_strip_and_makes_room_for_the_band() {
+            let plain = scrubber(900.0, 20);
+            assert_eq!(plain.natural_height(), 140.0);
+            assert_eq!(plain.band_rect(), Rect::ZERO, "no versions, no band");
+            let plain_track_y = plain.track_rect().center().y;
 
-            // Neutral button (Preview): its left edge against its face.
-            let preview = s
-                .button_rect(ScrubButton::Preview)
-                .expect("the wide strip offers Preview");
-            let bedge = lum(preview.x0, preview.center().y);
-            let face = lum(preview.x0 + 3.0, preview.center().y);
-            assert!(
-                (bedge - face).abs() >= EDGE_MIN,
-                "{}: button edge {bedge:.4} vs face {face:.4} did not register",
-                theme.name
-            );
-
-            // Track: the unfilled track does not exist at tick 19 (fully
-            // played), so probe the band's odd segment against the strip.
+            let s = with_versions(900.0);
+            assert_eq!(s.natural_height(), 168.0);
             let band = s.band_rect();
-            let seg = lum(band.x0 + 8.0, band.center().y + 6.0);
-            let beside = lum(band.x0 + 8.0, band.y1 + 3.0);
+            assert!(band.height() > 0.0, "the band is on screen");
             assert!(
-                (seg - beside).abs() >= EDGE_MIN,
-                "{}: band segment {seg:.4} vs strip {beside:.4} did not register",
-                theme.name
+                band.y1 < s.track_rect().y0,
+                "and it sits above the track rather than over it"
+            );
+            assert!(
+                s.track_rect().center().y > plain_track_y,
+                "the track moved down to make room, it did not lose height"
+            );
+            assert!(
+                s.restore_button_rect().y1 <= s.rect().y1,
+                "the button row must stay inside the taller strip"
             );
         }
+
+        fn dragging_snaps_to_version_boundaries() {
+            let mut s = with_versions(900.0);
+            assert!(s.snaps_to_groups());
+            assert_eq!(s.snap_targets(), vec![0, 4, 9, 14, 19]);
+
+            s.set_current_tick(0);
+            let y = s.track_rect().center().y;
+            let x0 = s.tick_x(0);
+            dispatch(&mut s, &cursor_moved(x0, y));
+            dispatch(&mut s, &mouse_press());
+            assert!(s.is_dragging());
+
+            let target = { s.tick_x(11) };
+            dispatch(&mut s, &cursor_moved(target, y));
+            assert_eq!(
+                s.current_tick(),
+                9,
+                "snapped to the nearest version boundary, not to keystroke 11"
+            );
+
+            let target = { s.tick_x(13) };
+            dispatch(&mut s, &cursor_moved(target, y));
+            assert_eq!(s.current_tick(), 14);
+            dispatch(&mut s, &mouse_release());
+        }
+
+        fn per_change_resolution_is_one_toggle_away() {
+            let mut s = with_versions(900.0);
+            s.set_snap_to_groups(false);
+            assert!(!s.snaps_to_groups());
+            s.set_current_tick(0);
+            let y = s.track_rect().center().y;
+            let (x0, x11) = (s.tick_x(0), s.tick_x(11));
+            dispatch(&mut s, &cursor_moved(x0, y));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(x11, y));
+            assert_eq!(s.current_tick(), 11, "every change is reachable again");
+        }
+
+        fn a_strip_with_no_versions_snaps_to_nothing() {
+            let mut s = scrubber(900.0, 20);
+            assert!(!s.snaps_to_groups());
+            assert!(s.snap_targets().is_empty());
+            s.set_current_tick(0);
+            let y = s.track_rect().center().y;
+            let (x0, x7) = (s.tick_x(0), s.tick_x(7));
+            dispatch(&mut s, &cursor_moved(x0, y));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(x7, y));
+            assert_eq!(s.current_tick(), 7);
+        }
+
+        fn clicking_a_version_block_goes_to_the_end_of_that_version() {
+            let mut s = with_versions(900.0);
+            s.set_current_tick(19);
+            // The middle of the "Intro rewrite" block (changes 10..=14).
+            let band = s.band_rect();
+            let x = f64::midpoint(s.tick_x(10), s.tick_x(14));
+            click(&mut s, Point::new(x, band.center().y));
+            assert_eq!(
+                s.current_tick(),
+                14,
+                "the version's end is the state that version produced"
+            );
+            assert_eq!(
+                s.current_group().map(ScrubberGroup::title),
+                Some("Intro rewrite"),
+                "and the handle is inside it"
+            );
+            assert!(
+                !s.is_dragging(),
+                "a click on the band is a jump, not the start of a drag"
+            );
+        }
+
+        fn an_empty_history_says_so_and_ignores_every_gesture() {
+            let mut s = scrubber(900.0, 0);
+            assert_eq!(s.tick_count(), 0);
+            assert!(s.current_group().is_none());
+            s.set_groups(vec![group(0, 3, Some("Impossible"))]);
+            assert!(s.groups().is_empty(), "no changes, no segments");
+            dispatch(&mut s, &cursor_moved(100.0, 60.0));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &mouse_release());
+            assert_eq!(s.current_tick(), 0);
+            assert!(!s.wants_keyboard());
+        }
+
+        ux1x_strip_buttons_and_track_edges_register_on_both_presets();
+        installing_versions_grows_the_strip_and_makes_room_for_the_band();
+        dragging_snaps_to_version_boundaries();
+        per_change_resolution_is_one_toggle_away();
+        a_strip_with_no_versions_snaps_to_nothing();
+        clicking_a_version_block_goes_to_the_end_of_that_version();
+        an_empty_history_says_so_and_ignores_every_gesture();
     }
 
     /// Twenty changes cut into four versions, two of them named.
@@ -2051,45 +2167,228 @@ mod version_tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
     #[test]
-    fn naming_field_forwards_ime_preedit_and_candidate_geometry() {
-        let mut scrubber = with_versions(900.0);
-        scrubber.set_current_tick(12);
-        assert!(scrubber.begin_naming_current_group());
-        let committed = scrubber.naming_buffer().unwrap().to_string();
-        dispatch(
-            &mut scrubber,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-        );
-        assert_eq!(scrubber.naming_buffer(), Some(committed.as_str()));
+    fn naming_versions_opens_renames_or_abandons() {
+        fn naming_field_forwards_ime_preedit_and_candidate_geometry() {
+            let mut scrubber = with_versions(900.0);
+            scrubber.set_current_tick(12);
+            assert!(scrubber.begin_naming_current_group());
+            let committed = scrubber.naming_buffer().unwrap().to_string();
+            dispatch(
+                &mut scrubber,
+                &WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "漢".into(),
+                    Some(("漢".len(), "漢".len())),
+                )),
+            );
+            assert_eq!(scrubber.naming_buffer(), Some(committed.as_str()));
 
-        let mut scene = Scene::new();
-        let mut renderer = TextRenderer::new();
-        Widget::draw(
-            &mut scrubber,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        let candidate = Widget::ime_cursor_rect(&scrubber)
-            .expect("history wrapper forwards its naming field caret");
-        assert!(scrubber.name_field_rect().contains(candidate.center()));
+            let mut scene = Scene::new();
+            let mut renderer = TextRenderer::new();
+            Widget::draw(
+                &mut scrubber,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            let candidate = Widget::ime_cursor_rect(&scrubber)
+                .expect("history wrapper forwards its naming field caret");
+            assert!(scrubber.name_field_rect().contains(candidate.center()));
+        }
+
+        fn naming_the_current_version_emits_that_versions_whole_range() {
+            let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+            let c = captured.clone();
+            let mut s = with_versions(900.0);
+            s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
+            s.set_current_tick(7); // inside the unnamed 5..=9 run
+
+            let btn = s.name_button_rect();
+            assert!(btn.area() > 0.0, "the strip offers a name button");
+            click(&mut s, btn.center());
+            assert!(s.wants_keyboard());
+            type_str(&mut s, "Second pass");
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+            );
+
+            let reqs = captured.borrow();
+            assert_eq!(reqs.len(), 1);
+            let mut start = [0u8; 16];
+            start[0] = 5;
+            let mut end = [0u8; 16];
+            end[0] = 9;
+            assert_eq!(reqs[0].start, HistoryEntryId(start));
+            assert_eq!(reqs[0].end, HistoryEntryId(end));
+            assert_eq!(reqs[0].label, "Second pass");
+            assert_eq!(reqs[0].record_id, None);
+            assert!(!s.wants_keyboard());
+        }
+
+        fn renaming_a_named_version_addresses_its_existing_record() {
+            let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+            let c = captured.clone();
+            let mut s = with_versions(900.0);
+            s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
+            s.set_current_tick(12); // inside "Intro rewrite"
+
+            let btn = s.name_button_rect();
+            click(&mut s, btn.center());
+            assert_eq!(
+                s.naming_buffer(),
+                Some("Intro rewrite"),
+                "a rename starts from the current name"
+            );
+            type_str(&mut s, "!");
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+            );
+            let reqs = captured.borrow();
+            assert_eq!(reqs[0].label, "Intro rewrite!");
+            assert_eq!(reqs[0].record_id.as_deref(), Some("tilo:group:10"));
+        }
+
+        fn starting_a_version_opens_one_and_finishing_closes_it() {
+            let captured: Rc<RefCell<Vec<VersionAction>>> = Rc::new(RefCell::new(Vec::new()));
+            let c = captured.clone();
+            let mut s = with_versions(900.0);
+            s.on_version = Some(Box::new(move |a| c.borrow_mut().push(a.clone())));
+
+            let btn = s.version_button_rect();
+            assert!(btn.area() > 0.0);
+            click(&mut s, btn.center());
+            assert!(s.wants_keyboard(), "it asks what you are about to do");
+            type_str(&mut s, "Rework the intro");
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+            );
+            {
+                let acts = captured.borrow();
+                assert_eq!(acts.len(), 1);
+                let mut at = [0u8; 16];
+                at[0] = 19;
+                assert_eq!(
+                    acts[0],
+                    VersionAction::Open {
+                        at: HistoryEntryId(at),
+                        label: "Rework the intro".to_string()
+                    },
+                    "a prospective version starts at the newest change"
+                );
+            }
+
+            // The host writes it and hands the groups back with one still open.
+            let mut groups = s.groups().to_vec();
+            groups.last_mut().unwrap().label = Some("Rework the intro".into());
+            groups.last_mut().unwrap().record_id = Some("tilo:group:15".into());
+            groups.last_mut().unwrap().open = true;
+            s.set_groups(groups);
+            assert!(s.open_group().is_some());
+
+            let btn = s.version_button_rect();
+            click(&mut s, btn.center());
+            let acts = captured.borrow();
+            assert_eq!(acts.len(), 2);
+            let mut at = [0u8; 16];
+            at[0] = 19;
+            assert_eq!(
+                acts[1],
+                VersionAction::Close {
+                    record_id: "tilo:group:15".to_string(),
+                    at: HistoryEntryId(at)
+                },
+                "finishing closes the open one at the newest change — no typing needed"
+            );
+        }
+
+        fn an_empty_name_neither_opens_a_version_nor_writes_one() {
+            let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let n = names.clone();
+            let v = versions.clone();
+            let mut s = with_versions(900.0);
+            s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
+            s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+
+            s.set_current_tick(7); // an unnamed run: nothing to remove
+            let at = s.name_button_rect().center();
+            click(&mut s, at);
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+            );
+            assert_eq!(*names.borrow(), 0, "nothing to write and nothing to remove");
+
+            let at = s.version_button_rect().center();
+            click(&mut s, at);
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+            );
+            assert_eq!(*versions.borrow(), 0, "an unnamed version is not a version");
+        }
+
+        fn escape_abandons_a_name_and_leaves_the_version_alone() {
+            let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let n = names.clone();
+            let mut s = with_versions(900.0);
+            s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
+            s.set_current_tick(12); // inside "Intro rewrite"
+
+            let at = s.name_button_rect().center();
+            click(&mut s, at);
+            type_str(&mut s, "half typed");
+            assert_eq!(s.naming_buffer(), Some("Intro rewritehalf typed"));
+
+            dispatch(
+                &mut s,
+                &key(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Escape,
+                )),
+            );
+            assert!(!s.wants_keyboard(), "the field is gone");
+            assert_eq!(*names.borrow(), 0, "and nothing was written");
+            assert_eq!(
+                s.current_group().and_then(|g| g.label.as_deref()),
+                Some("Intro rewrite"),
+                "the name it started from is untouched"
+            );
+        }
+
+        naming_field_forwards_ime_preedit_and_candidate_geometry();
+        naming_the_current_version_emits_that_versions_whole_range();
+        renaming_a_named_version_addresses_its_existing_record();
+        starting_a_version_opens_one_and_finishing_closes_it();
+        an_empty_name_neither_opens_a_version_nor_writes_one();
+        escape_abandons_a_name_and_leaves_the_version_alone();
     }
 
     fn type_str(s: &mut HistoryScrubber, text: &str) {
@@ -2109,352 +2408,213 @@ mod version_tests {
     }
 
     #[test]
-    fn installing_versions_grows_the_strip_and_makes_room_for_the_band() {
-        let plain = scrubber(900.0, 20);
-        assert_eq!(plain.natural_height(), 140.0);
-        assert_eq!(plain.band_rect(), Rect::ZERO, "no versions, no band");
-        let plain_track_y = plain.track_rect().center().y;
-
-        let s = with_versions(900.0);
-        assert_eq!(s.natural_height(), 168.0);
-        let band = s.band_rect();
-        assert!(band.height() > 0.0, "the band is on screen");
-        assert!(
-            band.y1 < s.track_rect().y0,
-            "and it sits above the track rather than over it"
-        );
-        assert!(
-            s.track_rect().center().y > plain_track_y,
-            "the track moved down to make room, it did not lose height"
-        );
-        assert!(
-            s.restore_button_rect().y1 <= s.rect().y1,
-            "the button row must stay inside the taller strip"
-        );
-    }
-
-    #[test]
-    fn dragging_snaps_to_version_boundaries() {
-        let mut s = with_versions(900.0);
-        assert!(s.snaps_to_groups());
-        assert_eq!(s.snap_targets(), vec![0, 4, 9, 14, 19]);
-
-        s.set_current_tick(0);
-        let y = s.track_rect().center().y;
-        let x0 = s.tick_x(0);
-        dispatch(&mut s, &cursor_moved(x0, y));
-        dispatch(&mut s, &mouse_press());
-        assert!(s.is_dragging());
-
-        let target = { s.tick_x(11) };
-        dispatch(&mut s, &cursor_moved(target, y));
-        assert_eq!(
-            s.current_tick(),
-            9,
-            "snapped to the nearest version boundary, not to keystroke 11"
-        );
-
-        let target = { s.tick_x(13) };
-        dispatch(&mut s, &cursor_moved(target, y));
-        assert_eq!(s.current_tick(), 14);
-        dispatch(&mut s, &mouse_release());
-    }
-
-    #[test]
-    fn per_change_resolution_is_one_toggle_away() {
-        let mut s = with_versions(900.0);
-        s.set_snap_to_groups(false);
-        assert!(!s.snaps_to_groups());
-        s.set_current_tick(0);
-        let y = s.track_rect().center().y;
-        let (x0, x11) = (s.tick_x(0), s.tick_x(11));
-        dispatch(&mut s, &cursor_moved(x0, y));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(x11, y));
-        assert_eq!(s.current_tick(), 11, "every change is reachable again");
-    }
-
-    #[test]
-    fn a_strip_with_no_versions_snaps_to_nothing() {
-        let mut s = scrubber(900.0, 20);
-        assert!(!s.snaps_to_groups());
-        assert!(s.snap_targets().is_empty());
-        s.set_current_tick(0);
-        let y = s.track_rect().center().y;
-        let (x0, x7) = (s.tick_x(0), s.tick_x(7));
-        dispatch(&mut s, &cursor_moved(x0, y));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(x7, y));
-        assert_eq!(s.current_tick(), 7);
-    }
-
-    #[test]
-    fn clicking_a_version_block_goes_to_the_end_of_that_version() {
-        let mut s = with_versions(900.0);
-        s.set_current_tick(19);
-        // The middle of the "Intro rewrite" block (changes 10..=14).
-        let band = s.band_rect();
-        let x = f64::midpoint(s.tick_x(10), s.tick_x(14));
-        click(&mut s, Point::new(x, band.center().y));
-        assert_eq!(
-            s.current_tick(),
-            14,
-            "the version's end is the state that version produced"
-        );
-        assert_eq!(
-            s.current_group().map(ScrubberGroup::title),
-            Some("Intro rewrite"),
-            "and the handle is inside it"
-        );
-        assert!(
-            !s.is_dragging(),
-            "a click on the band is a jump, not the start of a drag"
-        );
-    }
-
-    #[test]
-    fn the_popover_and_the_screen_reader_both_name_the_version() {
-        let mut s = with_versions(900.0);
-        s.set_current_tick(12);
-        assert_eq!(
-            s.current_group().map(ScrubberGroup::title),
-            Some("Intro rewrite")
-        );
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(
-            node.value.as_deref(),
-            Some("Intro rewrite, revision 13 of 20"),
-            "'revision 13 of 20' alone is not something a user can act on"
-        );
-
-        // An unnamed version falls back to its derived description.
-        s.set_current_tick(7);
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.value.as_deref(), Some("5 edits, revision 8 of 20"));
-    }
-
-    #[test]
-    fn naming_the_current_version_emits_that_versions_whole_range() {
-        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
-        let c = captured.clone();
-        let mut s = with_versions(900.0);
-        s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
-        s.set_current_tick(7); // inside the unnamed 5..=9 run
-
-        let btn = s.name_button_rect();
-        assert!(btn.area() > 0.0, "the strip offers a name button");
-        click(&mut s, btn.center());
-        assert!(s.wants_keyboard());
-        type_str(&mut s, "Second pass");
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-        );
-
-        let reqs = captured.borrow();
-        assert_eq!(reqs.len(), 1);
-        let mut start = [0u8; 16];
-        start[0] = 5;
-        let mut end = [0u8; 16];
-        end[0] = 9;
-        assert_eq!(reqs[0].start, HistoryEntryId(start));
-        assert_eq!(reqs[0].end, HistoryEntryId(end));
-        assert_eq!(reqs[0].label, "Second pass");
-        assert_eq!(reqs[0].record_id, None);
-        assert!(!s.wants_keyboard());
-    }
-
-    #[test]
-    fn renaming_a_named_version_addresses_its_existing_record() {
-        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
-        let c = captured.clone();
-        let mut s = with_versions(900.0);
-        s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
-        s.set_current_tick(12); // inside "Intro rewrite"
-
-        let btn = s.name_button_rect();
-        click(&mut s, btn.center());
-        assert_eq!(
-            s.naming_buffer(),
-            Some("Intro rewrite"),
-            "a rename starts from the current name"
-        );
-        type_str(&mut s, "!");
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-        );
-        let reqs = captured.borrow();
-        assert_eq!(reqs[0].label, "Intro rewrite!");
-        assert_eq!(reqs[0].record_id.as_deref(), Some("tilo:group:10"));
-    }
-
-    #[test]
-    fn starting_a_version_opens_one_and_finishing_closes_it() {
-        let captured: Rc<RefCell<Vec<VersionAction>>> = Rc::new(RefCell::new(Vec::new()));
-        let c = captured.clone();
-        let mut s = with_versions(900.0);
-        s.on_version = Some(Box::new(move |a| c.borrow_mut().push(a.clone())));
-
-        let btn = s.version_button_rect();
-        assert!(btn.area() > 0.0);
-        click(&mut s, btn.center());
-        assert!(s.wants_keyboard(), "it asks what you are about to do");
-        type_str(&mut s, "Rework the intro");
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-        );
-        {
-            let acts = captured.borrow();
-            assert_eq!(acts.len(), 1);
-            let mut at = [0u8; 16];
-            at[0] = 19;
+    fn version_segments_and_names_describe_real_changes() {
+        fn the_popover_and_the_screen_reader_both_name_the_version() {
+            let mut s = with_versions(900.0);
+            s.set_current_tick(12);
             assert_eq!(
-                acts[0],
-                VersionAction::Open {
-                    at: HistoryEntryId(at),
-                    label: "Rework the intro".to_string()
-                },
-                "a prospective version starts at the newest change"
+                s.current_group().map(ScrubberGroup::title),
+                Some("Intro rewrite")
+            );
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(
+                node.value.as_deref(),
+                Some("Intro rewrite, revision 13 of 20"),
+                "'revision 13 of 20' alone is not something a user can act on"
+            );
+
+            // An unnamed version falls back to its derived description.
+            s.set_current_tick(7);
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(node.value.as_deref(), Some("5 edits, revision 8 of 20"));
+        }
+
+        fn a_segment_that_does_not_describe_real_changes_is_dropped() {
+            let mut s = scrubber(900.0, 10);
+            s.set_groups(vec![
+                group(0, 4, Some("Real")),
+                group(8, 40, Some("Runs past the end")),
+                group(6, 5, Some("Backwards")),
+            ]);
+            let titles: Vec<&str> = s.groups().iter().map(ScrubberGroup::title).collect();
+            assert_eq!(titles, vec!["Real"]);
+        }
+
+        fn a_one_change_version_still_gets_a_visible_block() {
+            let mut s = scrubber(900.0, 20);
+            s.set_groups(vec![group(7, 7, Some("One change"))]);
+            let g = &s.groups()[0];
+            assert_eq!((g.start, g.end), (7, 7));
+            assert_eq!(s.tick_x(7), s.tick_x(g.end));
+            assert_eq!(s.snap_targets(), vec![0, 7]);
+        }
+
+        fn a_version_nobody_named_still_says_what_it_is() {
+            let mut s = with_versions(900.0);
+            let unnamed = segment_interior(&s, 1); // the 5..=9 run, which nobody named
+            assert!(
+                unnamed.width() > 60.0,
+                "the fixture's block has room: {unnamed:?}"
+            );
+            assert!(
+                ink_in(&mut s, unnamed) > 0,
+                "the unnamed block is blank grey"
+            );
+
+            // It is the segment's own text: blank the description and
+            // the same block goes back to being a flat fill.
+            let mut groups = s.groups().to_vec();
+            groups[1].derived = String::new();
+            s.set_groups(groups);
+            assert_eq!(
+                ink_in(&mut s, unnamed),
+                0,
+                "something other than `derived` is being drawn in there"
             );
         }
 
-        // The host writes it and hands the groups back with one still open.
-        let mut groups = s.groups().to_vec();
-        groups.last_mut().unwrap().label = Some("Rework the intro".into());
-        groups.last_mut().unwrap().record_id = Some("tilo:group:15".into());
-        groups.last_mut().unwrap().open = true;
-        s.set_groups(groups);
-        assert!(s.open_group().is_some());
+        fn a_dense_track_drops_the_per_change_notches_rather_than_smearing() {
+            // 200 changes across 900 px is a notch every 4.4 px — a grey texture,
+            // not marks. Asserts on the same predicate the paint path branches on.
+            let dense = scrubber(900.0, 200);
+            let track = dense.track_rect();
+            let spacing = track.width() / 199.0;
+            assert!(spacing < MIN_TICK_SPACING, "spacing is {spacing}");
 
-        let btn = s.version_button_rect();
-        click(&mut s, btn.center());
-        let acts = captured.borrow();
-        assert_eq!(acts.len(), 2);
-        let mut at = [0u8; 16];
-        at[0] = 19;
-        assert_eq!(
-            acts[1],
-            VersionAction::Close {
-                record_id: "tilo:group:15".to_string(),
-                at: HistoryEntryId(at)
-            },
-            "finishing closes the open one at the newest change — no typing needed"
-        );
+            let sparse = scrubber(900.0, 20);
+            let spacing = sparse.track_rect().width() / 19.0;
+            assert!(spacing >= MIN_TICK_SPACING, "spacing is {spacing}");
+        }
+
+        the_popover_and_the_screen_reader_both_name_the_version();
+        a_segment_that_does_not_describe_real_changes_is_dropped();
+        a_one_change_version_still_gets_a_visible_block();
+        a_version_nobody_named_still_says_what_it_is();
+        a_dense_track_drops_the_per_change_notches_rather_than_smearing();
     }
 
     #[test]
-    fn an_empty_name_neither_opens_a_version_nor_writes_one() {
-        let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let n = names.clone();
-        let v = versions.clone();
-        let mut s = with_versions(900.0);
-        s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
-        s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+    fn button_row_and_name_field_never_overlap_their_targets() {
+        fn the_button_row_drops_buttons_rather_than_overlapping_them() {
+            for w in [900.0, 620.0, 520.0, 420.0, 360.0, 300.0] {
+                let s = with_versions(w);
+                let mut rects: Vec<Rect> = vec![
+                    s.restore_button_rect(),
+                    s.preview_button_rect(),
+                    s.name_button_rect(),
+                    s.version_button_rect(),
+                ]
+                .into_iter()
+                .filter(|r| r.area() > 0.0)
+                .collect();
+                assert!(
+                    !rects.is_empty(),
+                    "at {w} px the strip must still offer something"
+                );
+                assert!(
+                    s.restore_button_rect().area() > 0.0,
+                    "restore is the primary action and is never dropped ({w} px)"
+                );
+                for r in &rects {
+                    assert!(
+                        r.x0 >= s.rect().x0 && r.x1 <= s.rect().x1,
+                        "a button escaped the strip at {w} px: {r:?}"
+                    );
+                }
+                rects.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
+                for pair in rects.windows(2) {
+                    assert!(
+                        pair[0].x1 <= pair[1].x0,
+                        "buttons overlap at {w} px: {:?} then {:?}",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        }
 
-        s.set_current_tick(7); // an unnamed run: nothing to remove
-        let at = s.name_button_rect().center();
-        click(&mut s, at);
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-        );
-        assert_eq!(*names.borrow(), 0, "nothing to write and nothing to remove");
+        fn a_click_in_the_name_field_cannot_reach_the_button_underneath_it() {
+            let restores: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let r = restores.clone();
+            let v = versions.clone();
+            let mut s = with_versions(900.0);
+            s.on_restore = Some(Box::new(move |_| *r.borrow_mut() += 1));
+            s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+            s.set_current_tick(12);
 
-        let at = s.version_button_rect().center();
-        click(&mut s, at);
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-        );
-        assert_eq!(*versions.borrow(), 0, "an unnamed version is not a version");
-    }
+            let at = s.name_button_rect().center();
+            click(&mut s, at);
+            type_str(&mut s, "Intro");
+            let field = s.name_field_rect();
+            assert!(field.area() > 0.0, "the field has a rect while it is up");
 
-    #[test]
-    fn a_segment_that_does_not_describe_real_changes_is_dropped() {
-        let mut s = scrubber(900.0, 10);
-        s.set_groups(vec![
-            group(0, 4, Some("Real")),
-            group(8, 40, Some("Runs past the end")),
-            group(6, 5, Some("Backwards")),
-        ]);
-        let titles: Vec<&str> = s.groups().iter().map(ScrubberGroup::title).collect();
-        assert_eq!(titles, vec!["Real"]);
-    }
-
-    #[test]
-    fn the_button_row_drops_buttons_rather_than_overlapping_them() {
-        for w in [900.0, 620.0, 520.0, 420.0, 360.0, 300.0] {
-            let s = with_versions(w);
-            let mut rects: Vec<Rect> = vec![
-                s.restore_button_rect(),
+            for btn in [
                 s.preview_button_rect(),
                 s.name_button_rect(),
                 s.version_button_rect(),
-            ]
-            .into_iter()
-            .filter(|r| r.area() > 0.0)
-            .collect();
-            assert!(
-                !rects.is_empty(),
-                "at {w} px the strip must still offer something"
-            );
-            assert!(
-                s.restore_button_rect().area() > 0.0,
-                "restore is the primary action and is never dropped ({w} px)"
-            );
-            for r in &rects {
-                assert!(
-                    r.x0 >= s.rect().x0 && r.x1 <= s.rect().x1,
-                    "a button escaped the strip at {w} px: {r:?}"
-                );
+            ] {
+                if btn.area() > 0.0 && field.contains(btn.center()) {
+                    click(&mut s, btn.center());
+                    assert!(
+                        s.wants_keyboard(),
+                        "the field was dismissed by a click inside it"
+                    );
+                    assert_eq!(
+                        s.naming_buffer(),
+                        Some("Intro rewriteIntro"),
+                        "a button under the field restarted the name"
+                    );
+                }
             }
-            rects.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
-            for pair in rects.windows(2) {
-                assert!(
-                    pair[0].x1 <= pair[1].x0,
-                    "buttons overlap at {w} px: {:?} then {:?}",
-                    pair[0],
-                    pair[1]
-                );
-            }
+            assert_eq!(*versions.borrow(), 0, "no version was opened");
+
+            let restore = s.restore_button_rect();
+            assert!(!field.contains(restore.center()));
+            click(&mut s, restore.center());
+            assert!(!s.wants_keyboard(), "clicking off the field abandons it");
+            assert_eq!(
+                *restores.borrow(),
+                0,
+                "the click that dismissed the field must not also restore"
+            );
+
+            let at = s.restore_button_rect().center();
+            click(&mut s, at);
+            assert_eq!(*restores.borrow(), 1);
         }
-    }
 
-    #[test]
-    fn a_dense_track_drops_the_per_change_notches_rather_than_smearing() {
-        // 200 changes across 900 px is a notch every 4.4 px — a grey texture,
-        // not marks. Asserts on the same predicate the paint path branches on.
-        let dense = scrubber(900.0, 200);
-        let track = dense.track_rect();
-        let spacing = track.width() / 199.0;
-        assert!(spacing < MIN_TICK_SPACING, "spacing is {spacing}");
+        fn the_name_field_is_a_label_box_not_the_whole_button_row() {
+            let mut s = with_versions(1000.0);
+            s.set_current_tick(12);
+            let at = s.name_button_rect().center();
+            click(&mut s, at);
+            let field = s.name_field_rect();
+            assert!(field.width() <= NAME_FIELD_W, "got {}", field.width());
+            assert!(
+                field.x1 < s.restore_button_rect().x0,
+                "the field must not reach the destructive button: {field:?}"
+            );
+        }
 
-        let sparse = scrubber(900.0, 20);
-        let spacing = sparse.track_rect().width() / 19.0;
-        assert!(spacing >= MIN_TICK_SPACING, "spacing is {spacing}");
-    }
+        fn the_live_state_dot_does_not_hide_under_the_band_or_the_popover() {
+            let s = with_versions(900.0);
+            let dot_y = s.live_state_dot_center().y;
+            assert!(
+                dot_y > s.band_rect().y1,
+                "the dot is inside the segment band"
+            );
+            assert!(dot_y > s.popover_rect().y1, "the dot is behind the popover");
+            assert!(
+                dot_y < s.restore_button_rect().y0,
+                "the dot collides with the button row"
+            );
+        }
 
-    #[test]
-    fn a_one_change_version_still_gets_a_visible_block() {
-        let mut s = scrubber(900.0, 20);
-        s.set_groups(vec![group(7, 7, Some("One change"))]);
-        let g = &s.groups()[0];
-        assert_eq!((g.start, g.end), (7, 7));
-        assert_eq!(s.tick_x(7), s.tick_x(g.end));
-        assert_eq!(s.snap_targets(), vec![0, 7]);
+        the_button_row_drops_buttons_rather_than_overlapping_them();
+        a_click_in_the_name_field_cannot_reach_the_button_underneath_it();
+        the_name_field_is_a_label_box_not_the_whole_button_row();
+        the_live_state_dot_does_not_hide_under_the_band_or_the_popover();
     }
 
     /// Rounds a rect coordinate into a device-pixel index for offscreen
@@ -2519,236 +2679,94 @@ mod version_tests {
     }
 
     #[test]
-    fn a_version_nobody_named_still_says_what_it_is() {
-        let mut s = with_versions(900.0);
-        let unnamed = segment_interior(&s, 1); // the 5..=9 run, which nobody named
-        assert!(
-            unnamed.width() > 60.0,
-            "the fixture's block has room: {unnamed:?}"
-        );
-        assert!(
-            ink_in(&mut s, unnamed) > 0,
-            "the unnamed block is blank grey"
-        );
-
-        // It is the segment's own text: blank the description and
-        // the same block goes back to being a flat fill.
-        let mut groups = s.groups().to_vec();
-        groups[1].derived = String::new();
-        s.set_groups(groups);
-        assert_eq!(
-            ink_in(&mut s, unnamed),
-            0,
-            "something other than `derived` is being drawn in there"
-        );
-    }
-
-    #[test]
-    fn escape_abandons_a_name_and_leaves_the_version_alone() {
-        let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let n = names.clone();
-        let mut s = with_versions(900.0);
-        s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
-        s.set_current_tick(12); // inside "Intro rewrite"
-
-        let at = s.name_button_rect().center();
-        click(&mut s, at);
-        type_str(&mut s, "half typed");
-        assert_eq!(s.naming_buffer(), Some("Intro rewritehalf typed"));
-
-        dispatch(
-            &mut s,
-            &key(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Escape,
-            )),
-        );
-        assert!(!s.wants_keyboard(), "the field is gone");
-        assert_eq!(*names.borrow(), 0, "and nothing was written");
-        assert_eq!(
-            s.current_group().and_then(|g| g.label.as_deref()),
-            Some("Intro rewrite"),
-            "the name it started from is untouched"
-        );
-    }
-
-    #[test]
-    fn a_click_in_the_name_field_cannot_reach_the_button_underneath_it() {
-        let restores: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let r = restores.clone();
-        let v = versions.clone();
-        let mut s = with_versions(900.0);
-        s.on_restore = Some(Box::new(move |_| *r.borrow_mut() += 1));
-        s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
-        s.set_current_tick(12);
-
-        let at = s.name_button_rect().center();
-        click(&mut s, at);
-        type_str(&mut s, "Intro");
-        let field = s.name_field_rect();
-        assert!(field.area() > 0.0, "the field has a rect while it is up");
-
-        for btn in [
-            s.preview_button_rect(),
-            s.name_button_rect(),
-            s.version_button_rect(),
-        ] {
-            if btn.area() > 0.0 && field.contains(btn.center()) {
-                click(&mut s, btn.center());
-                assert!(
-                    s.wants_keyboard(),
-                    "the field was dismissed by a click inside it"
-                );
-                assert_eq!(
-                    s.naming_buffer(),
-                    Some("Intro rewriteIntro"),
-                    "a button under the field restarted the name"
-                );
-            }
-        }
-        assert_eq!(*versions.borrow(), 0, "no version was opened");
-
-        let restore = s.restore_button_rect();
-        assert!(!field.contains(restore.center()));
-        click(&mut s, restore.center());
-        assert!(!s.wants_keyboard(), "clicking off the field abandons it");
-        assert_eq!(
-            *restores.borrow(),
-            0,
-            "the click that dismissed the field must not also restore"
-        );
-
-        let at = s.restore_button_rect().center();
-        click(&mut s, at);
-        assert_eq!(*restores.borrow(), 1);
-    }
-
-    #[test]
-    fn the_name_field_is_a_label_box_not_the_whole_button_row() {
-        let mut s = with_versions(1000.0);
-        s.set_current_tick(12);
-        let at = s.name_button_rect().center();
-        click(&mut s, at);
-        let field = s.name_field_rect();
-        assert!(field.width() <= NAME_FIELD_W, "got {}", field.width());
-        assert!(
-            field.x1 < s.restore_button_rect().x0,
-            "the field must not reach the destructive button: {field:?}"
-        );
-    }
-
-    #[test]
-    fn the_live_state_dot_does_not_hide_under_the_band_or_the_popover() {
-        let s = with_versions(900.0);
-        let dot_y = s.live_state_dot_center().y;
-        assert!(
-            dot_y > s.band_rect().y1,
-            "the dot is inside the segment band"
-        );
-        assert!(dot_y > s.popover_rect().y1, "the dot is behind the popover");
-        assert!(
-            dot_y < s.restore_button_rect().y0,
-            "the dot collides with the button row"
-        );
-    }
-
-    #[test]
-    fn an_empty_history_says_so_and_ignores_every_gesture() {
-        let mut s = scrubber(900.0, 0);
-        assert_eq!(s.tick_count(), 0);
-        assert!(s.current_group().is_none());
-        s.set_groups(vec![group(0, 3, Some("Impossible"))]);
-        assert!(s.groups().is_empty(), "no changes, no segments");
-        dispatch(&mut s, &cursor_moved(100.0, 60.0));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &mouse_release());
-        assert_eq!(s.current_tick(), 0);
-        assert!(!s.wants_keyboard());
-    }
-
-    /// The popover is clamped to the same gutter as the track and the
-    /// button row, so pushed to either end it lines up with the strip's
-    /// content edge instead of overhanging it by the old 8 px.
-    #[test]
-    fn popover_never_overhangs_the_track_gutter() {
-        let mut s = scrubber(1000.0, 20);
-        let track = s.track_rect();
-
-        s.set_current_tick(19);
-        let at_end = s.popover_rect();
-        assert!(
-            at_end.x1 <= track.x1 + 1e-6,
-            "popover right edge {} overhangs the track end {}",
-            at_end.x1,
-            track.x1
-        );
-
-        s.set_current_tick(0);
-        let at_start = s.popover_rect();
-        assert!(
-            at_start.x0 >= track.x0 - 1e-6,
-            "popover left edge {} overhangs the track start {}",
-            at_start.x0,
-            track.x0
-        );
-    }
-
-    /// The popover cannot grow (the band and the handle sit right under
-    /// it), so at 2× the two-line stack yields its change line and the
-    /// version name stays inside the box — before, the detail line ran
-    /// down over the band. At 1× both lines still paint, inside.
-    #[test]
-    fn popover_text_stays_inside_its_box_at_every_text_scale() {
-        for (scale, expected_lines) in [(1.0_f32, 2_usize), (2.0, 1)] {
-            // A matched host: the theme's type steps carry the scale the
-            // renderer is set to, so the glyphs paint at 2x, not 4x (X1).
-            let theme = Theme::dark().with_text_scale(scale);
+    fn popover_stays_inside_the_track_at_every_width_and_scale() {
+        /// The popover is clamped to the same gutter as the track and the
+        /// button row, so pushed to either end it lines up with the strip's
+        /// content edge instead of overhanging it by the old 8 px.
+        fn popover_never_overhangs_the_track_gutter() {
             let mut s = scrubber(1000.0, 20);
-            s.set_groups(vec![
-                group(0, 9, Some("Costs section")),
-                group(10, 19, Some("Headcount pass")),
-            ]);
-            s.set_current_tick(15);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let mut scene = Scene::new();
-            s.draw_popover(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            assert_eq!(
-                scene.encoding().resources.glyph_runs.len(),
-                expected_lines,
-                "at {scale}x the popover painted the wrong number of lines"
-            );
-            let pop = s.popover_rect();
-            let (w, h) = (1000_u32, 200_u32);
-            let rgba = crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
-            let mut ink_rows = Vec::new();
-            for y in 0..h as usize {
-                let row = &rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
-                if row
-                    .chunks_exact(4)
-                    .any(|px| px[0] > 160 && px[1] > 160 && px[2] > 160)
-                {
-                    ink_rows.push(y);
-                }
-            }
-            let (top, bottom) = (
-                *ink_rows.first().expect("the popover painted a label"),
-                *ink_rows.last().expect("the popover painted a label"),
-            );
+            let track = s.track_rect();
+
+            s.set_current_tick(19);
+            let at_end = s.popover_rect();
             assert!(
-                f64::from(top as u32) >= pop.y0.floor() && f64::from(bottom as u32) < pop.y1.ceil(),
-                "at {scale}x label ink rows {top}..={bottom} leave the popover {pop:?}"
+                at_end.x1 <= track.x1 + 1e-6,
+                "popover right edge {} overhangs the track end {}",
+                at_end.x1,
+                track.x1
+            );
+
+            s.set_current_tick(0);
+            let at_start = s.popover_rect();
+            assert!(
+                at_start.x0 >= track.x0 - 1e-6,
+                "popover left edge {} overhangs the track start {}",
+                at_start.x0,
+                track.x0
             );
         }
-    }
 
-    /// A strip narrower than its own gutters plus the popover's floor width
-    /// must degrade, not panic in `clamp`.
-    #[test]
-    fn popover_survives_a_strip_narrower_than_its_floor_width() {
-        let s = scrubber(60.0, 2);
-        let pop = s.popover_rect();
-        assert!(pop.width() > 0.0);
-        assert!((pop.x0 - TRACK_INSET).abs() < 1e-6);
+        /// The popover cannot grow (the band and the handle sit right under
+        /// it), so at 2× the two-line stack yields its change line and the
+        /// version name stays inside the box — before, the detail line ran
+        /// down over the band. At 1× both lines still paint, inside.
+        fn popover_text_stays_inside_its_box_at_every_text_scale() {
+            for (scale, expected_lines) in [(1.0_f32, 2_usize), (2.0, 1)] {
+                // A matched host: the theme's type steps carry the scale the
+                // renderer is set to, so the glyphs paint at 2x, not 4x (X1).
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut s = scrubber(1000.0, 20);
+                s.set_groups(vec![
+                    group(0, 9, Some("Costs section")),
+                    group(10, 19, Some("Headcount pass")),
+                ]);
+                s.set_current_tick(15);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let mut scene = Scene::new();
+                s.draw_popover(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                assert_eq!(
+                    scene.encoding().resources.glyph_runs.len(),
+                    expected_lines,
+                    "at {scale}x the popover painted the wrong number of lines"
+                );
+                let pop = s.popover_rect();
+                let (w, h) = (1000_u32, 200_u32);
+                let rgba =
+                    crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+                let mut ink_rows = Vec::new();
+                for y in 0..h as usize {
+                    let row = &rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
+                    if row
+                        .chunks_exact(4)
+                        .any(|px| px[0] > 160 && px[1] > 160 && px[2] > 160)
+                    {
+                        ink_rows.push(y);
+                    }
+                }
+                let (top, bottom) = (
+                    *ink_rows.first().expect("the popover painted a label"),
+                    *ink_rows.last().expect("the popover painted a label"),
+                );
+                assert!(
+                    f64::from(top as u32) >= pop.y0.floor()
+                        && f64::from(bottom as u32) < pop.y1.ceil(),
+                    "at {scale}x label ink rows {top}..={bottom} leave the popover {pop:?}"
+                );
+            }
+        }
+
+        /// A strip narrower than its own gutters plus the popover's floor width
+        /// must degrade, not panic in `clamp`.
+        fn popover_survives_a_strip_narrower_than_its_floor_width() {
+            let s = scrubber(60.0, 2);
+            let pop = s.popover_rect();
+            assert!(pop.width() > 0.0);
+            assert!((pop.x0 - TRACK_INSET).abs() < 1e-6);
+        }
+
+        popover_never_overhangs_the_track_gutter();
+        popover_text_stays_inside_its_box_at_every_text_scale();
+        popover_survives_a_strip_narrower_than_its_floor_width();
     }
 }

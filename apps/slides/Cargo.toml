@@ -17,8 +17,10 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -27,8 +29,13 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tilo-content = { path = "../../crates/system/content" }
+# Text boxes are qdoc rich text, edited and drawn by the SDK editor.
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+tracing.workspace = true
 # The XML entity helpers shared with the office document codecs.
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["office"] }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.
 bounded-zip = { path = "../../crates/doc/bounded-zip" }
 vello.workspace = true
@@ -40,7 +47,7 @@ image = { workspace = true, default-features = false, features = ["jpeg", "png",
 winit.workspace = true
 taffy.workspace = true
 # LibreOffice .odp read/write: an ODF package is a ZIP of XML parts. Versions
-# match the `qdoc-codecs` document codecs so the workspace resolves one copy of each.
+# match the `tilo-doc-codecs` document codecs so the workspace resolves one copy of each.
 zip.workspace = true
 quick-xml.workspace = true
 # Host-native image open through the XDG Desktop Portal
@@ -55,3 +62,8 @@ workspace = true
 [dev-dependencies]
 vello_encoding.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

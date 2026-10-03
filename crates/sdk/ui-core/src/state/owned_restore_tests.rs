@@ -92,161 +92,169 @@ fn snapshot(state: &State) -> Snapshot {
     }
 }
 #[test]
-fn owned_restore_legacy_one_stamp_exact_span_and_undo() {
-    let (mut state, plan) = fixture();
-    let authority = PermissionContext::permissive();
-    let before = state.doc.base_heads();
-    let count = state.doc.get_changes(&[]).len();
-    let revision = state.history_revision();
-    let actor = state.doc.get_actor().clone();
-    let root = state.root.clone();
-    let receipt = state
-        .restore_prepared_owned(&admission(&authority), &plan)
-        .unwrap();
-    assert!(receipt.changed);
-    assert_eq!(receipt.before, before);
-    assert_eq!(receipt.after, state.doc.base_heads());
-    assert_eq!(receipt.history_revision, revision + 1);
-    assert_eq!(state.doc.get_changes(&[]).len(), count + 1);
-    let entry = state.peek_last_undo().unwrap();
-    assert_eq!(entry.before, before);
-    assert_eq!(entry.after, receipt.after);
-    assert_eq!(entry.author, Some(UserId("ada".into())));
-    assert_eq!(entry.instance_id, None);
-    let change = &state.doc.get_changes(&before)[0];
-    assert_eq!(change.deps(), before);
-    assert!(change.timestamp() > 0);
-    assert_eq!(
-        change
-            .message()
-            .and_then(|s| tilo_actions::ActionContext::from_change_message(s)),
-        Some(context())
-    );
-    assert_eq!(value(&state.doc), "old");
-    assert_eq!(state.doc.get_actor(), &actor);
-    assert_eq!(state.root, root);
-    state
-        .undo_as(Some(&UserId("ada".into())), None, None)
-        .unwrap();
-    assert_eq!(value(&state.doc), "live");
-}
-#[test]
-fn owned_restore_legacy_refuses_pending_and_logically_unfinished_edits() {
-    let authority = PermissionContext::permissive();
-    let (mut state, plan) = fixture();
-    state.doc.put(ROOT, "body", "pending").unwrap();
-    let before = snapshot(&state);
-    assert!(matches!(
-        state.restore_prepared_owned(&admission(&authority), &plan),
-        Err(OwnedRestoreError::PendingEdits)
-    ));
-    assert_eq!(snapshot(&state), before);
-    state.doc.commit();
-    let plan = prepare_content_restore(
-        &state.doc,
-        &SCHEMA,
-        &state.doc.base_heads(),
-        plan.target_heads(),
-    )
-    .unwrap();
-    let before = snapshot(&state);
-    assert!(matches!(
-        state.restore_prepared_owned(&admission(&authority), &plan),
-        Err(OwnedRestoreError::UnfinishedActionBoundary)
-    ));
-    assert_eq!(snapshot(&state), before);
-    // Its original owner completes the precommitted ordinary action explicitly.
-    let baseline = state.undo.last_heads.clone();
-    state
-        .undo
-        .record_committed_action(&mut state.doc, baseline, None, None);
-    assert!(
-        state
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
+    // phase: owned_restore_legacy_one_stamp_exact_span_and_undo
+    {
+        let (mut state, plan) = fixture();
+        let authority = PermissionContext::permissive();
+        let before = state.doc.base_heads();
+        let count = state.doc.get_changes(&[]).len();
+        let revision = state.history_revision();
+        let actor = state.doc.get_actor().clone();
+        let root = state.root.clone();
+        let receipt = state
             .restore_prepared_owned(&admission(&authority), &plan)
-            .unwrap()
-            .changed
-    );
-}
-#[test]
-fn owned_restore_legacy_stale_and_capacity_leave_everything_untouched() {
-    let authority = PermissionContext::permissive();
-    let (mut state, plan) = fixture();
-    state.doc.put(ROOT, "body", "new").unwrap();
-    state.commit_action(None, None);
-    let before = snapshot(&state);
-    assert!(matches!(
-        state.restore_prepared_owned(&admission(&authority), &plan),
-        Err(OwnedRestoreError::StaleReview)
-    ));
-    assert_eq!(snapshot(&state), before);
-    let plan = prepare_content_restore(
-        &state.doc,
-        &SCHEMA,
-        &state.doc.base_heads(),
-        plan.target_heads(),
-    )
-    .unwrap();
-    state.undo.revision = u64::MAX;
-    let before = snapshot(&state);
-    assert!(matches!(
-        state.restore_prepared_owned(&admission(&authority), &plan),
-        Err(OwnedRestoreError::HistoryExhausted)
-    ));
-    assert_eq!(snapshot(&state), before);
-}
-#[test]
-fn owned_restore_legacy_noop_and_errors_preserve_redo() {
-    let authority = PermissionContext::permissive();
-    let (mut state, plan) = fixture();
-    state.doc.put(ROOT, "body", "later").unwrap();
-    state.commit_action(None, None);
-    state.undo(None, None).unwrap();
-    assert!(state.can_redo_as(None));
-    let current = state.doc.base_heads();
-    let noop = prepare_content_restore(&state.doc, &SCHEMA, &current, &current).unwrap();
-    let before = snapshot(&state);
-    let receipt = state
-        .restore_prepared_owned(&admission(&authority), &noop)
+            .unwrap();
+        assert!(receipt.changed);
+        assert_eq!(receipt.before, before);
+        assert_eq!(receipt.after, state.doc.base_heads());
+        assert_eq!(receipt.history_revision, revision + 1);
+        assert_eq!(state.doc.get_changes(&[]).len(), count + 1);
+        let entry = state.peek_last_undo().unwrap();
+        assert_eq!(entry.before, before);
+        assert_eq!(entry.after, receipt.after);
+        assert_eq!(entry.author, Some(UserId("ada".into())));
+        assert_eq!(entry.instance_id, None);
+        let change = &state.doc.get_changes(&before)[0];
+        assert_eq!(change.deps(), before);
+        assert!(change.timestamp() > 0);
+        assert_eq!(
+            change
+                .message()
+                .and_then(|s| tilo_actions::ActionContext::from_change_message(s)),
+            Some(context())
+        );
+        assert_eq!(value(&state.doc), "old");
+        assert_eq!(state.doc.get_actor(), &actor);
+        assert_eq!(state.root, root);
+        state
+            .undo_as(Some(&UserId("ada".into())), None, None)
+            .unwrap();
+        assert_eq!(value(&state.doc), "live");
+    }
+    // phase: owned_restore_legacy_refuses_pending_and_logically_unfinished_edits
+    {
+        let authority = PermissionContext::permissive();
+        let (mut state, plan) = fixture();
+        state.doc.put(ROOT, "body", "pending").unwrap();
+        let before = snapshot(&state);
+        assert!(matches!(
+            state.restore_prepared_owned(&admission(&authority), &plan),
+            Err(OwnedRestoreError::PendingEdits)
+        ));
+        assert_eq!(snapshot(&state), before);
+        state.doc.commit();
+        let plan = prepare_content_restore(
+            &state.doc,
+            &SCHEMA,
+            &state.doc.base_heads(),
+            plan.target_heads(),
+        )
         .unwrap();
-    assert!(!receipt.changed);
-    assert_eq!(receipt.before, receipt.after);
-    assert_eq!(snapshot(&state), before);
-    let plan = prepare_content_restore(&state.doc, &SCHEMA, &current, plan.target_heads()).unwrap();
-    VALIDATION_MODE.set(1);
-    assert!(matches!(
-        state.restore_prepared_owned(&admission(&authority), &plan),
-        Err(OwnedRestoreError::Engine(RestoreError::SchemaInvalid(_)))
-    ));
-    VALIDATION_MODE.set(0);
-    assert_eq!(snapshot(&state), before);
-    // A later real restore succeeds, proving rollback kept actor/patch state usable.
-    assert!(
+        let before = snapshot(&state);
+        assert!(matches!(
+            state.restore_prepared_owned(&admission(&authority), &plan),
+            Err(OwnedRestoreError::UnfinishedActionBoundary)
+        ));
+        assert_eq!(snapshot(&state), before);
+        // Its original owner completes the precommitted ordinary action explicitly.
+        let baseline = state.undo.last_heads.clone();
         state
-            .restore_prepared_owned(&admission(&authority), &plan)
-            .unwrap()
-            .changed
-    );
-}
-#[test]
-fn owned_restore_legacy_unwind_rolls_back_only_owned_writes() {
-    let authority = PermissionContext::permissive();
-    let (mut state, plan) = fixture();
-    state.doc.update_diff_cursor();
-    let before = snapshot(&state);
-    VALIDATION_MODE.set(2);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.restore_prepared_owned(&admission(&authority), &plan)
-    }));
-    VALIDATION_MODE.set(0);
-    assert!(result.is_err());
-    assert_eq!(snapshot(&state), before);
-    assert!(
-        state
-            .restore_prepared_owned(&admission(&authority), &plan)
-            .unwrap()
-            .changed
-    );
-    assert_eq!(value(&state.doc), "old");
+            .undo
+            .record_committed_action(&mut state.doc, baseline, None, None);
+        assert!(
+            state
+                .restore_prepared_owned(&admission(&authority), &plan)
+                .unwrap()
+                .changed
+        );
+    }
+    // phase: owned_restore_legacy_stale_and_capacity_leave_everything_untouched
+    {
+        let authority = PermissionContext::permissive();
+        let (mut state, plan) = fixture();
+        state.doc.put(ROOT, "body", "new").unwrap();
+        state.commit_action(None, None);
+        let before = snapshot(&state);
+        assert!(matches!(
+            state.restore_prepared_owned(&admission(&authority), &plan),
+            Err(OwnedRestoreError::StaleReview)
+        ));
+        assert_eq!(snapshot(&state), before);
+        let plan = prepare_content_restore(
+            &state.doc,
+            &SCHEMA,
+            &state.doc.base_heads(),
+            plan.target_heads(),
+        )
+        .unwrap();
+        state.undo.revision = u64::MAX;
+        let before = snapshot(&state);
+        assert!(matches!(
+            state.restore_prepared_owned(&admission(&authority), &plan),
+            Err(OwnedRestoreError::HistoryExhausted)
+        ));
+        assert_eq!(snapshot(&state), before);
+    }
+    // phase: owned_restore_legacy_noop_and_errors_preserve_redo
+    {
+        let authority = PermissionContext::permissive();
+        let (mut state, plan) = fixture();
+        state.doc.put(ROOT, "body", "later").unwrap();
+        state.commit_action(None, None);
+        state.undo(None, None).unwrap();
+        assert!(state.can_redo_as(None));
+        let current = state.doc.base_heads();
+        let noop = prepare_content_restore(&state.doc, &SCHEMA, &current, &current).unwrap();
+        let before = snapshot(&state);
+        let receipt = state
+            .restore_prepared_owned(&admission(&authority), &noop)
+            .unwrap();
+        assert!(!receipt.changed);
+        assert_eq!(receipt.before, receipt.after);
+        assert_eq!(snapshot(&state), before);
+        let plan =
+            prepare_content_restore(&state.doc, &SCHEMA, &current, plan.target_heads()).unwrap();
+        VALIDATION_MODE.set(1);
+        assert!(matches!(
+            state.restore_prepared_owned(&admission(&authority), &plan),
+            Err(OwnedRestoreError::Engine(RestoreError::SchemaInvalid(_)))
+        ));
+        VALIDATION_MODE.set(0);
+        assert_eq!(snapshot(&state), before);
+        // A later real restore succeeds, proving rollback kept actor/patch state usable.
+        assert!(
+            state
+                .restore_prepared_owned(&admission(&authority), &plan)
+                .unwrap()
+                .changed
+        );
+    }
+    // phase: owned_restore_legacy_unwind_rolls_back_only_owned_writes
+    {
+        let authority = PermissionContext::permissive();
+        let (mut state, plan) = fixture();
+        state.doc.update_diff_cursor();
+        let before = snapshot(&state);
+        VALIDATION_MODE.set(2);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.restore_prepared_owned(&admission(&authority), &plan)
+        }));
+        VALIDATION_MODE.set(0);
+        assert!(result.is_err());
+        assert_eq!(snapshot(&state), before);
+        assert!(
+            state
+                .restore_prepared_owned(&admission(&authority), &plan)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(value(&state.doc), "old");
+    }
 }
 
 #[test]

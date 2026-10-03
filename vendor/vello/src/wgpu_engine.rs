@@ -531,6 +531,12 @@ enum PipelineState {
 struct WgpuShader {
     pipeline: PipelineState,
     bind_group_layout: BindGroupLayout,
+    /// The layout's entries, so [`WgpuEngine::dispatch_empty`] can bind stand-in resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    /// Length of the WGSL source, a proxy for how long a driver takes to compile it.
+    #[cfg(not(target_arch = "wasm32"))]
+    source_len: usize,
 }
 
 const BIND_GROUP_CACHE_LIMIT: usize = 128;
@@ -1601,9 +1607,13 @@ impl WgpuEngine {
         self.sparse_segment_row_mask_enabled = true;
     }
 
+    pub(crate) fn enable_canonical_segment_order(&mut self) {
+        self.canonical_segment_order_enabled = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn enable_canonical_segment_order_fixture(&mut self) {
-        self.canonical_segment_order_enabled = true;
+        self.enable_canonical_segment_order();
     }
 
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
@@ -1885,6 +1895,10 @@ impl WgpuEngine {
             wgpu: Some(WgpuShader {
                 pipeline: PipelineState::Render(pipeline),
                 bind_group_layout,
+                #[cfg(not(target_arch = "wasm32"))]
+                entries,
+                #[cfg(not(target_arch = "wasm32"))]
+                source_len: 0,
             }),
             cpu: None,
             cpu_pathtag: None,
@@ -2770,8 +2784,11 @@ impl WgpuEngine {
             if Some(id) == zero_gradient_id {
                 continue;
             }
-            if let Some((_texture, _view)) = self.bind_map.image_map.remove(&id) {
+            if let Some((texture, _view)) = self.bind_map.image_map.remove(&id) {
                 // TODO: have a pool to avoid needless re-allocation
+                // Release it once the submitted work is done; dropping alone
+                // leaves a browser's GPU memory to its garbage collector.
+                texture.destroy();
             }
         }
         Ok(submission)
@@ -2796,7 +2813,12 @@ impl WgpuEngine {
     /// from under a frame in flight.
     pub fn clear_pool(&mut self) {
         self.bind_group_cache.clear();
-        self.pool.bufs.clear();
+        // On WebGPU a dropped buffer lives until JavaScript collects it, so a
+        // cleared pool would stay resident beside its replacements. destroy()
+        // waits for submitted work that still uses the buffer.
+        for buffer in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
+            buffer.destroy();
+        }
         self.cpu_pathtag_pool.clear();
         self.cpu_metadata_pool.clear();
         self.cpu_draw_prefix_pool.clear();
@@ -2866,7 +2888,9 @@ impl WgpuEngine {
 
     /// Drop a completed download.
     pub fn free_download(&mut self, buf: BufferProxy) {
-        self.downloads.remove(&buf.id);
+        if let Some(buffer) = self.downloads.remove(&buf.id) {
+            buffer.destroy();
+        }
     }
 
     /// Recycle the fixed-size adaptive bump-counter download.
@@ -2949,6 +2973,8 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_len = wgsl.len();
         // SAFETY: We only call this with trusted shaders (written by Vello developers)
         let shader_module = unsafe {
             device.create_shader_module_trusted(
@@ -2983,6 +3009,127 @@ impl WgpuEngine {
         WgpuShader {
             pipeline: PipelineState::Compute(pipeline),
             bind_group_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len,
+        }
+    }
+
+    /// The compute shaders [`Self::dispatch_empty`] can run, largest source first, so that
+    /// workers taking them in turn finish the longest compilations early.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn precompile_order(&self) -> Vec<usize> {
+        let mut order: Vec<(usize, usize)> = self
+            .shaders
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shader)| match shader.wgpu.as_ref()? {
+                WgpuShader {
+                    pipeline: PipelineState::Compute(_),
+                    source_len,
+                    ..
+                } => Some((index, *source_len)),
+                #[cfg(feature = "debug_layers")]
+                _ => None,
+            })
+            .collect();
+        order.sort_by(|a, b| b.1.cmp(&a.1));
+        order.into_iter().map(|(index, _)| index).collect()
+    }
+
+    /// Dispatch shader `index`'s compute pipeline once over an empty grid, with stand-in
+    /// resources of its layout's types, and wait for the device to finish.
+    ///
+    /// No invocation runs. What it buys is the driver's own work for a first dispatch: Mesa's
+    /// CPU Vulkan driver compiles a pipeline's machine code then, not when the pipeline is
+    /// created, and keeps the result in its shader disk cache.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn dispatch_empty(&self, device: &Device, queue: &Queue, index: usize) {
+        let Some(WgpuShader {
+            pipeline: PipelineState::Compute(pipeline),
+            bind_group_layout,
+            entries,
+            ..
+        }) = self.shaders.get(index).and_then(|shader| shader.wgpu.as_ref())
+        else {
+            return;
+        };
+        let resources: Vec<BoundResource> = entries
+            .iter()
+            .map(|entry| Self::stand_in_resource(device, entry))
+            .collect();
+        let bindings: Vec<wgpu::BindGroupEntry<'_>> = resources
+            .iter()
+            .zip(entries)
+            .map(|(resource, entry)| wgpu::BindGroupEntry {
+                binding: entry.binding,
+                resource: match resource {
+                    BoundResource::Buffer(buffer, _, _) => buffer.as_entire_binding(),
+                    BoundResource::Image(view) => wgpu::BindingResource::TextureView(view),
+                },
+            })
+            .collect();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: bind_group_layout,
+            entries: &bindings,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(0, 0, 0);
+        }
+        queue.submit(Some(encoder.finish()));
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stand_in_resource(device: &Device, entry: &wgpu::BindGroupLayoutEntry) -> BoundResource {
+        // Large enough for any fixed-size part a Vello shader declares; never read.
+        const BUFFER_SIZE: u64 = 1 << 14;
+        let texture = |format, usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        match entry.ty {
+            wgpu::BindingType::Buffer { ty, .. } => {
+                let usage = match ty {
+                    wgpu::BufferBindingType::Uniform => BufferUsages::UNIFORM,
+                    wgpu::BufferBindingType::Storage { .. } => BufferUsages::STORAGE,
+                };
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: BUFFER_SIZE,
+                    usage,
+                    mapped_at_creation: false,
+                });
+                BoundResource::Buffer(buffer, 0, None)
+            }
+            wgpu::BindingType::StorageTexture { format, .. } => {
+                BoundResource::Image(texture(format, TextureUsages::STORAGE_BINDING))
+            }
+            // Every sampled image Vello binds is `ImageFormat::Rgba8`.
+            _ => BoundResource::Image(texture(
+                wgpu::TextureFormat::Rgba8Unorm,
+                TextureUsages::TEXTURE_BINDING,
+            )),
         }
     }
 }

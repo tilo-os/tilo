@@ -1,0 +1,77 @@
+[package]
+name = "account-custody"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Custody of online account credentials: Tilo's OAuth client registrations, OAuth sign-in and refresh for Mail and cloud storage, Nextcloud Login Flow v2, iCloud sessions, and the short-lived handoff to the storage daemon."
+
+[lib]
+name = "account_custody"
+path = "src/lib.rs"
+
+# The credential helper the storage daemon runs to get a fresh short-lived
+# credential for one account. It holds the vault only for that call.
+[[bin]]
+name = "tilo-account-credential"
+path = "src/bin/tilo-account-credential.rs"
+required-features = ["custody"]
+
+[[test]]
+name = "helper"
+path = "tests/helper.rs"
+required-features = ["custody"]
+
+[features]
+default = ["custody"]
+# The custodian itself: sign-in, sealing, refresh and the daemon handoff,
+# with the HTTPS client and the storage providers it resolves new accounts
+# against. Without it the crate is the client registrations and provider
+# descriptors only, for builds that must stay free of the TLS/HTTP stack.
+custody = [
+    "tilo-oauth/client",
+    "dep:tilo-net",
+    "dep:reqwest",
+    "dep:serde_json",
+    "dep:url",
+    "dep:zeroize",
+    "dep:cloud-source",
+    "dep:cloud-source-gdrive",
+    "dep:cloud-source-onedrive",
+    "dep:cloud-source-dropbox",
+    "dep:cloud-source-icloud",
+]
+
+[dependencies]
+accounts = { path = "../accounts" }
+tilo-oauth = { path = "../tilo-oauth", default-features = false }
+serde.workspace = true
+tracing.workspace = true
+# The committed public client registrations (`oauth-clients.toml`).
+toml.workspace = true
+tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+serde_json = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+# Resolving a new account's storage (drive ids, team roots) once at sign-in,
+# and iCloud's web sign-in behind `icloud::ICloudAuth`.
+cloud-source = { path = "../cloud-source", optional = true }
+cloud-source-gdrive = { path = "../cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { path = "../cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { path = "../cloud-source-dropbox", optional = true }
+cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
+cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
+cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
+test-http = { path = "../../dev/test-http" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

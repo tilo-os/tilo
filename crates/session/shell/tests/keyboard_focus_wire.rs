@@ -10,6 +10,10 @@
     clippy::expect_used,
     reason = "test harness failures are assertions"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -301,415 +305,330 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
     );
 }
 
-/// The ownership decision has to happen before a foreign client receives the
-/// press: merely teaching the chrome about a custom binding is too late once
-/// an Electron/RPM/Flatpak client has consumed it.  Keep the matching release
-/// out of the client as well, then prove the same cached config drives the
-/// actual navigation action.  F1 is intentionally non-configurable desktop
-/// help and must follow the same foreign-client boundary.
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the wire-level ownership scenario keeps both client input and compositor assertions in one transcript"
 )]
-#[test]
-fn custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client() {
-    let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
-    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
-    let qh = h.queue.handle();
+fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
+    // Phase `custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client`.
+    // The ownership decision has to happen before a foreign client receives the
+    // press: merely teaching the chrome about a custom binding is too late once
+    // an Electron/RPM/Flatpak client has consumed it.  Keep the matching release
+    // out of the client as well, then prove the same cached config drives the
+    // actual navigation action.  F1 is intentionally non-configurable desktop
+    // help and must follow the same foreign-client boundary.
+    {
+        let mut h = Harness::new();
+        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+        h.pump();
+        let compositor = h
+            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+            .expect("compositor");
+        let wm = h
+            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+            .expect("xdg shell");
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+        let qh = h.queue.handle();
 
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.ShortcutOwnership".into());
-    h.pump();
-    let foreign_surface_id = foreign_id(&h.state, "org.example.ShortcutOwnership");
-    h.state.set_client_keyboard_focus(Some(foreign_surface_id));
-    h.pump();
-    h.client.keyboard.clear();
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_app_id("org.example.ShortcutOwnership".into());
+        h.pump();
+        let foreign_surface_id = foreign_id(&h.state, "org.example.ShortcutOwnership");
+        h.state.set_client_keyboard_focus(Some(foreign_surface_id));
+        h.pump();
+        h.client.keyboard.clear();
 
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
-    let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
-    shortcuts
-        .set(
-            settings_store::hardware::ShortcutAction::NextTab,
-            settings_store::hardware::KeyChord::parse("Ctrl+J").expect("valid custom chord"),
-        )
-        .expect("custom chord is not shared by another action");
-    frame
-        .host_mut()
-        .set_shortcut_config(shortcuts)
-        .expect("valid effective shortcut configuration");
+        let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+        let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+        shortcuts
+            .set(
+                settings_store::hardware::ShortcutAction::NextTab,
+                settings_store::hardware::KeyChord::parse("Ctrl+J").expect("valid custom chord"),
+            )
+            .expect("custom chord is not shared by another action");
+        frame
+            .host_mut()
+            .set_shortcut_config(shortcuts)
+            .expect("valid effective shortcut configuration");
 
-    let ctrl = Modifiers::from(ModifiersState::CONTROL);
-    let bare_ctrl_press = captured_key_event(Key::Named(NamedKey::Control), true);
-    let bare_ctrl_release = captured_key_event(Key::Named(NamedKey::Control), false);
-    let old_tab_press = captured_key_event(Key::Named(NamedKey::Tab), true);
-    let old_tab_release = captured_key_event(Key::Named(NamedKey::Tab), false);
-    let custom_press = captured_key_event(Key::Character("j".into()), true);
-    let custom_release = captured_key_event(Key::Character("j".into()), false);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        let bare_ctrl_press = captured_key_event(Key::Named(NamedKey::Control), true);
+        let bare_ctrl_release = captured_key_event(Key::Named(NamedKey::Control), false);
+        let old_tab_press = captured_key_event(Key::Named(NamedKey::Tab), true);
+        let old_tab_release = captured_key_event(Key::Named(NamedKey::Tab), false);
+        let custom_press = captured_key_event(Key::Character("j".into()), true);
+        let custom_release = captured_key_event(Key::Character("j".into()), false);
 
-    // Ctrl+Tab was Next Tab before the rebind.  The static compositor
-    // firewall must not keep claiming that old default after the effective
-    // table assigns Next Tab to Ctrl+J.
-    assert!(shell::compositor::client_input::route_input(
-        &mut h.state,
-        &mut frame,
-        &bare_ctrl_press,
-        &ctrl,
-    ));
-    assert!(shell::compositor::client_input::route_input(
-        &mut h.state,
-        &mut frame,
-        &old_tab_press,
-        &ctrl,
-    ));
-    assert!(shell::compositor::client_input::route_input(
-        &mut h.state,
-        &mut frame,
-        &old_tab_release,
-        &ctrl,
-    ));
-    assert!(shell::compositor::client_input::route_input(
-        &mut h.state,
-        &mut frame,
-        &bare_ctrl_release,
-        &Modifiers::default(),
-    ));
-    h.pump();
-    assert_eq!(
-        h.client.keyboard,
-        vec![
-            KeyboardWire::Key {
-                key: 29,
-                pressed: true
-            },
-            KeyboardWire::Key {
-                key: 15,
-                pressed: true
-            },
-            KeyboardWire::Key {
-                key: 15,
-                pressed: false
-            },
-            KeyboardWire::Key {
-                key: 29,
-                pressed: false
-            },
-        ],
-        "the previous Ctrl+Tab default must be a balanced client chord after rebinding"
-    );
-    h.client.keyboard.clear();
-
-    let before_tab =
-        frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-    assert!(
-        shell::compositor::client_input::route_input(
+        // Ctrl+Tab was Next Tab before the rebind.  The static compositor
+        // firewall must not keep claiming that old default after the effective
+        // table assigns Next Tab to Ctrl+J.
+        assert!(shell::compositor::client_input::route_input(
             &mut h.state,
             &mut frame,
             &bare_ctrl_press,
             &ctrl,
-        ),
-        "a bare modifier must remain visible to the foreign client's xkb state"
-    );
-    assert!(
-        !shell::compositor::client_input::route_input(
+        ));
+        assert!(shell::compositor::client_input::route_input(
             &mut h.state,
             &mut frame,
-            &custom_press,
+            &old_tab_press,
             &ctrl,
-        ),
-        "Ctrl+J must be claimed before the focused foreign client"
-    );
-    let mut doc = automerge::AutoCommit::new();
-    let mut focus = None;
-    assert!(frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,));
-    assert!(
-        !shell::compositor::client_input::route_input(
+        ));
+        assert!(shell::compositor::client_input::route_input(
             &mut h.state,
             &mut frame,
-            &custom_release,
+            &old_tab_release,
             &ctrl,
-        ),
-        "the foreign client must not receive a release for its unseen Ctrl+J press"
-    );
-    assert!(
-        shell::compositor::client_input::route_input(
+        ));
+        assert!(shell::compositor::client_input::route_input(
             &mut h.state,
             &mut frame,
             &bare_ctrl_release,
             &Modifiers::default(),
-        ),
-        "the modifier release must still balance the foreign client's xkb state"
-    );
-    h.pump();
-    assert_eq!(
-        h.client.keyboard,
-        vec![
-            KeyboardWire::Key {
-                key: 29,
-                pressed: true,
-            },
-            KeyboardWire::Key {
-                key: 29,
-                pressed: false,
-            },
-        ],
-        "only the bare Ctrl transitions, never the custom Ctrl+J pair, may reach the foreign-client wire"
-    );
-    assert_ne!(
-        frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
-        before_tab,
-        "the cached custom binding must fire Next Tab after pre-routing"
-    );
+        ));
+        h.pump();
+        assert_eq!(
+            h.client.keyboard,
+            vec![
+                KeyboardWire::Key {
+                    key: 29,
+                    pressed: true
+                },
+                KeyboardWire::Key {
+                    key: 15,
+                    pressed: true
+                },
+                KeyboardWire::Key {
+                    key: 15,
+                    pressed: false
+                },
+                KeyboardWire::Key {
+                    key: 29,
+                    pressed: false
+                },
+            ],
+            "the previous Ctrl+Tab default must be a balanced client chord after rebinding"
+        );
+        h.client.keyboard.clear();
 
-    h.client.keyboard.clear();
+        let before_tab =
+            frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        assert!(
+            shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &bare_ctrl_press,
+                &ctrl,
+            ),
+            "a bare modifier must remain visible to the foreign client's xkb state"
+        );
+        assert!(
+            !shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &custom_press,
+                &ctrl,
+            ),
+            "Ctrl+J must be claimed before the focused foreign client"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let mut focus = None;
+        assert!(
+            frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,)
+        );
+        assert!(
+            !shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &custom_release,
+                &ctrl,
+            ),
+            "the foreign client must not receive a release for its unseen Ctrl+J press"
+        );
+        assert!(
+            shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &bare_ctrl_release,
+                &Modifiers::default(),
+            ),
+            "the modifier release must still balance the foreign client's xkb state"
+        );
+        h.pump();
+        assert_eq!(
+            h.client.keyboard,
+            vec![
+                KeyboardWire::Key {
+                    key: 29,
+                    pressed: true,
+                },
+                KeyboardWire::Key {
+                    key: 29,
+                    pressed: false,
+                },
+            ],
+            "only the bare Ctrl transitions, never the custom Ctrl+J pair, may reach the foreign-client wire"
+        );
+        assert_ne!(
+            frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
+            before_tab,
+            "the cached custom binding must fire Next Tab after pre-routing"
+        );
 
-    let f1_press = captured_key_event(Key::Named(NamedKey::F1), true);
-    let f1_release = captured_key_event(Key::Named(NamedKey::F1), false);
-    let no_modifiers = Modifiers::default();
-    assert!(
-        !shell::compositor::client_input::route_input(
-            &mut h.state,
-            &mut frame,
+        h.client.keyboard.clear();
+
+        let f1_press = captured_key_event(Key::Named(NamedKey::F1), true);
+        let f1_release = captured_key_event(Key::Named(NamedKey::F1), false);
+        let no_modifiers = Modifiers::default();
+        assert!(
+            !shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &f1_press,
+                &no_modifiers,
+            ),
+            "F1 desktop help must be claimed before the focused foreign client"
+        );
+        assert!(frame.dispatch_event(
             &f1_press,
             &no_modifiers,
-        ),
-        "F1 desktop help must be claimed before the focused foreign client"
-    );
-    assert!(frame.dispatch_event(
-        &f1_press,
-        &no_modifiers,
-        &mut doc,
-        &automerge::ROOT,
-        &mut focus,
-    ));
-    assert!(
-        !shell::compositor::client_input::route_input(
-            &mut h.state,
-            &mut frame,
-            &f1_release,
-            &no_modifiers,
-        ),
-        "the foreign client must not receive an unmatched F1 release"
-    );
-    h.pump();
-    assert!(
-        h.client.keyboard.is_empty(),
-        "F1 must never reach the focused foreign client"
-    );
-    assert!(
-        frame.chrome().overlays.shortcut_help,
-        "F1 must open the compositor-owned keyboard guide"
-    );
-}
-
-/// A bounded real-socket stress pass for the failure pattern Electron users
-/// described: editing keys held while focus moves in response to a layout or
-/// activation revision.  Every press must get one release, regardless of
-/// which toplevel owns focus at the moment it arrives.
-#[test]
-fn focus_handoff_soak_has_one_release_per_backspace_press() {
-    const ROUNDS: usize = 128;
-    const MAX_DISPATCH: Duration = Duration::from_millis(500);
-
-    let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
-    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
-    let qh = h.queue.handle();
-
-    let first = compositor.create_surface(&qh, ());
-    let first_xdg = wm.get_xdg_surface(&first, &qh, ());
-    let first_top = first_xdg.get_toplevel(&qh, ());
-    first_top.set_app_id("org.example.SoakFirst".into());
-    let second = compositor.create_surface(&qh, ());
-    let second_xdg = wm.get_xdg_surface(&second, &qh, ());
-    let second_top = second_xdg.get_toplevel(&qh, ());
-    second_top.set_app_id("org.example.SoakSecond".into());
-    h.pump();
-
-    let first_id = foreign_id(&h.state, "org.example.SoakFirst");
-    let second_id = foreign_id(&h.state, "org.example.SoakSecond");
-    h.client.keyboard.clear();
-    let mut max_dispatch = Duration::ZERO;
-
-    for round in 0..ROUNDS {
-        let (old, new) = if round % 2 == 0 {
-            (first_id, second_id)
-        } else {
-            (second_id, first_id)
-        };
-        h.state.set_client_keyboard_focus(Some(old));
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(
+            !shell::compositor::client_input::route_input(
+                &mut h.state,
+                &mut frame,
+                &f1_release,
+                &no_modifiers,
+            ),
+            "the foreign client must not receive an unmatched F1 release"
+        );
         h.pump();
-        let started = Instant::now();
+        assert!(
+            h.client.keyboard.is_empty(),
+            "F1 must never reach the focused foreign client"
+        );
+        assert!(
+            frame.chrome().overlays.shortcut_help,
+            "F1 must open the compositor-owned keyboard guide"
+        );
+    }
+
+    // Phase `lock_capture_boundary_hides_held_keys_and_restores_a_clean_seat`.
+    // This is the precise seat sequence used at the lock boundary: the client
+    // first owns held modifier/editing keys, lock revokes focus but retains the
+    // seat's physical state, physical ups arrive while capture is active, then an app is focused
+    // again.  No release or stale modifier may leak into either locked or newly
+    // restored client input.
+    {
+        let mut h = Harness::new();
+        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+        h.pump();
+        let compositor = h
+            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+            .expect("compositor");
+        let wm = h
+            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+            .expect("xdg shell");
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+        let qh = h.queue.handle();
+
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_app_id("org.example.LockBoundary".into());
+        h.pump();
+        let foreign_surface_id = foreign_id(&h.state, "org.example.LockBoundary");
+        h.state.set_client_keyboard_focus(Some(foreign_surface_id));
+        h.pump();
+        h.client.keyboard.clear();
+
+        assert!(h.state.deliver_client_key(42, true, true));
         assert!(h.state.deliver_client_key(14, true, true));
         h.pump();
-        h.state.set_client_keyboard_focus(Some(new));
+        assert_eq!(
+            h.client.keyboard,
+            vec![
+                KeyboardWire::Key {
+                    key: 42,
+                    pressed: true,
+                },
+                KeyboardWire::Key {
+                    key: 14,
+                    pressed: true,
+                },
+            ]
+        );
+
+        // Native `run()` calls this immediately when SessionManager enters lock:
+        // client delivery stops, while Smithay retains the actual held keys until
+        // the locked physical ups below.
+        h.state.set_client_keyboard_focus(None);
         h.pump();
-        assert!(h.state.deliver_client_key(14, false, true));
+        h.client.keyboard.clear();
+
+        // These are the physical ups which arrived while the lock owns input.
+        // They advance Smithay's state but, with no focus, cannot be observed by
+        // the old client.
+        shell::compositor::client_input::consume_keyboard_while_captured(
+            &mut h.state,
+            &captured_key_event(Key::Named(NamedKey::Backspace), false),
+        );
+        shell::compositor::client_input::consume_keyboard_while_captured(
+            &mut h.state,
+            &captured_key_event(Key::Named(NamedKey::Shift), false),
+        );
         h.pump();
-        max_dispatch = max_dispatch.max(started.elapsed());
+        assert!(
+            h.client.keyboard.is_empty(),
+            "a locked client boundary must not emit a key up to the hidden app"
+        );
+        assert!(
+            h.state
+                .seat
+                .get_keyboard()
+                .expect("seat keyboard")
+                .pressed_keys()
+                .is_empty(),
+            "Shift/Backspace must be cleared before unlock restores application focus"
+        );
+
+        h.state.set_client_keyboard_focus(Some(foreign_surface_id));
+        h.pump();
+        assert_eq!(
+            h.client.keyboard,
+            vec![KeyboardWire::Enter {
+                surface: surface_id(&surface),
+                keys: Vec::new(),
+            }],
+            "restored focus must not inherit a held modifier or editing key"
+        );
+        h.client.keyboard.clear();
+        assert!(h.state.deliver_client_key(30, true, true));
+        assert!(h.state.deliver_client_key(30, false, true));
+        h.pump();
+        assert_eq!(
+            h.client.keyboard,
+            vec![
+                KeyboardWire::Key {
+                    key: 30,
+                    pressed: true,
+                },
+                KeyboardWire::Key {
+                    key: 30,
+                    pressed: false,
+                },
+            ],
+            "typing after unlock must be a normal, balanced new key sequence"
+        );
     }
-
-    let keys: Vec<_> = h
-        .client
-        .keyboard
-        .iter()
-        .filter_map(|event| match event {
-            KeyboardWire::Key { key, pressed } => Some((*key, *pressed)),
-            KeyboardWire::Enter { .. } | KeyboardWire::Leave { .. } => None,
-        })
-        .collect();
-    assert_eq!(
-        keys.len(),
-        ROUNDS * 2,
-        "every physical press/release must reach exactly one focused client"
-    );
-    for pair in keys.chunks_exact(2) {
-        assert_eq!(pair, [(14, true), (14, false)]);
-    }
-    assert!(
-        h.state
-            .seat
-            .get_keyboard()
-            .expect("seat keyboard")
-            .pressed_keys()
-            .is_empty(),
-        "no Backspace may remain pressed after the bounded focus soak"
-    );
-    eprintln!(
-        "keyboard focus soak: {ROUNDS} handoffs, max press-to-release dispatch {max_dispatch:?}"
-    );
-    assert!(
-        max_dispatch < MAX_DISPATCH,
-        "socket dispatch stalled for {max_dispatch:?}; limit is {MAX_DISPATCH:?}"
-    );
-}
-
-/// This is the precise seat sequence used at the lock boundary: the client
-/// first owns held modifier/editing keys, lock revokes focus but retains the
-/// seat's physical state, physical ups arrive while capture is active, then an app is focused
-/// again.  No release or stale modifier may leak into either locked or newly
-/// restored client input.
-#[test]
-fn lock_capture_boundary_hides_held_keys_and_restores_a_clean_seat() {
-    let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg shell");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
-    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
-    let qh = h.queue.handle();
-
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.LockBoundary".into());
-    h.pump();
-    let foreign_surface_id = foreign_id(&h.state, "org.example.LockBoundary");
-    h.state.set_client_keyboard_focus(Some(foreign_surface_id));
-    h.pump();
-    h.client.keyboard.clear();
-
-    assert!(h.state.deliver_client_key(42, true, true));
-    assert!(h.state.deliver_client_key(14, true, true));
-    h.pump();
-    assert_eq!(
-        h.client.keyboard,
-        vec![
-            KeyboardWire::Key {
-                key: 42,
-                pressed: true,
-            },
-            KeyboardWire::Key {
-                key: 14,
-                pressed: true,
-            },
-        ]
-    );
-
-    // Native `run()` calls this immediately when SessionManager enters lock:
-    // client delivery stops, while Smithay retains the actual held keys until
-    // the locked physical ups below.
-    h.state.set_client_keyboard_focus(None);
-    h.pump();
-    h.client.keyboard.clear();
-
-    // These are the physical ups which arrived while the lock owns input.
-    // They advance Smithay's state but, with no focus, cannot be observed by
-    // the old client.
-    shell::compositor::client_input::consume_keyboard_while_captured(
-        &mut h.state,
-        &captured_key_event(Key::Named(NamedKey::Backspace), false),
-    );
-    shell::compositor::client_input::consume_keyboard_while_captured(
-        &mut h.state,
-        &captured_key_event(Key::Named(NamedKey::Shift), false),
-    );
-    h.pump();
-    assert!(
-        h.client.keyboard.is_empty(),
-        "a locked client boundary must not emit a key up to the hidden app"
-    );
-    assert!(
-        h.state
-            .seat
-            .get_keyboard()
-            .expect("seat keyboard")
-            .pressed_keys()
-            .is_empty(),
-        "Shift/Backspace must be cleared before unlock restores application focus"
-    );
-
-    h.state.set_client_keyboard_focus(Some(foreign_surface_id));
-    h.pump();
-    assert_eq!(
-        h.client.keyboard,
-        vec![KeyboardWire::Enter {
-            surface: surface_id(&surface),
-            keys: Vec::new(),
-        }],
-        "restored focus must not inherit a held modifier or editing key"
-    );
-    h.client.keyboard.clear();
-    assert!(h.state.deliver_client_key(30, true, true));
-    assert!(h.state.deliver_client_key(30, false, true));
-    h.pump();
-    assert_eq!(
-        h.client.keyboard,
-        vec![
-            KeyboardWire::Key {
-                key: 30,
-                pressed: true,
-            },
-            KeyboardWire::Key {
-                key: 30,
-                pressed: false,
-            },
-        ],
-        "typing after unlock must be a normal, balanced new key sequence"
-    );
 }
 
 /// A key event carrying a real physical position, as the DRM and winit
@@ -839,5 +758,95 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     assert_eq!(
         drain_edges(&events),
         vec![("talk".to_string(), ShortcutEdge::Deactivated)]
+    );
+}
+
+/// A bounded real-socket stress pass for the failure pattern Electron users
+/// described: editing keys held while focus moves in response to a layout or
+/// activation revision.  Every press must get one release, regardless of
+/// which toplevel owns focus at the moment it arrives.
+#[test]
+fn focus_handoff_soak_has_one_release_per_backspace_press() {
+    const ROUNDS: usize = 128;
+    const MAX_DISPATCH: Duration = Duration::from_millis(500);
+
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .expect("xdg shell");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let first = compositor.create_surface(&qh, ());
+    let first_xdg = wm.get_xdg_surface(&first, &qh, ());
+    let first_top = first_xdg.get_toplevel(&qh, ());
+    first_top.set_app_id("org.example.SoakFirst".into());
+    let second = compositor.create_surface(&qh, ());
+    let second_xdg = wm.get_xdg_surface(&second, &qh, ());
+    let second_top = second_xdg.get_toplevel(&qh, ());
+    second_top.set_app_id("org.example.SoakSecond".into());
+    h.pump();
+
+    let first_id = foreign_id(&h.state, "org.example.SoakFirst");
+    let second_id = foreign_id(&h.state, "org.example.SoakSecond");
+    h.client.keyboard.clear();
+    let mut max_dispatch = Duration::ZERO;
+
+    for round in 0..ROUNDS {
+        let (old, new) = if round % 2 == 0 {
+            (first_id, second_id)
+        } else {
+            (second_id, first_id)
+        };
+        h.state.set_client_keyboard_focus(Some(old));
+        h.pump();
+        let started = Instant::now();
+        assert!(h.state.deliver_client_key(14, true, true));
+        h.pump();
+        h.state.set_client_keyboard_focus(Some(new));
+        h.pump();
+        assert!(h.state.deliver_client_key(14, false, true));
+        h.pump();
+        max_dispatch = max_dispatch.max(started.elapsed());
+    }
+
+    let keys: Vec<_> = h
+        .client
+        .keyboard
+        .iter()
+        .filter_map(|event| match event {
+            KeyboardWire::Key { key, pressed } => Some((*key, *pressed)),
+            KeyboardWire::Enter { .. } | KeyboardWire::Leave { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        keys.len(),
+        ROUNDS * 2,
+        "every physical press/release must reach exactly one focused client"
+    );
+    for pair in keys.chunks_exact(2) {
+        assert_eq!(pair, [(14, true), (14, false)]);
+    }
+    assert!(
+        h.state
+            .seat
+            .get_keyboard()
+            .expect("seat keyboard")
+            .pressed_keys()
+            .is_empty(),
+        "no Backspace may remain pressed after the bounded focus soak"
+    );
+    eprintln!(
+        "keyboard focus soak: {ROUNDS} handoffs, max press-to-release dispatch {max_dispatch:?}"
+    );
+    assert!(
+        max_dispatch < MAX_DISPATCH,
+        "socket dispatch stalled for {max_dispatch:?}; limit is {MAX_DISPATCH:?}"
     );
 }

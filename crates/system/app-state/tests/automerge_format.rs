@@ -158,72 +158,75 @@ fn assert_reference_content(doc: &AutoCommit) {
 }
 
 #[test]
-fn documents_saved_by_automerge_0_8_still_load() {
-    let mut doc = AutoCommit::load(DOCUMENT).unwrap();
-    assert_eq!(hex_heads(&mut doc), [HEAD]);
-    assert_reference_content(&doc);
-}
-
-#[test]
-fn change_logs_written_by_automerge_0_8_still_load() {
-    let mut doc = AutoCommit::load(CHANGES).unwrap();
-    assert_eq!(hex_heads(&mut doc), [HEAD]);
-    assert_reference_content(&doc);
-}
-
-#[test]
-fn change_hashes_are_unchanged() {
-    let mut doc = build().unwrap();
-    let hashes: Vec<String> = doc
-        .get_changes(&[])
-        .iter()
-        .map(|c| c.hash().to_string())
-        .collect();
-    assert_eq!(hashes, CHANGE_HASHES);
-    assert_eq!(hex_heads(&mut doc), [HEAD]);
-}
-
-#[test]
-fn saved_bytes_are_unchanged() {
-    let mut doc = build().unwrap();
-    assert_eq!(doc.save(), DOCUMENT, "save() output");
-    let changes: Vec<u8> = doc
-        .get_changes(&[])
-        .iter()
-        .flat_map(|c| c.raw_bytes().to_vec())
-        .collect();
-    assert_eq!(changes, CHANGES, "raw change bytes");
-}
-
-#[test]
-fn sync_messages_from_automerge_0_8_peers_are_understood() {
-    let message = sync::Message::decode(SYNC_MESSAGE).unwrap();
-    assert_eq!(
-        message
-            .heads
-            .iter()
-            .map(ChangeHash::to_string)
-            .collect::<Vec<_>>(),
-        [HEAD]
-    );
-
-    // An empty peer answering the old peer's opening message asks for
-    // everything, and the old peer's document then syncs across.
-    let mut old_peer = AutoCommit::load(DOCUMENT).unwrap();
-    let mut old_state = sync::State::new();
-    let mut new_peer = AutoCommit::new();
-    let mut new_state = sync::State::new();
-    new_peer
-        .receive_incoming_sync(&mut new_state, message)
-        .unwrap();
-    for _ in 0..8 {
-        if let Some(m) = new_peer.sync().generate_sync_message(&mut new_state) {
-            old_peer.receive_incoming_sync(&mut old_state, m).unwrap();
-        }
-        if let Some(m) = old_peer.sync().generate_sync_message(&mut old_state) {
-            new_peer.receive_incoming_sync(&mut new_state, m).unwrap();
-        }
+fn documents_change_logs_and_sync_messages_from_automerge_0_8_still_load() {
+    // Phase `documents_saved_by_automerge_0_8_still_load`.
+    {
+        let mut doc = AutoCommit::load(DOCUMENT).unwrap();
+        assert_eq!(hex_heads(&mut doc), [HEAD]);
+        assert_reference_content(&doc);
     }
-    assert_eq!(hex_heads(&mut new_peer), [HEAD]);
-    assert_reference_content(&new_peer);
+    // Phase `change_logs_written_by_automerge_0_8_still_load`.
+    {
+        let mut doc = AutoCommit::load(CHANGES).unwrap();
+        assert_eq!(hex_heads(&mut doc), [HEAD]);
+        assert_reference_content(&doc);
+    }
+    // Phase `sync_messages_from_automerge_0_8_peers_are_understood`.
+    {
+        let message = sync::Message::decode(SYNC_MESSAGE).unwrap();
+        assert_eq!(
+            message
+                .heads
+                .iter()
+                .map(ChangeHash::to_string)
+                .collect::<Vec<_>>(),
+            [HEAD]
+        );
+
+        // An empty peer answering the old peer's opening message asks for
+        // everything, and the old peer's document then syncs across.
+        let mut old_peer = AutoCommit::load(DOCUMENT).unwrap();
+        let mut old_state = sync::State::new();
+        let mut new_peer = AutoCommit::new();
+        let mut new_state = sync::State::new();
+        new_peer
+            .receive_incoming_sync(&mut new_state, message)
+            .unwrap();
+        for _ in 0..8 {
+            if let Some(m) = new_peer.sync().generate_sync_message(&mut new_state) {
+                old_peer.receive_incoming_sync(&mut old_state, m).unwrap();
+            }
+            if let Some(m) = old_peer.sync().generate_sync_message(&mut old_state) {
+                new_peer.receive_incoming_sync(&mut new_state, m).unwrap();
+            }
+        }
+        assert_eq!(hex_heads(&mut new_peer), [HEAD]);
+        assert_reference_content(&new_peer);
+    }
+}
+
+#[test]
+fn rebuilt_documents_keep_their_change_hashes_and_saved_bytes() {
+    // Phase `change_hashes_are_unchanged`.
+    {
+        let mut doc = build().unwrap();
+        let hashes: Vec<String> = doc
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.hash().to_string())
+            .collect();
+        assert_eq!(hashes, CHANGE_HASHES);
+        assert_eq!(hex_heads(&mut doc), [HEAD]);
+    }
+    // Phase `saved_bytes_are_unchanged`.
+    {
+        let mut doc = build().unwrap();
+        assert_eq!(doc.save(), DOCUMENT, "save() output");
+        let changes: Vec<u8> = doc
+            .get_changes(&[])
+            .iter()
+            .flat_map(|c| c.raw_bytes().to_vec())
+            .collect();
+        assert_eq!(changes, CHANGES, "raw change bytes");
+    }
 }

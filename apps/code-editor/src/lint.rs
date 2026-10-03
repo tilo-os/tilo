@@ -275,37 +275,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn textual_facts_are_reported_and_survive_the_textual_only_scope() {
+        // Each phase lints its own source; no state is shared.
+        detects_trailing_whitespace();
+        detects_todo_marker();
+        textual_only_drops_structure_and_keeps_facts();
+    }
+
     fn detects_trailing_whitespace() {
         let d = lint("let x = 1;   \n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("Trailing whitespace")));
     }
 
     #[test]
+    fn bracket_scan_reports_real_imbalance_and_skips_strings_comments_and_literals() {
+        // Each phase lints its own source; no state is shared.
+        detects_unclosed_bracket();
+        balanced_brackets_have_no_bracket_diagnostics();
+        ignores_brackets_in_strings();
+        ignores_brackets_after_line_comment();
+        rust_lifetimes_are_not_read_as_char_literals();
+        rust_char_literals_still_hide_their_contents();
+        single_quoted_strings_still_hide_brackets_in_other_languages();
+        real_rust_source_lints_clean();
+    }
+
     fn detects_unclosed_bracket() {
         let d = lint("fn main() {\n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("Unclosed '{'")));
     }
 
-    #[test]
     fn balanced_brackets_have_no_bracket_diagnostics() {
         let d = lint("fn main() {}\n", Language::Rust, Scope::Full);
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
         assert!(!d.iter().any(|x| x.message.contains("Unmatched")));
     }
 
-    #[test]
     fn ignores_brackets_in_strings() {
         let d = lint("let s = \"{[(\";\n", Language::Rust, Scope::Full);
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
     }
 
-    #[test]
     fn detects_todo_marker() {
         let d = lint("// TODO: fix this\n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("TODO")));
     }
 
-    #[test]
     fn ignores_brackets_after_line_comment() {
         let d = lint(
             "let x = 1; // a comment with ( unbalanced\n",
@@ -319,7 +334,6 @@ mod tests {
     /// partner, so reading it as an unterminated char literal makes the scanner
     /// swallow the rest of the line — including the `)` that closes the
     /// signature — and report "Unclosed '('" on code that compiles.
-    #[test]
     fn rust_lifetimes_are_not_read_as_char_literals() {
         for src in [
             "fn f<'a>(s: &'a str) -> &'a str { s }\n",
@@ -342,7 +356,6 @@ mod tests {
 
     /// Char literals still close: the lifetime rule must not make the scanner
     /// blind to a genuine `'x'`, or brackets inside one would be counted.
-    #[test]
     fn rust_char_literals_still_hide_their_contents() {
         let d = lint(
             "fn main() { let c = '('; drop(c); }\n",
@@ -366,7 +379,6 @@ mod tests {
     /// The reason the lifetime rule is gated on the language. A single quote
     /// opens a *string* in Python, so applying Rust's rule here would read the
     /// string's contents as code and report the bracket inside it.
-    #[test]
     fn single_quoted_strings_still_hide_brackets_in_other_languages() {
         for (lang, src) in [
             (Language::Python, "x = 'a) b'\nprint(x)\n"),
@@ -389,7 +401,6 @@ mod tests {
     /// The linter is what the editor shows while a language server is still
     /// indexing, so it must stay useful on a real source file: this is a
     /// verbatim slice of Tilo code, and it must lint clean.
-    #[test]
     fn real_rust_source_lints_clean() {
         let src = "\
 use std::path::Path;
@@ -412,7 +423,6 @@ pub fn resolve<'a>(root: &'a Path, rel: &str) -> Option<&'a Path> {
     /// `TextualOnly` drops the structural guess and keeps the textual facts.
     /// Both halves are asserted: a scope that dropped everything would satisfy
     /// the first assertion alone.
-    #[test]
     fn textual_only_drops_structure_and_keeps_facts() {
         let src = "fn main( {   \n    // TODO: later\n";
         let full = lint(src, Language::Rust, Scope::Full);

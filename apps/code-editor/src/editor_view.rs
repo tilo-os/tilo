@@ -21,14 +21,16 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::text_selection::{
     clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
     word_boundaries_chars,
 };
 use ui::theme::Theme;
-use ui::widget::{EmptyState, Widget};
+use ui::widget::{AppModel, ModelPath};
+use ui::widget::{EmptyState, EmptyStateContent, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
@@ -85,6 +87,19 @@ struct InlineDiag {
     end_col: usize,
     severity: Severity,
     message: String,
+}
+
+/// The rows one paint pass covers and where their columns start.
+#[derive(Clone, Copy, Debug)]
+struct VisibleRows {
+    gutter_w: f64,
+    /// Left edge of the code area, after the gutter and its padding.
+    code_x0: f64,
+    /// The first (possibly partial) visible line.
+    first_line: usize,
+    /// How far `first_line` is scrolled above the viewport top, in lines.
+    frac: f64,
+    n_visible: usize,
 }
 
 /// Monospace cell metrics. The editor advances a fixed cell width per column;
@@ -1381,16 +1396,17 @@ impl EditorView {
         (line_h + 2.0 * LINE_LEADING).max(LINE_HEIGHT)
     }
 
-    /// The geometry a draw pass threads through: gutter width, the code
-    /// area's left edge, the first (possibly partial) visible line, its
-    /// fractional scroll offset, and how many rows fit in the viewport.
-    fn layout_metrics(&self) -> (f64, f64, usize, f64, usize) {
+    /// The geometry a draw pass threads through.
+    fn visible_rows(&self) -> VisibleRows {
         let gutter_w = self.gutter_width();
-        let code_x0 = self.rect.x0 + gutter_w + self.code_pad_left();
         let first_line = self.scroll_y.floor() as usize;
-        let frac = self.scroll_y - first_line as f64;
-        let n_visible = self.visible_lines();
-        (gutter_w, code_x0, first_line, frac, n_visible)
+        VisibleRows {
+            gutter_w,
+            code_x0: self.rect.x0 + gutter_w + self.code_pad_left(),
+            first_line,
+            frac: self.scroll_y - first_line as f64,
+            n_visible: self.visible_lines(),
+        }
     }
 
     /// Fill the editor background and the (subtly raised) gutter background.
@@ -1417,22 +1433,20 @@ impl EditorView {
     /// Runs as its own pass over the visible rows (before [`Self::draw_line_text`]
     /// paints line numbers and code on top) — safe because rows never overlap,
     /// so the pass order only has to hold within a single row, not across rows.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
     fn draw_line_backgrounds(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        gutter_w: f64,
-        code_x0: f64,
-        first_line: usize,
-        frac: f64,
-        n_visible: usize,
+        ctx: &mut PaintCtx<'_>,
+        rows: &VisibleRows,
         primary_line: usize,
     ) {
+        let VisibleRows {
+            gutter_w,
+            code_x0,
+            first_line,
+            frac,
+            n_visible,
+        } = *rows;
+        let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
         let c = &theme.tokens.colors;
         for vi in 0..n_visible {
             let line_idx = first_line + vi;
@@ -1522,23 +1536,13 @@ impl EditorView {
 
     /// Draw the gutter line number and syntax-highlighted code text for every
     /// visible row (the pass on top of [`Self::draw_line_backgrounds`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
-    fn draw_line_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        gutter_w: f64,
-        code_x0: f64,
-        first_line: usize,
-        frac: f64,
-        n_visible: usize,
-        primary_line: usize,
-    ) {
+    fn draw_line_text(&self, ctx: &mut PaintCtx<'_>, rows: &VisibleRows, primary_line: usize) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let c = &theme.tokens.colors;
         // Horizontal editor scrolling moves source text, never the gutter.
         // Vello text does not implicitly inherit a clipping rect, so without
@@ -1546,17 +1550,17 @@ impl EditorView {
         // numbers on a narrow window. Keep the line-number pass outside it
         // and clip every source span to the content pane.
         let code_clip = Rect::new(
-            self.rect.x0 + gutter_w,
+            self.rect.x0 + rows.gutter_w,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
         );
-        for vi in 0..n_visible {
-            let line_idx = first_line + vi;
+        for vi in 0..rows.n_visible {
+            let line_idx = rows.first_line + vi;
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let y = self.rect.y0 + (vi as f64 - frac) * self.line_h;
+            let y = self.rect.y0 + (vi as f64 - rows.frac) * self.line_h;
             if y > self.rect.y1 {
                 break;
             }
@@ -1564,22 +1568,19 @@ impl EditorView {
             // Line number, right-aligned in the gutter.
             let num = (line_idx + 1).to_string();
             let num_w = num.len() as f64 * self.cell_w;
-            let num_x = self.rect.x0 + gutter_w - self.gutter_pad() - num_w;
+            let num_x = self.rect.x0 + rows.gutter_w - self.gutter_pad() - num_w;
             let num_color = if line_idx == primary_line {
                 c.text_primary
             } else {
                 c.text_dim
             };
-            text_renderer.draw_text_styled(
+            text_renderer.draw_style(
                 scene,
                 &num,
-                Self::font_size(),
                 num_color,
                 transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
             );
 
             // The highlighted code text, span by span.
@@ -1592,20 +1593,17 @@ impl EditorView {
             );
             let empty: Vec<Span> = Vec::new();
             let spans = self.spans.get(line_idx).unwrap_or(&empty);
-            let base_x = code_x0 - self.scroll_x;
+            let base_x = rows.code_x0 - self.scroll_x;
             if spans.is_empty() && !line.is_empty() {
                 // Fallback for a line the highlighter produced no spans for —
                 // draw it plain so no characters are ever dropped.
-                text_renderer.draw_text_styled(
+                text_renderer.draw_style(
                     scene,
                     line,
-                    Self::font_size(),
                     c.text_primary,
                     transform * Affine::translate((base_x, y + self.text_dy)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
                 );
             } else {
                 for span in spans {
@@ -1623,7 +1621,7 @@ impl EditorView {
                     }
                     let x = base_x + char_col as f64 * self.cell_w;
                     // Skip fully off-screen-left segments.
-                    if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + gutter_w {
+                    if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
                         continue;
                     }
                     let color = theme.tokens.syntax.color(span.kind);
@@ -1632,16 +1630,15 @@ impl EditorView {
                     } else {
                         TextWeight::Regular
                     };
-                    text_renderer.draw_text_styled(
+                    text_renderer.draw_style(
                         scene,
                         seg,
-                        Self::font_size(),
                         color,
                         transform * Affine::translate((x, y + self.text_dy)),
                         None,
-                        weight,
-                        false,
-                        true,
+                        &TextStyle::new(Self::font_size())
+                            .with_weight(weight)
+                            .with_family(FontChoice::Monospace),
                     );
                 }
             }
@@ -1651,20 +1648,20 @@ impl EditorView {
 
     /// Draw a coloured wavy underline under each inline diagnostic's span
     /// (from the language server) that falls within the visible line range.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
     fn draw_diagnostics(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        first_line: usize,
-        n_visible: usize,
-        code_x0: f64,
-        gutter_w: f64,
+        rows: &VisibleRows,
     ) {
+        let VisibleRows {
+            gutter_w,
+            code_x0,
+            first_line,
+            n_visible,
+            ..
+        } = *rows;
         let c = &theme.tokens.colors;
         for d in &self.diagnostics {
             if d.line < first_line || d.line >= first_line + n_visible {
@@ -1715,20 +1712,14 @@ impl EditorView {
     /// Draw the caret(s) as a thin vertical stroke, blink-free for screenshot
     /// determinism, for whichever carets fall in the visible line range.
     /// No-op while the view isn't focused.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
-    fn draw_carets(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        first_line: usize,
-        n_visible: usize,
-        code_x0: f64,
-        gutter_w: f64,
-    ) {
+    fn draw_carets(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rows: &VisibleRows) {
+        let VisibleRows {
+            gutter_w,
+            code_x0,
+            first_line,
+            n_visible,
+            ..
+        } = *rows;
         if !self.is_focused {
             return;
         }
@@ -1759,7 +1750,6 @@ impl EditorView {
     /// label and (space permitting) detail text. No-op when the popup isn't
     /// showing.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "a draw pass threads the same caret, viewport, and completion geometry through one visual unit; splitting it would separate sizing from its corresponding paint and clipping rules"
     )]
@@ -1830,27 +1820,21 @@ impl EditorView {
             }
             // Kind glyph (compact hint at the identifier's type).
             let glyph = completion_kind_glyph(item.kind);
-            text_renderer.draw_text_styled(
+            text_renderer.draw_style(
                 scene,
                 glyph,
-                Self::font_size(),
                 c.accent[6],
                 transform * Affine::translate((px + 8.0, ry + self.text_dy)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
             );
-            text_renderer.draw_text_styled(
+            text_renderer.draw_style(
                 scene,
                 &item.label,
-                Self::font_size(),
                 c.text_primary,
                 transform * Affine::translate((px + 26.0, ry + self.text_dy)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
             );
             // Details are useful on a desktop but compete directly with the
             // completion label on a narrow editor. Never let a wrapped detail
@@ -1884,16 +1868,13 @@ impl EditorView {
                     true,
                 );
                 let detail_dy = (row_h - f64::from(dh)) / 2.0;
-                text_renderer.draw_text_styled(
+                text_renderer.draw_style(
                     scene,
                     &detail,
-                    Self::font_size() - 1.0,
                     c.text_dim,
                     transform * Affine::translate((px + 34.0 + f64::from(lw), ry + detail_dy)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(Self::font_size() - 1.0).with_family(FontChoice::Monospace),
                 );
             }
         }
@@ -1902,10 +1883,6 @@ impl EditorView {
     /// Draw the hover tooltip: a small box near the caret with the server's
     /// text, preferring above the caret and dropping below when there's no
     /// room. No-op when there is no hover text to show.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
     fn draw_hover_tooltip(
         &self,
         scene: &mut Scene,
@@ -2196,10 +2173,6 @@ impl EditorView {
     /// Caret motion: arrows (plain, Ctrl-by-word, Alt for line move/duplicate,
     /// Ctrl+Alt to add a caret below), Home/End, Page Up/Down. Returns `true`
     /// when the key matched.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one key event's already-decoded fields threaded to the caret-motion match below; bundling them into a struct would not make the call clearer"
-    )]
     fn handle_navigation_keys(
         &mut self,
         logical_key: &Key,
@@ -2381,23 +2354,23 @@ impl EditorView {
             5.0,
             theme.tokens.colors.surfaces.raised,
         );
-        text_renderer.draw_text_styled(
+        text_renderer.draw_style(
             scene,
             "← Line start (Home)",
-            10.0,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + 6.0, rect.y0 + 4.0)),
             None,
-            TextWeight::Medium,
-            false,
-            true,
+            &TextStyle::new(10.0)
+                .with_weight(TextWeight::Medium)
+                .with_family(FontChoice::Monospace),
         );
         self.horizontal_scroll_reset_rect = rect;
     }
 }
 
 impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull remote/undo edits: if the buffer text differs from our cache,
         // rebuild. Cheap string compare on the hot path.
         if let Some(t) = self.text_obj.clone() {
@@ -2462,7 +2435,10 @@ impl Widget for EditorView {
         }
         let c = &theme.tokens.colors;
         self.measure_cell_width(text_renderer);
-        let (gutter_w, code_x0, first_line, frac, n_visible) = self.layout_metrics();
+        let rows = self.visible_rows();
+        let VisibleRows {
+            gutter_w, code_x0, ..
+        } = rows;
         self.draw_backgrounds(scene, transform, theme, gutter_w);
 
         if self.text_obj.is_none() {
@@ -2470,15 +2446,14 @@ impl Widget for EditorView {
             // a title, a one-line invitation, and an actionable "Open File"
             // pill that summons the portal picker.
             self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                Some(Icon::FileCode),
-                "No file open",
-                Some("Open a file from the tree, or pick one to start editing."),
-                Some("Open File"),
+                &EmptyStateContent {
+                    icon: Some(Icon::FileCode),
+                    title: "No file open",
+                    message: Some("Open a file from the tree, or pick one to start editing."),
+                    action_label: Some("Open File"),
+                },
                 self.last_cursor,
             )
             .unwrap_or(Rect::ZERO);
@@ -2486,35 +2461,11 @@ impl Widget for EditorView {
         }
 
         let primary_line = self.primary().line;
-        self.draw_line_backgrounds(
-            scene,
-            transform,
-            theme,
-            gutter_w,
-            code_x0,
-            first_line,
-            frac,
-            n_visible,
-            primary_line,
-        );
-        self.draw_line_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            gutter_w,
-            code_x0,
-            first_line,
-            frac,
-            n_visible,
-            primary_line,
-        );
-        self.draw_diagnostics(
-            scene, transform, theme, first_line, n_visible, code_x0, gutter_w,
-        );
-        self.draw_carets(
-            scene, transform, theme, first_line, n_visible, code_x0, gutter_w,
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_line_backgrounds(&mut ctx, &rows, primary_line);
+        self.draw_line_text(&mut ctx, &rows, primary_line);
+        self.draw_diagnostics(scene, transform, theme, &rows);
+        self.draw_carets(scene, transform, theme, &rows);
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
 
         // Border separating the editor from the raised side panel: derived
@@ -2556,18 +2507,7 @@ impl Widget for EditorView {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.text_obj.is_none() {
             // Unbound: the only interactive thing is the zero-state's "Open
             // File" pill. Track the cursor for its hover (redrawing only when
@@ -2575,7 +2515,8 @@ impl Widget for EditorView {
             // fire the action on a click inside it.
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let next =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let was = self.empty_action_rect.contains(self.last_cursor);
                     let now = self.empty_action_rect.contains(next);
                     self.last_cursor = next;
@@ -2589,13 +2530,13 @@ impl Widget for EditorView {
                     ..
                 } if self.empty_action_rect.contains(self.last_cursor) => {
                     self.empty_action = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
             return;
         }
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2604,31 +2545,31 @@ impl Widget for EditorView {
             } if self.horizontal_scroll_reset_rect.contains(self.last_cursor) => {
                 self.scroll_x = 0.0;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_mouse_press(mods, handled),
+            } => self.handle_mouse_press(mods, ctx.handled),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
                 if self.drag.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_moved(next, handled);
+                let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_moved(next, ctx.handled);
             }
-            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, handled),
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, ctx.handled),
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key_press(key_event, mods, state, handled);
+                self.handle_key_press(key_event, mods, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2780,10 +2721,19 @@ mod tests {
         (ev, doc)
     }
 
+    #[test]
+    fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
+        // Each phase builds a fresh bound editor so click counts and selections cannot leak.
+        line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale();
+        double_click_selects_word();
+        triple_click_selects_line();
+        drag_selects_char_range();
+        drag_across_lines_selects_multiline();
+    }
+
     /// The row pitch is the historical 20 px at 1× and grows with the glyphs
     /// at 2×; pointer hit-testing maps a click on the third row back to line
     /// 2 at both scales, so paint and hits share one pitch.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -2823,6 +2773,15 @@ mod tests {
     }
 
     #[test]
+    fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
+        // Each phase builds a fresh bound editor.
+        insert_text_requests_an_action_owned_edit();
+        newline_preserves_leading_indent();
+        backspace_at_line_start_joins_previous_line();
+        backspace_removes_char_before_caret();
+        multi_char_unicode_inserts_keep_caret_in_chars();
+    }
+
     fn insert_text_requests_an_action_owned_edit() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
@@ -2831,7 +2790,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 2));
     }
 
-    #[test]
     fn newline_preserves_leading_indent() {
         let (mut ev, mut doc) = bound_editor("    foo");
         ev.set_caret_for_test(0, 7); // end of "    foo"
@@ -2841,7 +2799,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (1, 4));
     }
 
-    #[test]
     fn backspace_at_line_start_joins_previous_line() {
         let (mut ev, mut doc) = bound_editor("ab\ncd");
         ev.set_caret_for_test(1, 0); // start of "cd"
@@ -2850,7 +2807,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 2));
     }
 
-    #[test]
     fn backspace_removes_char_before_caret() {
         let (mut ev, mut doc) = bound_editor("abc");
         ev.set_caret_for_test(0, 2);
@@ -2859,7 +2815,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 1));
     }
 
-    #[test]
     fn multi_char_unicode_inserts_keep_caret_in_chars() {
         let (mut ev, mut doc) = bound_editor("");
         ev.set_caret_for_test(0, 0);
@@ -2914,14 +2869,16 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -2942,14 +2899,16 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -2973,18 +2932,19 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
-    #[test]
     fn double_click_selects_word() {
         let (mut ev, mut doc) = geom_editor("hello world");
         // Two presses at the same point within the multi-click window → word.
@@ -2996,7 +2956,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("world"));
     }
 
-    #[test]
     fn triple_click_selects_line() {
         let (mut ev, mut doc) = geom_editor("hello world\nsecond line");
         let p = ev.pixel_for_test(0, 3);
@@ -3008,7 +2967,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello world"));
     }
 
-    #[test]
     fn drag_selects_char_range() {
         let (mut ev, mut doc) = geom_editor("hello world");
         let (p0, p5) = (ev.pixel_for_test(0, 0), ev.pixel_for_test(0, 5));
@@ -3022,7 +2980,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 5))));
     }
 
-    #[test]
     fn drag_across_lines_selects_multiline() {
         let (mut ev, mut doc) = geom_editor("abc\ndef");
         let (p01, p12) = (ev.pixel_for_test(0, 1), ev.pixel_for_test(1, 2));
@@ -3034,6 +2991,15 @@ mod tests {
     }
 
     #[test]
+    fn arrow_keys_move_and_extend_by_char_and_word() {
+        // Each phase builds a fresh bound editor.
+        shift_arrow_extends_by_char();
+        ctrl_arrow_moves_by_word();
+        ctrl_shift_arrow_extends_by_word();
+        word_move_uses_shared_boundaries_across_lines();
+        plain_arrow_collapses_selection_to_edge();
+    }
+
     fn shift_arrow_extends_by_char() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 0);
@@ -3055,7 +3021,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 2))));
     }
 
-    #[test]
     fn ctrl_arrow_moves_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
@@ -3091,7 +3056,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 4));
     }
 
-    #[test]
     fn ctrl_shift_arrow_extends_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
@@ -3106,7 +3070,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("foo "));
     }
 
-    #[test]
     fn word_move_uses_shared_boundaries_across_lines() {
         // Word-forward at end of a line steps onto the next line's first word —
         // proving the flat-index conversion round-trips through the shared
@@ -3117,7 +3080,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (1, 0));
     }
 
-    #[test]
     fn plain_arrow_collapses_selection_to_edge() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 1);
@@ -3157,6 +3119,13 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_shortcuts_cut_copy_and_paste_the_selection() {
+        // Each phase builds a fresh bound editor. The copy/paste phase keeps its
+        // original no-backend early return, which only ends that phase.
+        ctrl_x_cuts_selection_through_crdt();
+        clipboard_copy_paste_round_trips_when_available();
+    }
+
     fn ctrl_x_cuts_selection_through_crdt() {
         // Cut requests deletion of the selected range (clipboard write is a
         // silent no-op in the headless test env, so we assert on the buffer).
@@ -3178,7 +3147,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), None);
     }
 
-    #[test]
     fn clipboard_copy_paste_round_trips_when_available() {
         // Only meaningful where arboard has a backend (a Wayland/X11 session).
         // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the

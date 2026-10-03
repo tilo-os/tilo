@@ -433,153 +433,163 @@ mod tests {
         VerifiedEntry {
             entry,
             trust: TrustLevel::PublisherSigned,
+            version_index: None,
         }
     }
 
+    /// Registry entries resolve installed, update, immutable and locally-installed states.
     #[test]
-    fn tilo_entry_deserializes_installed_state() {
-        let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
-        let installed = vec![installed_package(
-            "so.tilo.notes",
-            "0.1.0",
-            entry.publisher_pubkey_hex.clone(),
-            true,
-            true,
-        )];
-        let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
-        assert!(matches!(item.installed, InstalledState::Installed { .. }));
-        // The pin flag from tilo-install's registry must survive the
-        // merge so the store can show "marked installed".
-        assert!(item.installed.is_pinned());
-        assert_eq!(item.latest_version(), "0.1.0");
-        assert!(matches!(item.source, StoreSource::Tilo { .. }));
+    fn catalogue_entries_resolve_install_and_update_state() {
+        // Case `tilo_entry_deserializes_installed_state`.
+        {
+            let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+            let installed = vec![installed_package(
+                "so.tilo.notes",
+                "0.1.0",
+                entry.publisher_pubkey_hex.clone(),
+                true,
+                true,
+            )];
+            let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
+            assert!(matches!(item.installed, InstalledState::Installed { .. }));
+            // The pin flag from tilo-install's registry must survive the
+            // merge so the store can show "marked installed".
+            assert!(item.installed.is_pinned());
+            assert_eq!(item.latest_version(), "0.1.0");
+            assert!(matches!(item.source, StoreSource::Tilo { .. }));
+        }
+
+        // Case `tilo_entry_with_newer_registry_version_flags_update`.
+        {
+            let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
+            let installed = vec![installed_package(
+                "so.tilo.notes",
+                "0.1.0",
+                entry.publisher_pubkey_hex.clone(),
+                false,
+                true,
+            )];
+            let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
+            assert!(item.installed.update_available());
+        }
+
+        // Case `immutable_system_entry_is_installed_but_not_mutable`.
+        {
+            let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
+            let installed = vec![installed_package(
+                entry.package_id.clone(),
+                "1.0.0",
+                entry.publisher_pubkey_hex.clone(),
+                false,
+                false,
+            )];
+            let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
+            assert!(item.installed.is_installed());
+            assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+            assert!(item.pin_action().is_none());
+            assert!(item.remove_action().is_none());
+        }
+
+        // Case `locally_installed_tilo_item_stays_actionable_without_catalogue_metadata`.
+        {
+            let item = installed_tilo_to_store_item(&installed_package(
+                "so.tilo.offline",
+                "1.2.3",
+                "ab".repeat(32),
+                true,
+                true,
+            ));
+            assert_eq!(item.name, "so.tilo.offline");
+            assert!(item.installed.is_installed());
+            assert!(item.installed.is_pinned());
+            assert!(!item.installed.update_available());
+            assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+            assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
+            assert!(item.versions[0].download_url.is_none());
+        }
+
+        // Case `locally_installed_flatpak_stays_actionable_without_a_popular_feed_row`.
+        {
+            let item = installed_flatpak_to_item("org.example.Offline", "4.0");
+            assert_eq!(item.name, "org.example.Offline");
+            assert!(item.installed.is_installed());
+            assert!(!item.installed.update_available());
+            assert_eq!(
+                item.action_kind(true),
+                crate::model::ActionKind::FlatpakOpen
+            );
+            assert_eq!(
+                item.remove_action(),
+                Some(crate::model::ActionKind::FlatpakRemove)
+            );
+        }
     }
 
+    /// Merging, category dedup and `AppStream` descriptions.
     #[test]
-    fn tilo_entry_with_newer_registry_version_flags_update() {
-        let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
-        let installed = vec![installed_package(
-            "so.tilo.notes",
-            "0.1.0",
-            entry.publisher_pubkey_hex.clone(),
-            false,
-            true,
-        )];
-        let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
-        assert!(item.installed.update_available());
-    }
+    fn source_merging_dedups_and_describes() {
+        // Case `merge_dedups_by_name_tilo_wins`.
+        {
+            let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+            let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
+            // Flathub carries a same-name item; it must be dropped.
+            let fh = PopularEntry {
+                app_id: "com.other.Notes".into(),
+                name: Some("Notes".into()),
+            };
+            let fh_item = flathub_placeholder_to_item(&fh, &[]);
+            let merged = merge(vec![tilo], vec![fh_item]);
+            assert_eq!(merged.len(), 1);
+            assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
+        }
 
-    #[test]
-    fn immutable_system_entry_is_installed_but_not_mutable() {
-        let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
-        let installed = vec![installed_package(
-            entry.package_id.clone(),
-            "1.0.0",
-            entry.publisher_pubkey_hex.clone(),
-            false,
-            false,
-        )];
-        let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
-        assert!(item.installed.is_installed());
-        assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
-        assert!(item.pin_action().is_none());
-        assert!(item.remove_action().is_none());
-    }
+        // Case `merge_preserves_distinct_flathub_items`.
+        {
+            let q = tilo_to_store_item(
+                &verified(tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
+                "Tilo main",
+                &[],
+            );
+            let f = flathub_placeholder_to_item(
+                &PopularEntry {
+                    app_id: "org.videolan.VLC".into(),
+                    name: Some("VLC".into()),
+                },
+                &[],
+            );
+            let merged = merge(vec![q], vec![f]);
+            assert_eq!(merged.len(), 2);
+        }
 
-    #[test]
-    fn locally_installed_tilo_item_stays_actionable_without_catalogue_metadata() {
-        let item = installed_tilo_to_store_item(&installed_package(
-            "so.tilo.offline",
-            "1.2.3",
-            "ab".repeat(32),
-            true,
-            true,
-        ));
-        assert_eq!(item.name, "so.tilo.offline");
-        assert!(item.installed.is_installed());
-        assert!(item.installed.is_pinned());
-        assert!(!item.installed.update_available());
-        assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
-        assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
-        assert!(item.versions[0].download_url.is_none());
-    }
+        // Case `distinct_categories_sorted_and_deduped`.
+        {
+            let a =
+                tilo_to_store_item(&verified(tilo_entry("a", "A", "1", [2u8; 32])), "Tilo", &[]);
+            let mut b =
+                tilo_to_store_item(&verified(tilo_entry("b", "B", "1", [3u8; 32])), "Tilo", &[]);
+            b.categories = vec!["Games".into(), "Productivity".into()];
+            let cats = distinct_categories(&[a, b]);
+            assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);
+        }
 
-    #[test]
-    fn locally_installed_flatpak_stays_actionable_without_a_popular_feed_row() {
-        let item = installed_flatpak_to_item("org.example.Offline", "4.0");
-        assert_eq!(item.name, "org.example.Offline");
-        assert!(item.installed.is_installed());
-        assert!(!item.installed.update_available());
-        assert_eq!(
-            item.action_kind(true),
-            crate::model::ActionKind::FlatpakOpen
-        );
-        assert_eq!(
-            item.remove_action(),
-            Some(crate::model::ActionKind::FlatpakRemove)
-        );
-    }
-
-    #[test]
-    fn merge_dedups_by_name_tilo_wins() {
-        let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
-        let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
-        // Flathub carries a same-name item; it must be dropped.
-        let fh = PopularEntry {
-            app_id: "com.other.Notes".into(),
-            name: Some("Notes".into()),
-        };
-        let fh_item = flathub_placeholder_to_item(&fh, &[]);
-        let merged = merge(vec![tilo], vec![fh_item]);
-        assert_eq!(merged.len(), 1);
-        assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
-    }
-
-    #[test]
-    fn merge_preserves_distinct_flathub_items() {
-        let q = tilo_to_store_item(
-            &verified(tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
-            "Tilo main",
-            &[],
-        );
-        let f = flathub_placeholder_to_item(
-            &PopularEntry {
-                app_id: "org.videolan.VLC".into(),
-                name: Some("VLC".into()),
-            },
-            &[],
-        );
-        let merged = merge(vec![q], vec![f]);
-        assert_eq!(merged.len(), 2);
-    }
-
-    #[test]
-    fn distinct_categories_sorted_and_deduped() {
-        let a = tilo_to_store_item(&verified(tilo_entry("a", "A", "1", [2u8; 32])), "Tilo", &[]);
-        let mut b =
-            tilo_to_store_item(&verified(tilo_entry("b", "B", "1", [3u8; 32])), "Tilo", &[]);
-        b.categories = vec!["Games".into(), "Productivity".into()];
-        let cats = distinct_categories(&[a, b]);
-        assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);
-    }
-
-    #[test]
-    fn appstream_detail_prefers_plain_long_description() {
-        let record = AppStreamRecord {
-            app_id: "org.example.App".into(),
-            name: "Example".into(),
-            summary: "Short".into(),
-            description: "<p>Long description</p>".into(),
-            icon: None,
-            current_release_version: Some("2".into()),
-            categories: Vec::new(),
-            homepage: None,
-            urls: None,
-            screenshots: Vec::new(),
-        };
-        assert_eq!(
-            flathub_record_to_item(&record, &[]).description,
-            "Long description"
-        );
+        // Case `appstream_detail_prefers_plain_long_description`.
+        {
+            let record = AppStreamRecord {
+                app_id: "org.example.App".into(),
+                name: "Example".into(),
+                summary: "Short".into(),
+                description: "<p>Long description</p>".into(),
+                icon: None,
+                current_release_version: Some("2".into()),
+                categories: Vec::new(),
+                homepage: None,
+                urls: None,
+                screenshots: Vec::new(),
+            };
+            assert_eq!(
+                flathub_record_to_item(&record, &[]).description,
+                "Long description"
+            );
+        }
     }
 }

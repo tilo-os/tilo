@@ -310,59 +310,46 @@ mod tests {
     }
 
     #[test]
-    fn is_portal_available_false_when_env_missing() {
-        let _env = without_bus();
-        assert!(!is_portal_available());
-    }
-
-    #[test]
-    fn is_portal_available_false_when_env_empty() {
-        let mut env = without_bus();
-        env.set("DBUS_SESSION_BUS_ADDRESS", "");
-        assert!(!is_portal_available());
-    }
-
-    #[test]
-    fn is_portal_available_false_when_unix_path_missing() {
-        let mut env = without_bus();
-        env.set(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/definitely/does/not/exist/tilo-portal-test",
-        );
-        assert!(!is_portal_available());
-    }
-
-    #[test]
-    fn is_portal_available_true_for_existing_unix_path() {
-        let mut env = without_bus();
+    fn portal_availability_follows_the_session_bus_address() {
+        {
+            let _env = without_bus();
+            assert!(!is_portal_available(), "case env missing");
+        }
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("fake.sock");
         std::fs::write(&sock, b"").unwrap();
-        env.set(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", sock.display()),
-        );
-        assert!(is_portal_available());
-    }
+        // (case, DBUS_SESSION_BUS_ADDRESS, available)
+        let cases = [
+            ("env empty", String::new(), false),
+            (
+                "unix path missing",
+                "unix:path=/definitely/does/not/exist/tilo-portal-test".to_owned(),
+                false,
+            ),
+            (
+                "existing unix path",
+                format!("unix:path={}", sock.display()),
+                true,
+            ),
+            (
+                "abstract namespace",
+                "unix:abstract=/tmp/dbus-abstract-XXXXXX,guid=deadbeef".to_owned(),
+                true,
+            ),
+        ];
+        for (case, address, want) in cases {
+            let mut env = without_bus();
+            env.set("DBUS_SESSION_BUS_ADDRESS", address);
+            assert_eq!(is_portal_available(), want, "case {case}");
+        }
 
-    #[test]
-    fn is_portal_available_true_for_abstract_namespace() {
-        let mut env = without_bus();
-        env.set(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:abstract=/tmp/dbus-abstract-XXXXXX,guid=deadbeef",
-        );
-        assert!(is_portal_available());
-    }
-
-    #[test]
-    fn portal_calls_report_notavailable_with_bogus_bus() {
+        // With a bogus bus the connection attempt fails: every portal
+        // reports NotAvailable.
         let mut env = without_bus();
         env.set(
             "DBUS_SESSION_BUS_ADDRESS",
             "unix:path=/definitely/does/not/exist/tilo-portal-test-bogus",
         );
-        // Connection attempt will fail. Every portal reports NotAvailable.
         assert!(matches!(
             Notification::send("bogus-bus-test"),
             Err(PortalError::NotAvailable)

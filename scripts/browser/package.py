@@ -19,13 +19,14 @@ def main():
     if not args.skip_native_build:
         subprocess.run([sys.executable, str(ROOT / "scripts/browser/build-host.py")], check=True)
     subprocess.run(["cargo", "build", "-p", "browser", "--profile", args.profile], cwd=ROOT, check=True)
+    # A package runs outside the Tilo desktop: it carries the standalone runtime.
     subprocess.run([
-        "cargo", "build", "-p", "shell", "--bin", "tilo-runtime-mcp",
-        "--no-default-features", "--profile", args.profile,
+        "cargo", "build", "-p", "tilo-runtime", "--bin", "tilo-runtime",
+        "--profile", args.profile,
     ], cwd=ROOT, check=True)
     binaries = ROOT / "target" / ("debug" if args.profile == "dev" else args.profile)
     binary = binaries / "browser"
-    runtime_host = binaries / "tilo-runtime-mcp"
+    runtime_host = binaries / "tilo-runtime"
     output = ROOT / "target/browser-package"
     output.mkdir(parents=True, exist_ok=True)
     if platform.system() == "Darwin":
@@ -42,7 +43,7 @@ def main():
             shutil.rmtree(destination)
         shutil.copytree(runtime, destination, symlinks=True)
         shutil.copy2(binary, contents / "MacOS/browser")
-        bundled_host = contents / "MacOS/tilo-runtime-mcp"
+        bundled_host = contents / "MacOS/tilo-runtime"
         shutil.copy2(runtime_host, bundled_host)
         info = {
             "CFBundleIdentifier": "dev.tilo.browser",
@@ -73,7 +74,7 @@ def main():
             shutil.rmtree(engine)
         shutil.copytree(runtime, engine, symlinks=True)
         shutil.copy2(binary, destination / "browser")
-        shutil.copy2(runtime_host, destination / "tilo-runtime-mcp")
+        shutil.copy2(runtime_host, destination / "tilo-runtime")
         print(destination / "browser")
     else:
         raise SystemExit("Only macOS and Linux are supported")

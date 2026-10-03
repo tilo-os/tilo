@@ -127,6 +127,12 @@ authorization.
   to that source and session. Leaving, deleting the group, a role change,
   the source going offline, or disabling media continuity tears sessions
   down; disabling media also withdraws the device's memberships.
+  Settings → Speakers sets groups up through a Settings-only broker command
+  (`speakerCommand`): choose outputs, play a short identify sound on each to
+  tell left from right, place room speakers, name and save. Calibration
+  measures every member with one microphone on any device and produces a
+  before/after proposal; trims change only when it is applied, and one
+  revert restores the previous ones.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never
@@ -165,13 +171,16 @@ authorization.
   evdev codes, keyboard events, and pointer events are not representable on the
   wire. Both compositors continuously enforce the exact focused app and
   workspace and neutralize the virtual controller when that binding changes.
-- **Shared clock** rides on the shell-owned health probe. Each round trip
-  carries four `CLOCK_MONOTONIC` microsecond timestamps, and the prober keeps a
-  per-peer NTP-style estimate of offset and skew: lowest-delay samples from a
-  sliding window, a Theil–Sen fit for rate, an error bound, and a synced flag.
-  Probes run every ten seconds; a consumer that needs synchronised playback
-  holds a `FabricClockSync` handle, which raises that peer to 4 Hz until the
-  last handle drops.
+- **Shared clock** has its own probe and report, part of Media continuity
+  because speaker groups and remote audio are what play against it; they carry
+  timestamps only, no health or power data. Each round trip carries four
+  `CLOCK_MONOTONIC` microsecond timestamps, and the prober keeps a per-peer
+  NTP-style estimate of offset and skew: lowest-delay samples from a sliding
+  window, a Theil–Sen fit for rate, an error bound, and a synced flag. The
+  clock runs only toward a peer while a consumer holds a `FabricClockSync`
+  handle for it, at 4 Hz, and forgets the estimate when the last handle drops
+  or Media is turned off. A member without an estimate is shown syncing, and
+  after a bounded wait fails with a reason, instead of playing silence.
 
 The Devices surface exposes these capabilities individually. Disabling a
 capability tears down its active leases; disabling continuity tears down all of

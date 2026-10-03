@@ -24,14 +24,25 @@
 //! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
 //!   FUSE or fanotify where the host lacks it, and fails it instead on a CI
 //!   lane that sets `TILO_REQUIRE_<CAP>=1`.
+//! - [`hang`] waits for workers, daemons, sockets and events against one
+//!   workspace-wide bound that only catches a hang: [`wait_until`],
+//!   [`wait_for`], [`recv`] and [`within`].
+//! - [`require_isolated_desktop`] refuses to go on when a test binary was
+//!   started outside the test environment, where it could reach the caller's
+//!   session bus, portals, media players or display.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
 //! mutates the variable without this crate.
 
+pub mod allocation;
 mod capability;
+mod desktop;
+pub mod hang;
 
 pub use capability::{Capability, Probe, capability_unavailable};
+pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
+pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;
@@ -382,225 +393,241 @@ mod tests {
         env::var(key).ok()
     }
 
+    /// Setting restores an absent variable to absent; set and remove restore the prior value; nested
+    /// scopes unwind in order on one thread; a panicking scope restores and releases the lock;
+    /// concurrent scopes are serialised.
     #[test]
-    fn set_restores_an_absent_variable_to_absent() {
+    fn scoped_env_restores_every_prior_value_and_serialises_scopes() {
+        // Phase: set_restores_an_absent_variable_to_absent.
         {
-            let mut env = ScopedEnv::new();
-            env.remove(KEY);
-        }
-        {
-            let mut env = ScopedEnv::new();
-            env.set(KEY, "inside");
-            assert_eq!(read(KEY).as_deref(), Some("inside"));
-        }
-        let _guard = lock();
-        assert_eq!(read(KEY), None);
-    }
-
-    #[test]
-    fn set_and_remove_restore_the_prior_value() {
-        let mut outer = ScopedEnv::new();
-        outer.set(KEY, "prior");
-        {
-            let mut env = ScopedEnv::new();
-            env.set(KEY, "first").set(KEY, "second");
-            assert_eq!(read(KEY).as_deref(), Some("second"));
-        }
-        assert_eq!(
-            read(KEY).as_deref(),
-            Some("prior"),
-            "set twice, restored once"
-        );
-        {
-            let mut env = ScopedEnv::new();
-            env.remove(KEY);
-            assert_eq!(read(KEY), None);
-        }
-        assert_eq!(read(KEY).as_deref(), Some("prior"), "removal is undone");
-    }
-
-    #[test]
-    fn nested_scopes_unwind_in_order_on_one_thread() {
-        let mut outer = ScopedEnv::new();
-        outer.remove(KEY).set(OTHER, "outer");
-        {
-            let mut inner = ScopedEnv::new();
-            inner.set(KEY, "inner").set(OTHER, "inner");
-            assert_eq!(read(KEY).as_deref(), Some("inner"));
-            assert_eq!(read(OTHER).as_deref(), Some("inner"));
-        }
-        assert_eq!(read(KEY), None);
-        assert_eq!(read(OTHER).as_deref(), Some("outer"));
-        drop(outer);
-        let _guard = lock();
-        assert_eq!(read(OTHER), None);
-    }
-
-    #[test]
-    fn a_panicking_scope_restores_and_releases_the_lock() {
-        // Every scope in this module leaves `KEY` absent, so absent is the
-        // prior value each panicking scope below must restore.
-        let result = thread::spawn(|| {
-            let mut env = ScopedEnv::new();
-            env.set(KEY, "leaked?");
-            panic!("assertion failure inside a scope");
-        })
-        .join();
-        assert!(result.is_err(), "the scope's thread panicked");
-        {
-            // Taking the lock again proves the panic released it; the value
-            // proves the unwinding drop restored it.
+            {
+                let mut env = ScopedEnv::new();
+                env.remove(KEY);
+            }
+            {
+                let mut env = ScopedEnv::new();
+                env.set(KEY, "inside");
+                assert_eq!(read(KEY).as_deref(), Some("inside"));
+            }
             let _guard = lock();
             assert_eq!(read(KEY), None);
         }
-        let caught = std::panic::catch_unwind(|| {
-            let mut env = ScopedEnv::new();
-            env.set(KEY, "leaked?");
-            panic!("same-thread failure");
-        });
-        assert!(caught.is_err());
-        let _guard = lock();
-        assert_eq!(read(KEY), None);
-    }
 
-    #[test]
-    fn concurrent_scopes_are_serialised() {
-        const THREADS: usize = 8;
-        const ROUNDS: usize = 50;
-        let inside = Arc::new(AtomicUsize::new(0));
-        let handles: Vec<_> = (0..THREADS)
-            .map(|index| {
-                let inside = Arc::clone(&inside);
-                thread::spawn(move || {
-                    let mine = format!("thread-{index}");
-                    for _ in 0..ROUNDS {
-                        let mut env = ScopedEnv::new();
-                        assert_eq!(
-                            inside.fetch_add(1, Ordering::SeqCst),
-                            0,
-                            "two scopes at once"
-                        );
-                        env.set(KEY, &mine);
-                        thread::yield_now();
-                        assert_eq!(read(KEY).as_deref(), Some(mine.as_str()));
-                        inside.fetch_sub(1, Ordering::SeqCst);
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        let _guard = lock();
-        assert_eq!(read(KEY), None, "every scope restored the absent value");
-    }
-
-    #[test]
-    fn test_home_points_every_base_directory_into_one_temporary_tree() {
-        let root;
+        // Phase: set_and_remove_restore_the_prior_value.
         {
-            let home = TestHome::new().unwrap();
-            root = home.root().to_path_buf();
-            for (key, dir) in [
-                ("HOME", home.home()),
-                ("XDG_DATA_HOME", home.data()),
-                ("XDG_CONFIG_HOME", home.config()),
-                ("XDG_STATE_HOME", home.state()),
-                ("XDG_CACHE_HOME", home.cache()),
-                ("XDG_RUNTIME_DIR", home.runtime()),
-            ] {
-                assert_eq!(env::var_os(key).as_deref(), Some(dir.as_os_str()), "{key}");
-                assert!(dir.is_dir(), "{key} exists");
-                assert!(dir.starts_with(&root), "{key} is inside the fixture");
-            }
-            #[cfg(unix)]
+            let mut outer = ScopedEnv::new();
+            outer.set(KEY, "prior");
             {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(home.runtime()).unwrap().permissions().mode();
-                assert_eq!(mode & 0o777, 0o700, "runtime directory is private");
+                let mut env = ScopedEnv::new();
+                env.set(KEY, "first").set(KEY, "second");
+                assert_eq!(read(KEY).as_deref(), Some("second"));
             }
+            assert_eq!(
+                read(KEY).as_deref(),
+                Some("prior"),
+                "set twice, restored once"
+            );
+            {
+                let mut env = ScopedEnv::new();
+                env.remove(KEY);
+                assert_eq!(read(KEY), None);
+            }
+            assert_eq!(read(KEY).as_deref(), Some("prior"), "removal is undone");
         }
-        assert!(!root.exists(), "the tree is removed on drop");
-        let _guard = lock();
-        assert!(env::var_os("XDG_DATA_HOME").is_none_or(|dir| !Path::new(&dir).starts_with(&root)));
+
+        // Phase: nested_scopes_unwind_in_order_on_one_thread.
+        {
+            let mut outer = ScopedEnv::new();
+            outer.remove(KEY).set(OTHER, "outer");
+            {
+                let mut inner = ScopedEnv::new();
+                inner.set(KEY, "inner").set(OTHER, "inner");
+                assert_eq!(read(KEY).as_deref(), Some("inner"));
+                assert_eq!(read(OTHER).as_deref(), Some("inner"));
+            }
+            assert_eq!(read(KEY), None);
+            assert_eq!(read(OTHER).as_deref(), Some("outer"));
+            drop(outer);
+            let _guard = lock();
+            assert_eq!(read(OTHER), None);
+        }
+
+        // Phase: a_panicking_scope_restores_and_releases_the_lock.
+        {
+            // Every scope in this module leaves `KEY` absent, so absent is the
+            // prior value each panicking scope below must restore.
+            let result = thread::spawn(|| {
+                let mut env = ScopedEnv::new();
+                env.set(KEY, "leaked?");
+                panic!("assertion failure inside a scope");
+            })
+            .join();
+            assert!(result.is_err(), "the scope's thread panicked");
+            {
+                // Taking the lock again proves the panic released it; the value
+                // proves the unwinding drop restored it.
+                let _guard = lock();
+                assert_eq!(read(KEY), None);
+            }
+            let caught = std::panic::catch_unwind(|| {
+                let mut env = ScopedEnv::new();
+                env.set(KEY, "leaked?");
+                panic!("same-thread failure");
+            });
+            assert!(caught.is_err());
+            let _guard = lock();
+            assert_eq!(read(KEY), None);
+        }
+
+        // Phase: concurrent_scopes_are_serialised.
+        {
+            const THREADS: usize = 8;
+            const ROUNDS: usize = 50;
+            let inside = Arc::new(AtomicUsize::new(0));
+            let handles: Vec<_> = (0..THREADS)
+                .map(|index| {
+                    let inside = Arc::clone(&inside);
+                    thread::spawn(move || {
+                        let mine = format!("thread-{index}");
+                        for _ in 0..ROUNDS {
+                            let mut env = ScopedEnv::new();
+                            assert_eq!(
+                                inside.fetch_add(1, Ordering::SeqCst),
+                                0,
+                                "two scopes at once"
+                            );
+                            env.set(KEY, &mine);
+                            thread::yield_now();
+                            assert_eq!(read(KEY).as_deref(), Some(mine.as_str()));
+                            inside.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let _guard = lock();
+            assert_eq!(read(KEY), None, "every scope restored the absent value");
+        }
     }
 
+    /// Test home points every base directory into one temporary tree and restores the previous home.
     #[test]
-    fn test_home_restores_the_previous_home() {
-        let mut outer = ScopedEnv::new();
-        outer.set("XDG_CONFIG_HOME", "/nonexistent/prior-config");
+    fn test_home_redirects_every_base_directory_and_restores_home() {
+        // Phase: test_home_points_every_base_directory_into_one_temporary_tree.
         {
-            let mut home = TestHome::new().unwrap();
-            home.env().set(KEY, "with-home");
-            assert_ne!(
+            let root;
+            {
+                let home = TestHome::new().unwrap();
+                root = home.root().to_path_buf();
+                for (key, dir) in [
+                    ("HOME", home.home()),
+                    ("XDG_DATA_HOME", home.data()),
+                    ("XDG_CONFIG_HOME", home.config()),
+                    ("XDG_STATE_HOME", home.state()),
+                    ("XDG_CACHE_HOME", home.cache()),
+                    ("XDG_RUNTIME_DIR", home.runtime()),
+                ] {
+                    assert_eq!(env::var_os(key).as_deref(), Some(dir.as_os_str()), "{key}");
+                    assert!(dir.is_dir(), "{key} exists");
+                    assert!(dir.starts_with(&root), "{key} is inside the fixture");
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = fs::metadata(home.runtime()).unwrap().permissions().mode();
+                    assert_eq!(mode & 0o777, 0o700, "runtime directory is private");
+                }
+            }
+            assert!(!root.exists(), "the tree is removed on drop");
+            let _guard = lock();
+            assert!(
+                env::var_os("XDG_DATA_HOME").is_none_or(|dir| !Path::new(&dir).starts_with(&root))
+            );
+        }
+
+        // Phase: test_home_restores_the_previous_home.
+        {
+            let mut outer = ScopedEnv::new();
+            outer.set("XDG_CONFIG_HOME", "/nonexistent/prior-config");
+            {
+                let mut home = TestHome::new().unwrap();
+                home.env().set(KEY, "with-home");
+                assert_ne!(
+                    read("XDG_CONFIG_HOME").as_deref(),
+                    Some("/nonexistent/prior-config")
+                );
+            }
+            assert_eq!(
                 read("XDG_CONFIG_HOME").as_deref(),
                 Some("/nonexistent/prior-config")
             );
+            assert_eq!(read(KEY), None, "extra variables share the home's scope");
         }
-        assert_eq!(
-            read("XDG_CONFIG_HOME").as_deref(),
-            Some("/nonexistent/prior-config")
-        );
-        assert_eq!(read(KEY), None, "extra variables share the home's scope");
     }
 
+    /// A script is executable and complete and leaves no staging file; scripts written and run
+    /// concurrently never fail to start.
     #[cfg(unix)]
     #[test]
-    fn script_is_executable_complete_and_leaves_no_staging_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fixture");
-        fs::write(&path, "stale").unwrap();
-        let script = script(&path, "#!/bin/sh\nprintf 'ran %s' \"$1\"\n").unwrap();
-        assert_eq!(script.path(), path);
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(
-            mode & 0o111,
-            0o111,
-            "executable by everyone who can read it"
-        );
-        let names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(
-            names,
-            [OsString::from("fixture")],
-            "no staging file left behind"
-        );
-        let [shell, arg] = script.exec_argv();
-        assert_eq!(shell, OsStr::new("/bin/sh"));
-        let output = std::process::Command::new(shell)
-            .arg(arg)
-            .arg("once")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"ran once");
-    }
+    fn test_scripts_are_written_whole_and_start_under_concurrency() {
+        // Phase: script_is_executable_complete_and_leaves_no_staging_file.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fixture");
+            fs::write(&path, "stale").unwrap();
+            let script = script(&path, "#!/bin/sh\nprintf 'ran %s' \"$1\"\n").unwrap();
+            assert_eq!(script.path(), path);
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "executable by everyone who can read it"
+            );
+            let names: Vec<_> = fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(
+                names,
+                [OsString::from("fixture")],
+                "no staging file left behind"
+            );
+            let [shell, arg] = script.exec_argv();
+            assert_eq!(shell, OsStr::new("/bin/sh"));
+            let output = std::process::Command::new(shell)
+                .arg(arg)
+                .arg("once")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"ran once");
+        }
 
-    /// Many threads writing and running fixtures at once is what made
-    /// directly executed fixtures fail with `ETXTBSY`.
-    #[cfg(unix)]
-    #[test]
-    fn scripts_written_and_run_concurrently_never_fail_to_start() {
-        let dir = Arc::new(tempfile::tempdir().unwrap());
-        let handles: Vec<_> = (0..8)
-            .map(|thread_index| {
-                let dir = Arc::clone(&dir);
-                thread::spawn(move || {
-                    for round in 0..25 {
-                        let path = dir.path().join(format!("fixture-{thread_index}-{round}"));
-                        let body = format!("#!/bin/sh\nprintf '{thread_index}-{round}'\n");
-                        let output = script(&path, &body).unwrap().command().output().unwrap();
-                        assert!(output.status.success());
-                        assert_eq!(output.stdout, format!("{thread_index}-{round}").as_bytes());
-                    }
+        // Phase: scripts_written_and_run_concurrently_never_fail_to_start.
+        // Many threads writing and running fixtures at once is what made
+        // directly executed fixtures fail with `ETXTBSY`.
+        {
+            let dir = Arc::new(tempfile::tempdir().unwrap());
+            let handles: Vec<_> = (0..8)
+                .map(|thread_index| {
+                    let dir = Arc::clone(&dir);
+                    thread::spawn(move || {
+                        for round in 0..25 {
+                            let path = dir.path().join(format!("fixture-{thread_index}-{round}"));
+                            let body = format!("#!/bin/sh\nprintf '{thread_index}-{round}'\n");
+                            let output = script(&path, &body).unwrap().command().output().unwrap();
+                            assert!(output.status.success());
+                            assert_eq!(output.stdout, format!("{thread_index}-{round}").as_bytes());
+                        }
+                    })
                 })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
         }
     }
 }

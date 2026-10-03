@@ -29,10 +29,28 @@ if [ "${1:-}" = is-active ]; then
   exit
 fi
 case "${2:-}" in
+  --property=InitRDTimestampMonotonic) printf '%s\n' "${TILO_TEST_INITRD_US:-}" ;;
+  --property=UserspaceTimestampMonotonic) printf '%s\n' "${TILO_TEST_USERSPACE_US:-}" ;;
   graphical.target) printf '%s\n' "${TILO_TEST_GRAPHICAL_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
   greetd.service) printf '%s\n' "${TILO_TEST_GREETD_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
   *) exit 1 ;;
 esac
+EOF
+cat >"$work/dmesg" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[    2.000000] host kernel: Trying to unpack rootfs image as initramfs...' \
+  '[   14.000000] host kernel: Freeing initrd memory: 98000K' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   20.000000] host systemd[1]: after the initrd'
+EOF
+cat >"$work/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   15.000000] host systemd[1]: Starting tilo-root-discover.service - Discover the root...' \
+  '[   19.000000] host systemd[1]: Finished tilo-root-discover.service - Discover the root.' \
+  '[   20.000000] host systemd[1]: after the initrd'
 EOF
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
@@ -45,7 +63,7 @@ if [ "${TILO_TEST_ZRAM_SWAP:-yes}" = yes ]; then
 fi
 [ -z "${TILO_TEST_EXTRA_SWAP:-}" ] || printf '%s\n' "$TILO_TEST_EXTRA_SWAP"
 EOF
-chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon"
+chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" "$work/journalctl"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
@@ -58,6 +76,42 @@ if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
 fi
 grep -Fq '20.000s (budget: 20s)' "$work/fail.err"
 grep -Fq 'mock critical chain' "$work/fail.err"
+
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
+  TILO_TEST_USERSPACE_US=18000000 "$repo/os/tests/boot_performance_gate.sh" \
+  >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
+grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
+grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
+grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
+grep -Fq 'switch-root milestones:' "$work/gaps.err"
+grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
+  TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
+  >/dev/null 2>"$work/initrd-gaps.err" || true
+grep -Fq '4.000s before [   19.000000] host systemd[1]: Finished tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq '4.000s tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq 'initrd, longest units (4 journal entries in the phase):' "$work/initrd-gaps.err" \
+  || { cat "$work/initrd-gaps.err" >&2; exit 1; }
+if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the initrd'; then
+  echo 'kernel gap report reached past the initrd start' >&2
+  exit 1
+fi
+
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19000000 TILO_TEST_INITRD_US=4000000 \
+  TILO_TEST_USERSPACE_US=14000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/phases"
+grep -Fq 'phases: kernel 4.000s, initrd 10.000s, userspace to greeter 5.000s' "$work/phases"
+
+# 4 CPUs, 1000 ticks of steal at 100 Hz = 10 s of 76 CPU-seconds.
+printf 'cpu  100 0 100 1000 0 0 0 1000 0 0\ncpu0 1 0 0 0\ncpu1 1 0 0 0\ncpu2 1 0 0 0\ncpu3 1 0 0 0\n' >"$work/stat"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=19000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/steal"
+grep -Fq 'cpu steal since boot: 10.000s over 4 CPUs (13% of 19.000s)' "$work/steal"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=5000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/fast"
+if grep -Fq 'cpu steal' "$work/fast"; then
+  echo 'a boot well inside the budget printed contention diagnostics' >&2
+  exit 1
+fi
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
@@ -218,6 +272,9 @@ grep -Fqx 'Requires=firewalld.service' "$network_manager_firewall"
 grep -Fqx 'After=firewalld.service' "$network_manager_firewall"
 grep -Fq 'OnUnitInactiveSec=1h' \
   "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'OnBootSec=2min' "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'CPUSchedulingPolicy=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
+grep -Fqx 'IOSchedulingClass=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
 if grep -Fq 'RemainAfterExit=yes' \
     "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   echo 'security audit oneshot remains active and cannot recur from its timer' >&2
@@ -243,14 +300,11 @@ if grep -Fq 'systemctl enable tilo-growfs-sysroot.service' "$repo/os/Containerfi
   exit 1
 fi
 device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
-grep -Fqx 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
-grep -Fqx 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' "$device_key_unit"
-identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
-grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
-grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/mkdir -p %E/tilo/identity' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/touch %E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'UMask=0077' "$identity_unit"
+grep -Fqx 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
+if grep -Fq 'tilo-identity.service' "$repo/os/Containerfile"; then
+  echo 'a pre-session identity unit is back in the login path' >&2
+  exit 1
+fi
 if grep -Fq 'systemctl enable tilo-boot-entries.service' "$repo/os/Containerfile"; then
   echo 'boot-entry ESP maintenance still blocks first login' >&2
   exit 1
@@ -365,7 +419,12 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/crates/system/fs/src/main.rs"
+# Activation may omit a pathname; an explicit path must still be this socket.
+recipient_src="$repo/crates/system/fs/src/main.rs"
+if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
+  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+  exit 1
+fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
 app_host_serve_line="$(grep -n 'transport::serve(listener, store' "$app_host_source" | cut -d: -f1)"
 if [ -z "$app_host_gc_line" ] || [ -z "$app_host_serve_line" ] \
@@ -414,6 +473,20 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   echo 'composefs VM still exercises blocking boot-entry maintenance' >&2
   exit 1
 fi
+
+grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile" || {
+  echo 'first boot regenerates the linker cache on the login critical chain' >&2
+  exit 1
+}
+
+for preset_wants in multi-user.target.wants/ModemManager.service \
+    graphical.target.wants/power-profiles-daemon.service \
+    multi-user.target.wants/virtqemud.service; do
+  grep -Fq "/etc/systemd/system/$preset_wants" "$repo/os/Containerfile" || {
+    echo "the preset still starts $preset_wants before login" >&2
+    exit 1
+  }
+done
 
 for demand_activated in bluetooth ModemManager fwupd power-profiles-daemon systemd-homed; do
   if grep -Fq "systemctl enable $demand_activated.service" "$repo/os/Containerfile"; then

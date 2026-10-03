@@ -24,6 +24,15 @@ impl App {
         if let Some(history) = &self.history {
             roots.push(history.as_ref() as &dyn Widget);
         }
+        if let Some(palette) = self
+            .actions
+            .action_palette
+            .as_ref()
+            .filter(|p| p.is_presented())
+        {
+            roots.push(palette as &dyn Widget);
+            return roots;
+        }
         if self
             .history
             .as_ref()
@@ -34,9 +43,112 @@ impl App {
         roots
     }
     pub(super) fn discard_history_local_intents(&mut self) {
-        let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
-        while self.root_widget.take_control_invocation().is_some() {}
-        self.actions.action_palette = None;
+        if let Some(history) = &mut self.history {
+            history.discard_pending_output(self.root_widget.as_mut());
+        } else {
+            let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
+            crate::bound_dispatch::legacy_document::discard_legacy_controls(
+                self.root_widget.as_mut(),
+            );
+            while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
+                .is_some()
+            {}
+        }
+    }
+    fn capture_history_entry(&mut self) {
+        let captured = self.history.as_mut().is_some_and(|history| {
+            history.captures_input()
+                && history
+                    .capture_embedded_pending_controls(self.root_widget.as_mut(), &self.state.doc)
+        });
+        if captured {
+            let address = self
+                .actions
+                .action_palette
+                .as_ref()
+                .filter(|palette| !palette.history_has_custody())
+                .and_then(crate::action_palette::ActionPalette::history_pending_address);
+            let invocation = self
+                .actions
+                .action_palette
+                .as_ref()
+                .and_then(crate::action_palette::ActionPalette::history_pending_invocation);
+            let original_arguments = self
+                .actions
+                .action_palette
+                .as_ref()
+                .and_then(|palette| palette.history_pending_continuation_arguments());
+            let custody = address.as_ref().map(|address| {
+                let original = self
+                    .actions
+                    .action_palette
+                    .as_ref()
+                    .and_then(|p| p.ordinary_request());
+                if let Some(original) = original {
+                    original.validate_owner(&self.control_domain)?;
+                }
+                let target =
+                    if let Some(original) = original {
+                        original.target.clone()
+                    } else {
+                        match self.actions.action_palette
+                        .as_ref()
+                        .and_then(|palette| palette.history_pending_bound_target())
+                    {
+                        Some(bound) => {
+                            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                                bound,
+                            )
+                        }
+                        None => crate::bound_dispatch::legacy_document::select_local_target(
+                            self.root_widget.as_ref(),
+                            &self.state.doc,
+                            address,
+                        )?,
+                    }
+                    };
+                let witness = invocation.as_ref().zip(original_arguments.as_ref()).map(
+                    |(invocation, original_arguments)| {
+                        crate::bound_dispatch::control_witness_with_arguments(
+                            self.root_widget.as_ref(),
+                            &self.state.doc,
+                            &target,
+                            invocation,
+                            original_arguments,
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                );
+                let identity = match &witness {
+                    Some(Ok(witness)) => Some(Ok(witness.identity().clone())),
+                    Some(Err(reason)) => Some(Err(reason.clone())),
+                    None => Some(
+                        crate::bound_dispatch::control_draft_identity(
+                            self.root_widget.as_ref(),
+                            &self.state.doc,
+                            &target,
+                            address,
+                        )
+                        .map_err(|error| error.to_string()),
+                    ),
+                };
+                Ok::<_, tilo_actions::DoorError>((target, identity, witness))
+            });
+            if let Some(palette) = self.actions.action_palette.as_mut() {
+                palette.suspend_for_history();
+                if let Some(custody) = custody {
+                    match custody {
+                        Ok((target, identity, witness)) => {
+                            palette.retain_history_custody(target, identity, witness);
+                        }
+                        Err(error) => {
+                            palette.retain_history_resolution_error(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        crate::history_mode::embedded::capture_entries(self.root_widget.as_mut(), &self.state.doc);
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
@@ -78,6 +190,7 @@ impl App {
         self.layout.node_map.clear();
         self.bindings.clear();
         self.focused_node = None;
+        self.capture_history_entry();
         if let Some(history) = &mut self.history {
             if status_changed {
                 history.set_sync_status(status.clone());
@@ -95,12 +208,26 @@ impl App {
             width,
             status.as_deref(),
         );
+        let returning_live = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.returning_live());
         if self
             .history
             .as_ref()
-            .is_some_and(|history| history.captures_input() || history.returning_live())
+            .is_some_and(|history| history.captures_input())
+            || returning_live
         {
             self.discard_history_local_intents();
+        }
+        if returning_live {
+            if let Some(history) = &mut self.history {
+                history.finish_return_to_live();
+                history.flush_pending_toolbar();
+            }
+            if let Some(palette) = self.actions.action_palette.as_mut() {
+                palette.resume_after_history();
+            }
         }
         self.invalidate_widget_resource_cache();
         self.layout.structure_dirty = true;
@@ -137,6 +264,17 @@ impl App {
                     .into_iter()
                     .rev(),
             );
+        }
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| !history.captures_input())
+        {
+            self.focusable_order.sort_by_key(|id| {
+                self.history
+                    .as_ref()
+                    .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
+            });
         }
         self.accessibility.focus_trap_active = self
             .history
@@ -264,14 +402,16 @@ impl App {
         event: &WindowEvent,
         scale: f64,
     ) -> bool {
-        let _frame = FrameworkInputFrame::new(&self.framework_input, true);
+        let frame = FrameworkInputFrame::new(&self.framework_input, true);
         let mut handled = false;
         let mut focus = None;
         if matches!(event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
             handled = self.focus_tab(self.input.modifiers.state().shift_key());
-        } else if let Some(history) = &mut self.history {
+        } else if let Some(history) = &mut self.history
+            && let Some(root) = self.layout.root_node
+        {
             if history.captures_input()
                 && self
                     .focused_node
@@ -290,31 +430,42 @@ impl App {
             history.route_event(
                 self.root_widget.as_mut(),
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         } else if let Some(root) = self.layout.root_node {
             self.root_widget.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                root,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if let Some(focus) = focus {
             self.set_focused_node(Some(focus));
         }
         self.handle_unconsumed_activation_key(event, &mut handled);
+        // A genuine open request must seal the live queue before any History
+        // output disposal. The refresh also invalidates admitted raw maps
+        // before replacing framework chrome.
+        self.refresh_framework_history(
+            self.layout.last_layout_logical.map_or(900.0, |size| size.0),
+        );
         if self
             .history
             .as_ref()
@@ -323,9 +474,8 @@ impl App {
             self.discard_history_local_intents();
         }
         self.poll_directed_invocations();
-        self.refresh_framework_history(
-            self.layout.last_layout_logical.map_or(900.0, |size| size.0),
-        );
+        drop(frame);
+        self.service_pending_history_commands();
         self.layout.layout_dirty = true;
         true
     }
@@ -425,5 +575,19 @@ impl App {
             };
         }
         false
+    }
+
+    /// Called only after native exit layout, focus, drawing and publication.
+    /// A deferred or failed frame retains its leases until a later completion.
+    #[cfg(feature = "native")]
+    pub(super) fn finish_history_return_frame(&mut self) {
+        // Keep an outer covering lease through nested discard callbacks too.
+        crate::history_mode::embedded::finish_returns(self.root_widget.as_mut());
+        if let Some(history) = &mut self.history {
+            if history.has_settled_control_return() {
+                history.discard_pending_output(self.root_widget.as_mut());
+                history.finish_control_return();
+            }
+        }
     }
 }

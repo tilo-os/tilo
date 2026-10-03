@@ -231,6 +231,12 @@ impl<T: Lerp + Copy> Animated<T> {
     pub fn started(&self) -> Instant {
         self.started
     }
+
+    /// Move the start later by `by` so time already elapsed does not count.
+    /// A presenter that cannot take the frame holds the curve this way.
+    fn defer(&mut self, by: Duration) {
+        self.started = self.started.checked_add(by).unwrap_or(self.started);
+    }
 }
 
 /// An interruptible open/close transition tracking a `0.0..=1.0` "openness"
@@ -274,6 +280,16 @@ impl Transition {
     /// Openness in `0.0..=1.0` at `now`.
     pub fn value(&self, now: Instant) -> f32 {
         self.anim.current(now).clamp(0.0, 1.0)
+    }
+
+    /// `(alpha, dy, scale)` for a modal this transition drives, covering
+    /// both the enter (openness 0→1) and the exit (openness 1→0). The panel
+    /// starts 20 px low at `start_scale` and rises to rest on the enter; the
+    /// exit plays the same curve in reverse instead of the panel vanishing.
+    pub fn modal_curve(&self, now: Instant, start_scale: f64) -> (f32, f64, f64) {
+        let o = self.value(now);
+        let scale = start_scale + (1.0 - start_scale) * f64::from(o);
+        (o, 20.0 * f64::from(1.0 - o), scale)
     }
 
     /// True while opening, open, or closing (openness `> 0`) — draw code
@@ -328,6 +344,12 @@ impl Transition {
         self.anim = Animated::starting_at(current, target, now, scaled, curve);
         self.open = open;
     }
+
+    /// Hold the curve for `by`. Wall time spent waiting on a full presenter
+    /// is not progress.
+    pub fn defer(&mut self, by: Duration) {
+        self.anim.defer(by);
+    }
 }
 
 #[cfg(test)]
@@ -335,260 +357,273 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linear_curve_is_identity() {
-        assert_eq!(Curve::Linear.apply(0.0), 0.0);
-        assert_eq!(Curve::Linear.apply(0.5), 0.5);
-        assert_eq!(Curve::Linear.apply(1.0), 1.0);
+    fn easing_curves_have_their_shape_and_clamp() {
+        // Case `linear_curve_is_identity`.
+        {
+            assert_eq!(Curve::Linear.apply(0.0), 0.0);
+            assert_eq!(Curve::Linear.apply(0.5), 0.5);
+            assert_eq!(Curve::Linear.apply(1.0), 1.0);
+        }
+
+        // Case `linear_curve_clamps`.
+        {
+            assert_eq!(Curve::Linear.apply(-0.5), 0.0);
+            assert_eq!(Curve::Linear.apply(2.0), 1.0);
+        }
+
+        // Case `ease_out_starts_fast_ends_slow`.
+        {
+            let half = Curve::EaseOut.apply(0.5);
+            assert!(
+                half > 0.5,
+                "ease-out at midpoint should be past linear: {half}"
+            );
+            assert!(Curve::EaseOut.apply(0.0).abs() < 1e-6);
+            assert!((Curve::EaseOut.apply(1.0) - 1.0).abs() < 1e-6);
+        }
+
+        // Case `ease_in_out_is_smoothstep`.
+        {
+            let a = Curve::EaseInOut.apply(0.25);
+            let b = Curve::EaseInOut.apply(0.75);
+            assert!((a + b - 1.0).abs() < 1e-5);
+            assert!((Curve::EaseInOut.apply(0.5) - 0.5).abs() < 1e-5);
+        }
+
+        // Case `spring_curve_settles_near_one`.
+        {
+            // Critically damped spring: settles by the end of the unit window.
+            let c = Curve::Spring {
+                stiffness: 200.0,
+                damping: 2.0 * (200.0_f32).sqrt(),
+                mass: 1.0,
+            };
+            let v = c.apply(1.0);
+            assert!(v > 0.9 && v <= 1.05, "spring at t=1 should be near 1: {v}");
+        }
     }
 
     #[test]
-    fn linear_curve_clamps() {
-        assert_eq!(Curve::Linear.apply(-0.5), 0.0);
-        assert_eq!(Curve::Linear.apply(2.0), 1.0);
+    fn animated_values_progress_clamp_finish_and_lerp() {
+        // Case `animated_progresses_through_curve_over_duration`.
+        {
+            let now = crate::time::now();
+            let a = Animated::starting_at(
+                0.0_f32,
+                100.0,
+                now,
+                Duration::from_millis(100),
+                Curve::Linear,
+            );
+            assert_eq!(a.current(now), 0.0);
+            assert!((a.current(now + Duration::from_millis(50)) - 50.0).abs() < 0.5);
+            assert!((a.current(now + Duration::from_millis(100)) - 100.0).abs() < 0.001);
+        }
+
+        // Case `animated_clamps_at_endpoints`.
+        {
+            let now = crate::time::now();
+            let a = Animated::starting_at(
+                0.0_f32,
+                100.0,
+                now,
+                Duration::from_millis(100),
+                Curve::Linear,
+            );
+            assert_eq!(
+                a.current(now.checked_sub(Duration::from_millis(10)).unwrap()),
+                0.0
+            );
+            assert_eq!(a.current(now + Duration::from_millis(200)), 100.0);
+        }
+
+        // Case `done_flips_after_duration_elapsed`.
+        {
+            let now = crate::time::now();
+            let a = Animated::starting_at(
+                0.0_f32,
+                100.0,
+                now,
+                Duration::from_millis(100),
+                Curve::Linear,
+            );
+            assert!(!a.done(now));
+            assert!(!a.done(now + Duration::from_millis(50)));
+            assert!(a.done(now + Duration::from_millis(101)));
+        }
+
+        // Case `raw_t_is_unclamped`.
+        {
+            let now = crate::time::now();
+            let a =
+                Animated::starting_at(0.0_f32, 1.0, now, Duration::from_millis(100), Curve::Linear);
+            assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
+            let over = a.raw_t(now + Duration::from_millis(300));
+            assert!(over > 2.5 && over < 3.5, "raw_t should overshoot: {over}");
+            let under = a.raw_t(now.checked_sub(Duration::from_millis(50)).unwrap());
+            assert!(
+                under < -0.4 && under > -0.6,
+                "raw_t should be negative: {under}"
+            );
+        }
+
+        // Case `zero_duration_is_immediate`.
+        {
+            let now = crate::time::now();
+            let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::ZERO, Curve::Linear);
+            assert!(a.done(now));
+            assert_eq!(a.current(now), 1.0);
+            assert_eq!(
+                a.current(now.checked_sub(Duration::from_millis(1)).unwrap()),
+                0.0
+            );
+        }
+
+        // Case `color_lerp_interpolates_per_channel`.
+        {
+            use vello::peniko::Color;
+            // UFCS: disambiguates from peniko's own 3-arg `lerp` so this
+            // exercises per-channel u8 interpolation, not the color-space lerp.
+            let red = Color::from_rgba8(255, 0, 0, 255);
+            let blue = Color::from_rgba8(0, 0, 255, 255);
+            let mid = <Color as Lerp>::lerp(red, blue, 0.5);
+            // Round-to-nearest of 127.5 -> 128.
+            assert_eq!(mid.r(), 128);
+            assert_eq!(mid.g(), 0);
+            assert_eq!(mid.b(), 128);
+            assert_eq!(mid.a(), 255);
+
+            assert_eq!(<Color as Lerp>::lerp(red, blue, 0.0).r(), 255);
+            assert_eq!(<Color as Lerp>::lerp(red, blue, 1.0).b(), 255);
+        }
+
+        // Case `animated_color_runs`.
+        {
+            use vello::peniko::Color;
+            let now = crate::time::now();
+            let a = Animated::starting_at(
+                Color::from_rgba8(0, 0, 0, 255),
+                Color::from_rgba8(200, 100, 50, 255),
+                now,
+                Duration::from_millis(100),
+                Curve::Linear,
+            );
+            let mid = a.current(now + Duration::from_millis(50));
+            assert!(
+                mid.r() > 90 && mid.r() < 110,
+                "mid R should be ~100: {}",
+                mid.r()
+            );
+            assert!(mid.g() > 40 && mid.g() < 60);
+            assert!(mid.b() > 20 && mid.b() < 30);
+        }
+
+        // Case `f64_lerp_works`.
+        {
+            let mid = (0.0_f64).lerp(10.0, 0.5);
+            assert!((mid - 5.0).abs() < 1e-9);
+        }
     }
 
     #[test]
-    fn ease_out_starts_fast_ends_slow() {
-        let half = Curve::EaseOut.apply(0.5);
-        assert!(
-            half > 0.5,
-            "ease-out at midpoint should be past linear: {half}"
-        );
-        assert!(Curve::EaseOut.apply(0.0).abs() < 1e-6);
-        assert!((Curve::EaseOut.apply(1.0) - 1.0).abs() < 1e-6);
+    fn transition_visibility_follows_open_close_intent() {
+        // Case `transition_closed_is_invisible_open_is_visible`.
+        {
+            let now = crate::time::now();
+            let closed = Transition::closed();
+            assert!(!closed.is_visible(now));
+            assert!((closed.value(now) - 0.0).abs() < 1e-6);
+
+            let open = Transition::open();
+            assert!(open.is_visible(now));
+            assert!((open.value(now) - 1.0).abs() < 1e-6);
+        }
+
+        // Case `transition_opening_stays_visible_through_the_curve`.
+        {
+            let mut t = Transition::closed();
+            t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
+            assert!(t.is_visible(crate::time::now()));
+            assert!(t.is_open());
+        }
+
+        // Case `transition_closing_stays_visible_until_settled`.
+        {
+            let mut t = Transition::open();
+            t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
+            let now = crate::time::now();
+            assert!(
+                t.is_visible(now),
+                "a closing surface must stay visible so its exit animates"
+            );
+            let later = now + Duration::from_millis(500);
+            assert!(!t.is_visible(later));
+            assert!((t.value(later) - 0.0).abs() < 1e-6);
+        }
+
+        // Case `transition_reversal_retargets_from_current_value`.
+        {
+            let mut t = Transition::closed();
+            t.set_open(true, Duration::from_secs(1), Curve::Linear);
+            // Can't advance wall-clock precisely without sleeping, so assert the
+            // structural contract: after a reversal it's still visible
+            // (mid-flight, not popped to 0).
+            t.set_open(false, Duration::from_secs(1), Curve::Linear);
+            assert!(!t.is_open());
+            assert!(t.is_visible(crate::time::now()));
+        }
+
+        // Case `transition_repeated_same_intent_is_noop_once_settled`.
+        {
+            let mut t = Transition::open();
+            let before = t.value(crate::time::now());
+            t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
+            let after = t.value(crate::time::now());
+            assert!((before - after).abs() < 1e-6);
+            assert!(t.is_open());
+        }
     }
 
     #[test]
-    fn ease_in_out_is_smoothstep() {
-        let a = Curve::EaseInOut.apply(0.25);
-        let b = Curve::EaseInOut.apply(0.75);
-        assert!((a + b - 1.0).abs() < 1e-5);
-        assert!((Curve::EaseInOut.apply(0.5) - 0.5).abs() < 1e-5);
-    }
+    fn capture_open_at_freezes_clamps_and_closes_from_the_pose() {
+        // Case `capture_open_at_keeps_fractional_pose_at_future_times`.
+        {
+            let now = crate::time::now();
+            let t = Transition::capture_open_at(375);
+            assert!((t.value(now + Duration::from_secs(1)) - 0.375).abs() < f32::EPSILON);
+            assert!(t.is_visible(now + Duration::from_secs(1)));
+            assert!(!t.is_animating(now + Duration::from_secs(1)));
+        }
 
-    #[test]
-    fn spring_curve_settles_near_one() {
-        // Critically damped spring: settles by the end of the unit window.
-        let c = Curve::Spring {
-            stiffness: 200.0,
-            damping: 2.0 * (200.0_f32).sqrt(),
-            mass: 1.0,
-        };
-        let v = c.apply(1.0);
-        assert!(v > 0.9 && v <= 1.05, "spring at t=1 should be near 1: {v}");
-    }
+        // Case `capture_open_at_same_open_intent_does_not_advance_pose`.
+        {
+            let now = crate::time::now();
+            let mut t = Transition::capture_open_at(625);
+            t.set_open_at(
+                true,
+                Duration::from_millis(180),
+                Curve::EaseOut,
+                now + Duration::from_secs(1),
+            );
+            assert!((t.value(now + Duration::from_secs(2)) - 0.625).abs() < f32::EPSILON);
+        }
 
-    #[test]
-    fn animated_progresses_through_curve_over_duration() {
-        let now = crate::time::now();
-        let a = Animated::starting_at(
-            0.0_f32,
-            100.0,
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
-        assert_eq!(a.current(now), 0.0);
-        assert!((a.current(now + Duration::from_millis(50)) - 50.0).abs() < 0.5);
-        assert!((a.current(now + Duration::from_millis(100)) - 100.0).abs() < 0.001);
-    }
+        // Case `capture_open_at_clamps_boundaries`.
+        {
+            let now = crate::time::now();
+            assert_eq!(Transition::capture_open_at(0).value(now), 0.0);
+            assert_eq!(Transition::capture_open_at(1_000).value(now), 1.0);
+            assert_eq!(Transition::capture_open_at(u16::MAX).value(now), 1.0);
+        }
 
-    #[test]
-    fn animated_clamps_at_endpoints() {
-        let now = crate::time::now();
-        let a = Animated::starting_at(
-            0.0_f32,
-            100.0,
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
-        assert_eq!(
-            a.current(now.checked_sub(Duration::from_millis(10)).unwrap()),
-            0.0
-        );
-        assert_eq!(a.current(now + Duration::from_millis(200)), 100.0);
-    }
-
-    #[test]
-    fn done_flips_after_duration_elapsed() {
-        let now = crate::time::now();
-        let a = Animated::starting_at(
-            0.0_f32,
-            100.0,
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
-        assert!(!a.done(now));
-        assert!(!a.done(now + Duration::from_millis(50)));
-        assert!(a.done(now + Duration::from_millis(101)));
-    }
-
-    #[test]
-    fn raw_t_is_unclamped() {
-        let now = crate::time::now();
-        let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::from_millis(100), Curve::Linear);
-        assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
-        let over = a.raw_t(now + Duration::from_millis(300));
-        assert!(over > 2.5 && over < 3.5, "raw_t should overshoot: {over}");
-        let under = a.raw_t(now.checked_sub(Duration::from_millis(50)).unwrap());
-        assert!(
-            under < -0.4 && under > -0.6,
-            "raw_t should be negative: {under}"
-        );
-    }
-
-    #[test]
-    fn zero_duration_is_immediate() {
-        let now = crate::time::now();
-        let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::ZERO, Curve::Linear);
-        assert!(a.done(now));
-        assert_eq!(a.current(now), 1.0);
-        assert_eq!(
-            a.current(now.checked_sub(Duration::from_millis(1)).unwrap()),
-            0.0
-        );
-    }
-
-    #[test]
-    fn color_lerp_interpolates_per_channel() {
-        use vello::peniko::Color;
-        // UFCS: disambiguates from peniko's own 3-arg `lerp` so this
-        // exercises per-channel u8 interpolation, not the color-space lerp.
-        let red = Color::from_rgba8(255, 0, 0, 255);
-        let blue = Color::from_rgba8(0, 0, 255, 255);
-        let mid = <Color as Lerp>::lerp(red, blue, 0.5);
-        // Round-to-nearest of 127.5 -> 128.
-        assert_eq!(mid.r(), 128);
-        assert_eq!(mid.g(), 0);
-        assert_eq!(mid.b(), 128);
-        assert_eq!(mid.a(), 255);
-
-        assert_eq!(<Color as Lerp>::lerp(red, blue, 0.0).r(), 255);
-        assert_eq!(<Color as Lerp>::lerp(red, blue, 1.0).b(), 255);
-    }
-
-    #[test]
-    fn animated_color_runs() {
-        use vello::peniko::Color;
-        let now = crate::time::now();
-        let a = Animated::starting_at(
-            Color::from_rgba8(0, 0, 0, 255),
-            Color::from_rgba8(200, 100, 50, 255),
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
-        let mid = a.current(now + Duration::from_millis(50));
-        assert!(
-            mid.r() > 90 && mid.r() < 110,
-            "mid R should be ~100: {}",
-            mid.r()
-        );
-        assert!(mid.g() > 40 && mid.g() < 60);
-        assert!(mid.b() > 20 && mid.b() < 30);
-    }
-
-    #[test]
-    fn f64_lerp_works() {
-        let mid = (0.0_f64).lerp(10.0, 0.5);
-        assert!((mid - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn transition_closed_is_invisible_open_is_visible() {
-        let now = crate::time::now();
-        let closed = Transition::closed();
-        assert!(!closed.is_visible(now));
-        assert!((closed.value(now) - 0.0).abs() < 1e-6);
-
-        let open = Transition::open();
-        assert!(open.is_visible(now));
-        assert!((open.value(now) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn transition_opening_stays_visible_through_the_curve() {
-        let mut t = Transition::closed();
-        t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
-        assert!(t.is_visible(crate::time::now()));
-        assert!(t.is_open());
-    }
-
-    #[test]
-    fn transition_closing_stays_visible_until_settled() {
-        let mut t = Transition::open();
-        t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
-        let now = crate::time::now();
-        assert!(
-            t.is_visible(now),
-            "a closing surface must stay visible so its exit animates"
-        );
-        let later = now + Duration::from_millis(500);
-        assert!(!t.is_visible(later));
-        assert!((t.value(later) - 0.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn transition_reversal_retargets_from_current_value() {
-        let mut t = Transition::closed();
-        t.set_open(true, Duration::from_secs(1), Curve::Linear);
-        // Can't advance wall-clock precisely without sleeping, so assert the
-        // structural contract: after a reversal it's still visible
-        // (mid-flight, not popped to 0).
-        t.set_open(false, Duration::from_secs(1), Curve::Linear);
-        assert!(!t.is_open());
-        assert!(t.is_visible(crate::time::now()));
-    }
-
-    #[test]
-    fn transition_repeated_same_intent_is_noop_once_settled() {
-        let mut t = Transition::open();
-        let before = t.value(crate::time::now());
-        t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
-        let after = t.value(crate::time::now());
-        assert!((before - after).abs() < 1e-6);
-        assert!(t.is_open());
-    }
-
-    #[test]
-    fn capture_open_at_keeps_fractional_pose_at_future_times() {
-        let now = crate::time::now();
-        let t = Transition::capture_open_at(375);
-        assert!((t.value(now + Duration::from_secs(1)) - 0.375).abs() < f32::EPSILON);
-        assert!(t.is_visible(now + Duration::from_secs(1)));
-        assert!(!t.is_animating(now + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn capture_open_at_same_open_intent_does_not_advance_pose() {
-        let now = crate::time::now();
-        let mut t = Transition::capture_open_at(625);
-        t.set_open_at(
-            true,
-            Duration::from_millis(180),
-            Curve::EaseOut,
-            now + Duration::from_secs(1),
-        );
-        assert!((t.value(now + Duration::from_secs(2)) - 0.625).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn capture_open_at_clamps_boundaries() {
-        let now = crate::time::now();
-        assert_eq!(Transition::capture_open_at(0).value(now), 0.0);
-        assert_eq!(Transition::capture_open_at(1_000).value(now), 1.0);
-        assert_eq!(Transition::capture_open_at(u16::MAX).value(now), 1.0);
-    }
-
-    #[test]
-    fn capture_open_at_closes_from_frozen_value() {
-        let now = crate::time::now();
-        let mut t = Transition::capture_open_at(500);
-        t.set_open_at(false, Duration::from_millis(100), Curve::Linear, now);
-        assert!((t.value(now) - 0.5).abs() < f32::EPSILON);
-        assert!((t.value(now + Duration::from_millis(25)) - 0.25).abs() < 0.01);
-        assert_eq!(t.value(now + Duration::from_millis(60)), 0.0);
+        // Case `capture_open_at_closes_from_frozen_value`.
+        {
+            let now = crate::time::now();
+            let mut t = Transition::capture_open_at(500);
+            t.set_open_at(false, Duration::from_millis(100), Curve::Linear, now);
+            assert!((t.value(now) - 0.5).abs() < f32::EPSILON);
+            assert!((t.value(now + Duration::from_millis(25)) - 0.25).abs() < 0.01);
+            assert_eq!(t.value(now + Duration::from_millis(60)), 0.0);
+        }
     }
 }

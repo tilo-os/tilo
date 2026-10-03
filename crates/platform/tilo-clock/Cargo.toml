@@ -1,0 +1,25 @@
+[package]
+name = "tilo-clock"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The sanctioned monotonic and wall clocks on every target, Unix-time helpers, and an injectable millisecond Clock with fixed and manual test clocks."
+
+[lib]
+name = "tilo_clock"
+path = "src/lib.rs"
+
+# A std-only leaf: apps, daemons and protocol crates all read the time, so it
+# must not pull anything in. The browser has no std clock; there the page's
+# clocks back the same re-exported types through `web-time`.
+[dependencies]
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1"
+
+[lints]
+workspace = true

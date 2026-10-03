@@ -35,7 +35,9 @@
 )]
 
 pub mod actions;
+pub mod framework_history;
 mod graphics;
+pub mod resource;
 
 pub use graphics::TerminalImagePlacement;
 
@@ -55,6 +57,24 @@ mod inner {
 
 mod app_widget_impl;
 
+/// A short scripted session, typed into a freshly spawned login shell, that
+/// prints a few recognisable lines in that shell's own syntax. Hosts use it to
+/// stage screenshots of a live terminal.
+#[must_use]
+pub fn demo_session_input() -> &'static str {
+    #[cfg(windows)]
+    {
+        "echo Tilo embedded terminal (live PTY)\recho shell: %COMSPEC%\recho demo output:\recho primes below 20: 2 3 5 7 11 13 17 19\recho done\r"
+    }
+    #[cfg(not(windows))]
+    {
+        "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+         echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n"
+    }
+}
+
+#[cfg(test)]
+mod framework_history_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -68,8 +88,7 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
+        let ush = xdg_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
     }
@@ -241,9 +260,9 @@ fn wait_for_unix_connect(
     fd: std::os::fd::RawFd,
     timeout: std::time::Duration,
 ) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = ui::time::now() + timeout;
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(ui::time::now());
         let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
         let mut event = libc::pollfd {
             fd,
@@ -305,3 +324,4 @@ impl std::fmt::Display for HostedTerminalError {
     }
 }
 impl std::error::Error for HostedTerminalError {}
+pub use resource::{Terminal, TerminalShell};

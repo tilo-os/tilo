@@ -25,6 +25,8 @@
 )]
 
 mod client;
+#[cfg(unix)]
+pub mod connected;
 pub use client::BrokerSigningIdentity;
 mod async_client;
 pub use async_client::AsyncBrokerSigningIdentity;
@@ -34,6 +36,17 @@ pub use runtime_portal::NotAvailable;
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+
+/// Outside Unix (the browser) no identity service is ever handed to an app,
+/// so there is nothing to load; callers fall back as they do outside Tilo.
+///
+/// # Errors
+///
+/// Always [`NotAvailable::ServiceFdMissing`].
+#[cfg(not(unix))]
+pub fn load() -> Result<BrokerSigningIdentity, NotAvailable> {
+    Err(NotAvailable::ServiceFdMissing)
+}
 
 pub const IDENTITY_SERVICE: &str = "identity";
 const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v1\0";

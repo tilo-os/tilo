@@ -2,21 +2,22 @@
 name = "tilo-relay-protocol"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
 license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
 
 # Clients of the relay (the shell, Settings, Remote) read and write these
 # records without linking the daemon. Keep this crate free of the relay's
-# transport, storage and sandbox dependencies: stream I/O and the iroh
-# endpoint belong in `tilo-relay-client`, the runtime and storage in
-# `tilo-relay`.
+# transport, storage and sandbox dependencies: the frame codec belongs in
+# `tilo-relay-client`, the iroh endpoint, runtime and storage in `tilo-relay`.
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # `EndpointAddr` in mesh profiles and home-peer registrations.
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true
@@ -27,9 +28,17 @@ serde_json.workspace = true
 ed25519-dalek.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+# Live frames have one canonical encoding the host re-checks before relaying.
+postcard = { workspace = true, features = ["alloc"] }
+# Live frames are sealed with their record's channel content keys.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
+
+# Browser peers mint ids from JavaScript's entropy source.
+[target.'cfg(target_family = "wasm")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -37,3 +46,7 @@ postcard = { workspace = true, features = ["use-std"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

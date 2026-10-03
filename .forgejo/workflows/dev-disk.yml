@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       base_image:
-        description: "Signed production image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
+        description: "Signed production image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...; aarch64 exists only for the main commits its newest-first lane built); empty uses tilo:main-<sha7>."
         required: false
         default: ""
       dev_image:
@@ -49,6 +49,18 @@ on:
         description: "Space-separated disk formats: qcow2 (UTM, libvirt), vhdx (Hyper-V)."
         required: false
         default: "qcow2"
+      rootfs:
+        description: "Filesystem for this development VM disk: btrfs (default) or ext4. Does not rebuild or change the source OS image."
+        required: false
+        default: "btrfs"
+      validate_boot:
+        description: "auto: native boot proof for signed bases, candidate only for tilo-ci; true requires usable KVM; false publishes only an unvalidated candidate."
+        required: false
+        default: "auto"
+      validate_greeter:
+        description: "Diagnostic only: require a stable graphical greeter and report guest DRM state; skip disk publication."
+        required: false
+        default: "false"
 
 concurrency:
   # One request per tag, source and architecture set at a time; different
@@ -71,6 +83,7 @@ jobs:
       checkpoint: ${{ steps.plan.outputs.checkpoint }}
       trust: ${{ steps.plan.outputs.trust }}
       channel: ${{ steps.plan.outputs.channel }}
+      validate_boot: ${{ steps.plan.outputs.validate_boot }}
     steps:
       - name: Resolve source, base image, tag and native lanes
         id: plan
@@ -81,6 +94,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           INPUT_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           INPUT_FORMATS: ${{ github.event.inputs.formats }}
+          INPUT_VALIDATE_BOOT: ${{ github.event.inputs.validate_boot }}
         run: |
           set -euo pipefail
           source=${INPUT_SOURCE:-$GITHUB_SHA}
@@ -131,6 +145,11 @@ jobs:
             echo "::error::a tilo-ci base publishes only -ci tags, not $tag"
             exit 1
           }
+          case ${INPUT_VALIDATE_BOOT:-auto} in
+            auto) [[ $trust == release ]] && validate_boot=true || validate_boot=false ;;
+            true|false) validate_boot=$INPUT_VALIDATE_BOOT ;;
+            *) echo '::error::validate_boot must be auto, true or false'; exit 1 ;;
+          esac
           # Only main and release tags advance `latest`; other refs publish
           # addressable tags without moving the channel.
           if [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/v* ]]; then
@@ -175,11 +194,12 @@ jobs:
             echo "checkpoint=$checkpoint"
             echo "trust=$trust"
             echo "channel=$channel"
+            echo "validate_boot=$validate_boot"
             echo "architectures=${architectures[*]}"
             echo "formats=${formats[*]}"
             echo "matrix=$(jq -c '{include:.}' <<< "$include")"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::tilo-vm:$tag from $base ($trust trust) at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
+          echo "::notice::tilo-vm:$tag from $base ($trust trust) at $source (${architectures[*]}; ${formats[*]}; channel=$channel; validate_boot=$validate_boot)"
 
   build:
     needs: plan
@@ -189,7 +209,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 300
+    timeout-minutes: 180
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DISK_TOOLING_REVISION: ${{ github.sha }}
@@ -235,16 +255,22 @@ jobs:
               qemu_packages=(qemu-efi-aarch64 qemu-system-arm)
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-qemu openssh-client podman \
               jq qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux "${qemu_packages[@]}"
+            test -r /usr/lib/ipxe/qemu/efi-virtio.rom || {
+              echo '::error::ipxe-qemu did not provide efi-virtio.rom for QEMU disk boot'
+              exit 1
+            }
           elif command -v dnf >/dev/null; then
             if [[ $ARCH == x86_64 ]]; then
               qemu_packages=(edk2-ovmf qemu-system-x86-core)
             else
               qemu_packages=(edk2-aarch64 qemu-system-aarch64-core)
             fi
-            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
+            # Fedora keeps QEMU's efi-virtio.rom in ipxe-roms-qemu, separate
+            # from the architecture-specific QEMU system/device packages.
+            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-roms-qemu \
               jq openssh-clients podman qemu-img skopeo slirp4netns socat sshpass \
               sudo systemd util-linux "${qemu_packages[@]}"
           else
@@ -264,7 +290,7 @@ jobs:
           if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
             sudo -n mount -t devtmpfs devtmpfs /dev
             sudo -n mkdir -p /dev/pts /dev/shm
-            mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
           test -c /dev/fuse && test -c /dev/loop-control || {
@@ -385,6 +411,7 @@ jobs:
           podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
           digest=$(tr -d '[:space:]' < "$digest_file")
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           echo "::notice::preinstall dev image $candidate ($digest); resume with dev_image=registry.tilo.so/tilo/tilo-vm@$digest"
 
       - name: Load and verify preinstall dev-image checkpoint
@@ -407,15 +434,22 @@ jobs:
           }
           config=$(skopeo inspect "docker://$DEV_CHECKPOINT_REF")
           case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+          # The standalone disk builder labels the dev image with the index,
+          # while the OS integration lane labels it with its exact native child.
+          # Both identify the verified source above; require the name and digest
+          # to use the same form, and always bind the native child separately.
           jq -e --arg arch "$platform" --arg source "$SOURCE_REVISION" \
-            --arg base "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_index "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_child "$BASE_REPOSITORY@$BASE_CHILD_DIGEST" \
             --arg index "$BASE_INDEX_DIGEST" --arg child "$BASE_CHILD_DIGEST" \
             --arg trust "$BASE_TRUST" '
             .Architecture == $arch
             and .Labels["sh.tilo.image.flavour"] == "dev"
             and .Labels["org.opencontainers.image.revision"] == $source
-            and .Labels["org.opencontainers.image.base.name"] == $base
-            and .Labels["org.opencontainers.image.base.digest"] == $index
+            and ((.Labels["org.opencontainers.image.base.name"] == $base_index
+                  and .Labels["org.opencontainers.image.base.digest"] == $index)
+                 or (.Labels["org.opencontainers.image.base.name"] == $base_child
+                     and .Labels["org.opencontainers.image.base.digest"] == $child))
             and .Labels["org.opencontainers.image.base.child.digest"] == $child
             and .Labels["sh.tilo.dev.base-trust"] == $trust
           ' <<< "$config" >/dev/null || {
@@ -424,11 +458,12 @@ jobs:
           }
           podman pull "$DEV_CHECKPOINT_REF"
           podman tag "$DEV_CHECKPOINT_REF" "$DEV_IMAGE"
+          echo "DEV_IMAGE_DIGEST=$actual" >> "$GITHUB_ENV"
           echo "::notice::resumed verified dev image $DEV_CHECKPOINT_REF"
 
-      # Keep the OS and dev-image recipe at SOURCE_REVISION. A separately
-      # reviewed workflow commit supplies disk installation, VM verification,
-      # and publication scripts even when an older signed source lacks them.
+      # Keep the OS and dev-image recipe at SOURCE_REVISION. After the image is
+      # loaded, a separately reviewed workflow commit supplies the disk-only
+      # entry point, installation, VM verification, and publication scripts.
       # The package records both revisions.
       - name: Checkout exact disk tooling revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -437,12 +472,18 @@ jobs:
           path: .ci-disk-tooling
           persist-credentials: false
           sparse-checkout: |
+            os/dev/build-image.sh
             os/dev/disk-image.sh
+            os/dev/check-composefs-verity.py
+            os/dev/export-direct-boot-bundle.sh
             os/dev/hold-loop-partition-nodes.py
             os/dev/private_disk_image.py
             os/dev/check-dev-vm.sh
+            os/dev/diagnose-boot-failure.sh
+            os/dev/publish-dev-disk-candidate.sh
             os/dev/publish-dev-disk.sh
             os/dev/_common.sh
+            os/dev/probe-kvm.py
           sparse-checkout-cone-mode: false
 
       - name: Apply reviewed disk tooling only
@@ -453,11 +494,12 @@ jobs:
             echo '::error::disk tooling checkout differs from workflow revision'
             exit 1
           }
-          # build-image.sh and disk-image.sh both source _common.sh. Install
-          # the reviewed helper with the reviewed disk script, after the dev
-          # image was built from the unmodified OS source.
-          for file in disk-image.sh hold-loop-partition-nodes.py private_disk_image.py \
-                      check-dev-vm.sh publish-dev-disk.sh _common.sh; do
+          # The dev image is already built from SOURCE_REVISION. Install the
+          # reviewed disk-only entry point with its disk helpers, so checkpoint
+          # runs do not download external build assets again.
+          for file in build-image.sh disk-image.sh check-composefs-verity.py export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
+                       check-dev-vm.sh diagnose-boot-failure.sh publish-dev-disk-candidate.sh \
+                       publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"
             install -m 0755 ".ci-disk-tooling/os/dev/$file" "os/dev/$file"
           done
@@ -475,9 +517,12 @@ jobs:
           TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
           TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
+          TILO_DISK_ROOTFS: ${{ github.event.inputs.rootfs }}
+          TILO_QCOW2_COMPRESS: "1"
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          df -h "$TILO_OUTPUT" "${RUNNER_TEMP:-/var/tmp}"
           if [[ $ARCH == aarch64 ]]; then
             rm -rf -- "$TILO_OUTPUT/direct-boot"
             export TILO_DEV_DIRECT_BUNDLE_DIR="$TILO_OUTPUT/direct-boot"
@@ -488,7 +533,21 @@ jobs:
             test -s "$TILO_OUTPUT/direct-boot/boot.json"
           fi
 
+      # An immutable, explicitly unvalidated checkpoint lets a WHPX host
+      # inspect the installed disk even if slow CI TCG cannot reach greetd.
+      # The normal dev-disk manifest is still published only after boot proof.
+      - name: Publish unvalidated installed disk candidate
+        if: github.event.inputs.validate_greeter != 'true'
+        env:
+          SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
+          SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
+          BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: ./os/dev/publish-dev-disk-candidate.sh
+
       - name: Boot the disk and reach tilo-vmd over SSH
+        if: needs.plan.outputs.validate_boot == 'true'
         timeout-minutes: 45
         env:
           TILO_DISTROBOX: ""
@@ -501,17 +560,56 @@ jobs:
           TILO_BOOT_WAIT_ATTEMPTS: "600"
         run: |
           set -euo pipefail
+          # A validation request must use native acceleration. TCG on Kata
+          # spent 20 minutes in UEFI without entering Linux; the candidate is
+          # already published for a WHPX or native-KVM proof instead.
+          python3 os/dev/probe-kvm.py "$ARCH" || {
+            echo '::error::boot validation requires usable native KVM; dispatch validate_boot=false for an unvalidated disk candidate'
+            exit 1
+          }
+          # Diagnostic runs need failure evidence quickly, not the 20-minute
+          # fallback intended for unusually slow ordinary disk validations.
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            export TILO_BOOT_WAIT_ATTEMPTS=120
+          fi
           # Boot a throwaway overlay so the published disk is never first-booted.
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
-          trap './os/dev/vm.sh stop || true; rm -f "$overlay"' EXIT
+          finish_boot() {
+            status=$?
+            if (( status != 0 )); then ./os/dev/diagnose-boot-failure.sh || true; fi
+            ./os/dev/vm.sh stop || true
+            rm -f "$overlay"
+            return "$status"
+          }
+          trap finish_boot EXIT
           ./os/dev/vm.sh boot --disk "$overlay"
           ./os/dev/vm.sh wait
           ./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            # `vm.sh wait` observes greetd starting, which can precede a
+            # compositor crash. The dev disk is already accessible over SSH;
+            # require the actual greeter to survive and report guest DRM state.
+            sleep 10
+            if ! ./os/dev/vm.sh ssh 'test -c /dev/dri/card0 && systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter'; then
+              ./os/dev/vm.sh ssh 'ls -l /dev/dri 2>&1; systemctl status greetd --no-pager -l; journalctl -b -u greetd --no-pager -n 40; journalctl -b -k --no-pager -n 80' || true
+              echo '::error::native KVM guest did not keep a graphical greeter'
+              exit 1
+            fi
+          fi
+
+      - name: Upload failed boot framebuffer
+        if: failure() && needs.plan.outputs.validate_boot == 'true'
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: dev-disk-boot-failure-${{ matrix.arch }}
+          path: /var/tmp/tilo-vm-vm-${{ matrix.arch }}/boot-timeout.ppm
+          if-no-files-found: ignore
 
       # This architecture publishes on its own; another lane of the same tag
       # adds its child to the index and its own manifest whenever it lands.
       - name: Publish this architecture's dev image and disk
+        if: needs.plan.outputs.validate_boot == 'true' && github.event.inputs.validate_greeter != 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot

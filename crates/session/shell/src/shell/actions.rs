@@ -159,6 +159,12 @@ pub fn permitted_actions<'r>(
         .collect()
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,290 +195,310 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_action_is_refused_even_for_the_owner() {
-        let ws = room();
-        let reg = registry();
-        let owner = ws.actor_for_person(&"alice".to_string());
-        assert_eq!(
-            check_action(&ws, &reg, &owner, "org.tilo.Ebook", "rm-rf", &book()),
-            ActionOutcome::Denied(DenyReason::UndeclaredAction),
-            "an app must not be able to smuggle an operation past the check by \
-             declining to declare it"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn declared_actions_are_granted_only_by_role_and_confirmed_when_destructive() {
+        fn an_undeclared_action_is_refused_even_for_the_owner() {
+            let ws = room();
+            let reg = registry();
+            let owner = ws.actor_for_person(&"alice".to_string());
+            assert_eq!(
+                check_action(&ws, &reg, &owner, "org.tilo.Ebook", "rm-rf", &book()),
+                ActionOutcome::Denied(DenyReason::UndeclaredAction),
+                "an app must not be able to smuggle an operation past the check by \
+                 declining to declare it"
+            );
+        }
 
-    #[test]
-    fn a_viewer_may_turn_a_page_but_not_annotate() {
-        let mut ws = room();
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("bob"),
-            ws.id.raw().to_string(),
-            Verb::Read,
-        ));
-        let reg = registry();
-        let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.tilo.Ebook".into());
+        fn a_viewer_may_turn_a_page_but_not_annotate() {
+            let mut ws = room();
+            ws.grant_capability(CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Read,
+            ));
+            let reg = registry();
+            let bob = ws.actor_for_person(&"bob".to_string());
+            let target = ResourceRef::App("org.tilo.Ebook".into());
 
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "turn-page", &target),
-            ActionOutcome::Allow,
-            "a read-class action is available to a Viewer"
-        );
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
-            ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
-            "a write-class action must be denied to a Viewer"
-        );
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "turn-page", &target),
+                ActionOutcome::Allow,
+                "a read-class action is available to a Viewer"
+            );
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "a write-class action must be denied to a Viewer"
+            );
 
-        // And chrome must not even offer it.
-        let offered: Vec<&str> = permitted_actions(&ws, &reg, &bob, "org.tilo.Ebook", &target)
-            .into_iter()
-            .map(|d| d.action.as_str())
-            .collect();
-        assert!(offered.contains(&"turn-page"));
-        assert!(
-            !offered.contains(&"annotate"),
-            "an action the peer cannot take must not be offered — no greyed-out \
-             button, no modal mid-edit"
-        );
-        assert!(!offered.contains(&"delete-annotation"));
-    }
+            // And chrome must not even offer it.
+            let offered: Vec<&str> = permitted_actions(&ws, &reg, &bob, "org.tilo.Ebook", &target)
+                .into_iter()
+                .map(|d| d.action.as_str())
+                .collect();
+            assert!(offered.contains(&"turn-page"));
+            assert!(
+                !offered.contains(&"annotate"),
+                "an action the peer cannot take must not be offered — no greyed-out \
+                 button, no modal mid-edit"
+            );
+            assert!(!offered.contains(&"delete-annotation"));
+        }
 
-    #[test]
-    fn a_destructive_action_is_confirmed_not_granted() {
-        let mut ws = room();
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("bob"),
-            ws.id.raw().to_string(),
-            Verb::Write,
-        ));
-        let reg = registry();
-        let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.tilo.Ebook".into());
+        fn a_destructive_action_is_confirmed_not_granted() {
+            let mut ws = room();
+            ws.grant_capability(CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Write,
+            ));
+            let reg = registry();
+            let bob = ws.actor_for_person(&"bob".to_string());
+            let target = ResourceRef::App("org.tilo.Ebook".into());
 
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
-            ActionOutcome::Allow
-        );
-        assert_eq!(
-            check_action(
-                &ws,
-                &reg,
-                &bob,
-                "org.tilo.Ebook",
-                "delete-annotation",
-                &target
-            ),
-            ActionOutcome::NeedsConfirmation,
-            "a destructive action an actor IS permitted still gets a confirmation step"
-        );
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
+                ActionOutcome::Allow
+            );
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &bob,
+                    "org.tilo.Ebook",
+                    "delete-annotation",
+                    &target
+                ),
+                ActionOutcome::NeedsConfirmation,
+                "a destructive action an actor IS permitted still gets a confirmation step"
+            );
 
-        // Confirmation is not a grant: no Write means denial, not a prompt.
-        let mut ws2 = room();
-        ws2.grant_capability(CapOverride::membership(
-            Subject::person("carol"),
-            ws2.id.raw().to_string(),
-            Verb::Read,
-        ));
-        let carol = ws2.actor_for_person(&"carol".to_string());
-        assert_eq!(
-            check_action(
-                &ws2,
-                &reg,
-                &carol,
-                "org.tilo.Ebook",
-                "delete-annotation",
-                &target
-            ),
-            ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
-            "a destructive action must be DENIED, not merely confirmed, when the \
-             actor lacks the verb"
-        );
-    }
+            // Confirmation is not a grant: no Write means denial, not a prompt.
+            let mut ws2 = room();
+            ws2.grant_capability(CapOverride::membership(
+                Subject::person("carol"),
+                ws2.id.raw().to_string(),
+                Verb::Read,
+            ));
+            let carol = ws2.actor_for_person(&"carol".to_string());
+            assert_eq!(
+                check_action(
+                    &ws2,
+                    &reg,
+                    &carol,
+                    "org.tilo.Ebook",
+                    "delete-annotation",
+                    &target
+                ),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "a destructive action must be DENIED, not merely confirmed, when the \
+                 actor lacks the verb"
+            );
+        }
 
-    #[test]
-    fn an_action_capability_is_scoped_to_its_resource() {
-        let mut ws = room();
-        // Read-only admission, then write on exactly one action.
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("bob"),
-            ws.id.raw().to_string(),
-            Verb::Read,
-        ));
-        ws.grant_capability(CapOverride::grant(
-            Subject::person("bob"),
-            Scope::Action {
-                app: "org.tilo.Ebook".into(),
-                action: "annotate".into(),
-            },
-            Verb::Write,
-        ));
-        let reg = registry();
-        let bob = ws.actor_for_person(&"bob".to_string());
-
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &book()),
-            ActionOutcome::Allow,
-            "the granted action is invokable"
-        );
-        assert_eq!(
-            check_action(
-                &ws,
-                &reg,
-                &bob,
-                "org.tilo.Ebook",
-                "delete-annotation",
-                &ResourceRef::Action {
+        fn an_action_capability_is_scoped_to_its_resource() {
+            let mut ws = room();
+            // Read-only admission, then write on exactly one action.
+            ws.grant_capability(CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Read,
+            ));
+            ws.grant_capability(CapOverride::grant(
+                Subject::person("bob"),
+                Scope::Action {
                     app: "org.tilo.Ebook".into(),
-                    action: "delete-annotation".into(),
-                }
-            ),
-            ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
-            "a capability on one action must not reach a sibling action"
-        );
+                    action: "annotate".into(),
+                },
+                Verb::Write,
+            ));
+            let reg = registry();
+            let bob = ws.actor_for_person(&"bob".to_string());
+
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &book()),
+                ActionOutcome::Allow,
+                "the granted action is invokable"
+            );
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &bob,
+                    "org.tilo.Ebook",
+                    "delete-annotation",
+                    &ResourceRef::Action {
+                        app: "org.tilo.Ebook".into(),
+                        action: "delete-annotation".into(),
+                    }
+                ),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "a capability on one action must not reach a sibling action"
+            );
+        }
+
+        an_undeclared_action_is_refused_even_for_the_owner();
+        a_viewer_may_turn_a_page_but_not_annotate();
+        a_destructive_action_is_confirmed_not_granted();
+        an_action_capability_is_scoped_to_its_resource();
     }
 
     #[test]
-    fn an_app_acting_on_its_own_never_inherits_a_persons_authority() {
-        let mut ws = room();
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("bob"),
-            ws.id.raw().to_string(),
-            Verb::Admin,
-        ));
-        let reg = registry();
-        let app = ws.actor_for_app("org.tilo.Ebook");
-        let target = ResourceRef::App("org.tilo.Ebook".into());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn action_authority_is_never_inherited_and_ends_with_revocation() {
+        fn an_app_acting_on_its_own_never_inherits_a_persons_authority() {
+            let mut ws = room();
+            ws.grant_capability(CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Admin,
+            ));
+            let reg = registry();
+            let app = ws.actor_for_app("org.tilo.Ebook");
+            let target = ResourceRef::App("org.tilo.Ebook".into());
 
-        assert_eq!(
-            check_action(&ws, &reg, &app, "org.tilo.Ebook", "annotate", &target),
-            ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
-            "an app holds no role, so a room full of admins grants it nothing"
-        );
+            assert_eq!(
+                check_action(&ws, &reg, &app, "org.tilo.Ebook", "annotate", &target),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "an app holds no role, so a room full of admins grants it nothing"
+            );
 
-        // Granting the app itself is what authorises it.
-        let mut ws = ws;
-        ws.grant_capability(CapOverride::grant(
-            Subject::app("org.tilo.Ebook"),
-            Scope::App("org.tilo.Ebook".into()),
-            Verb::Write,
-        ));
-        assert_eq!(
-            check_action(
-                &ws,
-                &reg,
-                &ws.actor_for_app("org.tilo.Ebook"),
-                "org.tilo.Ebook",
-                "annotate",
-                &target
-            ),
-            ActionOutcome::Allow
-        );
-    }
+            // Granting the app itself is what authorises it.
+            let mut ws = ws;
+            ws.grant_capability(CapOverride::grant(
+                Subject::app("org.tilo.Ebook"),
+                Scope::App("org.tilo.Ebook".into()),
+                Verb::Write,
+            ));
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &ws.actor_for_app("org.tilo.Ebook"),
+                    "org.tilo.Ebook",
+                    "annotate",
+                    &target
+                ),
+                ActionOutcome::Allow
+            );
+        }
 
-    #[test]
-    fn forgetting_an_app_disables_its_actions() {
-        let mut ws = room();
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("bob"),
-            ws.id.raw().to_string(),
-            Verb::Write,
-        ));
-        let mut reg = registry();
-        let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.tilo.Ebook".into());
+        fn forgetting_an_app_disables_its_actions() {
+            let mut ws = room();
+            ws.grant_capability(CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Write,
+            ));
+            let mut reg = registry();
+            let bob = ws.actor_for_person(&"bob".to_string());
+            let target = ResourceRef::App("org.tilo.Ebook".into());
 
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
-            ActionOutcome::Allow
-        );
-        reg.forget_app("org.tilo.Ebook");
-        assert_eq!(
-            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
-            ActionOutcome::Denied(DenyReason::UndeclaredAction),
-            "an action of an app that has exited must not remain invokable"
-        );
-    }
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
+                ActionOutcome::Allow
+            );
+            reg.forget_app("org.tilo.Ebook");
+            assert_eq!(
+                check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
+                ActionOutcome::Denied(DenyReason::UndeclaredAction),
+                "an action of an app that has exited must not remain invokable"
+            );
+        }
 
-    #[test]
-    fn a_revoked_capability_stops_offering_the_action() {
-        let mut ws = room();
-        let id = ws.grant_capability(
-            CapOverride::membership(Subject::person("bob"), ws.id.raw().to_string(), Verb::Write)
+        fn a_revoked_capability_stops_offering_the_action() {
+            let mut ws = room();
+            let id = ws.grant_capability(
+                CapOverride::membership(
+                    Subject::person("bob"),
+                    ws.id.raw().to_string(),
+                    Verb::Write,
+                )
                 .with_id("bob-write"),
-        );
-        assert_eq!(id, "bob-write");
-        let reg = registry();
-        let target = ResourceRef::App("org.tilo.Ebook".into());
+            );
+            assert_eq!(id, "bob-write");
+            let reg = registry();
+            let target = ResourceRef::App("org.tilo.Ebook".into());
 
-        assert_eq!(
-            check_action(
-                &ws,
-                &reg,
-                &ws.actor_for_person(&"bob".to_string()),
-                "org.tilo.Ebook",
-                "annotate",
-                &target
-            ),
-            ActionOutcome::Allow
-        );
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &ws.actor_for_person(&"bob".to_string()),
+                    "org.tilo.Ebook",
+                    "annotate",
+                    &target
+                ),
+                ActionOutcome::Allow
+            );
 
-        assert!(ws.revoke_capability("bob-write"));
-        assert_eq!(
-            check_action(
-                &ws,
-                &reg,
-                &ws.actor_for_person(&"bob".to_string()),
-                "org.tilo.Ebook",
-                "annotate",
-                &target
-            ),
-            ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
-            "revoking takes effect on the next check, with no restart"
-        );
-        assert!(
-            permitted_actions(
-                &ws,
-                &reg,
-                &ws.actor_for_person(&"bob".to_string()),
-                "org.tilo.Ebook",
-                &target
-            )
-            .iter()
-            .all(|d| d.verb == Verb::Read),
-            "and chrome stops offering the write-class actions immediately"
-        );
-    }
-
-    #[test]
-    fn the_subject_of_a_share_is_never_a_room_member() {
-        let mut ws = room(); // a shared resource, never room membership
-        ws.grant_capability(CapOverride::grant(
-            Subject::person("dave"),
-            Scope::Action {
-                app: "org.tilo.Ebook".into(),
-                action: "annotate".into(),
-            },
-            Verb::Write,
-        ));
-        let reg = registry();
-        let dave = ws.actor_for_person(&"dave".to_string());
-
-        assert_eq!(
-            check_action(&ws, &reg, &dave, "org.tilo.Ebook", "annotate", &book()),
-            ActionOutcome::Allow,
-            "the share works"
-        );
-        assert_eq!(ws.role_of(&"dave".to_string()), None, "but confers no role");
-        assert!(
-            !ws.roster().iter().any(|(u, _)| u == "dave"),
-            "and never puts Dave in the roster"
-        );
-        assert!(
-            ws.shares_of(&book())
+            assert!(ws.revoke_capability("bob-write"));
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &ws.actor_for_person(&"bob".to_string()),
+                    "org.tilo.Ebook",
+                    "annotate",
+                    &target
+                ),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "revoking takes effect on the next check, with no restart"
+            );
+            assert!(
+                permitted_actions(
+                    &ws,
+                    &reg,
+                    &ws.actor_for_person(&"bob".to_string()),
+                    "org.tilo.Ebook",
+                    &target
+                )
                 .iter()
-                .any(|c| c.subject == Subject::Principal(Principal::Person("dave".into()))),
-            "he belongs on the resource's share list instead"
-        );
+                .all(|d| d.verb == Verb::Read),
+                "and chrome stops offering the write-class actions immediately"
+            );
+        }
+
+        fn the_subject_of_a_share_is_never_a_room_member() {
+            let mut ws = room(); // a shared resource, never room membership
+            ws.grant_capability(CapOverride::grant(
+                Subject::person("dave"),
+                Scope::Action {
+                    app: "org.tilo.Ebook".into(),
+                    action: "annotate".into(),
+                },
+                Verb::Write,
+            ));
+            let reg = registry();
+            let dave = ws.actor_for_person(&"dave".to_string());
+
+            assert_eq!(
+                check_action(&ws, &reg, &dave, "org.tilo.Ebook", "annotate", &book()),
+                ActionOutcome::Allow,
+                "the share works"
+            );
+            assert_eq!(ws.role_of(&"dave".to_string()), None, "but confers no role");
+            assert!(
+                !ws.roster().iter().any(|(u, _)| u == "dave"),
+                "and never puts Dave in the roster"
+            );
+            assert!(
+                ws.shares_of(&book())
+                    .iter()
+                    .any(|c| c.subject == Subject::Principal(Principal::Person("dave".into()))),
+                "he belongs on the resource's share list instead"
+            );
+        }
+
+        an_app_acting_on_its_own_never_inherits_a_persons_authority();
+        forgetting_an_app_disables_its_actions();
+        a_revoked_capability_stops_offering_the_action();
+        the_subject_of_a_share_is_never_a_room_member();
     }
 }

@@ -105,8 +105,10 @@ mod tests {
         ]
     }
 
+    /// Every presence variant round-trips deterministically; trailing or
+    /// truncated frames are rejected.
     #[test]
-    fn every_presence_variant_round_trips_canonically() {
+    fn presence_frames_round_trip_exactly_and_reject_extra_or_missing_bytes() {
         for payload in fixtures() {
             let presence = PeerPresence {
                 key: vec![0, 1, 2, 255],
@@ -117,10 +119,8 @@ mod tests {
             assert_eq!(first, second, "canonical encoding must be deterministic");
             assert_eq!(PeerPresence::from_bytes(&first).unwrap(), presence);
         }
-    }
 
-    #[test]
-    fn trailing_and_truncated_peer_frames_are_rejected() {
+        // Case: trailing and truncated peer frames are rejected.
         let frame = PeerPresence {
             key: vec![7],
             payload: PeerPresencePayload::Arrived,

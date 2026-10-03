@@ -62,11 +62,13 @@ def main():
             context.mkdir()
             assets.mkdir()
             (context / 'Containerfile').write_text(
-                'ARG BASE_REF\nFROM ${BASE_REF} AS wpe-builder-1\n'
+                'ARG BASE_REF\nFROM scratch AS external-assets\n'
+                'COPY --from=github-assets /input /input\n'
+                'FROM ${BASE_REF} AS wpe-builder-1\n'
                 'ARG TILO_WPE_SOURCE_DATE_EPOCH=0\nENV SOURCE_DATE_EPOCH=${TILO_WPE_SOURCE_DATE_EPOCH}\n'
                 'COPY recipe /recipe\n'
                 'RUN --mount=type=cache,target=/wpe-cache '
-                '--mount=type=bind,from=github-assets,source=/,target=/assets,ro sh /recipe\n')
+                '--mount=type=bind,from=external-assets,source=/,target=/assets,ro sh /recipe\n')
             recipe = 'echo WPE_FIXTURE_EXECUTED\nmkdir -p /wpe\ncat /assets/input > /wpe/marker\n'
             (context / 'recipe').write_text(recipe)
             (assets / 'input').write_bytes(b'original frozen asset\n')
@@ -90,6 +92,11 @@ def main():
             assert warm == original, 'remote cached stage changed immutable identity'
             assert 'Cache pulled from remote' in warm_log, 'fresh store did not retrieve registry cache'
             assert 'WPE_FIXTURE_EXECUTED' not in warm_log, 'warm cache executed compiler fixture'
+
+            (assets / 'unrelated').write_bytes(b'new OS asset\n')
+            unrelated, unrelated_log = build('unrelated-asset', second_env)
+            assert unrelated == original, 'unrelated asset changed the WPE stage'
+            assert 'WPE_FIXTURE_EXECUTED' not in unrelated_log, 'unrelated asset reran the WPE compile'
 
             (context / 'recipe').write_text(recipe + 'printf recipe-change >> /wpe/marker\n')
             recipe_id, recipe_log = build('recipe-change', second_env)
@@ -124,7 +131,7 @@ def main():
                 'podman': podman('--version')[0].strip(), 'dependency_epoch': 0,
                 'wpe_fixture_id': original, 'consumer_id': final_id,
                 'checks': ['fresh-store registry hit without execution', 'recipe invalidation',
-                    'frozen asset invalidation', 'epoch invalidation',
+                    'unrelated asset does not invalidate', 'frozen asset invalidation', 'epoch invalidation',
                     'immutable WPE reuse across release epoch and public identity changes']}))
         finally:
             podman('rm', '--force', registry)

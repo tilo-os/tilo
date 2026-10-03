@@ -14,7 +14,11 @@
 //! re-implementing any of it.
 
 use ssip_client::Client;
-use ssip_client::{ClientName, ClientScope, MessageScope, fifo};
+use ssip_client::{
+    ClientName, ClientScope, MessageScope, OK_BYE, OK_CANCELED, OK_LANGUAGE_SET,
+    OK_OUTPUT_MODULE_SET, OK_PRIORITY_SET, OK_RATE_SET, OK_RECEIVING_DATA, OK_STOPPED,
+    OK_VOICE_SET, fifo,
+};
 use std::os::unix::net::UnixStream;
 
 use crate::error::TtsError;
@@ -53,7 +57,11 @@ impl SpeechDispatcherSpeaker {
     /// Returns [`TtsError::Ssip`] if the daemon socket can't be opened or the
     /// handshake fails.
     pub fn with_identity(user: &str, component: &str) -> Result<Self, TtsError> {
-        let mut client = fifo::Builder::new().build().map_err(|e| TtsError::Ssip {
+        Self::connect(&fifo::Builder::new(), user, component)
+    }
+
+    fn connect(builder: &fifo::Builder, user: &str, component: &str) -> Result<Self, TtsError> {
+        let mut client = builder.build().map_err(|e| TtsError::Ssip {
             detail: format!("connect: {e}"),
         })?;
 
@@ -77,14 +85,22 @@ impl SpeechDispatcherSpeaker {
     /// This is how the a11y settings UI switches between the instant and quality
     /// voices: both run behind the same socket, so it's a one-line change.
     pub fn set_output_module(&mut self, module: &str) {
-        if let Err(e) = self.client.set_output_module(ClientScope::Current, module) {
+        if let Err(e) = self
+            .client
+            .set_output_module(ClientScope::Current, module)
+            .and_then(|c| c.check_status(OK_OUTPUT_MODULE_SET))
+        {
             tracing::warn!("speechd: set_output_module({module}) failed: {e}");
         }
     }
 
     /// Set the language (BCP-47-ish, e.g. `"en"`, `"de"`), per SSIP `SET … LANGUAGE`.
     pub fn set_language(&mut self, lang: &str) {
-        if let Err(e) = self.client.set_language(ClientScope::Current, lang) {
+        if let Err(e) = self
+            .client
+            .set_language(ClientScope::Current, lang)
+            .and_then(|c| c.check_status(OK_LANGUAGE_SET))
+        {
             tracing::warn!("speechd: set_language({lang}) failed: {e}");
         }
     }
@@ -96,23 +112,42 @@ impl Speaker for SpeechDispatcherSpeaker {
         // before speaking. This is the SSIP `CANCEL self` then `SPEAK` dance
         // that produces stop-and-speak focus narration.
         if utterance.interrupt
-            && let Err(e) = self.client.cancel(MessageScope::All)
+            && let Err(e) = self
+                .client
+                .cancel(MessageScope::All)
+                .and_then(|c| c.check_status(OK_CANCELED))
         {
             tracing::debug!("speechd: cancel before interrupting speak failed: {e}");
         }
 
         // Apply this utterance's priority for the upcoming message.
-        if let Err(e) = self.client.set_priority(utterance.priority.to_ssip()) {
+        if let Err(e) = self
+            .client
+            .set_priority(utterance.priority.to_ssip())
+            .and_then(|c| c.check_status(OK_PRIORITY_SET))
+        {
             tracing::debug!("speechd: set_priority failed: {e}");
         }
 
-        // SSIP SPEAK: `SPEAK\r\n`, then the text line(s), then `.\r\n`. The
-        // ssip-client crate drives that handshake: speak() opens the data block,
-        // send_line() writes a line, and the message-id receive closes it.
+        // SSIP SPEAK: `SPEAK`, the server's go-ahead, then the text lines and
+        // `.`, answered with the queued message id. A line that starts with a
+        // dot is sent with the dot doubled, so it cannot end the block early.
+        let lines: Vec<String> = utterance
+            .text
+            .lines()
+            .map(|line| {
+                if line.starts_with('.') {
+                    format!(".{line}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect();
         let result = self
             .client
             .speak()
-            .and_then(|c| c.send_line(&utterance.text))
+            .and_then(|c| c.check_status(OK_RECEIVING_DATA))
+            .and_then(|c| c.send_lines(&lines))
             .and_then(|c| c.receive_message_id().map(|_id| c));
 
         match result {
@@ -124,10 +159,18 @@ impl Speaker for SpeechDispatcherSpeaker {
     fn stop(&mut self) {
         // STOP cuts off speech immediately; CANCEL also flushes the queue. For a
         // silence key we want both: stop what's talking and drop what's pending.
-        if let Err(e) = self.client.stop(MessageScope::All) {
+        if let Err(e) = self
+            .client
+            .stop(MessageScope::All)
+            .and_then(|c| c.check_status(OK_STOPPED))
+        {
             tracing::debug!("speechd: stop failed: {e}");
         }
-        if let Err(e) = self.client.cancel(MessageScope::All) {
+        if let Err(e) = self
+            .client
+            .cancel(MessageScope::All)
+            .and_then(|c| c.check_status(OK_CANCELED))
+        {
             tracing::debug!("speechd: cancel failed: {e}");
         }
         self.in_flight = false;
@@ -135,7 +178,11 @@ impl Speaker for SpeechDispatcherSpeaker {
 
     fn set_rate(&mut self, rate: f32) {
         let ssip_rate = rate_to_ssip(rate);
-        if let Err(e) = self.client.set_rate(ClientScope::Current, ssip_rate) {
+        if let Err(e) = self
+            .client
+            .set_rate(ClientScope::Current, ssip_rate)
+            .and_then(|c| c.check_status(OK_RATE_SET))
+        {
             tracing::warn!("speechd: set_rate({ssip_rate}) failed: {e}");
         }
     }
@@ -143,7 +190,11 @@ impl Speaker for SpeechDispatcherSpeaker {
     fn set_voice(&mut self, voice: &str) {
         // SSIP `SET self SYNTHESIS_VOICE <name>` — a named voice within the
         // current output module.
-        if let Err(e) = self.client.set_synthesis_voice(ClientScope::Current, voice) {
+        if let Err(e) = self
+            .client
+            .set_synthesis_voice(ClientScope::Current, voice)
+            .and_then(|c| c.check_status(OK_VOICE_SET))
+        {
             tracing::warn!("speechd: set_synthesis_voice({voice}) failed: {e}");
         }
     }
@@ -164,21 +215,96 @@ impl Speaker for SpeechDispatcherSpeaker {
 impl Drop for SpeechDispatcherSpeaker {
     fn drop(&mut self) {
         // Politely close the SSIP session so the daemon frees the client slot.
-        let _ = self.client.quit();
+        let _ = self.client.quit().and_then(|c| c.check_status(OK_BYE));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // These tests must NOT require a running speech-dispatcher. We assert the
-    // things we can without a live socket: identity constants and the rate
-    // translation that feeds the SSIP `SET … RATE` command.
-    use crate::speaker::rate_to_ssip;
+
+    use super::*;
+    use crate::speaker::Priority;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// Answer each request line with the reply speech-dispatcher would send,
+    /// and return every line received.
+    fn fake_daemon(stream: UnixStream) -> Vec<String> {
+        let mut writer = stream.try_clone().unwrap();
+        let mut received = Vec::new();
+        let mut in_block = false;
+        for line in BufReader::new(stream).lines() {
+            let line = line.unwrap();
+            let reply = if in_block {
+                (line == ".").then(|| {
+                    in_block = false;
+                    "225-17\r\n225 OK MESSAGE QUEUED\r\n"
+                })
+            } else {
+                Some(match line.as_str() {
+                    "SPEAK" => {
+                        in_block = true;
+                        "230 OK RECEIVING DATA\r\n"
+                    }
+                    "QUIT" => "231 HAPPY HACKING\r\n",
+                    "CANCEL all" => "213 OK CANCELED\r\n",
+                    "STOP all" => "210 OK STOPPED\r\n",
+                    l if l.starts_with("SET self CLIENT_NAME") => "208 OK CLIENT NAME SET\r\n",
+                    l if l.starts_with("SET self PRIORITY") => "202 OK PRIORITY SET\r\n",
+                    l if l.starts_with("SET self RATE") => "409 ERR RATE TOO HIGH\r\n",
+                    l if l.starts_with("SET self SYNTHESIS_VOICE") => "209 OK VOICE SET\r\n",
+                    _ => "500 ERR UNKNOWN\r\n",
+                })
+            };
+            received.push(line);
+            if let Some(reply) = reply {
+                writer.write_all(reply.as_bytes()).unwrap();
+            }
+        }
+        received
+    }
 
     #[test]
-    fn identity_constants_are_sane() {
-        assert_eq!(super::SSIP_USER, "tilo");
-        assert_eq!(super::SSIP_COMPONENT, "screen-reader");
+    fn speaker_reads_every_reply_and_stays_in_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("speechd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let daemon = std::thread::spawn(move || fake_daemon(listener.accept().unwrap().0));
+        let mut speaker = SpeechDispatcherSpeaker::connect(
+            fifo::Builder::new().path(&socket),
+            SSIP_USER,
+            SSIP_COMPONENT,
+        )
+        .unwrap();
+
+        speaker.speak_utterance(
+            Utterance::new("Save, button\n.hidden file").with_priority(Priority::Important),
+        );
+        assert!(speaker.is_speaking());
+        // A refused setting is logged; the next command still reads its own reply.
+        speaker.set_rate(2.0);
+        speaker.set_voice("en-us");
+        speaker.stop();
+        assert!(!speaker.is_speaking());
+        drop(speaker);
+
+        assert_eq!(
+            daemon.join().unwrap(),
+            [
+                "SET self CLIENT_NAME tilo:screen-reader:main",
+                "CANCEL all",
+                "SET self PRIORITY important",
+                "SPEAK",
+                "Save, button",
+                "..hidden file",
+                ".",
+                "SET self RATE 100",
+                "SET self SYNTHESIS_VOICE en-us",
+                "STOP all",
+                "CANCEL all",
+                "QUIT",
+            ]
+        );
     }
 
     #[test]
@@ -186,17 +312,25 @@ mod tests {
         clippy::cast_precision_loss,
         reason = "milli only ever reaches 4000, far inside f32's exact-integer range"
     )]
-    fn rate_translation_matches_ssip_range() {
-        // The SSIP RATE command takes -100..=100; prove our translation stays
-        // inside it for a sweep of normalized rates.
-        for milli in 1..=4000u32 {
-            let r = milli as f32 / 1000.0; // 0.001 ..= 4.0
-            let v = rate_to_ssip(r);
-            assert!(
-                (-100..=100).contains(&v),
-                "rate {r} -> {v} out of SSIP range"
-            );
+    fn speechd_identity_and_rate_translation_match_ssip() {
+        // Phase `identity_constants_are_sane`.
+        {
+            assert_eq!(super::SSIP_USER, "tilo");
+            assert_eq!(super::SSIP_COMPONENT, "screen-reader");
         }
-        assert_eq!(rate_to_ssip(1.0), 0);
+        // Phase `rate_translation_matches_ssip_range`.
+        {
+            // The SSIP RATE command takes -100..=100; prove our translation stays
+            // inside it for a sweep of normalized rates.
+            for milli in 1..=4000u32 {
+                let r = milli as f32 / 1000.0; // 0.001 ..= 4.0
+                let v = rate_to_ssip(r);
+                assert!(
+                    (-100..=100).contains(&v),
+                    "rate {r} -> {v} out of SSIP range"
+                );
+            }
+            assert_eq!(rate_to_ssip(1.0), 0);
+        }
     }
 }

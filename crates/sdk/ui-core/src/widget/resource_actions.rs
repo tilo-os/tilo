@@ -4,6 +4,7 @@
 //! immediate or background operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -16,7 +17,7 @@ use crate::tilo_actions::{
     OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
-use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
+use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
@@ -379,12 +380,26 @@ pub fn background(
     })
 }
 
-impl Widget for ResourceActionHost {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(state, path);
+impl ResourceActionHost {
+    fn run_operation(
+        &mut self,
+        invocation: InvocationId,
+        payload: &[u8],
+    ) -> Result<ResourceOperationStart, String> {
+        match &mut self.runner {
+            Runner::Immediate(run) => run(payload).map(ResourceOperationStart::Completed),
+            Runner::Background(run) => {
+                self.pending.insert(invocation, run(payload)?);
+                Ok(ResourceOperationStart::Accepted)
+            }
+        }
     }
+}
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+impl Widget for ResourceActionHost {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -440,30 +455,17 @@ impl Widget for ResourceActionHost {
     fn handle_event(
         &mut self,
         event: &crate::winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &crate::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.root.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy
-                .children(node_id)
-                .ok()
-                .and_then(|children| children.first().copied())
-                .unwrap_or(node_id),
-            taffy,
-        );
+        let node_id = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.first().copied())
+            .unwrap_or(ctx.node_id);
+        let path = ctx.path;
+        self.root
+            .handle_event(event, &mut ctx.reborrow(path, node_id));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -517,8 +519,8 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, state, path)
     }
@@ -527,8 +529,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action_at(action, key_path, state, path)
     }
@@ -537,8 +539,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root
             .perform_semantic_action(target, action, state, path)
@@ -548,50 +550,24 @@ impl Widget for ResourceActionHost {
         &[OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.resource.clone()]
-    }
-
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload).map(Some),
-            Runner::Background(_) => Ok(None),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return self
-                .root
-                .start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload)
-                .map(ResourceOperationStart::Completed)
-                .map(Some),
-            Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
-                Ok(Some(ResourceOperationStart::Accepted))
-            }
-        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
+        self.run_operation(request.invocation, request.payload)
+            .map(Some)
     }
 
     fn poll_resource_operation(
@@ -662,53 +638,62 @@ impl Widget for ResourceActionHost {
     }
 }
 
+impl crate::resources::PublishesResources for ResourceActionHost {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.resource.clone()]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn action_form_connects_controls_discovery_and_external_invocation() {
-        let name = crate::LocalState::new(String::from("Ada"));
-        let enabled = crate::LocalState::new(true);
-        let form = ActionForm::new("profile", "Profile", "save", "Save")
-            .field("name", "Display name", &name)
-            .field("enabled", "Enabled", &enabled);
+    fn action_form_validates_controls_and_connects_invocation() {
+        // Case `action_form_connects_controls_discovery_and_external_invocation`.
+        {
+            let name = crate::LocalState::new(String::from("Ada"));
+            let enabled = crate::LocalState::new(true);
+            let form = ActionForm::new("profile", "Profile", "save", "Save")
+                .field("name", "Display name", &name)
+                .field("enabled", "Enabled", &enabled);
 
-        let invocation = form
-            .binding::<String>("name")
-            .expect("text binding")
-            .invoke(String::from("Grace"))
-            .expect("valid invocation");
-        assert_eq!(invocation.arguments["name"], "Grace");
-        assert_eq!(invocation.arguments["enabled"], true);
+            let invocation = form
+                .binding::<String>("name")
+                .expect("text binding")
+                .invoke(String::from("Grace"))
+                .expect("valid invocation");
+            assert_eq!(invocation.arguments["name"], "Grace");
+            assert_eq!(invocation.arguments["enabled"], true);
 
-        form.apply(br#"{"name":"Lin","enabled":false}"#)
-            .expect("valid external invocation");
-        assert_eq!(name.get(), "Lin");
-        assert!(!enabled.get());
+            form.apply(br#"{"name":"Lin","enabled":false}"#)
+                .expect("valid external invocation");
+            assert_eq!(name.get(), "Lin");
+            assert!(!enabled.get());
 
-        name.set(String::from("Changed"));
-        let reset = form
-            .reset_binding()
-            .expect("reset binding")
-            .invoke(())
-            .expect("reset invocation");
-        assert_eq!(reset.arguments["name"], "Ada");
-        assert_eq!(reset.arguments["enabled"], true);
-    }
+            name.set(String::from("Changed"));
+            let reset = form
+                .reset_binding()
+                .expect("reset binding")
+                .invoke(())
+                .expect("reset invocation");
+            assert_eq!(reset.arguments["name"], "Ada");
+            assert_eq!(reset.arguments["enabled"], true);
+        }
 
-    #[test]
-    fn action_form_rejects_wrong_control_types_before_mounting() {
-        let value = crate::LocalState::new(String::new());
-        let form = ActionForm::new("profile", "Profile", "save", "Save").field(
-            "name",
-            "Display name",
-            &value,
-        );
-        let error = form
-            .binding::<bool>("name")
-            .err()
-            .expect("wrong field type must fail");
-        assert!(error.contains("text, not boolean"));
+        // Case `action_form_rejects_wrong_control_types_before_mounting`.
+        {
+            let value = crate::LocalState::new(String::new());
+            let form = ActionForm::new("profile", "Profile", "save", "Save").field(
+                "name",
+                "Display name",
+                &value,
+            );
+            let error = form
+                .binding::<bool>("name")
+                .err()
+                .expect("wrong field type must fail");
+            assert!(error.contains("text, not boolean"));
+        }
     }
 }

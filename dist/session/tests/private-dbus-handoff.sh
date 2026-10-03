@@ -6,6 +6,11 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+. "$repo_root/tools/desktop-isolation.sh"
+# The private bus below re-enters this script with its own address.
+if [[ ${1:-} != --private-bus ]]; then
+    tilo_test_isolate "$@"
+fi
 for command in dbus-run-session dbus-send dbus-update-activation-environment; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "private D-Bus handoff: SKIP ($command is unavailable)"
@@ -24,6 +29,7 @@ private_bus() {
     mkdir -p "$XDG_DATA_HOME/dbus-1/services"
 
     printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/systemctl"
+    printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/loginctl"
     printf '%s\n' \
         '#!/bin/sh' \
         'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
@@ -34,17 +40,26 @@ private_bus() {
         '#!/bin/sh' \
         'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
-    chmod 0755 "$root/systemctl" "$root/tilo-shell" "$root/dbus-probe"
+    chmod 0755 "$root/systemctl" "$root/loginctl" "$root/tilo-shell" "$root/dbus-probe"
     for probe_name in Initial Tilo Empty EmptyLogout Gnome; do
         printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
             >"$XDG_DATA_HOME/dbus-1/services/org.tilo.SessionProbe${probe_name}.service"
     done
-    sed \
-        -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$root/tilo-shell|" \
-        -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$root/systemctl|" \
-        "$repo/dist/session/tilo-session" >"$root/tilo-session"
-    chmod 0755 "$root/tilo-session"
+    # The wrapper execs the packaged runner by absolute path. Stage both from
+    # the tree under test: a developer host may have Tilo installed, and its
+    # runner would stop the desktop's real graphical-session.target. The
+    # activation environment is what this test proves, so that command stays
+    # real and talks to the private bus.
+    tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
+        SYSTEMCTL="$root/systemctl" \
+        LOGINCTL="$root/loginctl" \
+        FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
+    tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
+        TILO_SHELL="$root/tilo-shell" \
+        SESSION_RUNNER="$root/tilo-session-runner" || return 1
+    export XDG_RUNTIME_DIR="$root/runtime" XDG_STATE_HOME="$root/state"
+    mkdir -m 0700 "$XDG_RUNTIME_DIR"
 
     probe() {
         local probe_name=$1

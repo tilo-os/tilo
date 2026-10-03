@@ -31,7 +31,7 @@
 //! The one thing header tampering can do is deny service — see the note on
 //! `base` in [`crate::counter`], and [`crate::counter::MAX_INCREMENTS_PER_ADVANCE`].
 
-use crate::policy::Prediction;
+use crate::policy::{GenerationPolicy, NvConstraint, Prediction};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -90,48 +90,70 @@ pub struct RollbackToken {
     pub predictions: Vec<SignedPrediction>,
 }
 
+impl From<&Prediction> for SignedPrediction {
+    fn from(p: &Prediction) -> Self {
+        Self {
+            approved_policy: B64.encode(&p.approved_policy),
+            signature: B64.encode(&p.signature),
+            label: p.label.clone(),
+        }
+    }
+}
+
+/// The object `tpm2_create` sealed, and the policy digest it was sealed to.
+#[derive(Debug, Clone, Copy)]
+pub struct SealedObject<'a> {
+    /// `TPM2B_PUBLIC`.
+    pub public: &'a [u8],
+    /// `TPM2B_PRIVATE`.
+    pub private: &'a [u8],
+    pub policy_digest: &'a [u8],
+}
+
 impl RollbackToken {
-    #[allow(clippy::too_many_arguments)]
+    /// `nv_base` is the counter value for floor generation 0 that `policy.nv.operand` was
+    /// derived from.
     pub fn new(
         keyslot: u32,
-        generation: u64,
-        nv_index: u32,
-        nv_operand: u64,
+        policy: &GenerationPolicy<'_>,
         nv_base: i64,
-        pcr_bank: &str,
-        pcrs: &[u32],
-        platform_pcrs: &[u32],
-        pin: bool,
-        sealed_public: &[u8],
-        sealed_private: &[u8],
-        key_name: &[u8],
-        policy_digest: &[u8],
+        sealed: &SealedObject<'_>,
         predictions: &[Prediction],
     ) -> Self {
         Self {
             token_type: TOKEN_TYPE.into(),
             keyslots: vec![keyslot.to_string()],
             version: TOKEN_VERSION,
-            generation,
-            nv_index,
-            nv_operand,
+            generation: policy.generation,
+            nv_index: policy.nv.index,
+            nv_operand: policy.nv.operand,
             nv_base,
-            pcr_bank: pcr_bank.into(),
-            pcrs: pcrs.to_vec(),
-            platform_pcrs: platform_pcrs.to_vec(),
-            pin,
-            sealed_public: B64.encode(sealed_public),
-            sealed_private: B64.encode(sealed_private),
-            key_name: B64.encode(key_name),
-            policy_digest: B64.encode(policy_digest),
-            predictions: predictions
-                .iter()
-                .map(|p| SignedPrediction {
-                    approved_policy: B64.encode(&p.approved_policy),
-                    signature: B64.encode(&p.signature),
-                    label: p.label.clone(),
-                })
-                .collect(),
+            pcr_bank: policy.pcr_bank.into(),
+            pcrs: policy.pcrs.to_vec(),
+            platform_pcrs: policy.platform_pcrs.to_vec(),
+            pin: policy.pin,
+            sealed_public: B64.encode(sealed.public),
+            sealed_private: B64.encode(sealed.private),
+            key_name: B64.encode(policy.key_name),
+            policy_digest: B64.encode(sealed.policy_digest),
+            predictions: predictions.iter().map(SignedPrediction::from).collect(),
+        }
+    }
+
+    /// The policy this token's secret is sealed under, given its decoded
+    /// [`key_name`](Self::decoded_key_name).
+    pub fn policy<'a>(&'a self, key_name: &'a [u8]) -> GenerationPolicy<'a> {
+        GenerationPolicy {
+            generation: self.generation,
+            key_name,
+            pcr_bank: &self.pcr_bank,
+            pcrs: &self.pcrs,
+            platform_pcrs: &self.platform_pcrs,
+            nv: NvConstraint {
+                index: self.nv_index,
+                operand: self.nv_operand,
+            },
+            pin: self.pin,
         }
     }
 
@@ -266,18 +288,24 @@ mod tests {
     fn sample() -> RollbackToken {
         RollbackToken::new(
             2,
-            7,
-            0x01D9_1100,
-            107,
+            &GenerationPolicy {
+                generation: 7,
+                key_name: b"name",
+                pcr_bank: "sha256",
+                pcrs: &[11],
+                platform_pcrs: &[7],
+                nv: NvConstraint {
+                    index: 0x01D9_1100,
+                    operand: 107,
+                },
+                pin: true,
+            },
             100,
-            "sha256",
-            &[11],
-            &[7],
-            true,
-            b"pub",
-            b"priv",
-            b"name",
-            b"digest",
+            &SealedObject {
+                public: b"pub",
+                private: b"priv",
+                policy_digest: b"digest",
+            },
             &[Prediction {
                 approved_policy: b"ap".to_vec(),
                 signature: b"sig".to_vec(),
@@ -287,55 +315,52 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_json() {
-        let t = sample();
-        let j = t.to_json().unwrap();
-        assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
-    }
-
-    #[test]
-    fn cryptsetup_required_fields_are_present_and_named_right() {
-        let j = sample().to_json().unwrap();
-        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-        assert_eq!(v["type"], "tilo-rollback");
-        assert_eq!(v["keyslots"], serde_json::json!(["2"]));
-    }
-
-    #[test]
-    fn blobs_decode_back_to_bytes() {
-        let t = sample();
-        assert_eq!(t.decoded_public().unwrap(), b"pub");
-        assert_eq!(t.decoded_private().unwrap(), b"priv");
-        assert_eq!(t.decoded_key_name().unwrap(), b"name");
-        let p = t.decoded_predictions().unwrap();
-        assert_eq!(p[0].approved_policy, b"ap");
-        assert_eq!(p[0].signature, b"sig");
-    }
-
-    #[test]
-    fn keyslot_is_parsed_from_the_string_form() {
-        assert_eq!(sample().keyslot().unwrap(), 2);
-    }
-
-    #[test]
-    fn a_token_with_no_prediction_is_rejected() {
-        let mut t = sample();
-        t.predictions.clear();
-        assert!(t.validate().is_err());
-    }
-
-    #[test]
-    fn an_inconsistent_operand_is_rejected() {
-        let mut t = sample();
-        t.nv_operand = 999;
-        let e = t.validate().unwrap_err().to_string();
-        assert!(e.contains("internally inconsistent"), "{e}");
-    }
-
-    #[test]
-    fn a_future_schema_version_is_rejected_not_guessed_at() {
-        let mut t = sample();
-        t.version = TOKEN_VERSION + 1;
-        assert!(t.validate().is_err());
+    fn tokens_round_trip_with_named_fields_and_reject_inconsistency() {
+        // Phase `round_trips_through_json`.
+        {
+            let t = sample();
+            let j = t.to_json().unwrap();
+            assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
+        }
+        // Phase `cryptsetup_required_fields_are_present_and_named_right`.
+        {
+            let j = sample().to_json().unwrap();
+            let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+            assert_eq!(v["type"], "tilo-rollback");
+            assert_eq!(v["keyslots"], serde_json::json!(["2"]));
+        }
+        // Phase `blobs_decode_back_to_bytes`.
+        {
+            let t = sample();
+            assert_eq!(t.decoded_public().unwrap(), b"pub");
+            assert_eq!(t.decoded_private().unwrap(), b"priv");
+            assert_eq!(t.decoded_key_name().unwrap(), b"name");
+            let p = t.decoded_predictions().unwrap();
+            assert_eq!(p[0].approved_policy, b"ap");
+            assert_eq!(p[0].signature, b"sig");
+        }
+        // Phase `keyslot_is_parsed_from_the_string_form`.
+        {
+            assert_eq!(sample().keyslot().unwrap(), 2);
+        }
+        // Phase `a_token_with_no_prediction_is_rejected`.
+        {
+            let mut t = sample();
+            t.predictions.clear();
+            assert!(t.validate().is_err());
+        }
+        // Phase `an_inconsistent_operand_is_rejected`.
+        {
+            let mut t = sample();
+            t.nv_operand = 999;
+            let e = t.validate().unwrap_err().to_string();
+            assert!(e.contains("internally inconsistent"), "{e}");
+        }
+        // Phase `a_future_schema_version_is_rejected_not_guessed_at`.
+        {
+            let mut t = sample();
+            t.version = TOKEN_VERSION + 1;
+            assert!(t.validate().is_err());
+        }
     }
 }

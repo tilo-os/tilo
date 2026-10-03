@@ -14,12 +14,14 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
+use crate::shell::i18n::t;
+
 use crate::shell::chrome_state::QuickSettingsState;
 #[cfg(test)]
 use crate::shell::quick_settings::WifiNetwork;
 use crate::shell::quick_settings::WifiPasswordPrompt;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, LIST_TOP, PANEL_PAD, RELATED_GAP,
     ROW_HEIGHT, STATUS_DOT, TOGGLE_H, TOGGLE_W, centred_text_top, leading_glyph, paint_control,
     trailing_dot_center, trailing_status_glyph, trailing_toggle, type_size,
@@ -48,7 +50,7 @@ pub enum WifiPaneOutcome {
     /// A synchronous radio mutation succeeded; refresh authoritative OS state.
     Reconcile,
     ActionFailed {
-        action: &'static str,
+        action: String,
         error: String,
     },
     JoinOpen(String),
@@ -114,18 +116,19 @@ impl QuickSettingsWifiPane {
         }
     }
 
-    fn status_message(state: &QuickSettingsState) -> Option<&'static str> {
-        if !state.wifi {
-            Some("Wi-Fi is off")
+    fn status_message(state: &QuickSettingsState) -> Option<String> {
+        let key = if !state.wifi {
+            "qs-wifi-off"
         } else if state.wifi_scanning {
-            Some("Scanning for networks…")
+            "qs-wifi-scanning"
         } else if state.wifi_scan_error.is_some() {
-            Some("Couldn’t scan · Refresh to try again")
+            "qs-wifi-scan-failed"
         } else if state.wifi_networks.is_empty() {
-            Some("No networks found")
+            "qs-wifi-none"
         } else {
-            None
-        }
+            return None;
+        };
+        Some(t(key))
     }
 
     /// Stable visual ids that are currently actionable. Disabled controls and
@@ -244,23 +247,27 @@ impl QuickSettingsWifiPane {
             .iter()
             .filter_map(|index| match *index {
                 Self::BACK_FOCUS => Some(
-                    AccessNode::new(Role::Button).with_name("Back").with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.keyboard_focus == Some(*index)),
-                    ),
+                    AccessNode::new(Role::Button)
+                        .with_name(t("qs-back"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index)),
+                        ),
                 ),
                 Self::WIFI_FOCUS => Some(
-                    AccessNode::new(Role::Switch).with_name("Wi-Fi").with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.keyboard_focus == Some(*index))
-                            .checked(state.wifi),
-                    ),
+                    AccessNode::new(Role::Switch)
+                        .with_name(t("qs-wifi"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index))
+                                .checked(state.wifi),
+                        ),
                 ),
                 Self::RESCAN_FOCUS => Some(
                     AccessNode::new(Role::Button)
-                        .with_name("Scan for Wi-Fi networks")
+                        .with_name(t("qs-wifi-rescan-a11y"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -269,7 +276,7 @@ impl QuickSettingsWifiPane {
                 ),
                 Self::HOTSPOT_FOCUS => Some(
                     AccessNode::new(Role::Switch)
-                        .with_name("Wi-Fi hotspot")
+                        .with_name(t("qs-wifi-hotspot-a11y"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -283,7 +290,11 @@ impl QuickSettingsWifiPane {
                     Some(
                         AccessNode::new(Role::Button)
                             .with_name(item.ssid.clone())
-                            .with_description(if item.secure { "Secured" } else { "Open" })
+                            .with_description(t(if item.secure {
+                                "qs-wifi-secured"
+                            } else {
+                                "qs-wifi-open"
+                            }))
                             .with_position(network.saturating_add(1), state.wifi_networks.len())
                             .with_state(
                                 AccessState::new()
@@ -295,10 +306,10 @@ impl QuickSettingsWifiPane {
             })
             .collect();
         AccessNode::new(Role::Dialog)
-            .with_name("Wi-Fi")
-            .with_description(Self::status_message(state).unwrap_or(
-                "Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot",
-            ))
+            .with_name(t("qs-wifi"))
+            .with_description(
+                Self::status_message(state).unwrap_or_else(|| t("qs-wifi-choose-a11y")),
+            )
             .with_state(AccessState::new().modal(true))
             .with_children(children)
     }
@@ -458,11 +469,11 @@ impl QuickSettingsWifiPane {
             if let Err(error) = result {
                 log_qs_result("set_wifi", Err(error.clone()));
                 return WifiPaneOutcome::ActionFailed {
-                    action: if next {
-                        "Turn on Wi-Fi"
+                    action: t(if next {
+                        "qs-wifi-turn-on"
                     } else {
-                        "Turn off Wi-Fi"
-                    },
+                        "qs-wifi-turn-off"
+                    }),
                     error,
                 };
             }
@@ -496,11 +507,11 @@ impl QuickSettingsWifiPane {
             if let Err(error) = result {
                 log_qs_result("set_hotspot", Err(error.clone()));
                 return WifiPaneOutcome::ActionFailed {
-                    action: if next {
-                        "Turn on Wi-Fi hotspot"
+                    action: t(if next {
+                        "qs-wifi-hotspot-turn-on"
                     } else {
-                        "Turn off Wi-Fi hotspot"
-                    },
+                        "qs-wifi-hotspot-turn-off"
+                    }),
                     error,
                 };
             }
@@ -534,11 +545,6 @@ impl QuickSettingsWifiPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching the sibling \
-                  bluetooth/vpn drill-in panes this is called alongside"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "The drill-in's paint, scroll, and Wi-Fi hit targets share one panel coordinate system and must remain synchronized."
     )]
@@ -559,7 +565,7 @@ impl QuickSettingsWifiPane {
             .layout_from(panel, displayed_networks, Self::LIST_TOP);
         let colors = &theme.tokens.colors;
         self.list
-            .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
+            .draw_header(scene, transform, text, theme, panel, cursor, &t("qs-wifi"));
         // The Hotspot row is a Control (HIG §9.1/§9.5): glyph, two-line
         // label and switch all on its centre line and the shared inset.
         let row = Self::hotspot_rect_for(panel);
@@ -576,23 +582,24 @@ impl QuickSettingsWifiPane {
         );
         let label_size = type_size(text, theme.tokens.typography.scale.sm);
         let detail_size = type_size(text, theme.tokens.typography.scale.xs);
-        let detail = if state.radios.hotspot_active {
-            "Sharing this connection"
+        let detail = t(if state.radios.hotspot_active {
+            "qs-wifi-hotspot-sharing"
         } else {
-            "Off"
-        };
+            "qs-off"
+        });
+        let hotspot_label = t("qs-wifi-hotspot");
         let (_, label_h) = text.measure_weighted(
-            "Hotspot",
+            &hotspot_label,
             label_size,
             None,
             ui::text_render::TextWeight::Medium,
         );
-        let (_, detail_h) = text.measure(detail, detail_size, None);
+        let (_, detail_h) = text.measure(&detail, detail_size, None);
         let block_top = centred_text_top(row, f64::from(label_h) + f64::from(detail_h));
         let text_x = glyph.x1 + CONTROL_INSET;
         text.draw_text_weighted(
             scene,
-            "Hotspot",
+            &hotspot_label,
             label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
@@ -601,7 +608,7 @@ impl QuickSettingsWifiPane {
         );
         text.draw_text(
             scene,
-            detail,
+            &detail,
             detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
@@ -624,7 +631,7 @@ impl QuickSettingsWifiPane {
                 text,
                 theme,
                 panel,
-                message,
+                &message,
                 Self::LIST_TOP,
             );
             if displayed_networks == 0 {
@@ -641,12 +648,8 @@ impl QuickSettingsWifiPane {
                 cursor
             };
             let glyph = DrillInList::draw_discovery_row(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
                 *row,
-                index,
                 row_cursor,
                 100.0,
                 &network.ssid,
@@ -667,7 +670,7 @@ impl QuickSettingsWifiPane {
             if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
                 text.draw_text(
                     scene,
-                    "Connecting…",
+                    &t("qs-connecting"),
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
@@ -676,7 +679,7 @@ impl QuickSettingsWifiPane {
             } else if network.connected {
                 text.draw_text(
                     scene,
-                    "Connected",
+                    &t("qs-connected"),
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
@@ -781,411 +784,429 @@ mod tests {
     }
 
     #[test]
-    fn protected_and_open_rows_take_distinct_paths() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![network("Cafe", true), network("Open", false)],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        // The pane reserves its hotspot card before discovery rows; prepare
-        // the same geometry that `handle_click` will use.
-        pane.list
-            .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
-        );
-        assert_eq!(state.wifi_password.as_ref().unwrap().ssid, "Cafe");
-        state.wifi_password = None;
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::JoinOpen("Open".into())
-        );
-        assert!(
-            actions.joins.borrow().is_empty(),
-            "the pane never blocks on a join"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wifi_rows_join_only_joinable_networks_exactly_once() {
+        // Phase `protected_and_open_rows_take_distinct_paths`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![network("Cafe", true), network("Open", false)],
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            // The pane reserves its hotspot card before discovery rows; prepare
+            // the same geometry that `handle_click` will use.
+            pane.list
+                .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
+            );
+            assert_eq!(state.wifi_password.as_ref().unwrap().ssid, "Cafe");
+            state.wifi_password = None;
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
+                WifiPaneOutcome::JoinOpen("Open".into())
+            );
+            assert!(
+                actions.joins.borrow().is_empty(),
+                "the pane never blocks on a join"
+            );
+        }
+
+        // Phase `back_and_empty_space_never_join_a_network`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![network("Cafe", true)],
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            pane.list.layout(panel, 1);
+            assert_eq!(
+                pane.handle_click(pane.list.back_center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::Back)
+            );
+            assert_eq!(
+                pane.handle_click(panel.center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert!(actions.joins.borrow().is_empty());
+            assert!(state.wifi_password.is_none());
+        }
+
+        // Phase `an_in_flight_open_network_join_is_not_dispatched_twice`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![network("Open", false)],
+                wifi_joining: Some("Open".into()),
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            pane.list.layout_from(panel, 1, 116.0);
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert!(actions.joins.borrow().is_empty());
+        }
+
+        // Phase `connected_rows_are_inert_instead_of_rejoining`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut connected = network("Studio", true);
+            connected.connected = true;
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![connected],
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            pane.list
+                .layout_from(panel, 1, QuickSettingsWifiPane::LIST_TOP);
+
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert!(state.wifi_password.is_none());
+            assert!(actions.joins.borrow().is_empty());
+        }
+
+        // Phase `any_in_flight_join_blocks_every_other_network`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![network("First", false), network("Second", false)],
+                wifi_joining: Some("First".into()),
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            pane.list
+                .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
+
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert_eq!(state.wifi_joining.as_deref(), Some("First"));
+            assert!(actions.joins.borrow().is_empty());
+        }
     }
 
     #[test]
-    fn back_and_empty_space_never_join_a_network() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![network("Cafe", true)],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list.layout(panel, 1);
-        assert_eq!(
-            pane.handle_click(pane.list.back_center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::Back)
-        );
-        assert_eq!(
-            pane.handle_click(panel.center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(actions.joins.borrow().is_empty());
-        assert!(state.wifi_password.is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wifi_radio_refresh_and_status_tell_the_truth() {
+        // Phase `header_toggle_changes_radio_only_after_a_successful_action`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi: false,
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
 
-    #[test]
-    fn an_in_flight_open_network_join_is_not_dispatched_twice() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![network("Open", false)],
-            wifi_joining: Some("Open".into()),
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list.layout_from(panel, 1, 116.0);
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(actions.joins.borrow().is_empty());
-    }
+            assert_eq!(
+                pane.handle_click(
+                    QuickSettingsWifiPane::wifi_toggle_rect(panel).center(),
+                    panel,
+                    &mut state,
+                    &actions,
+                ),
+                WifiPaneOutcome::Reconcile
+            );
+            assert!(state.wifi);
+            assert!(state.radios.wifi_enabled);
+            assert_eq!(actions.wifi.borrow().as_slice(), [true]);
+            assert!(pane.take_rescan_request());
+            assert!(!pane.take_rescan_request(), "the scan request is one-shot");
 
-    #[test]
-    fn connected_rows_are_inert_instead_of_rejoining() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut connected = network("Studio", true);
-        connected.connected = true;
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![connected],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list
-            .layout_from(panel, 1, QuickSettingsWifiPane::LIST_TOP);
-
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(state.wifi_password.is_none());
-        assert!(actions.joins.borrow().is_empty());
-    }
-
-    #[test]
-    fn any_in_flight_join_blocks_every_other_network() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![network("First", false), network("Second", false)],
-            wifi_joining: Some("First".into()),
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list
-            .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
-
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert_eq!(state.wifi_joining.as_deref(), Some("First"));
-        assert!(actions.joins.borrow().is_empty());
-    }
-
-    #[test]
-    fn header_toggle_changes_radio_only_after_a_successful_action() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi: false,
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-
-        assert_eq!(
-            pane.handle_click(
+            let mut rejected_state = QuickSettingsState {
+                wifi: false,
+                ..Default::default()
+            };
+            let rejecting = RecordingActions {
+                reject_wifi: true,
+                ..Default::default()
+            };
+            let failure = pane.handle_click(
                 QuickSettingsWifiPane::wifi_toggle_rect(panel).center(),
                 panel,
-                &mut state,
-                &actions,
-            ),
-            WifiPaneOutcome::Reconcile
-        );
-        assert!(state.wifi);
-        assert!(state.radios.wifi_enabled);
-        assert_eq!(actions.wifi.borrow().as_slice(), [true]);
-        assert!(pane.take_rescan_request());
-        assert!(!pane.take_rescan_request(), "the scan request is one-shot");
+                &mut rejected_state,
+                &rejecting,
+            );
+            assert!(matches!(
+                failure,
+                WifiPaneOutcome::ActionFailed { ref action, .. } if action == "Turn on Wi-Fi"
+            ));
+            assert!(
+                !rejected_state.wifi,
+                "a failed OS write must not lie in the UI"
+            );
+            assert!(!pane.take_rescan_request());
+        }
 
-        let mut rejected_state = QuickSettingsState {
-            wifi: false,
-            ..Default::default()
-        };
-        let rejecting = RecordingActions {
-            reject_wifi: true,
-            ..Default::default()
-        };
-        let failure = pane.handle_click(
-            QuickSettingsWifiPane::wifi_toggle_rect(panel).center(),
-            panel,
-            &mut rejected_state,
-            &rejecting,
-        );
-        assert!(matches!(
-            failure,
-            WifiPaneOutcome::ActionFailed {
-                action: "Turn on Wi-Fi",
-                ..
-            }
-        ));
-        assert!(
-            !rejected_state.wifi,
-            "a failed OS write must not lie in the UI"
-        );
-        assert!(!pane.take_rescan_request());
+        // Phase `refresh_is_named_and_requests_one_host_owned_scan`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState::default();
+            let actions = RecordingActions::default();
+            let targets = QuickSettingsWifiPane::action_rects(panel);
+            let (_, refresh) = targets
+                .iter()
+                .find(|(name, _)| *name == "quick_settings_wifi_rescan")
+                .copied()
+                .expect("named rescan target");
+
+            assert_eq!(
+                pane.handle_click(refresh.center(), panel, &mut state, &actions),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
+            );
+            assert!(pane.take_rescan_request());
+        }
+
+        // Phase `wifi_off_hides_stale_rows_and_disables_refresh`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi: false,
+                wifi_networks: vec![network("Stale", false)],
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
+            pane.list
+                .layout_from(panel, 0, QuickSettingsWifiPane::LIST_TOP);
+
+            assert_eq!(
+                pane.handle_click(
+                    QuickSettingsWifiPane::rescan_rect(panel).center(),
+                    panel,
+                    &mut state,
+                    &actions,
+                ),
+                WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert!(!pane.take_rescan_request());
+            assert!(pane.list.rows().is_empty());
+        }
+
+        // Phase `off_loading_empty_and_error_have_distinct_truthful_status`.
+        {
+            let mut state = QuickSettingsState {
+                wifi: false,
+                ..Default::default()
+            };
+            assert_eq!(
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
+                Some("Wi-Fi is off")
+            );
+
+            state.wifi = true;
+            state.wifi_scanning = true;
+            assert_eq!(
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
+                Some("Scanning for networks…")
+            );
+
+            state.wifi_scanning = false;
+            assert_eq!(
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
+                Some("No networks found")
+            );
+
+            state.wifi_scan_error = Some("NetworkManager unavailable".into());
+            assert_eq!(
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
+                Some("Couldn’t scan · Refresh to try again")
+            );
+            assert_eq!(
+                QuickSettingsWifiPane::default()
+                    .accessibility_snapshot(&state)
+                    .description
+                    .as_deref(),
+                Some("Couldn’t scan · Refresh to try again")
+            );
+        }
     }
 
     #[test]
-    fn refresh_is_named_and_requests_one_host_owned_scan() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState::default();
-        let actions = RecordingActions::default();
-        let targets = QuickSettingsWifiPane::action_rects(panel);
-        let (_, refresh) = targets
-            .iter()
-            .find(|(name, _)| *name == "quick_settings_wifi_rescan")
-            .copied()
-            .expect("named rescan target");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wifi_keyboard_and_semantics_match_the_visible_actionable_rows() {
+        // Phase `keyboard_traverses_visible_actions_and_activates_the_focused_row`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut state = QuickSettingsState {
+                wifi_networks: vec![network("Cafe", true)],
+                ..Default::default()
+            };
+            let actions = RecordingActions::default();
 
-        assert_eq!(
-            pane.handle_click(refresh.center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
-        );
-        assert!(pane.take_rescan_request());
-    }
+            // Shift+Tab from no focus wraps to the final visible network.
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Tab),
+                    true,
+                    panel,
+                    &mut state,
+                    &actions,
+                ),
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
+            );
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Enter),
+                    false,
+                    panel,
+                    &mut state,
+                    &actions,
+                ),
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::Changed))
+            );
+            assert_eq!(
+                state
+                    .wifi_password
+                    .as_ref()
+                    .map(|prompt| prompt.ssid.as_str()),
+                Some("Cafe")
+            );
 
-    #[test]
-    fn wifi_off_hides_stale_rows_and_disables_refresh() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi: false,
-            wifi_networks: vec![network("Stale", false)],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list
-            .layout_from(panel, 0, QuickSettingsWifiPane::LIST_TOP);
-
-        assert_eq!(
-            pane.handle_click(
-                QuickSettingsWifiPane::rescan_rect(panel).center(),
-                panel,
-                &mut state,
-                &actions,
-            ),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(!pane.take_rescan_request());
-        assert!(pane.list.rows().is_empty());
-    }
-
-    #[test]
-    fn keyboard_traverses_visible_actions_and_activates_the_focused_row() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![network("Cafe", true)],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-
-        // Shift+Tab from no focus wraps to the final visible network.
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Tab),
-                true,
-                panel,
-                &mut state,
-                &actions,
-            ),
-            Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Enter),
+            // Reset + Enter on the first focus stop is the visible Back action.
+            state.wifi_password = None;
+            pane.reset_focus();
+            let _ = pane.handle_key(
+                &Key::Named(NamedKey::ArrowDown),
                 false,
                 panel,
                 &mut state,
                 &actions,
-            ),
-            Some(WifiPaneOutcome::DrillIn(DrillInOutcome::Changed))
-        );
-        assert_eq!(
-            state
-                .wifi_password
-                .as_ref()
-                .map(|prompt| prompt.ssid.as_str()),
-            Some("Cafe")
-        );
+            );
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Space),
+                    false,
+                    panel,
+                    &mut state,
+                    &actions,
+                ),
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::Back))
+            );
+        }
 
-        // Reset + Enter on the first focus stop is the visible Back action.
-        state.wifi_password = None;
-        pane.reset_focus();
-        let _ = pane.handle_key(
-            &Key::Named(NamedKey::ArrowDown),
-            false,
-            panel,
-            &mut state,
-            &actions,
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Space),
-                false,
+        // Phase `semantic_projection_matches_the_visible_pane`.
+        {
+            let pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let state = QuickSettingsState {
+                wifi_networks: vec![network("Cafe", true), network("Open", false)],
+                ..Default::default()
+            };
+            let names = pane
+                .semantic_rects(panel, &state)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                [
+                    "quick_settings_wifi_back",
+                    "quick_settings_wifi_toggle",
+                    "quick_settings_wifi_rescan",
+                    "quick_settings_wifi_hotspot",
+                    "quick_settings_wifi_network[0]",
+                    "quick_settings_wifi_network[1]",
+                ]
+            );
+
+            let snapshot = pane.accessibility_snapshot(&state);
+            assert_eq!(snapshot.name.as_deref(), Some("Wi-Fi"));
+            assert_eq!(snapshot.children.len(), names.len());
+            assert_eq!(snapshot.children[4].name.as_deref(), Some("Cafe"));
+            assert_eq!(snapshot.children[4].description.as_deref(), Some("Secured"));
+        }
+
+        // Phase `traversal_excludes_disabled_controls_and_connected_rows`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(600.0, 40.0, 948.0, 232.0);
+            let mut connected = network("Already here", true);
+            connected.connected = true;
+            let state = QuickSettingsState {
+                wifi_networks: vec![connected, network("Available", false)],
+                ..Default::default()
+            };
+
+            let snapshot = pane.accessibility_snapshot(&state);
+            let names = snapshot
+                .children
+                .iter()
+                .filter_map(|child| child.name.as_deref())
+                .collect::<Vec<_>>();
+            assert!(!names.contains(&"Already here"));
+            assert!(names.contains(&"Available"));
+
+            // Backwards from no focus lands on the last actionable network, not
+            // the connected row that intentionally has no activation.
+            pane.focus_next(panel, &state, true);
+            assert_eq!(
+                pane.keyboard_focus,
+                Some(QuickSettingsWifiPane::NETWORK_FOCUS_START + 1)
+            );
+            assert_eq!(pane.list.visible_indices(), 1..2);
+
+            let busy = QuickSettingsState {
+                wifi_joining: Some("Available".into()),
+                ..state
+            };
+            assert_eq!(
+                QuickSettingsWifiPane::focusable_indices(&busy),
+                [QuickSettingsWifiPane::BACK_FOCUS],
+                "an in-flight join leaves only Back in traversal"
+            );
+        }
+
+        // Phase `compact_wheel_exposes_only_the_scrolled_network_window`.
+        {
+            let mut pane = QuickSettingsWifiPane::default();
+            let panel = Rect::new(600.0, 40.0, 948.0, 232.0);
+            let state = QuickSettingsState {
+                wifi_networks: (0..8)
+                    .map(|index| network(&format!("Network {index}"), false))
+                    .collect(),
+                ..Default::default()
+            };
+            pane.list.layout_from(
                 panel,
-                &mut state,
-                &actions,
-            ),
-            Some(WifiPaneOutcome::DrillIn(DrillInOutcome::Back))
-        );
-    }
-
-    #[test]
-    fn semantic_projection_matches_the_visible_pane() {
-        let pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let state = QuickSettingsState {
-            wifi_networks: vec![network("Cafe", true), network("Open", false)],
-            ..Default::default()
-        };
-        let names = pane
-            .semantic_rects(panel, &state)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            [
-                "quick_settings_wifi_back",
-                "quick_settings_wifi_toggle",
-                "quick_settings_wifi_rescan",
-                "quick_settings_wifi_hotspot",
-                "quick_settings_wifi_network[0]",
-                "quick_settings_wifi_network[1]",
-            ]
-        );
-
-        let snapshot = pane.accessibility_snapshot(&state);
-        assert_eq!(snapshot.name.as_deref(), Some("Wi-Fi"));
-        assert_eq!(snapshot.children.len(), names.len());
-        assert_eq!(snapshot.children[4].name.as_deref(), Some("Cafe"));
-        assert_eq!(snapshot.children[4].description.as_deref(), Some("Secured"));
-    }
-
-    #[test]
-    fn traversal_excludes_disabled_controls_and_connected_rows() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(600.0, 40.0, 948.0, 232.0);
-        let mut connected = network("Already here", true);
-        connected.connected = true;
-        let state = QuickSettingsState {
-            wifi_networks: vec![connected, network("Available", false)],
-            ..Default::default()
-        };
-
-        let snapshot = pane.accessibility_snapshot(&state);
-        let names = snapshot
-            .children
-            .iter()
-            .filter_map(|child| child.name.as_deref())
-            .collect::<Vec<_>>();
-        assert!(!names.contains(&"Already here"));
-        assert!(names.contains(&"Available"));
-
-        // Backwards from no focus lands on the last actionable network, not
-        // the connected row that intentionally has no activation.
-        pane.focus_next(panel, &state, true);
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(QuickSettingsWifiPane::NETWORK_FOCUS_START + 1)
-        );
-        assert_eq!(pane.list.visible_indices(), 1..2);
-
-        let busy = QuickSettingsState {
-            wifi_joining: Some("Available".into()),
-            ..state
-        };
-        assert_eq!(
-            QuickSettingsWifiPane::focusable_indices(&busy),
-            [QuickSettingsWifiPane::BACK_FOCUS],
-            "an in-flight join leaves only Back in traversal"
-        );
-    }
-
-    #[test]
-    fn compact_wheel_exposes_only_the_scrolled_network_window() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(600.0, 40.0, 948.0, 232.0);
-        let state = QuickSettingsState {
-            wifi_networks: (0..8)
-                .map(|index| network(&format!("Network {index}"), false))
-                .collect(),
-            ..Default::default()
-        };
-        pane.list.layout_from(
-            panel,
-            state.wifi_networks.len(),
-            QuickSettingsWifiPane::LIST_TOP,
-        );
-        assert_eq!(pane.list.visible_indices(), 0..1);
-        assert!(pane.scroll_wheel(panel, &state, 4.0));
-        assert_eq!(pane.list.visible_indices(), 4..5);
-        let names = pane
-            .semantic_rects(panel, &state)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"quick_settings_wifi_network[4]".to_string()));
-        assert!(!names.contains(&"quick_settings_wifi_network[0]".to_string()));
-    }
-
-    #[test]
-    fn off_loading_empty_and_error_have_distinct_truthful_status() {
-        let mut state = QuickSettingsState {
-            wifi: false,
-            ..Default::default()
-        };
-        assert_eq!(
-            QuickSettingsWifiPane::status_message(&state),
-            Some("Wi-Fi is off")
-        );
-
-        state.wifi = true;
-        state.wifi_scanning = true;
-        assert_eq!(
-            QuickSettingsWifiPane::status_message(&state),
-            Some("Scanning for networks…")
-        );
-
-        state.wifi_scanning = false;
-        assert_eq!(
-            QuickSettingsWifiPane::status_message(&state),
-            Some("No networks found")
-        );
-
-        state.wifi_scan_error = Some("NetworkManager unavailable".into());
-        assert_eq!(
-            QuickSettingsWifiPane::status_message(&state),
-            Some("Couldn’t scan · Refresh to try again")
-        );
-        assert_eq!(
-            QuickSettingsWifiPane::default()
-                .accessibility_snapshot(&state)
-                .description
-                .as_deref(),
-            Some("Couldn’t scan · Refresh to try again")
-        );
+                state.wifi_networks.len(),
+                QuickSettingsWifiPane::LIST_TOP,
+            );
+            assert_eq!(pane.list.visible_indices(), 0..1);
+            assert!(pane.scroll_wheel(panel, &state, 4.0));
+            assert_eq!(pane.list.visible_indices(), 4..5);
+            let names = pane
+                .semantic_rects(panel, &state)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert!(names.contains(&"quick_settings_wifi_network[4]".to_string()));
+            assert!(!names.contains(&"quick_settings_wifi_network[0]".to_string()));
+        }
     }
 }

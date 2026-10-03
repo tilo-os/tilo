@@ -12,16 +12,16 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -36,47 +36,74 @@ const ACCENT_BAR_W: f64 = 4.0;
 const DISMISS_D: f64 = 18.0;
 const GAP: f64 = 10.0;
 
+/// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
+/// title, optional secondary message and whether the "×" is offered.
+#[derive(Clone, Copy, Debug)]
+pub struct BannerContent<'a> {
+    pub kind: BannerKind,
+    pub icon: Icon,
+    pub title: &'a str,
+    pub message: Option<&'a str>,
+    pub dismissible: bool,
+}
+
+impl<'a> BannerContent<'a> {
+    /// A non-dismissible banner with the severity's default icon.
+    pub fn new(kind: BannerKind, title: &'a str) -> Self {
+        Self {
+            kind,
+            icon: kind.default_icon(),
+            title,
+            message: None,
+            dismissible: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: Option<&'a str>) -> Self {
+        self.message = message;
+        self
+    }
+
+    #[must_use]
+    pub fn dismissible(mut self, dismissible: bool) -> Self {
+        self.dismissible = dismissible;
+        self
+    }
+}
+
 /// Shared visual paint for a banner filling `rect`. Used by both the retained
 /// [`Banner`] widget and the immediate-mode [`Banner::paint`] entry point.
 /// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shared banner painting combines render context with bounds, severity, icon, text and dismiss-button hover state"
-)]
 fn paint_banner(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    kind: BannerKind,
-    icon: Icon,
-    title: &str,
-    message: Option<&str>,
-    dismissible: bool,
+    content: &BannerContent<'_>,
     hover: Point,
 ) -> Rect {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return Rect::ZERO;
     }
+    let BannerContent {
+        kind,
+        icon,
+        title,
+        message,
+        dismissible,
+    } = *content;
+    let theme = ctx.theme;
+    let transform = ctx.transform;
     let accent = kind.color(theme);
     let radius = f64::from(theme.tokens.radii.md);
 
-    let surf = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        accent.with_alpha_factor(0.13),
-        None,
-        &surf,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        accent.with_alpha_factor(0.4),
-        None,
-        &surf,
-    );
+    ctx.fill_round(rect, radius, accent.with_alpha_factor(0.13));
+    ctx.stroke_round(rect, radius, accent.with_alpha_factor(0.4), 1.0);
 
     let bar = RoundedRect::new(
         rect.x0,
@@ -85,57 +112,45 @@ fn paint_banner(
         rect.y1,
         (radius, 0.0, 0.0, radius),
     );
-    scene.fill(Fill::NonZero, transform, accent, None, &bar);
+    ctx.scene.fill(Fill::NonZero, transform, accent, None, &bar);
 
     let icon_x = rect.x0 + PAD_X;
     let icon_cy = rect.center().y;
     let icon_rect =
         Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
-    icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
+    icon.draw_with_stroke(ctx.scene, transform, icon_rect, accent, 1.6);
 
     let text_x = icon_rect.x1 + GAP;
-    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
-    let msg_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let title_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.base);
+    let msg_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
     let title_style = TextStyle::new(title_size);
     let message_style = TextStyle::new(msg_size);
     let text_width = banner_text_width(rect, dismissible);
-    let (_, title_h) = text_renderer.measure_style(title, Some(text_width), &title_style);
+    let (_, title_h) = ctx
+        .text
+        .measure_style(title, Some(text_width), &title_style);
     let message_h = message.map_or(0.0, |msg| {
-        text_renderer
+        ctx.text
             .measure_style(msg, Some(text_width), &message_style)
             .1
     });
     let gap = f64::from(theme.tokens.spacing.s1);
     let total_text_h = f64::from(title_h + message_h) + if message.is_some() { gap } else { 0.0 };
     let mut ty = rect.center().y - total_text_h / 2.0;
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine composition is float matrix multiplication; it cannot overflow or \
-                  panic"
-    )]
-    let title_transform = transform * Affine::translate((text_x, ty));
-    text_renderer.draw_text(
-        scene,
+    ctx.text(
         title,
-        title_size,
+        &title_style,
         theme.text_primary,
-        title_transform,
+        Point::new(text_x, ty),
         Some(text_width),
     );
     ty += f64::from(title_h) + gap;
     if let Some(msg) = message {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix multiplication; it cannot overflow \
-                      or panic"
-        )]
-        let msg_transform = transform * Affine::translate((text_x, ty));
-        text_renderer.draw_text(
-            scene,
+        ctx.text(
             msg,
-            msg_size,
+            &message_style,
             theme.text_dim,
-            msg_transform,
+            Point::new(text_x, ty),
             Some(text_width),
         );
     }
@@ -152,7 +167,7 @@ fn paint_banner(
         } else {
             theme.text_dim
         };
-        Icon::X.draw_with_stroke(scene, transform, dr, col, 1.6);
+        Icon::X.draw_with_stroke(ctx.scene, transform, dr, col, 1.6);
         dr
     } else {
         Rect::ZERO
@@ -299,36 +314,13 @@ impl Banner {
     /// straight to a `Scene`. Returns the dismiss "×" rect (or `Rect::ZERO`
     /// when not dismissible) so the caller can hit-test it against its own
     /// pointer state; pass `hover` for the ×-hover tint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate banner painting forwards render context, content, bounds and dismissal state to the retained widget painter"
-    )]
     pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        kind: BannerKind,
-        icon: Icon,
-        title: &str,
-        message: Option<&str>,
-        dismissible: bool,
+        content: &BannerContent<'_>,
         hover: Point,
     ) -> Rect {
-        paint_banner(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            kind,
-            icon,
-            title,
-            message,
-            dismissible,
-            hover,
-        )
+        paint_banner(ctx, rect, content, hover)
     }
 
     /// Intrinsic content height for the current title/message, in logical px.
@@ -355,8 +347,6 @@ impl Banner {
 }
 
 impl Widget for Banner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "content_height is a small, bounded pixel value built from theme typography \
@@ -426,36 +416,23 @@ impl Widget for Banner {
             self.dismiss_rect = Rect::ZERO;
             return;
         }
+        let content = BannerContent::new(self.kind, &self.title)
+            .with_icon(self.icon())
+            .with_message(self.message.as_deref())
+            .dismissible(self.dismissible);
         self.dismiss_rect = paint_banner(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            self.kind,
-            self.icon(),
-            &self.title,
-            self.message.as_deref(),
-            self.dismissible,
+            &content,
             self.last_cursor,
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -467,7 +444,7 @@ impl Widget for Banner {
             {
                 self.dismissed = true;
                 self.dismiss_fired = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -513,28 +490,117 @@ impl Widget for Banner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
     #[test]
-    fn retained_measure_uses_the_active_text_scale() {
-        let mut banner = Banner::info("A title").with_message("Supporting detail");
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-        let mut text = TextRenderer::new();
-        let measured = banner.measure(
-            taffy::Size {
-                width: Some(320.0),
-                height: None,
-            },
-            taffy::Size::MAX_CONTENT,
-            &mut text,
-        );
-        let default_height = Banner::info("A title")
-            .with_message("Supporting detail")
-            .content_height(&Theme::dark(), &mut text, 320.0);
-        assert!(f64::from(measured.height) > default_height);
+    fn banner_kind_icon_and_message_drive_paint_and_height() {
+        fn retained_measure_uses_the_active_text_scale() {
+            let mut banner = Banner::info("A title").with_message("Supporting detail");
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+            let mut text = TextRenderer::new();
+            let measured = banner.measure(
+                taffy::Size {
+                    width: Some(320.0),
+                    height: None,
+                },
+                taffy::Size::MAX_CONTENT,
+                &mut text,
+            );
+            let default_height = Banner::info("A title")
+                .with_message("Supporting detail")
+                .content_height(&Theme::dark(), &mut text, 320.0);
+            assert!(f64::from(measured.height) > default_height);
+        }
+
+        fn kind_maps_to_semantic_color_and_icon() {
+            let theme = Theme::dark();
+            assert_eq!(
+                BannerKind::Error.color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            assert_eq!(
+                BannerKind::Success.color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            assert_eq!(
+                BannerKind::Warning.color(&theme),
+                theme.tokens.colors.semantic.warning
+            );
+            assert_eq!(
+                BannerKind::Info.color(&theme),
+                theme.tokens.colors.semantic.info
+            );
+            assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
+        }
+
+        fn icon_override_wins() {
+            let b = Banner::info("Heads up").with_icon(Icon::Bell);
+            assert_eq!(b.icon(), Icon::Bell);
+            let d = Banner::info("Heads up");
+            assert_eq!(d.icon(), Icon::Info, "defaults to the severity icon");
+        }
+
+        fn message_makes_the_banner_taller() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
+            let tall = Banner::info("One line")
+                .with_message("Plus a detail line")
+                .content_height(&theme, &mut text, 500.0);
+            assert!(tall > short, "a message adds a second line of height");
+        }
+
+        fn long_message_wraps_and_grows_to_its_painted_height() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+            let banner =
+                Banner::warning("Your existing identity needs recovery").with_message(message);
+            let width = 700.0;
+            let height = banner.content_height(&theme, &mut text, width);
+            let text_width =
+                banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
+            let (_, message_height) =
+                text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
+
+            assert!(
+                message_height > theme.tokens.typography.scale.sm * 1.25,
+                "the recovery copy must wrap instead of escaping the banner"
+            );
+            assert!(
+                height >= f64::from(message_height) + PAD_Y * 2.0,
+                "the banner must reserve the same wrapped height that it paints"
+            );
+        }
+
+        fn draws_accent_bar_and_text() {
+            let mut b = Banner::error("Upload failed")
+                .with_message("Check your connection")
+                .dismissible();
+            lay_out(&mut b, 500.0, 200.0);
+            let scene = draw(&mut b);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(
+                fills > 4,
+                "surface + border + bar + icon + text ⇒ many fills, got {fills}"
+            );
+        }
+
+        retained_measure_uses_the_active_text_scale();
+        kind_maps_to_semantic_color_and_icon();
+        icon_override_wins();
+        message_makes_the_banner_taller();
+        long_message_wraps_and_grows_to_its_painted_height();
+        draws_accent_bar_and_text();
     }
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
@@ -594,152 +660,76 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
 
     #[test]
-    fn kind_maps_to_semantic_color_and_icon() {
-        let theme = Theme::dark();
-        assert_eq!(
-            BannerKind::Error.color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        assert_eq!(
-            BannerKind::Success.color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        assert_eq!(
-            BannerKind::Warning.color(&theme),
-            theme.tokens.colors.semantic.warning
-        );
-        assert_eq!(
-            BannerKind::Info.color(&theme),
-            theme.tokens.colors.semantic.info
-        );
-        assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
-    }
+    fn banner_dismissal_and_live_region_semantics() {
+        fn dismiss_click_fires_once_and_collapses() {
+            let mut b = Banner::warning("Offline")
+                .with_message("Changes will sync later")
+                .dismissible();
+            lay_out(&mut b, 500.0, 200.0);
+            let _ = draw(&mut b);
+            let target = b.dismiss_rect.center();
+            assert!(target.x > 0.0, "dismiss rect resolves after draw");
+            dispatch(&mut b, &cursor(target));
+            assert!(dispatch(&mut b, &press()), "clicking × is consumed");
+            assert!(b.take_dismissed(), "dismiss signal fires");
+            assert!(!b.take_dismissed(), "dismiss signal drains after one read");
+            assert!(b.is_dismissed());
+            let scene = draw(&mut b);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert_eq!(fills, 0, "a dismissed banner paints nothing");
+        }
 
-    #[test]
-    fn icon_override_wins() {
-        let b = Banner::info("Heads up").with_icon(Icon::Bell);
-        assert_eq!(b.icon(), Icon::Bell);
-        let d = Banner::info("Heads up");
-        assert_eq!(d.icon(), Icon::Info, "defaults to the severity icon");
-    }
+        fn non_dismissible_has_no_close_target() {
+            let mut b = Banner::success("Saved");
+            lay_out(&mut b, 500.0, 200.0);
+            let _ = draw(&mut b);
+            assert_eq!(b.dismiss_rect, Rect::ZERO, "no × when not dismissible");
+            let center = b.get_rect().center();
+            dispatch(&mut b, &cursor(center));
+            assert!(!dispatch(&mut b, &press()), "a body click is not consumed");
+            assert!(!b.take_dismissed());
+        }
 
-    #[test]
-    fn dismiss_click_fires_once_and_collapses() {
-        let mut b = Banner::warning("Offline")
-            .with_message("Changes will sync later")
-            .dismissible();
-        lay_out(&mut b, 500.0, 200.0);
-        let _ = draw(&mut b);
-        let target = b.dismiss_rect.center();
-        assert!(target.x > 0.0, "dismiss rect resolves after draw");
-        dispatch(&mut b, &cursor(target));
-        assert!(dispatch(&mut b, &press()), "clicking × is consumed");
-        assert!(b.take_dismissed(), "dismiss signal fires");
-        assert!(!b.take_dismissed(), "dismiss signal drains after one read");
-        assert!(b.is_dismissed());
-        let scene = draw(&mut b);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert_eq!(fills, 0, "a dismissed banner paints nothing");
-    }
+        fn accessibility_is_live_region_with_severity_politeness() {
+            use crate::a11y::{Politeness, Role};
+            let err = Banner::error("Boom").with_message("details");
+            let node = Widget::accessibility(&err).expect("banner exposes a11y");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Boom"));
+            assert_eq!(
+                node.live,
+                Some(Politeness::Assertive),
+                "errors announce assertively"
+            );
+            let info = Banner::info("FYI");
+            assert_eq!(
+                Widget::accessibility(&info).unwrap().live,
+                Some(Politeness::Polite)
+            );
+        }
 
-    #[test]
-    fn non_dismissible_has_no_close_target() {
-        let mut b = Banner::success("Saved");
-        lay_out(&mut b, 500.0, 200.0);
-        let _ = draw(&mut b);
-        assert_eq!(b.dismiss_rect, Rect::ZERO, "no × when not dismissible");
-        let center = b.get_rect().center();
-        dispatch(&mut b, &cursor(center));
-        assert!(!dispatch(&mut b, &press()), "a body click is not consumed");
-        assert!(!b.take_dismissed());
-    }
-
-    #[test]
-    fn message_makes_the_banner_taller() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
-        let tall = Banner::info("One line")
-            .with_message("Plus a detail line")
-            .content_height(&theme, &mut text, 500.0);
-        assert!(tall > short, "a message adds a second line of height");
-    }
-
-    #[test]
-    fn long_message_wraps_and_grows_to_its_painted_height() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
-        let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
-        let width = 700.0;
-        let height = banner.content_height(&theme, &mut text, width);
-        let text_width = banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
-        let (_, message_height) =
-            text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
-
-        assert!(
-            message_height > theme.tokens.typography.scale.sm * 1.25,
-            "the recovery copy must wrap instead of escaping the banner"
-        );
-        assert!(
-            height >= f64::from(message_height) + PAD_Y * 2.0,
-            "the banner must reserve the same wrapped height that it paints"
-        );
-    }
-
-    #[test]
-    fn draws_accent_bar_and_text() {
-        let mut b = Banner::error("Upload failed")
-            .with_message("Check your connection")
-            .dismissible();
-        lay_out(&mut b, 500.0, 200.0);
-        let scene = draw(&mut b);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills > 4,
-            "surface + border + bar + icon + text ⇒ many fills, got {fills}"
-        );
-    }
-
-    #[test]
-    fn accessibility_is_live_region_with_severity_politeness() {
-        use crate::a11y::{Politeness, Role};
-        let err = Banner::error("Boom").with_message("details");
-        let node = Widget::accessibility(&err).expect("banner exposes a11y");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Boom"));
-        assert_eq!(
-            node.live,
-            Some(Politeness::Assertive),
-            "errors announce assertively"
-        );
-        let info = Banner::info("FYI");
-        assert_eq!(
-            Widget::accessibility(&info).unwrap().live,
-            Some(Politeness::Polite)
-        );
+        dismiss_click_fires_once_and_collapses();
+        non_dismissible_has_no_close_target();
+        accessibility_is_live_region_with_severity_politeness();
     }
 }

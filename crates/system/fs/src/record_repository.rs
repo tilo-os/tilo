@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{FileActor, FileMutationTransaction, FileRecordId};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -36,7 +35,6 @@ use crate::record_transaction::{
     RecordTransactionParticipantBatch, RecordTransactionPhase,
 };
 
-pub const RECORD_REPOSITORY_VERSION: u16 = 1;
 /// Records one repository holds. The log itself has no practical limit
 /// (positions are `u64`); what bounds a device is the in-memory index,
 /// which keeps each record's replica state and envelopes (a few KiB for a
@@ -47,14 +45,10 @@ pub const MAX_REPOSITORY_RECORDS: usize = 1 << 24;
 pub const MAX_RECORD_OPERATIONS: usize = 4_096;
 pub const MAX_RECORD_VERSIONS: usize = 1_024;
 pub const MAX_RECORD_CONFLICTS: usize = 256;
-/// Bound on one legacy record file read during the one-time import.
-pub const MAX_RECORD_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_RECORD_BATCH_OPERATIONS: usize = 256;
 
 /// The operation log inside the repository root.
 const LOG_FILE: &str = "records.redb";
-/// Where record files from before the log are kept once imported.
-const IMPORTED_DIR: &str = "imported-json";
 /// Position of an envelope a changeset scope still holds back.
 const PENDING: u64 = u64::MAX;
 
@@ -168,15 +162,6 @@ pub(crate) struct RecordReconciliationBatch {
     pub key: RecordRepositoryKey,
     pub envelopes: Vec<RecordEnvelopeV1>,
     pub snapshot: RecordSnapshot,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedRecordV1 {
-    schema_version: u16,
-    workspace_id: Uuid,
-    record_id: FileRecordId,
-    envelopes: Vec<RecordEnvelopeV1>,
 }
 
 /// The local author's open publish batch.
@@ -306,6 +291,9 @@ pub struct RepositoryState {
     /// reading by anything that shows namespace or record state to peers or
     /// to the live tree: none of them ever sees half of a changeset.
     gate: tokio::sync::RwLock<()>,
+    /// Versions one record may hold: [`MAX_RECORD_VERSIONS`], lowered only
+    /// by tests so they can cross the bound cheaply.
+    max_versions: std::sync::atomic::AtomicUsize,
 }
 
 type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
@@ -600,7 +588,7 @@ impl RecordRepository {
             })
             .collect();
         let count = ops.len();
-        let first = self.log.append(&ops, changeset.map(AsRef::as_ref), false)?;
+        let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
         drop(ops);
         let mut next = first;
         let mut written = Vec::with_capacity(candidates.len());
@@ -648,7 +636,7 @@ impl RecordRepository {
             if ops.is_empty() && changeset.is_none() {
                 return Ok(());
             }
-            self.log.append(&ops, changeset.map(AsRef::as_ref), false)?
+            self.log.append(&ops, changeset.map(AsRef::as_ref))?
         };
         let mut next = first;
         for key in keys {
@@ -952,7 +940,7 @@ impl RecordRepository {
         } else {
             // Already in the log; an empty commit is the durability barrier
             // after an ambiguous earlier write error.
-            self.log.append(&[], None, false)?;
+            self.log.append(&[], None)?;
         }
         self.forget_scope_keys(&records, &keys);
         if journal
@@ -980,19 +968,12 @@ impl RecordRepository {
         Ok(())
     }
 
-    /// Open the repository at `root`: its operation log, importing the
-    /// per-record files of earlier releases into it on first start.
-    ///
-    /// The import verifies every legacy record exactly as those releases
-    /// did (malformed, duplicate, cross-key or oversized state fails closed
-    /// rather than being silently discarded), writes all of it in one log
-    /// transaction and only then moves the files aside, so an interrupted
-    /// import is simply repeated.
+    /// Open the repository at `root` and replay its operation log.
     ///
     /// # Errors
     ///
-    /// Returns an error for I/O, a damaged log, invalid legacy state, or any
-    /// repository bound violation.
+    /// Returns an error for I/O, a damaged log, or any repository bound
+    /// violation.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecordRepositoryError> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -1012,27 +993,6 @@ impl RecordRepository {
 
     fn load(root: PathBuf) -> Result<RepositoryState, RecordRepositoryError> {
         let log = RecordLog::open(&root.join(LOG_FILE))?;
-        if !log.legacy_imported()? {
-            let legacy = load_records(&root)?;
-            let ops: Vec<(Uuid, &RecordEnvelopeV1)> = legacy
-                .iter()
-                .flat_map(|(key, record)| {
-                    record
-                        .envelopes
-                        .iter()
-                        .map(|envelope| (key.workspace_id, envelope))
-                })
-                .collect();
-            log.append(&ops, None, true)?;
-            if !legacy.is_empty() {
-                eprintln!(
-                    "imported {} signed record file(s) ({} operations) into the record log",
-                    legacy.len(),
-                    ops.len()
-                );
-            }
-            retire_legacy_records(&root)?;
-        }
         let mut records = Records::new();
         log.replay_ops(|position, workspace_id, envelope| {
             let key = RecordRepositoryKey {
@@ -1072,7 +1032,21 @@ impl RecordRepository {
             scope: Mutex::new(None),
             changesets: Mutex::new(index),
             gate: tokio::sync::RwLock::new(()),
+            max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
         })
+    }
+
+    /// Versions one record may hold before a write is refused.
+    pub(crate) fn max_record_versions(&self) -> usize {
+        self.max_versions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lower the per-record version bound, so a test crosses it without
+    /// writing [`MAX_RECORD_VERSIONS`] versions.
+    #[cfg(test)]
+    pub(crate) fn set_max_record_versions(&self, versions: usize) {
+        self.max_versions
+            .store(versions, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Make every durable write fail (or succeed again).
@@ -1132,6 +1106,7 @@ impl RecordRepository {
     /// Validate one batch against `records` and the candidates staged so
     /// far, and stage its candidate.
     fn stage_batch<A: RecordAuthorizer + ?Sized>(
+        &self,
         records: &Records,
         candidates: &mut BTreeMap<RecordRepositoryKey, StoredRecord>,
         key: RecordRepositoryKey,
@@ -1184,7 +1159,7 @@ impl RecordRepository {
             }
             candidate.push_pending(envelope.clone());
         }
-        if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
+        if candidate.replica.version_count() > self.max_record_versions() {
             return Err(RecordRepositoryError::TooManyVersions);
         }
         if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
@@ -1249,7 +1224,7 @@ impl RecordRepository {
                 .all(|pair| matches!(pair, [a, b] if a.actor == b.actor));
         let mut records = self.lock_records()?;
         let mut candidates = BTreeMap::new();
-        Self::stage_batch(
+        self.stage_batch(
             &records,
             &mut candidates,
             key,
@@ -1287,7 +1262,7 @@ impl RecordRepository {
         let mut records = self.lock_records()?;
         let mut candidates = BTreeMap::new();
         for (key, envelopes) in batches {
-            Self::stage_batch(
+            self.stage_batch(
                 &records,
                 &mut candidates,
                 *key,
@@ -1417,7 +1392,7 @@ impl RecordRepository {
             if candidate.envelopes.len() > MAX_RECORD_OPERATIONS {
                 return Err(RecordRepositoryError::TooManyOperations);
             }
-            if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
+            if candidate.replica.version_count() > self.max_record_versions() {
                 return Err(RecordRepositoryError::TooManyVersions);
             }
             if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
@@ -2410,191 +2385,6 @@ fn envelope_prefix_digest<'a>(
     Ok(*digest.finalize().as_bytes())
 }
 
-/// Whether a root entry is the log (or anything else that is not a legacy
-/// workspace directory of record files).
-fn is_repository_entry(name: &str) -> bool {
-    name == IMPORTED_DIR || name.starts_with(LOG_FILE)
-}
-
-/// Read and fully verify the per-record files of releases before the log.
-fn load_records(root: &Path) -> Result<Records, RecordRepositoryError> {
-    let root_entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Records::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut records = Records::new();
-    for workspace_entry in root_entries {
-        let workspace_entry = workspace_entry?;
-        let workspace_name = entry_name(&workspace_entry)?;
-        if is_atomic_temp(&workspace_name)
-            || is_repository_entry(&workspace_name)
-            || crate::durable_backup::is_backup_directory_name(&workspace_name)
-        {
-            continue;
-        }
-        if !workspace_entry.file_type()?.is_dir() {
-            return Err(RecordRepositoryError::UnexpectedEntry(
-                workspace_entry.path(),
-            ));
-        }
-        let workspace_id = Uuid::parse_str(&workspace_name)
-            .map_err(|_| RecordRepositoryError::UnexpectedEntry(workspace_entry.path()))?;
-        for record_entry in std::fs::read_dir(workspace_entry.path())? {
-            let record_entry = record_entry?;
-            let record_name = entry_name(&record_entry)?;
-            if is_atomic_temp(&record_name)
-                || crate::durable_backup::is_backup_directory_name(&record_name)
-            {
-                continue;
-            }
-            if !record_entry.file_type()?.is_file() {
-                return Err(RecordRepositoryError::UnexpectedEntry(record_entry.path()));
-            }
-            let record_text = record_name
-                .strip_suffix(".json")
-                .ok_or_else(|| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?;
-            let path_record_id = FileRecordId(
-                Uuid::parse_str(record_text)
-                    .map_err(|_| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?,
-            );
-            let key = RecordRepositoryKey {
-                workspace_id,
-                record_id: path_record_id,
-            };
-            let primary = crate::durable_backup::read_primary(&record_entry.path())?
-                .ok_or_else(|| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?;
-            let outcome = match decode_stored_record(&primary, key) {
-                Ok(stored) => {
-                    if records.insert(key, stored).is_some() {
-                        return Err(RecordRepositoryError::DuplicateRecord);
-                    }
-                    if records.len() > MAX_REPOSITORY_RECORDS {
-                        return Err(RecordRepositoryError::TooManyRecords);
-                    }
-                    continue;
-                }
-                Err(primary_error) => {
-                    match crate::durable_backup::read_or_recover(&record_entry.path(), |bytes| {
-                        bytes.len() as u64 <= MAX_RECORD_FILE_BYTES
-                            && decode_stored_record(bytes, key).is_ok()
-                    }) {
-                        Ok(Some(outcome)) => outcome,
-                        Ok(None) => return Err(primary_error),
-                        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                            return Err(primary_error);
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            };
-            if let Some(recovery) = &outcome.recovery {
-                eprintln!(
-                    "RECOVERED damaged signed record {} from {}; evidence {}; receipt {}",
-                    record_entry.path().display(),
-                    recovery.backup_path.display(),
-                    recovery.damaged_evidence_path.display(),
-                    recovery.receipt_path.display()
-                );
-            }
-            let stored = decode_stored_record(&outcome.bytes, key)?;
-            if records.insert(key, stored).is_some() {
-                return Err(RecordRepositoryError::DuplicateRecord);
-            }
-            if records.len() > MAX_REPOSITORY_RECORDS {
-                return Err(RecordRepositoryError::TooManyRecords);
-            }
-        }
-    }
-    Ok(records)
-}
-
-/// Move imported legacy workspace directories under [`IMPORTED_DIR`]. They
-/// are never read again; they stay as the pre-import copy.
-fn retire_legacy_records(root: &Path) -> Result<(), RecordRepositoryError> {
-    let mut moved = false;
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry_name(&entry)?;
-        if is_repository_entry(&name)
-            || is_atomic_temp(&name)
-            || crate::durable_backup::is_backup_directory_name(&name)
-            || !entry.file_type()?.is_dir()
-            || Uuid::parse_str(&name).is_err()
-        {
-            continue;
-        }
-        let target = root.join(IMPORTED_DIR);
-        std::fs::create_dir_all(&target)?;
-        std::fs::rename(entry.path(), target.join(&name))?;
-        moved = true;
-    }
-    if moved {
-        atomic_file::sync_directory(root)?;
-    }
-    Ok(())
-}
-
-fn decode_stored_record(
-    bytes: &[u8],
-    key: RecordRepositoryKey,
-) -> Result<StoredRecord, RecordRepositoryError> {
-    if bytes.len() as u64 > MAX_RECORD_FILE_BYTES {
-        return Err(RecordRepositoryError::RecordFileTooLarge);
-    }
-    let persisted: PersistedRecordV1 = serde_json::from_slice(bytes)?;
-    if persisted.schema_version != RECORD_REPOSITORY_VERSION {
-        return Err(RecordRepositoryError::UnsupportedVersion(
-            persisted.schema_version,
-        ));
-    }
-    if persisted.workspace_id != key.workspace_id || persisted.record_id != key.record_id {
-        return Err(RecordRepositoryError::PathKeyMismatch);
-    }
-    if persisted.envelopes.is_empty() {
-        return Err(RecordRepositoryError::EmptyRecord);
-    }
-    if persisted.envelopes.len() > MAX_RECORD_OPERATIONS {
-        return Err(RecordRepositoryError::TooManyOperations);
-    }
-    let mut record = StoredRecord::new(key.record_id);
-    for envelope in persisted.envelopes {
-        if envelope.record_id != key.record_id {
-            return Err(RecordRepositoryError::CrossRecordEnvelope);
-        }
-        if matches!(
-            &envelope.operation,
-            crate::record_replication::RecordOperationV1::PrepareTransaction(transaction)
-                if transaction.manifest.workspace_id != key.workspace_id
-        ) {
-            return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
-        }
-        record.replica.restore_envelope(&envelope)?;
-        if record.replica.version_count() > MAX_RECORD_VERSIONS {
-            return Err(RecordRepositoryError::TooManyVersions);
-        }
-        if record.replica.conflict_count() > MAX_RECORD_CONFLICTS {
-            return Err(RecordRepositoryError::TooManyConflicts);
-        }
-        record.push_pending(envelope);
-    }
-    Ok(record)
-}
-
-fn entry_name(entry: &std::fs::DirEntry) -> Result<String, RecordRepositoryError> {
-    entry
-        .file_name()
-        .into_string()
-        .map_err(|_| RecordRepositoryError::UnexpectedEntry(entry.path()))
-}
-
-fn is_atomic_temp(name: &str) -> bool {
-    name.starts_with('.')
-        && name
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("tmp"))
-}
-
 #[derive(Debug, Error)]
 pub enum RecordRepositoryError {
     #[error(
@@ -2607,12 +2397,6 @@ pub enum RecordRepositoryError {
     Log(#[from] RecordLogError),
     #[error("record repository contains invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("unsupported record repository schema version {0}")]
-    UnsupportedVersion(u16),
-    #[error("record repository contains an unexpected entry at {0:?}")]
-    UnexpectedEntry(PathBuf),
-    #[error("persisted record path and embedded workspace/record key differ")]
-    PathKeyMismatch,
     #[error("persisted record contains an envelope for another record")]
     CrossRecordEnvelope,
     #[error("transaction workspace does not match the repository key")]
@@ -2629,10 +2413,6 @@ pub enum RecordRepositoryError {
     TransactionJournal(#[from] RecordTransactionJournalError),
     #[error("transaction failure injected at a durable checkpoint: {0}")]
     TransactionFailureInjected(std::io::Error),
-    #[error("persisted record contains no accepted operations")]
-    EmptyRecord,
-    #[error("record repository contains the same workspace/record more than once")]
-    DuplicateRecord,
     #[error("record repository has reached its record bound")]
     TooManyRecords,
     #[error("record has reached its signed-operation bound")]
@@ -2641,8 +2421,6 @@ pub enum RecordRepositoryError {
     TooManyVersions,
     #[error("record has reached its conflict snapshot bound")]
     TooManyConflicts,
-    #[error("persisted record exceeds its byte bound")]
-    RecordFileTooLarge,
     #[error("record does not exist in this workspace")]
     RecordNotFound,
     #[error("record repository batch size is outside its bound")]
@@ -3123,291 +2901,364 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "the codec matrix follows one signed merge through prepare, atomic publication and repository restart"
-    )] // Atomic merge and restart scenario.
-    fn completed_single_record_merge_projects_atomically_and_survives_restart() {
-        for codec in [
-            ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
-            ConflictMergeCodecV1::QdocAutomergeV1,
-        ] {
-            let fixture = Fixture::new();
-            let (transaction, parent, base, current, other, conflict) =
-                merge_transaction(&fixture, codec);
-            let transaction_id = transaction.manifest.transaction_id;
-            let result_id = transaction.manifest.participants[0].proposed_version.id;
-            let repository = RecordRepository::open(&fixture.root).unwrap();
-            let auth = TestAuthorizer {
-                actor: fixture.actor,
-                record: fixture.key.record_id,
-                read: true,
-                write: true,
-            };
-            repository
-                .apply_batch(
-                    fixture.key,
-                    &[
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            1,
-                            RecordOperationV1::SetBinding(FileBindingV1 {
-                                schema_version: FILE_BINDING_VERSION,
-                                record_id: fixture.key.record_id,
-                                parent: Some(parent),
-                                name: "source.txt".into(),
-                                kind: FileNodeKind::File,
-                                tombstoned: false,
-                                actor: fixture.actor,
-                                observed_at_ms: 1,
-                            }),
-                            &fixture.device_key,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn signed_transactions_merges_and_batches_project_whole_and_survive_restart() {
+        // Phase `transactions_and_batches_complete_exactly_and_survive_restart`.
+        {
+            // Phase `later_signed_edit_and_binding_survive_completed_transaction_projection_and_reopen`.
+            {
+                let fixture = Fixture::new();
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                let (transaction, parent, base, current, other, conflict) =
+                    merge_transaction(&fixture, ConflictMergeCodecV1::QdocAutomergeV1);
+                let proposed = transaction.manifest.participants[0].clone();
+                let binding = FileBindingV1 {
+                    schema_version: FILE_BINDING_VERSION,
+                    record_id: fixture.key.record_id,
+                    parent: Some(parent),
+                    name: "source.txt".into(),
+                    kind: FileNodeKind::File,
+                    tombstoned: false,
+                    actor: fixture.actor,
+                    observed_at_ms: 1,
+                };
+                let current_revision = collab_types::ContentRevisionV1 {
+                    schema_version: CONTENT_REVISION_VERSION,
+                    record_id: fixture.key.record_id,
+                    version_id: current.id,
+                    content_hash: current.content_hash,
+                    byte_len: 1,
+                    metadata_hash: current.metadata_hash,
+                };
+                let operations = [
+                    RecordOperationV1::SetBinding(binding.clone()),
+                    RecordOperationV1::AppendVersion(base),
+                    RecordOperationV1::AppendVersion(current),
+                    RecordOperationV1::AppendVersion(other),
+                    RecordOperationV1::SetContentRevision(current_revision),
+                    RecordOperationV1::AppendConflict(conflict),
+                    RecordOperationV1::PrepareTransaction(transaction.clone()),
+                    RecordOperationV1::CommitTransaction {
+                        transaction_id: transaction.manifest.transaction_id,
+                    },
+                ];
+                for (index, operation) in operations.into_iter().enumerate() {
+                    repository
+                        .apply(
+                            fixture.key,
+                            &RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                index as u64 + 1,
+                                operation,
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            &fixture.auth(true, true),
                         )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            2,
-                            RecordOperationV1::AppendVersion(base),
-                            &fixture.device_key,
+                        .unwrap();
+                }
+                assert_eq!(
+                    repository
+                        .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
+                        .unwrap()
+                        .content_revision,
+                    proposed.proposed_content_revision
+                );
+                let later = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    parents: vec![proposed.proposed_version.id],
+                    timestamp_ms: 5,
+                    provenance: FileProvenance::Edit,
+                    ..proposed.proposed_version
+                };
+                let later_revision = collab_types::ContentRevisionV1 {
+                    version_id: later.id,
+                    ..proposed.proposed_content_revision.unwrap()
+                };
+                let later_binding = FileBindingV1 {
+                    name: "later.txt".into(),
+                    observed_at_ms: 5,
+                    ..binding
+                };
+                for (sequence, operation) in [
+                    (9, RecordOperationV1::AppendVersion(later)),
+                    (10, RecordOperationV1::SetContentRevision(later_revision)),
+                    (11, RecordOperationV1::SetBinding(later_binding.clone())),
+                ] {
+                    repository
+                        .apply(
+                            fixture.key,
+                            &RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                sequence,
+                                operation,
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            &fixture.auth(true, true),
                         )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            3,
-                            RecordOperationV1::AppendVersion(current.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            4,
-                            RecordOperationV1::AppendVersion(other),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            5,
-                            RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                                schema_version: CONTENT_REVISION_VERSION,
-                                record_id: fixture.key.record_id,
-                                version_id: current.id,
-                                content_hash: current.content_hash,
-                                byte_len: 1,
-                                metadata_hash: current.metadata_hash,
-                            }),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            6,
-                            RecordOperationV1::AppendConflict(conflict.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                    ],
-                    &auth,
-                )
-                .unwrap();
-            repository
-                .apply(
-                    fixture.key,
-                    &RecordEnvelopeV1::signed(
-                        fixture.key.record_id,
+                        .unwrap();
+                }
+                drop(repository);
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                let snapshot = repository
+                    .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
+                    .unwrap();
+                assert_eq!(snapshot.content_revision, Some(later_revision));
+                assert_eq!(snapshot.binding, Some(later_binding));
+            }
+            // Phase `transaction_stays_incomplete_until_every_exact_commit_and_survives_restart`.
+            {
+                let fixture = Fixture::new();
+                let replaced = FileRecordId::new();
+                let transaction = replacement_transaction(&fixture, replaced);
+                let transaction_id = transaction.manifest.transaction_id;
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                for (index, record_id) in [fixture.key.record_id, replaced].into_iter().enumerate()
+                {
+                    let key = RecordRepositoryKey {
+                        workspace_id: fixture.key.workspace_id,
+                        record_id,
+                    };
+                    let auth = TestAuthorizer {
+                        actor: fixture.actor,
+                        record: record_id,
+                        read: true,
+                        write: true,
+                    };
+                    let prepare = RecordEnvelopeV1::signed(
+                        record_id,
                         fixture.actor,
-                        7,
+                        1,
                         RecordOperationV1::PrepareTransaction(transaction.clone()),
                         &fixture.device_key,
                     )
-                    .unwrap(),
-                    &auth,
-                )
-                .unwrap();
-            assert!(
-                !repository
-                    .transaction_status(fixture.key.workspace_id, transaction_id)
-                    .unwrap()
-                    .unwrap()
-                    .complete
-            );
-            assert_eq!(
-                repository
-                    .snapshot(fixture.key, &fixture.actor, &auth)
-                    .unwrap()
-                    .content_revision
-                    .unwrap()
-                    .version_id,
-                current.id
-            );
-            repository
-                .apply(
-                    fixture.key,
-                    &RecordEnvelopeV1::signed(
-                        fixture.key.record_id,
+                    .unwrap();
+                    repository.apply(key, &prepare, &auth).unwrap();
+                    let status = repository
+                        .transaction_status(fixture.key.workspace_id, transaction_id)
+                        .unwrap()
+                        .unwrap();
+                    assert!(!status.complete);
+                    assert_eq!(status.prepared_participants, index + 1);
+                    let commit = RecordEnvelopeV1::signed(
+                        record_id,
                         fixture.actor,
-                        8,
+                        2,
                         RecordOperationV1::CommitTransaction { transaction_id },
                         &fixture.device_key,
                     )
-                    .unwrap(),
-                    &auth,
+                    .unwrap();
+                    repository.apply(key, &commit, &auth).unwrap();
+                }
+                assert!(
+                    repository
+                        .transaction_status(fixture.key.workspace_id, transaction_id)
+                        .unwrap()
+                        .unwrap()
+                        .complete
+                );
+                assert_eq!(
+                    repository
+                        .complete_transactions(fixture.key.workspace_id)
+                        .unwrap(),
+                    vec![transaction.clone()]
+                );
+                let recovered = repository
+                    .completed_transaction_journal_entry(fixture.key.workspace_id, &transaction)
+                    .unwrap();
+                assert_eq!(recovered.transaction, transaction);
+                assert_eq!(
+                    recovered
+                        .participant_batches
+                        .iter()
+                        .map(|batch| batch.record_id)
+                        .collect::<Vec<_>>(),
+                    recovered
+                        .transaction
+                        .manifest
+                        .participants
+                        .iter()
+                        .map(|participant| participant.record_id)
+                        .collect::<Vec<_>>()
+                );
+                assert!(recovered.participant_batches.iter().all(|batch| {
+                    matches!(
+                        batch.envelopes.as_slice(),
+                        [
+                            RecordEnvelopeV1 {
+                                operation: RecordOperationV1::PrepareTransaction(_),
+                                ..
+                            },
+                            RecordEnvelopeV1 {
+                                operation: RecordOperationV1::CommitTransaction { .. },
+                                ..
+                            }
+                        ]
+                    )
+                }));
+                drop(repository);
+                assert!(
+                    RecordRepository::open(&fixture.root)
+                        .unwrap()
+                        .transaction_status(fixture.key.workspace_id, transaction_id)
+                        .unwrap()
+                        .unwrap()
+                        .complete
+                );
+            }
+            // Phase `atomic_batch_inventory_and_suffix_survive_restart`.
+            {
+                let fixture = Fixture::new();
+                let repo = RecordRepository::open(&fixture.root).unwrap();
+                let first = fixture.metadata_envelope(1);
+                let second = fixture.metadata_envelope(2);
+                repo.apply_batch(
+                    fixture.key,
+                    &[first, second.clone()],
+                    &fixture.auth(true, true),
                 )
                 .unwrap();
-            let snapshot = repository
-                .snapshot(fixture.key, &fixture.actor, &auth)
-                .unwrap();
-            assert_eq!(snapshot.content_revision.unwrap().version_id, result_id);
-            assert_eq!(
-                snapshot
-                    .conflicts
-                    .iter()
-                    .find(|value| value.id == conflict.id)
-                    .unwrap()
-                    .resolution
-                    .as_ref()
-                    .unwrap()
-                    .strategy,
-                collab_types::ConflictStrategy::Merge
-            );
-            drop(repository);
-            let repository = RecordRepository::open(&fixture.root).unwrap();
-            assert_eq!(
-                repository
-                    .snapshot(fixture.key, &fixture.actor, &auth)
-                    .unwrap()
-                    .content_revision
-                    .unwrap()
-                    .version_id,
-                result_id
-            );
-            assert_eq!(
-                repository
-                    .complete_transactions(fixture.key.workspace_id)
-                    .unwrap(),
-                vec![transaction]
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "both participant arrival orders share the same keep-both fixture and assert no partial projection at each step"
-    )] // Both participant orders form one contract matrix.
-    fn keep_both_remote_participant_orders_never_project_one_half() {
-        for source_first in [true, false] {
-            let fixture = Fixture::new();
-            let (transaction, parent, sibling, current, selected, conflict) =
-                keep_both_transaction(&fixture);
-            let repository = RecordRepository::open(&fixture.root).unwrap();
-            let auth = MultiRecordAuthorizer {
-                actor: fixture.actor,
-                records: [fixture.key.record_id, sibling].into_iter().collect(),
-            };
-            repository
-                .apply_batch(
+                let inventory = repo
+                    .inventory_page(fixture.key.workspace_id, None, 8)
+                    .unwrap();
+                assert_eq!(inventory.len(), 1);
+                assert_eq!(inventory[0].record_id, fixture.key.record_id);
+                assert_eq!(inventory[0].actor, fixture.actor);
+                assert_eq!(inventory[0].contiguous_sequence, 2);
+                assert_eq!(
+                    repo.stream_cursor(fixture.key, &fixture.actor, 2).unwrap(),
+                    inventory[0]
+                );
+                assert!(
+                    repo.inventory_page(fixture.key.workspace_id, Some(inventory[0].key()), 8)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    repo.envelopes_after(fixture.key, &fixture.actor, 1, 8)
+                        .unwrap(),
+                    vec![second]
+                );
+                let digest = inventory[0].prefix_digest;
+                drop(repo);
+                let reopened = RecordRepository::open(&fixture.root).unwrap();
+                assert_eq!(
+                    reopened
+                        .inventory_page(fixture.key.workspace_id, None, 8)
+                        .unwrap()[0]
+                        .prefix_digest,
+                    digest
+                );
+            }
+            // Phase `invalid_late_batch_operation_commits_no_prefix`.
+            {
+                let fixture = Fixture::new();
+                let repo = RecordRepository::open(&fixture.root).unwrap();
+                let result = repo.apply_batch(
                     fixture.key,
-                    &[
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            1,
-                            RecordOperationV1::SetBinding(FileBindingV1 {
-                                schema_version: FILE_BINDING_VERSION,
-                                record_id: fixture.key.record_id,
-                                parent: Some(parent),
-                                name: "source.txt".into(),
-                                kind: FileNodeKind::File,
-                                tombstoned: false,
-                                actor: fixture.actor,
-                                observed_at_ms: 1,
-                            }),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            2,
-                            RecordOperationV1::AppendVersion(current.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            3,
-                            RecordOperationV1::AppendVersion(selected.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            4,
-                            RecordOperationV1::SetContentRevision(
-                                collab_types::ContentRevisionV1 {
+                    &[fixture.metadata_envelope(1), fixture.metadata_envelope(3)],
+                    &fixture.auth(true, true),
+                );
+                assert!(matches!(
+                    result,
+                    Err(RecordRepositoryError::Replication(
+                        RecordReplicationError::SequenceGap {
+                            expected: 2,
+                            received: 3
+                        }
+                    ))
+                ));
+                assert!(repo.is_empty());
+                assert_eq!(repo.logged_operations().unwrap(), 0);
+            }
+        }
+        // Phase `completed_single_record_merge_projects_atomically_and_survives_restart`.
+        {
+            for codec in [
+                ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
+                ConflictMergeCodecV1::QdocAutomergeV1,
+            ] {
+                let fixture = Fixture::new();
+                let (transaction, parent, base, current, other, conflict) =
+                    merge_transaction(&fixture, codec);
+                let transaction_id = transaction.manifest.transaction_id;
+                let result_id = transaction.manifest.participants[0].proposed_version.id;
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                let auth = TestAuthorizer {
+                    actor: fixture.actor,
+                    record: fixture.key.record_id,
+                    read: true,
+                    write: true,
+                };
+                repository
+                    .apply_batch(
+                        fixture.key,
+                        &[
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                1,
+                                RecordOperationV1::SetBinding(FileBindingV1 {
+                                    schema_version: FILE_BINDING_VERSION,
+                                    record_id: fixture.key.record_id,
+                                    parent: Some(parent),
+                                    name: "source.txt".into(),
+                                    kind: FileNodeKind::File,
+                                    tombstoned: false,
+                                    actor: fixture.actor,
+                                    observed_at_ms: 1,
+                                }),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                2,
+                                RecordOperationV1::AppendVersion(base),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                3,
+                                RecordOperationV1::AppendVersion(current.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                4,
+                                RecordOperationV1::AppendVersion(other),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                5,
+                                RecordOperationV1::SetContentRevision(ContentRevisionV1 {
                                     schema_version: CONTENT_REVISION_VERSION,
                                     record_id: fixture.key.record_id,
                                     version_id: current.id,
                                     content_hash: current.content_hash,
                                     byte_len: 1,
                                     metadata_hash: current.metadata_hash,
-                                },
-                            ),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            fixture.key.record_id,
-                            fixture.actor,
-                            5,
-                            RecordOperationV1::AppendConflict(conflict),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                    ],
-                    &auth,
-                )
-                .unwrap();
-            let order = if source_first {
-                [fixture.key.record_id, sibling]
-            } else {
-                [sibling, fixture.key.record_id]
-            };
-            for (index, record_id) in order.into_iter().enumerate() {
-                let sequence = if record_id == fixture.key.record_id {
-                    6
-                } else {
-                    1
-                };
-                repository
-                    .apply_batch(
-                        RecordRepositoryKey {
-                            workspace_id: fixture.key.workspace_id,
-                            record_id,
-                        },
-                        &[
-                            RecordEnvelopeV1::signed(
-                                record_id,
-                                fixture.actor,
-                                sequence,
-                                RecordOperationV1::PrepareTransaction(transaction.clone()),
+                                }),
                                 &fixture.device_key,
                             )
                             .unwrap(),
                             RecordEnvelopeV1::signed(
-                                record_id,
+                                fixture.key.record_id,
                                 fixture.actor,
-                                sequence + 1,
-                                RecordOperationV1::CommitTransaction {
-                                    transaction_id: transaction.manifest.transaction_id,
-                                },
+                                6,
+                                RecordOperationV1::AppendConflict(conflict.clone()),
                                 &fixture.device_key,
                             )
                             .unwrap(),
@@ -3415,787 +3266,586 @@ mod tests {
                         &auth,
                     )
                     .unwrap();
-                let status = repository
-                    .transaction_status(
-                        fixture.key.workspace_id,
-                        transaction.manifest.transaction_id,
+                repository
+                    .apply(
+                        fixture.key,
+                        &RecordEnvelopeV1::signed(
+                            fixture.key.record_id,
+                            fixture.actor,
+                            7,
+                            RecordOperationV1::PrepareTransaction(transaction.clone()),
+                            &fixture.device_key,
+                        )
+                        .unwrap(),
+                        &auth,
                     )
-                    .unwrap()
                     .unwrap();
-                assert_eq!(status.complete, index == 1);
-                let source = repository
+                assert!(
+                    !repository
+                        .transaction_status(fixture.key.workspace_id, transaction_id)
+                        .unwrap()
+                        .unwrap()
+                        .complete
+                );
+                assert_eq!(
+                    repository
+                        .snapshot(fixture.key, &fixture.actor, &auth)
+                        .unwrap()
+                        .content_revision
+                        .unwrap()
+                        .version_id,
+                    current.id
+                );
+                repository
+                    .apply(
+                        fixture.key,
+                        &RecordEnvelopeV1::signed(
+                            fixture.key.record_id,
+                            fixture.actor,
+                            8,
+                            RecordOperationV1::CommitTransaction { transaction_id },
+                            &fixture.device_key,
+                        )
+                        .unwrap(),
+                        &auth,
+                    )
+                    .unwrap();
+                let snapshot = repository
                     .snapshot(fixture.key, &fixture.actor, &auth)
                     .unwrap();
-                if index == 0 {
-                    assert_eq!(source.content_revision.unwrap().version_id, current.id);
-                    let target = repository.snapshot(
+                assert_eq!(snapshot.content_revision.unwrap().version_id, result_id);
+                assert_eq!(
+                    snapshot
+                        .conflicts
+                        .iter()
+                        .find(|value| value.id == conflict.id)
+                        .unwrap()
+                        .resolution
+                        .as_ref()
+                        .unwrap()
+                        .strategy,
+                    collab_types::ConflictStrategy::Merge
+                );
+                drop(repository);
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                assert_eq!(
+                    repository
+                        .snapshot(fixture.key, &fixture.actor, &auth)
+                        .unwrap()
+                        .content_revision
+                        .unwrap()
+                        .version_id,
+                    result_id
+                );
+                assert_eq!(
+                    repository
+                        .complete_transactions(fixture.key.workspace_id)
+                        .unwrap(),
+                    vec![transaction]
+                );
+            }
+        }
+        // Phase `keep_both_remote_participant_orders_never_project_one_half`.
+        {
+            for source_first in [true, false] {
+                let fixture = Fixture::new();
+                let (transaction, parent, sibling, current, selected, conflict) =
+                    keep_both_transaction(&fixture);
+                let repository = RecordRepository::open(&fixture.root).unwrap();
+                let auth = MultiRecordAuthorizer {
+                    actor: fixture.actor,
+                    records: [fixture.key.record_id, sibling].into_iter().collect(),
+                };
+                repository
+                    .apply_batch(
+                        fixture.key,
+                        &[
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                1,
+                                RecordOperationV1::SetBinding(FileBindingV1 {
+                                    schema_version: FILE_BINDING_VERSION,
+                                    record_id: fixture.key.record_id,
+                                    parent: Some(parent),
+                                    name: "source.txt".into(),
+                                    kind: FileNodeKind::File,
+                                    tombstoned: false,
+                                    actor: fixture.actor,
+                                    observed_at_ms: 1,
+                                }),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                2,
+                                RecordOperationV1::AppendVersion(current.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                3,
+                                RecordOperationV1::AppendVersion(selected.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                4,
+                                RecordOperationV1::SetContentRevision(
+                                    collab_types::ContentRevisionV1 {
+                                        schema_version: CONTENT_REVISION_VERSION,
+                                        record_id: fixture.key.record_id,
+                                        version_id: current.id,
+                                        content_hash: current.content_hash,
+                                        byte_len: 1,
+                                        metadata_hash: current.metadata_hash,
+                                    },
+                                ),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                fixture.key.record_id,
+                                fixture.actor,
+                                5,
+                                RecordOperationV1::AppendConflict(conflict),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                        ],
+                        &auth,
+                    )
+                    .unwrap();
+                let order = if source_first {
+                    [fixture.key.record_id, sibling]
+                } else {
+                    [sibling, fixture.key.record_id]
+                };
+                for (index, record_id) in order.into_iter().enumerate() {
+                    let sequence = if record_id == fixture.key.record_id {
+                        6
+                    } else {
+                        1
+                    };
+                    repository
+                        .apply_batch(
+                            RecordRepositoryKey {
+                                workspace_id: fixture.key.workspace_id,
+                                record_id,
+                            },
+                            &[
+                                RecordEnvelopeV1::signed(
+                                    record_id,
+                                    fixture.actor,
+                                    sequence,
+                                    RecordOperationV1::PrepareTransaction(transaction.clone()),
+                                    &fixture.device_key,
+                                )
+                                .unwrap(),
+                                RecordEnvelopeV1::signed(
+                                    record_id,
+                                    fixture.actor,
+                                    sequence + 1,
+                                    RecordOperationV1::CommitTransaction {
+                                        transaction_id: transaction.manifest.transaction_id,
+                                    },
+                                    &fixture.device_key,
+                                )
+                                .unwrap(),
+                            ],
+                            &auth,
+                        )
+                        .unwrap();
+                    let status = repository
+                        .transaction_status(
+                            fixture.key.workspace_id,
+                            transaction.manifest.transaction_id,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(status.complete, index == 1);
+                    let source = repository
+                        .snapshot(fixture.key, &fixture.actor, &auth)
+                        .unwrap();
+                    if index == 0 {
+                        assert_eq!(source.content_revision.unwrap().version_id, current.id);
+                        let target = repository.snapshot(
+                            RecordRepositoryKey {
+                                workspace_id: fixture.key.workspace_id,
+                                record_id: sibling,
+                            },
+                            &fixture.actor,
+                            &auth,
+                        );
+                        match target {
+                            Ok(snapshot) => assert!(snapshot.binding.is_none()),
+                            Err(RecordRepositoryError::RecordNotFound) => {}
+                            Err(error) => panic!("unexpected target projection error: {error:?}"),
+                        }
+                    } else {
+                        assert_eq!(
+                            source.content_revision.unwrap().version_id,
+                            transaction
+                                .manifest
+                                .participants
+                                .iter()
+                                .find(|value| value.record_id == fixture.key.record_id)
+                                .unwrap()
+                                .proposed_version
+                                .id
+                        );
+                        assert!(
+                            repository
+                                .snapshot(
+                                    RecordRepositoryKey {
+                                        workspace_id: fixture.key.workspace_id,
+                                        record_id: sibling,
+                                    },
+                                    &fixture.actor,
+                                    &auth,
+                                )
+                                .unwrap()
+                                .binding
+                                .is_some()
+                        );
+                    }
+                }
+            }
+        }
+        // Phase `journaled_repository_commit_projects_neither_half_and_replays_exactly`.
+        {
+            let fixture = Fixture::new();
+            let replaced = FileRecordId::new();
+            let transaction = replacement_transaction(&fixture, replaced);
+            let repository = RecordRepository::open(&fixture.root).unwrap();
+            let records = [fixture.key.record_id, replaced]
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let auth = MultiRecordAuthorizer {
+                actor: fixture.actor,
+                records,
+            };
+            let collab_types::FileMutationOperation::ReplacementRename {
+                source_parent,
+                source_name,
+                destination_parent,
+                destination_name,
+                source_record,
+                replaced_record,
+            } = &transaction.manifest.operation
+            else {
+                unreachable!("replacement fixture operation")
+            };
+            for participant in &transaction.manifest.participants {
+                let (parent, name) = if participant.record_id == *source_record {
+                    (*source_parent, source_name.clone())
+                } else {
+                    assert_eq!(participant.record_id, *replaced_record);
+                    (*destination_parent, destination_name.clone())
+                };
+                let baseline = FileVersionV1 {
+                    id: participant.expected_version,
+                    record_id: participant.record_id,
+                    parents: Vec::new(),
+                    actor: fixture.actor,
+                    timestamp_ms: 1,
+                    content_hash: None,
+                    metadata_hash: ContentHash([1; 32]),
+                    provenance: FileProvenance::Create,
+                };
+                let key = RecordRepositoryKey {
+                    workspace_id: fixture.key.workspace_id,
+                    record_id: participant.record_id,
+                };
+                repository
+                    .apply_batch(
+                        key,
+                        &[
+                            RecordEnvelopeV1::signed(
+                                participant.record_id,
+                                fixture.actor,
+                                1,
+                                RecordOperationV1::SetBinding(FileBindingV1 {
+                                    schema_version: FILE_BINDING_VERSION,
+                                    record_id: participant.record_id,
+                                    parent: Some(parent),
+                                    name,
+                                    kind: FileNodeKind::File,
+                                    tombstoned: false,
+                                    actor: fixture.actor,
+                                    observed_at_ms: 1,
+                                }),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                participant.record_id,
+                                fixture.actor,
+                                2,
+                                RecordOperationV1::AppendVersion(baseline.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                participant.record_id,
+                                fixture.actor,
+                                3,
+                                RecordOperationV1::SetContentRevision(
+                                    collab_types::ContentRevisionV1 {
+                                        schema_version: CONTENT_REVISION_VERSION,
+                                        record_id: participant.record_id,
+                                        version_id: baseline.id,
+                                        content_hash: None,
+                                        byte_len: 0,
+                                        metadata_hash: baseline.metadata_hash,
+                                    },
+                                ),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                        ],
+                        &auth,
+                    )
+                    .unwrap();
+            }
+            let participant_batches = transaction
+                .manifest
+                .participants
+                .iter()
+                .map(
+                    |participant| crate::record_transaction::RecordTransactionParticipantBatch {
+                        record_id: participant.record_id,
+                        envelopes: vec![
+                            RecordEnvelopeV1::signed(
+                                participant.record_id,
+                                fixture.actor,
+                                4,
+                                RecordOperationV1::PrepareTransaction(transaction.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                participant.record_id,
+                                fixture.actor,
+                                5,
+                                RecordOperationV1::CommitTransaction {
+                                    transaction_id: transaction.manifest.transaction_id,
+                                },
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                        ],
+                    },
+                )
+                .collect();
+            let prepared = crate::record_transaction::RecordTransactionJournalEntry {
+                schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
+                transaction: transaction.clone(),
+                participant_batches,
+                phase: crate::record_transaction::RecordTransactionPhase::Prepared,
+                namespace_delta: None,
+            };
+            let journal_root = fixture.dir.path().join("transaction-journal");
+            let mut journal =
+                crate::record_transaction::RecordTransactionJournal::open(&journal_root).unwrap();
+            let failure = repository.apply_transaction_with_checkpoint(
+                &mut journal,
+                &prepared,
+                &auth,
+                |checkpoint| {
+                    if matches!(
+                        checkpoint,
+                        RecordTransactionCheckpoint::ParticipantRecordDurable { index: 0 }
+                    ) {
+                        Err(std::io::Error::other("simulated crash"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(
+                failure,
+                Err(RecordRepositoryError::TransactionFailureInjected(_))
+            ));
+            assert_eq!(
+                journal
+                    .get(transaction.manifest.transaction_id)
+                    .unwrap()
+                    .phase,
+                crate::record_transaction::RecordTransactionPhase::Prepared
+            );
+            drop(repository);
+            drop(journal);
+            let repository = RecordRepository::open(&fixture.root).unwrap();
+            let mut journal =
+                crate::record_transaction::RecordTransactionJournal::open(&journal_root).unwrap();
+            let recovery = journal
+                .get(transaction.manifest.transaction_id)
+                .unwrap()
+                .clone();
+            repository
+                .apply_transaction(&mut journal, &recovery, &auth)
+                .unwrap();
+            assert_eq!(repository.len(), 2);
+            for participant in &transaction.manifest.participants {
+                let snapshot = repository
+                    .snapshot(
                         RecordRepositoryKey {
                             workspace_id: fixture.key.workspace_id,
-                            record_id: sibling,
+                            record_id: participant.record_id,
                         },
                         &fixture.actor,
                         &auth,
-                    );
-                    match target {
-                        Ok(snapshot) => assert!(snapshot.binding.is_none()),
-                        Err(RecordRepositoryError::RecordNotFound) => {}
-                        Err(error) => panic!("unexpected target projection error: {error:?}"),
-                    }
-                } else {
-                    assert_eq!(
-                        source.content_revision.unwrap().version_id,
-                        transaction
-                            .manifest
-                            .participants
-                            .iter()
-                            .find(|value| value.record_id == fixture.key.record_id)
-                            .unwrap()
-                            .proposed_version
-                            .id
-                    );
-                    assert!(
-                        repository
-                            .snapshot(
-                                RecordRepositoryKey {
-                                    workspace_id: fixture.key.workspace_id,
-                                    record_id: sibling,
-                                },
-                                &fixture.actor,
-                                &auth,
-                            )
-                            .unwrap()
-                            .binding
-                            .is_some()
-                    );
-                }
+                    )
+                    .unwrap();
+                assert_eq!(
+                    snapshot.binding.as_ref(),
+                    Some(&participant.proposed_binding)
+                );
+                assert!(snapshot.versions.contains(&participant.proposed_version));
             }
         }
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "end-to-end scenario that reads top to bottom"
-    )]
-    fn later_signed_edit_and_binding_survive_completed_transaction_projection_and_reopen() {
-        let fixture = Fixture::new();
-        let repository = RecordRepository::open(&fixture.root).unwrap();
-        let (transaction, parent, base, current, other, conflict) =
-            merge_transaction(&fixture, ConflictMergeCodecV1::QdocAutomergeV1);
-        let proposed = transaction.manifest.participants[0].clone();
-        let binding = FileBindingV1 {
-            schema_version: FILE_BINDING_VERSION,
-            record_id: fixture.key.record_id,
-            parent: Some(parent),
-            name: "source.txt".into(),
-            kind: FileNodeKind::File,
-            tombstoned: false,
-            actor: fixture.actor,
-            observed_at_ms: 1,
-        };
-        let current_revision = collab_types::ContentRevisionV1 {
-            schema_version: CONTENT_REVISION_VERSION,
-            record_id: fixture.key.record_id,
-            version_id: current.id,
-            content_hash: current.content_hash,
-            byte_len: 1,
-            metadata_hash: current.metadata_hash,
-        };
-        let operations = [
-            RecordOperationV1::SetBinding(binding.clone()),
-            RecordOperationV1::AppendVersion(base),
-            RecordOperationV1::AppendVersion(current),
-            RecordOperationV1::AppendVersion(other),
-            RecordOperationV1::SetContentRevision(current_revision),
-            RecordOperationV1::AppendConflict(conflict),
-            RecordOperationV1::PrepareTransaction(transaction.clone()),
-            RecordOperationV1::CommitTransaction {
-                transaction_id: transaction.manifest.transaction_id,
-            },
-        ];
-        for (index, operation) in operations.into_iter().enumerate() {
-            repository
-                .apply(
-                    fixture.key,
-                    &RecordEnvelopeV1::signed(
-                        fixture.key.record_id,
-                        fixture.actor,
-                        index as u64 + 1,
-                        operation,
-                        &fixture.device_key,
-                    )
-                    .unwrap(),
-                    &fixture.auth(true, true),
-                )
+    fn restart_preserves_snapshot_and_replay_watermark() {
+        {
+            let fixture = Fixture::new();
+            let repo = RecordRepository::open(&fixture.root).unwrap();
+            let first = fixture.metadata_envelope(1);
+            repo.apply(fixture.key, &first, &fixture.auth(true, true))
                 .unwrap();
-        }
-        assert_eq!(
-            repository
-                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
-                .unwrap()
-                .content_revision,
-            proposed.proposed_content_revision
-        );
-        let later = FileVersionV1 {
-            id: FileVersionId::new(),
-            parents: vec![proposed.proposed_version.id],
-            timestamp_ms: 5,
-            provenance: FileProvenance::Edit,
-            ..proposed.proposed_version
-        };
-        let later_revision = collab_types::ContentRevisionV1 {
-            version_id: later.id,
-            ..proposed.proposed_content_revision.unwrap()
-        };
-        let later_binding = FileBindingV1 {
-            name: "later.txt".into(),
-            observed_at_ms: 5,
-            ..binding
-        };
-        for (sequence, operation) in [
-            (9, RecordOperationV1::AppendVersion(later)),
-            (10, RecordOperationV1::SetContentRevision(later_revision)),
-            (11, RecordOperationV1::SetBinding(later_binding.clone())),
-        ] {
-            repository
-                .apply(
-                    fixture.key,
-                    &RecordEnvelopeV1::signed(
-                        fixture.key.record_id,
-                        fixture.actor,
-                        sequence,
-                        operation,
-                        &fixture.device_key,
-                    )
-                    .unwrap(),
-                    &fixture.auth(true, true),
-                )
-                .unwrap();
-        }
-        drop(repository);
-        let repository = RecordRepository::open(&fixture.root).unwrap();
-        let snapshot = repository
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
-            .unwrap();
-        assert_eq!(snapshot.content_revision, Some(later_revision));
-        assert_eq!(snapshot.binding, Some(later_binding));
-    }
+            drop(repo);
 
-    #[test]
-    fn transaction_stays_incomplete_until_every_exact_commit_and_survives_restart() {
-        let fixture = Fixture::new();
-        let replaced = FileRecordId::new();
-        let transaction = replacement_transaction(&fixture, replaced);
-        let transaction_id = transaction.manifest.transaction_id;
-        let repository = RecordRepository::open(&fixture.root).unwrap();
-        for (index, record_id) in [fixture.key.record_id, replaced].into_iter().enumerate() {
-            let key = RecordRepositoryKey {
-                workspace_id: fixture.key.workspace_id,
-                record_id,
-            };
-            let auth = TestAuthorizer {
-                actor: fixture.actor,
-                record: record_id,
-                read: true,
-                write: true,
-            };
-            let prepare = RecordEnvelopeV1::signed(
-                record_id,
-                fixture.actor,
-                1,
-                RecordOperationV1::PrepareTransaction(transaction.clone()),
-                &fixture.device_key,
-            )
-            .unwrap();
-            repository.apply(key, &prepare, &auth).unwrap();
-            let status = repository
-                .transaction_status(fixture.key.workspace_id, transaction_id)
-                .unwrap()
+            let reopened = RecordRepository::open(&fixture.root).unwrap();
+            let snapshot = reopened
+                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
                 .unwrap();
-            assert!(!status.complete);
-            assert_eq!(status.prepared_participants, index + 1);
-            let commit = RecordEnvelopeV1::signed(
-                record_id,
-                fixture.actor,
-                2,
-                RecordOperationV1::CommitTransaction { transaction_id },
-                &fixture.device_key,
-            )
-            .unwrap();
-            repository.apply(key, &commit, &auth).unwrap();
+            assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
+            assert!(matches!(
+                reopened.apply(fixture.key, &first, &fixture.auth(true, true)),
+                Err(RecordRepositoryError::Replication(
+                    RecordReplicationError::Replay { sequence: 1 }
+                ))
+            ));
+            assert!(reopened.is_latest_envelope(fixture.key, &first));
+            let second = fixture.metadata_envelope(2);
+            reopened
+                .apply(fixture.key, &second, &fixture.auth(true, true))
+                .unwrap();
+            assert!(!reopened.is_latest_envelope(fixture.key, &first));
+            assert!(reopened.is_latest_envelope(fixture.key, &second));
         }
-        assert!(
-            repository
-                .transaction_status(fixture.key.workspace_id, transaction_id)
-                .unwrap()
-                .unwrap()
-                .complete
-        );
-        assert_eq!(
-            repository
-                .complete_transactions(fixture.key.workspace_id)
-                .unwrap(),
-            vec![transaction.clone()]
-        );
-        let recovered = repository
-            .completed_transaction_journal_entry(fixture.key.workspace_id, &transaction)
-            .unwrap();
-        assert_eq!(recovered.transaction, transaction);
-        assert_eq!(
-            recovered
-                .participant_batches
-                .iter()
-                .map(|batch| batch.record_id)
-                .collect::<Vec<_>>(),
-            recovered
-                .transaction
-                .manifest
-                .participants
-                .iter()
-                .map(|participant| participant.record_id)
-                .collect::<Vec<_>>()
-        );
-        assert!(recovered.participant_batches.iter().all(|batch| {
-            matches!(
-                batch.envelopes.as_slice(),
-                [
-                    RecordEnvelopeV1 {
-                        operation: RecordOperationV1::PrepareTransaction(_),
-                        ..
-                    },
-                    RecordEnvelopeV1 {
-                        operation: RecordOperationV1::CommitTransaction { .. },
-                        ..
-                    }
-                ]
-            )
-        }));
-        drop(repository);
-        assert!(
-            RecordRepository::open(&fixture.root)
-                .unwrap()
-                .transaction_status(fixture.key.workspace_id, transaction_id)
-                .unwrap()
-                .unwrap()
-                .complete
-        );
     }
 
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one crash-recovery scenario covers signed participant setup, partial durability, journal replay and final projections"
-    )] // Crash-journal replay is checked phase by phase.
-    fn journaled_repository_commit_projects_neither_half_and_replays_exactly() {
-        let fixture = Fixture::new();
-        let replaced = FileRecordId::new();
-        let transaction = replacement_transaction(&fixture, replaced);
-        let repository = RecordRepository::open(&fixture.root).unwrap();
-        let records = [fixture.key.record_id, replaced]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let auth = MultiRecordAuthorizer {
-            actor: fixture.actor,
-            records,
-        };
-        let collab_types::FileMutationOperation::ReplacementRename {
-            source_parent,
-            source_name,
-            destination_parent,
-            destination_name,
-            source_record,
-            replaced_record,
-        } = &transaction.manifest.operation
-        else {
-            unreachable!("replacement fixture operation")
-        };
-        for participant in &transaction.manifest.participants {
-            let (parent, name) = if participant.record_id == *source_record {
-                (*source_parent, source_name.clone())
-            } else {
-                assert_eq!(participant.record_id, *replaced_record);
-                (*destination_parent, destination_name.clone())
-            };
-            let baseline = FileVersionV1 {
-                id: participant.expected_version,
-                record_id: participant.record_id,
-                parents: Vec::new(),
-                actor: fixture.actor,
-                timestamp_ms: 1,
-                content_hash: None,
-                metadata_hash: ContentHash([1; 32]),
-                provenance: FileProvenance::Create,
-            };
-            let key = RecordRepositoryKey {
-                workspace_id: fixture.key.workspace_id,
-                record_id: participant.record_id,
-            };
-            repository
-                .apply_batch(
-                    key,
-                    &[
-                        RecordEnvelopeV1::signed(
-                            participant.record_id,
-                            fixture.actor,
-                            1,
-                            RecordOperationV1::SetBinding(FileBindingV1 {
-                                schema_version: FILE_BINDING_VERSION,
-                                record_id: participant.record_id,
-                                parent: Some(parent),
-                                name,
-                                kind: FileNodeKind::File,
-                                tombstoned: false,
-                                actor: fixture.actor,
-                                observed_at_ms: 1,
-                            }),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            participant.record_id,
-                            fixture.actor,
-                            2,
-                            RecordOperationV1::AppendVersion(baseline.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            participant.record_id,
-                            fixture.actor,
-                            3,
-                            RecordOperationV1::SetContentRevision(
-                                collab_types::ContentRevisionV1 {
-                                    schema_version: CONTENT_REVISION_VERSION,
-                                    record_id: participant.record_id,
-                                    version_id: baseline.id,
-                                    content_hash: None,
-                                    byte_len: 0,
-                                    metadata_hash: baseline.metadata_hash,
-                                },
-                            ),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                    ],
-                    &auth,
-                )
-                .unwrap();
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn invalid_or_unauthorized_operations_fail_closed_without_publishing() {
+        // Phase `read_only_authorizer_cannot_create_durable_state`.
+        {
+            let fixture = Fixture::new();
+            let repo = RecordRepository::open(&fixture.root).unwrap();
+            assert!(matches!(
+                repo.apply(
+                    fixture.key,
+                    &fixture.metadata_envelope(1),
+                    &fixture.auth(true, false)
+                ),
+                Err(RecordRepositoryError::Replication(
+                    RecordReplicationError::WriteDenied
+                ))
+            ));
+            assert!(repo.is_empty());
+            assert_eq!(repo.logged_operations().unwrap(), 0);
         }
-        let participant_batches = transaction
-            .manifest
-            .participants
-            .iter()
-            .map(
-                |participant| crate::record_transaction::RecordTransactionParticipantBatch {
-                    record_id: participant.record_id,
-                    envelopes: vec![
-                        RecordEnvelopeV1::signed(
-                            participant.record_id,
-                            fixture.actor,
-                            4,
-                            RecordOperationV1::PrepareTransaction(transaction.clone()),
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                        RecordEnvelopeV1::signed(
-                            participant.record_id,
-                            fixture.actor,
-                            5,
-                            RecordOperationV1::CommitTransaction {
-                                transaction_id: transaction.manifest.transaction_id,
-                            },
-                            &fixture.device_key,
-                        )
-                        .unwrap(),
-                    ],
-                },
-            )
-            .collect();
-        let prepared = crate::record_transaction::RecordTransactionJournalEntry {
-            schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
-            transaction: transaction.clone(),
-            participant_batches,
-            phase: crate::record_transaction::RecordTransactionPhase::Prepared,
-            namespace_delta: None,
-        };
-        let journal_root = fixture.dir.path().join("transaction-journal");
-        let mut journal =
-            crate::record_transaction::RecordTransactionJournal::open(&journal_root).unwrap();
-        let failure = repository.apply_transaction_with_checkpoint(
-            &mut journal,
-            &prepared,
-            &auth,
-            |checkpoint| {
-                if matches!(
-                    checkpoint,
-                    RecordTransactionCheckpoint::ParticipantRecordDurable { index: 0 }
-                ) {
-                    Err(std::io::Error::other("simulated crash"))
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        assert!(matches!(
-            failure,
-            Err(RecordRepositoryError::TransactionFailureInjected(_))
-        ));
-        assert_eq!(
-            journal
-                .get(transaction.manifest.transaction_id)
-                .unwrap()
-                .phase,
-            crate::record_transaction::RecordTransactionPhase::Prepared
-        );
-        drop(repository);
-        drop(journal);
-        let repository = RecordRepository::open(&fixture.root).unwrap();
-        let mut journal =
-            crate::record_transaction::RecordTransactionJournal::open(&journal_root).unwrap();
-        let recovery = journal
-            .get(transaction.manifest.transaction_id)
-            .unwrap()
-            .clone();
-        repository
-            .apply_transaction(&mut journal, &recovery, &auth)
-            .unwrap();
-        assert_eq!(repository.len(), 2);
-        for participant in &transaction.manifest.participants {
-            let snapshot = repository
-                .snapshot(
-                    RecordRepositoryKey {
-                        workspace_id: fixture.key.workspace_id,
-                        record_id: participant.record_id,
-                    },
-                    &fixture.actor,
-                    &auth,
-                )
+        // Phase `immutable_version_collision_does_not_replace_persisted_state`.
+        {
+            let fixture = Fixture::new();
+            let repo = RecordRepository::open(&fixture.root).unwrap();
+            let version_id = FileVersionId::new();
+            let first = fixture.version_envelope(1, version_id, 1);
+            repo.apply(fixture.key, &first, &fixture.auth(true, true))
+                .unwrap();
+            let collision = fixture.version_envelope(2, version_id, 2);
+            assert!(matches!(
+                repo.apply(fixture.key, &collision, &fixture.auth(true, true)),
+                Err(RecordRepositoryError::Replication(
+                    RecordReplicationError::VersionIdCollision(id)
+                )) if id == version_id
+            ));
+            drop(repo);
+            let reopened = RecordRepository::open(&fixture.root).unwrap();
+            let snapshot = reopened
+                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
                 .unwrap();
             assert_eq!(
-                snapshot.binding.as_ref(),
-                Some(&participant.proposed_binding)
+                snapshot.versions,
+                vec![match first.operation {
+                    RecordOperationV1::AppendVersion(version) => version,
+                    _ => unreachable!(),
+                }]
             );
-            assert!(snapshot.versions.contains(&participant.proposed_version));
         }
-    }
-
-    #[test]
-    fn restart_preserves_snapshot_and_replay_watermark() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        let first = fixture.metadata_envelope(1);
-        repo.apply(fixture.key, &first, &fixture.auth(true, true))
-            .unwrap();
-        drop(repo);
-
-        let reopened = RecordRepository::open(&fixture.root).unwrap();
-        let snapshot = reopened
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-            .unwrap();
-        assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
-        assert!(matches!(
-            reopened.apply(fixture.key, &first, &fixture.auth(true, true)),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::Replay { sequence: 1 }
-            ))
-        ));
-        assert!(reopened.is_latest_envelope(fixture.key, &first));
-        let second = fixture.metadata_envelope(2);
-        reopened
-            .apply(fixture.key, &second, &fixture.auth(true, true))
-            .unwrap();
-        assert!(!reopened.is_latest_envelope(fixture.key, &first));
-        assert!(reopened.is_latest_envelope(fixture.key, &second));
-    }
-
-    /// A record file as releases before the operation log wrote it.
-    fn legacy_path(root: &Path, key: RecordRepositoryKey) -> PathBuf {
-        root.join(key.workspace_id.to_string())
-            .join(format!("{}.json", key.record_id.0))
-    }
-
-    fn legacy_json(key: RecordRepositoryKey, envelopes: &[RecordEnvelopeV1]) -> serde_json::Value {
-        serde_json::to_value(PersistedRecordV1 {
-            schema_version: RECORD_REPOSITORY_VERSION,
-            workspace_id: key.workspace_id,
-            record_id: key.record_id,
-            envelopes: envelopes.to_vec(),
-        })
-        .unwrap()
-    }
-
-    fn write_legacy(root: &Path, key: RecordRepositoryKey, value: &serde_json::Value) {
-        let path = legacy_path(root, key);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::durable_backup::write(&path, &serde_json::to_vec(value).unwrap(), |_| true).unwrap();
-    }
-
-    #[test]
-    fn legacy_record_files_are_imported_once_and_kept_aside() {
-        let fixture = Fixture::new();
-        let other = RecordRepositoryKey {
-            workspace_id: fixture.key.workspace_id,
-            record_id: FileRecordId::new(),
-        };
-        let other_envelope = RecordEnvelopeV1::signed(
-            other.record_id,
-            fixture.actor,
-            1,
-            RecordOperationV1::SetMetadata(FileMetadataV1 {
-                schema_version: 1,
-                record_id: other.record_id,
-                content_hash: None,
-                byte_len: 0,
-                mime: None,
-                previews: Vec::new(),
-                latest_actor: Some(fixture.actor),
-                observed_at_ms: 5,
-                index_status: IndexStatus::Indexed,
-                properties: None,
-            }),
-            &fixture.device_key,
-        )
-        .unwrap();
-        write_legacy(
-            &fixture.root,
-            fixture.key,
-            &legacy_json(
+        // Phase `out_of_order_and_duplicate_operations_fail_closed`.
+        {
+            let fixture = Fixture::new();
+            let repo = RecordRepository::open(&fixture.root).unwrap();
+            assert!(matches!(
+                repo.apply(
+                    fixture.key,
+                    &fixture.metadata_envelope(2),
+                    &fixture.auth(true, true)
+                ),
+                Err(RecordRepositoryError::Replication(
+                    RecordReplicationError::SequenceGap {
+                        expected: 1,
+                        received: 2
+                    }
+                ))
+            ));
+            repo.apply(
                 fixture.key,
-                &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
-            ),
-        );
-        write_legacy(&fixture.root, other, &legacy_json(other, &[other_envelope]));
-
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        assert_eq!(repo.len(), 2);
-        assert_eq!(repo.logged_operations().unwrap(), 3);
-        assert_eq!(
-            repo.snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-                .unwrap()
-                .metadata
-                .unwrap()
-                .observed_at_ms,
-            2
-        );
-        assert!(!legacy_path(&fixture.root, fixture.key).exists());
-        assert!(
-            fixture
-                .root
-                .join(IMPORTED_DIR)
-                .join(fixture.key.workspace_id.to_string())
-                .join(format!("{}.json", fixture.key.record_id.0))
-                .exists()
-        );
-        let cursors = repo
-            .stream_cursors_in(fixture.key.workspace_id, None, None, None)
-            .unwrap();
-        drop(repo);
-
-        // A second start neither imports again nor loses anything.
-        let reopened = RecordRepository::open(&fixture.root).unwrap();
-        assert_eq!(reopened.logged_operations().unwrap(), 3);
-        assert_eq!(
-            reopened
-                .stream_cursors_in(fixture.key.workspace_id, None, None, None)
-                .unwrap(),
-            cursors
-        );
-        reopened
-            .apply(
-                fixture.key,
-                &fixture.metadata_envelope(3),
+                &fixture.metadata_envelope(1),
                 &fixture.auth(true, true),
             )
             .unwrap();
-    }
-
-    #[test]
-    fn a_tampered_legacy_record_is_rejected_on_import() {
-        let fixture = Fixture::new();
-        let mut value = legacy_json(fixture.key, &[fixture.metadata_envelope(1)]);
-        value["envelopes"][0]["sequence"] = serde_json::json!(2);
-        write_legacy(&fixture.root, fixture.key, &value);
-        assert!(matches!(
-            RecordRepository::open(&fixture.root),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::Signature(_)
-            ))
-        ));
-        // Nothing was imported, and the file is where it was.
-        assert!(legacy_path(&fixture.root, fixture.key).exists());
-    }
-
-    #[test]
-    fn a_damaged_legacy_primary_is_imported_from_its_latest_valid_generation() {
-        let fixture = Fixture::new();
-        write_legacy(
-            &fixture.root,
-            fixture.key,
-            &legacy_json(fixture.key, &[fixture.metadata_envelope(1)]),
-        );
-        write_legacy(
-            &fixture.root,
-            fixture.key,
-            &legacy_json(
-                fixture.key,
-                &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
-            ),
-        );
-        let path = legacy_path(&fixture.root, fixture.key);
-        let damaged = b"{\"schema_version\":1,\"tampered\":true}";
-        std::fs::write(&path, damaged).unwrap();
-        let reopened = RecordRepository::open(&fixture.root).unwrap();
-        let snapshot = reopened
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-            .unwrap();
-        assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
-
-        // The evidence moved aside with the imported files.
-        let backup_dir = fixture
-            .root
-            .join(IMPORTED_DIR)
-            .join(fixture.key.workspace_id.to_string())
-            .join(format!(
-                ".{}.tilo-backups",
-                path.file_name().unwrap().to_string_lossy()
+            assert!(matches!(
+                repo.apply(
+                    fixture.key,
+                    &fixture.metadata_envelope(1),
+                    &fixture.auth(true, true)
+                ),
+                Err(RecordRepositoryError::Replication(
+                    RecordReplicationError::Replay { sequence: 1 }
+                ))
             ));
-        let entries = std::fs::read_dir(backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect::<Vec<_>>();
-        let evidence = entries
-            .iter()
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
-            .unwrap();
-        assert_eq!(std::fs::read(evidence.path()).unwrap(), damaged);
-    }
-
-    #[test]
-    fn read_only_authorizer_cannot_create_durable_state() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        assert!(matches!(
-            repo.apply(
-                fixture.key,
-                &fixture.metadata_envelope(1),
-                &fixture.auth(true, false)
-            ),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::WriteDenied
-            ))
-        ));
-        assert!(repo.is_empty());
-        assert_eq!(repo.logged_operations().unwrap(), 0);
-    }
-
-    #[test]
-    fn immutable_version_collision_does_not_replace_persisted_state() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        let version_id = FileVersionId::new();
-        let first = fixture.version_envelope(1, version_id, 1);
-        repo.apply(fixture.key, &first, &fixture.auth(true, true))
-            .unwrap();
-        let collision = fixture.version_envelope(2, version_id, 2);
-        assert!(matches!(
-            repo.apply(fixture.key, &collision, &fixture.auth(true, true)),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::VersionIdCollision(id)
-            )) if id == version_id
-        ));
-        drop(repo);
-        let reopened = RecordRepository::open(&fixture.root).unwrap();
-        let snapshot = reopened
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-            .unwrap();
-        assert_eq!(
-            snapshot.versions,
-            vec![match first.operation {
-                RecordOperationV1::AppendVersion(version) => version,
-                _ => unreachable!(),
-            }]
-        );
-    }
-
-    #[test]
-    fn out_of_order_and_duplicate_operations_fail_closed() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        assert!(matches!(
-            repo.apply(
-                fixture.key,
-                &fixture.metadata_envelope(2),
-                &fixture.auth(true, true)
-            ),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::SequenceGap {
-                    expected: 1,
-                    received: 2
-                }
-            ))
-        ));
-        repo.apply(
-            fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        assert!(matches!(
-            repo.apply(
-                fixture.key,
-                &fixture.metadata_envelope(1),
-                &fixture.auth(true, true)
-            ),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::Replay { sequence: 1 }
-            ))
-        ));
-        drop(repo);
-
-        let other = Fixture::new();
-        let first = other.metadata_envelope(1);
-        write_legacy(
-            &other.root,
-            other.key,
-            &legacy_json(other.key, &[first.clone(), first]),
-        );
-        assert!(matches!(
-            RecordRepository::open(&other.root),
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::Replay { sequence: 1 }
-            ))
-        ));
-    }
-
-    #[test]
-    fn cross_record_state_is_rejected_on_apply_and_import() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        let other_key = RecordRepositoryKey {
-            workspace_id: fixture.key.workspace_id,
-            record_id: FileRecordId::new(),
-        };
-        assert!(matches!(
-            repo.apply(
-                other_key,
-                &fixture.metadata_envelope(1),
-                &fixture.auth(true, true)
-            ),
-            Err(RecordRepositoryError::CrossRecordEnvelope)
-        ));
-        drop(repo);
-
-        let legacy = Fixture::new();
-        let misplaced = RecordRepositoryKey {
-            workspace_id: legacy.key.workspace_id,
-            record_id: FileRecordId::new(),
-        };
-        let value = legacy_json(legacy.key, &[legacy.metadata_envelope(1)]);
-        write_legacy(&legacy.root, misplaced, &value);
-        assert!(matches!(
-            RecordRepository::open(&legacy.root),
-            Err(RecordRepositoryError::PathKeyMismatch)
-        ));
+        }
+        // Phase `cross_record_state_is_rejected_on_apply`.
+        {
+            let fixture = Fixture::new();
+            let repo = RecordRepository::open(&fixture.root).unwrap();
+            let other_key = RecordRepositoryKey {
+                workspace_id: fixture.key.workspace_id,
+                record_id: FileRecordId::new(),
+            };
+            assert!(matches!(
+                repo.apply(
+                    other_key,
+                    &fixture.metadata_envelope(1),
+                    &fixture.auth(true, true)
+                ),
+                Err(RecordRepositoryError::CrossRecordEnvelope)
+            ));
+        }
     }
 
     /// Two records' worth of one actor's envelopes, as a publisher signs
@@ -4401,6 +4051,41 @@ mod tests {
         assert_eq!(reopened.len(), 2);
     }
 
+    /// A peer that serves another workspace's changeset, complete and
+    /// validly signed by its author, gets nothing applied here.
+    #[test]
+    fn a_validly_signed_changeset_of_another_workspace_is_refused() {
+        let author = Fixture::new();
+        let batches = two_record_batches(&author);
+        let auth = AnyRecord(author.actor);
+        let repo = RecordRepository::open(&author.root).unwrap();
+        repo.begin_changeset(author.key.workspace_id, author.actor)
+            .unwrap();
+        for (key, envelopes) in &batches {
+            repo.apply_batch(*key, envelopes, &auth).unwrap();
+        }
+        let signed = repo
+            .commit_changeset(&author.device_key, 1)
+            .unwrap()
+            .unwrap();
+        signed.verify().unwrap();
+        let all: Vec<RecordEnvelopeV1> = batches
+            .iter()
+            .flat_map(|(_, envelopes)| envelopes.iter().cloned())
+            .collect();
+
+        let peer_dir = tempfile::tempdir().unwrap();
+        let peer = RecordRepository::open(peer_dir.path().join("records")).unwrap();
+        let this_workspace = Uuid::new_v4();
+        assert_ne!(this_workspace, author.key.workspace_id);
+        assert!(matches!(
+            peer.apply_changeset(this_workspace, &signed, &all, &auth),
+            Err(RecordRepositoryError::TransactionWorkspaceMismatch)
+        ));
+        assert!(peer.is_empty());
+        assert_eq!(peer.logged_operations().unwrap(), 0);
+    }
+
     #[test]
     fn a_write_outside_the_changeset_takes_its_pending_envelopes_along() {
         let fixture = Fixture::new();
@@ -4445,72 +4130,5 @@ mod tests {
             reopened.highest_sequence(fixture.key, &fixture.actor),
             Some(2)
         );
-    }
-
-    #[test]
-    fn atomic_batch_inventory_and_suffix_survive_restart() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        let first = fixture.metadata_envelope(1);
-        let second = fixture.metadata_envelope(2);
-        repo.apply_batch(
-            fixture.key,
-            &[first, second.clone()],
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        let inventory = repo
-            .inventory_page(fixture.key.workspace_id, None, 8)
-            .unwrap();
-        assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].record_id, fixture.key.record_id);
-        assert_eq!(inventory[0].actor, fixture.actor);
-        assert_eq!(inventory[0].contiguous_sequence, 2);
-        assert_eq!(
-            repo.stream_cursor(fixture.key, &fixture.actor, 2).unwrap(),
-            inventory[0]
-        );
-        assert!(
-            repo.inventory_page(fixture.key.workspace_id, Some(inventory[0].key()), 8)
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            repo.envelopes_after(fixture.key, &fixture.actor, 1, 8)
-                .unwrap(),
-            vec![second]
-        );
-        let digest = inventory[0].prefix_digest;
-        drop(repo);
-        let reopened = RecordRepository::open(&fixture.root).unwrap();
-        assert_eq!(
-            reopened
-                .inventory_page(fixture.key.workspace_id, None, 8)
-                .unwrap()[0]
-                .prefix_digest,
-            digest
-        );
-    }
-
-    #[test]
-    fn invalid_late_batch_operation_commits_no_prefix() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        let result = repo.apply_batch(
-            fixture.key,
-            &[fixture.metadata_envelope(1), fixture.metadata_envelope(3)],
-            &fixture.auth(true, true),
-        );
-        assert!(matches!(
-            result,
-            Err(RecordRepositoryError::Replication(
-                RecordReplicationError::SequenceGap {
-                    expected: 2,
-                    received: 3
-                }
-            ))
-        ));
-        assert!(repo.is_empty());
-        assert_eq!(repo.logged_operations().unwrap(), 0);
     }
 }

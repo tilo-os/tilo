@@ -5,9 +5,6 @@ use super::migration::{
 use super::migration_native_journal::{NativeJournal, Receipt};
 use super::migration_source::{CopyFileSource, CopyPass, CopyTimes, SourcePass, sealed};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use tilo_ntfs_protocol::{
-    CHUNK_BYTES, Entry, HASH_BYTES, Identity, Issue, Manifest, NativePath, ntfs_time_to_system_time,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,6 +14,9 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
+};
+use tilo_ntfs_protocol::{
+    CHUNK_BYTES, Entry, HASH_BYTES, Identity, Issue, Manifest, NativePath, ntfs_time_to_system_time,
 };
 
 mod transport_sealed {
@@ -47,8 +47,8 @@ impl Transport for tilo_ntfs_protocol::client::Client {
 }
 /// Durable source facts deliberately exclude observation tokens.
 pub(super) mod entry_facts {
-    use tilo_ntfs_protocol::Entry;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tilo_ntfs_protocol::Entry;
     pub fn serialize<S: Serializer>(entry: &Entry, serializer: S) -> Result<S::Ok, S::Error> {
         if !entry.token.is_empty() {
             return Err(serde::ser::Error::custom(
@@ -1023,89 +1023,139 @@ mod tests {
         parent.create_child(OsStr::new("journal")).unwrap();
         (temp, base.join("destination"), base.join("journal/receipt"))
     }
+    /// Two-pass native copy, second-pass mutation, fixtures and failed receipts.
     #[test]
-    fn native_bytes_two_passes_empty_directories_times_and_fresh_resume() {
-        let (_temp, dest, journal) = fixture();
-        let state = Rc::new(RefCell::new(State::default()));
-        let cancel = Arc::new(AtomicBool::new(false));
-        let transport = script(state.clone(), cancel.clone());
-        let expected = transport.content.clone();
-        let report = run(transport, Some(&dest), &journal, &cancel, |_| {}).unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(report.verified_bytes, 1_048_579);
-        assert_eq!(
-            state.borrow().reads,
-            vec![
-                (0, 1_048_576),
-                (1_048_576, 3),
-                (0, 1_048_576),
-                (1_048_576, 3)
-            ]
-        );
-        assert!(dest.join("nested/empty-dir").is_dir());
-        assert_eq!(std::fs::metadata(dest.join("empty")).unwrap().len(), 0);
-        let expected_time = std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
-        assert_eq!(
-            std::fs::metadata(dest.join("large.bin"))
-                .unwrap()
-                .modified()
-                .unwrap(),
-            expected_time
-        );
-        assert!(std::fs::read(&journal).unwrap().starts_with(b"TILOJL3\n"));
-        let resumed = run(
-            script(state.clone(), cancel.clone()),
-            None,
-            &journal,
-            &cancel,
-            |_| {},
-        )
-        .unwrap();
-        assert!(resumed.complete(), "{resumed:?}");
-        assert_eq!(state.borrow().reads.len(), 8);
-        assert_eq!(std::fs::read(dest.join("large.bin")).unwrap(), expected);
-        assert!(
-            super::super::migration_journal::resume_folder(&journal, &cancel, |_| {})
-                .unwrap_err()
-                .contains("fresh native selection")
-        );
-    }
-    #[test]
-    fn native_second_pass_mutation_short_range_and_postflight_never_publish() {
-        for fault in [
-            "mutation",
-            "short",
-            "extra",
-            "hash",
-            "read-cancel",
-            "finish-cancel",
-            "begin-loss",
-            "stale-generation",
-            "changed-manifest",
-            "begin-cancel",
-            "read-loss",
-            "finish-loss",
-            "selected-incomplete",
-            "missing-empty-hash",
-        ] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_copy_passes_publish_only_verified_bytes() {
+        // Phase `native_bytes_two_passes_empty_directories_times_and_fresh_resume`.
+        {
             let (_temp, dest, journal) = fixture();
-            let state = State {
-                fault: Some(fault),
-                ..State::default()
-            };
-            let state = Rc::new(RefCell::new(state));
+            let state = Rc::new(RefCell::new(State::default()));
             let cancel = Arc::new(AtomicBool::new(false));
+            let transport = script(state.clone(), cancel.clone());
+            let expected = transport.content.clone();
+            let report = run(transport, Some(&dest), &journal, &cancel, |_| {}).unwrap();
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(report.verified_bytes, 1_048_579);
+            assert_eq!(
+                state.borrow().reads,
+                vec![
+                    (0, 1_048_576),
+                    (1_048_576, 3),
+                    (0, 1_048_576),
+                    (1_048_576, 3)
+                ]
+            );
+            assert!(dest.join("nested/empty-dir").is_dir());
+            assert_eq!(std::fs::metadata(dest.join("empty")).unwrap().len(), 0);
+            let expected_time = ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
+            assert_eq!(
+                std::fs::metadata(dest.join("large.bin"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                expected_time
+            );
+            assert!(std::fs::read(&journal).unwrap().starts_with(b"TILOJL3\n"));
+            let resumed = run(
+                script(state.clone(), cancel.clone()),
+                None,
+                &journal,
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+            assert!(resumed.complete(), "{resumed:?}");
+            assert_eq!(state.borrow().reads.len(), 8);
+            assert_eq!(std::fs::read(dest.join("large.bin")).unwrap(), expected);
+            assert!(
+                super::super::migration_journal::resume_folder(&journal, &cancel, |_| {})
+                    .unwrap_err()
+                    .contains("fresh native selection")
+            );
+        }
+
+        // Phase `native_second_pass_mutation_short_range_and_postflight_never_publish`.
+        {
+            for fault in [
+                "mutation",
+                "short",
+                "extra",
+                "hash",
+                "read-cancel",
+                "finish-cancel",
+                "begin-loss",
+                "stale-generation",
+                "changed-manifest",
+                "begin-cancel",
+                "read-loss",
+                "finish-loss",
+                "selected-incomplete",
+                "missing-empty-hash",
+            ] {
+                let (_temp, dest, journal) = fixture();
+                let state = State {
+                    fault: Some(fault),
+                    ..State::default()
+                };
+                let state = Rc::new(RefCell::new(state));
+                let cancel = Arc::new(AtomicBool::new(false));
+                let report = run(
+                    script(state, cancel.clone()),
+                    Some(&dest),
+                    &journal,
+                    &cancel,
+                    |_| {},
+                )
+                .unwrap();
+                assert!(!report.complete(), "{fault}");
+                assert!(!dest.join("large.bin").exists(), "{fault}");
+                assert!(dest.join("empty").exists());
+            }
+        }
+
+        // Phase `scoped_fixture_prefers_generated_sibling_image_over_original`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let original = temp.path().join("times.img");
+            let scoped = temp.path().join("copy-scoped-times.img");
+            std::fs::write(&original, b"original").unwrap();
+            std::fs::write(&scoped, b"scoped sibling").unwrap();
+            assert_eq!(scoped_fixture(temp.path(), "times"), Some(scoped.clone()));
+            std::fs::remove_file(scoped).unwrap();
+            assert_eq!(scoped_fixture(temp.path(), "times"), Some(original));
+        }
+
+        // Phase `native_failed_receipt_stops_before_later_entries`.
+        {
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let _failure = super::super::migration_journal::persistence_injection::Failure::at(
+                "native_file_receipt",
+                1,
+            );
             let report = run(
-                script(state, cancel.clone()),
+                script(Rc::new(RefCell::new(State::default())), cancel.clone()),
                 Some(&dest),
                 &journal,
                 &cancel,
                 |_| {},
             )
             .unwrap();
-            assert!(!report.complete(), "{fault}");
-            assert!(!dest.join("large.bin").exists(), "{fault}");
+            assert!(!report.complete());
+            assert!(
+                report
+                    .failed
+                    .iter()
+                    .any(|(_, message)| message.contains("published output has no saved receipt")),
+                "{report:?}"
+            );
+            assert!(report.verified_files.is_empty());
             assert!(dest.join("empty").exists());
+            assert!(!dest.join("large.bin").exists());
         }
     }
     #[cfg(unix)]
@@ -1395,18 +1445,6 @@ mod tests {
             .find(|candidate| candidate.is_file())
     }
 
-    #[test]
-    fn scoped_fixture_prefers_generated_sibling_image_over_original() {
-        let temp = tempfile::tempdir().unwrap();
-        let original = temp.path().join("times.img");
-        let scoped = temp.path().join("copy-scoped-times.img");
-        std::fs::write(&original, b"original").unwrap();
-        std::fs::write(&scoped, b"scoped sibling").unwrap();
-        assert_eq!(scoped_fixture(temp.path(), "times"), Some(scoped.clone()));
-        std::fs::remove_file(scoped).unwrap();
-        assert_eq!(scoped_fixture(temp.path(), "times"), Some(original));
-    }
-
     #[cfg(unix)]
     fn image_transport(name: &str) -> io::Result<ImageTransport> {
         let mut transport = ImageTransport {
@@ -1462,11 +1500,11 @@ mod tests {
             let meta = std::fs::metadata(dest.join("hello.txt")).unwrap();
             assert_eq!(
                 meta.modified().unwrap(),
-                std::time::UNIX_EPOCH - std::time::Duration::from_nanos(100)
+                ui::time::UNIX_EPOCH - std::time::Duration::from_nanos(100)
             );
             assert_eq!(
                 meta.accessed().unwrap(),
-                std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800)
+                ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800)
             );
         } else if name.starts_with("times-") {
             assert!(!dest.join("hello.txt").exists());
@@ -1569,98 +1607,267 @@ mod tests {
             serde_json::from_str(&std::env::var("TILO_NATIVE_COPY_COMMAND_ARGS").unwrap()).unwrap();
         assert!(maybe_run_command(&args).unwrap().is_some());
     }
+    /// Durable facts, root metadata and name budgets.
     #[test]
-    fn native_failed_receipt_stops_before_later_entries() {
-        let (_temp, dest, journal) = fixture();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let _failure = super::super::migration_journal::persistence_injection::Failure::at(
-            "native_file_receipt",
-            1,
-        );
-        let report = run(
-            script(Rc::new(RefCell::new(State::default())), cancel.clone()),
-            Some(&dest),
-            &journal,
-            &cancel,
-            |_| {},
-        )
-        .unwrap();
-        assert!(!report.complete());
-        assert!(
-            report
-                .failed
-                .iter()
-                .any(|(_, message)| message.contains("published output has no saved receipt")),
-            "{report:?}"
-        );
-        assert!(report.verified_files.is_empty());
-        assert!(dest.join("empty").exists());
-        assert!(!dest.join("large.bin").exists());
+    fn native_facts_metadata_and_names_are_durable_safe_and_bounded() {
+        // Phase `durable_native_facts_exclude_and_refuse_observation_tokens`.
+        {
+            let mut item = PlanEntry {
+                entry: entry(&["file"], false, 0),
+                mapped: Some(PathBuf::from("file")),
+            };
+            item.entry.token = "ephemeral-secret-token".into();
+            assert!(serde_json::to_value(&item).is_err());
+            item.entry.token.clear();
+            let mut value = serde_json::to_value(&item).unwrap();
+            assert!(value["entry"].get("token").is_none());
+            value["entry"]["token"] = serde_json::json!("old-session-token");
+            assert!(serde_json::from_value::<PlanEntry>(value).is_err());
+        }
+
+        // Phase `unsafe_root_metadata_never_authorizes_child_publication`.
+        {
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut source = script(Rc::new(RefCell::new(State::default())), cancel.clone());
+            source.entries[0]
+                .fidelity_pending
+                .push("unsupported-dos-flags".into());
+            let report = run(source, Some(&dest), &journal, &cancel, |_| {}).unwrap();
+            assert!(!report.complete());
+            assert!(report.verified_files.is_empty());
+            assert!(!dest.join("large.bin").exists());
+        }
+
+        // Phase `native_budget_and_lossless_names_are_bounded`.
+        {
+            assert_eq!(request_cost(536_870_912, 4096).unwrap(), 1024);
+            assert!(request_cost(536_870_913, 4096).is_err());
+            assert!(request_cost(u64::MAX, 4096).is_err());
+            assert!(request_cost(1, 1).is_err());
+            assert_eq!(request_cost(0, 0).unwrap(), 0);
+            for name in [
+                vec![0xd800],
+                vec![0],
+                vec![47],
+                vec![92],
+                vec![46, 46],
+                vec![0x4e00; 100],
+            ] {
+                assert!(map_path(&vec![name]).is_err());
+            }
+            assert_eq!(
+                map_path(&vec!["café".encode_utf16().collect()]).unwrap(),
+                PathBuf::from("café")
+            );
+        }
     }
 
+    /// Resume after relocation, edits, directory changes and torn journals.
     #[test]
-    fn durable_native_facts_exclude_and_refuse_observation_tokens() {
-        let mut item = PlanEntry {
-            entry: entry(&["file"], false, 0),
-            mapped: Some(PathBuf::from("file")),
-        };
-        item.entry.token = "ephemeral-secret-token".into();
-        assert!(serde_json::to_value(&item).is_err());
-        item.entry.token.clear();
-        let mut value = serde_json::to_value(&item).unwrap();
-        assert!(value["entry"].get("token").is_none());
-        value["entry"]["token"] = serde_json::json!("old-session-token");
-        assert!(serde_json::from_value::<PlanEntry>(value).is_err());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_resume_repairs_only_consistent_journals_and_directories() {
+        // Phase `relocated_journal_and_unreceipted_conflicts_preserve_bytes`.
+        {
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let state = Rc::new(RefCell::new(State {
+                fault: Some("read-cancel"),
+                ..State::default()
+            }));
+            assert!(
+                run(
+                    script(state, cancel.clone()),
+                    Some(&dest),
+                    &journal,
+                    &cancel,
+                    |_| {}
+                )
+                .unwrap()
+                .cancelled
+            );
+            std::fs::write(dest.join("large.bin"), b"user conflict").unwrap();
+            cancel.store(false, Ordering::Relaxed);
+            let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
+            let relocated = journal.with_file_name("relocated");
+            std::fs::copy(&journal, &relocated).unwrap();
+            assert!(run(fresh(), None, &relocated, &cancel, |_| {}).is_err());
+            assert!(run(fresh(), None, &journal, &cancel, |_| {}).is_err());
+            assert_eq!(
+                std::fs::read(dest.join("large.bin")).unwrap(),
+                b"user conflict"
+            );
+        }
 
-    #[test]
-    fn unsafe_root_metadata_never_authorizes_child_publication() {
-        let (_temp, dest, journal) = fixture();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut source = script(Rc::new(RefCell::new(State::default())), cancel.clone());
-        source.entries[0]
-            .fidelity_pending
-            .push("unsupported-dos-flags".into());
-        let report = run(source, Some(&dest), &journal, &cancel, |_| {}).unwrap();
-        assert!(!report.complete());
-        assert!(report.verified_files.is_empty());
-        assert!(!dest.join("large.bin").exists());
-    }
-    #[test]
-    fn relocated_journal_and_unreceipted_conflicts_preserve_bytes() {
-        let (_temp, dest, journal) = fixture();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let state = Rc::new(RefCell::new(State {
-            fault: Some("read-cancel"),
-            ..State::default()
-        }));
-        assert!(
-            run(
-                script(state, cancel.clone()),
-                Some(&dest),
+        // Phase `resume_rejects_file_edits_during_native_postflight_without_changing_mtime`.
+        {
+            for replace_name in [false, true] {
+                let (_temp, dest, journal) = fixture();
+                let state = Rc::new(RefCell::new(State::default()));
+                let cancel = Arc::new(AtomicBool::new(false));
+                assert!(
+                    run(
+                        script(state.clone(), cancel.clone()),
+                        Some(&dest),
+                        &journal,
+                        &cancel,
+                        |_| {}
+                    )
+                    .unwrap()
+                    .complete()
+                );
+                let target = dest.join("large.bin");
+                let changed_time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+                let edited = target.clone();
+                state.borrow_mut().during_finish = Some(Box::new(move || {
+                    if replace_name {
+                        std::fs::rename(&edited, edited.with_extension("retained")).unwrap();
+                    }
+                    std::fs::write(&edited, b"user edit during native Finish").unwrap();
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&edited)
+                        .unwrap()
+                        .set_times(std::fs::FileTimes::new().set_modified(changed_time))
+                        .unwrap();
+                }));
+                let report = run(
+                    script(state, cancel.clone()),
+                    None,
+                    &journal,
+                    &cancel,
+                    |_| {},
+                )
+                .unwrap();
+                assert!(
+                    !report.verified_files.contains(&PathBuf::from("large.bin")),
+                    "edited output certified: {report:?}"
+                );
+                assert!(!report.failed.is_empty());
+                assert_eq!(
+                    std::fs::metadata(&target).unwrap().modified().unwrap(),
+                    changed_time
+                );
+                assert_eq!(
+                    std::fs::read(&target).unwrap(),
+                    b"user edit during native Finish"
+                );
+            }
+        }
+
+        // Phase `resume_preserves_changed_completed_directory_and_root_timestamps`.
+        {
+            use std::io::Write;
+            for relative in ["nested/empty-dir", ""] {
+                let (_temp, dest, journal) = fixture();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
+                assert!(
+                    run(fresh(), Some(&dest), &journal, &cancel, |_| {})
+                        .unwrap()
+                        .complete()
+                );
+                let changed_time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+                let directory = dest.join(relative);
+                std::fs::File::open(&directory)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(changed_time))
+                    .unwrap();
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&journal)
+                    .unwrap()
+                    .write_all(b"torn")
+                    .unwrap();
+                let before = std::fs::read(&journal).unwrap();
+                assert!(
+                    run(fresh(), None, &journal, &cancel, |_| {}).is_err(),
+                    "changed directory accepted: {relative}"
+                );
+                assert_eq!(
+                    std::fs::metadata(directory).unwrap().modified().unwrap(),
+                    changed_time
+                );
+                assert_eq!(std::fs::read(&journal).unwrap(), before);
+            }
+        }
+
+        // Phase `resume_completes_previously_incomplete_directories`.
+        {
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let state = Rc::new(RefCell::new(State {
+                fault: Some("read-cancel"),
+                ..State::default()
+            }));
+            assert!(
+                run(
+                    script(state, cancel.clone()),
+                    Some(&dest),
+                    &journal,
+                    &cancel,
+                    |_| {}
+                )
+                .unwrap()
+                .cancelled
+            );
+            cancel.store(false, Ordering::Relaxed);
+            let report = run(
+                script(Rc::new(RefCell::new(State::default())), cancel.clone()),
+                None,
                 &journal,
                 &cancel,
-                |_| {}
+                |_| {},
             )
-            .unwrap()
-            .cancelled
-        );
-        std::fs::write(dest.join("large.bin"), b"user conflict").unwrap();
-        cancel.store(false, Ordering::Relaxed);
-        let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
-        let relocated = journal.with_file_name("relocated");
-        std::fs::copy(&journal, &relocated).unwrap();
-        assert!(run(fresh(), None, &relocated, &cancel, |_| {}).is_err());
-        assert!(run(fresh(), None, &journal, &cancel, |_| {}).is_err());
-        assert_eq!(
-            std::fs::read(dest.join("large.bin")).unwrap(),
-            b"user conflict"
-        );
-    }
+            .unwrap();
+            assert!(report.complete(), "{report:?}");
+            let expected = ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
+            assert_eq!(
+                std::fs::metadata(&dest).unwrap().modified().unwrap(),
+                expected
+            );
+            assert_eq!(
+                std::fs::metadata(dest.join("nested/empty-dir"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                expected
+            );
+        }
 
-    #[test]
-    fn resume_rejects_file_edits_during_native_postflight_without_changing_mtime() {
-        for replace_name in [false, true] {
+        // Phase `foreign_output_and_abandoned_temporary_block_resume_before_tail_repair`.
+        {
+            use std::io::Write;
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
+            assert!(
+                run(fresh(), Some(&dest), &journal, &cancel, |_| {})
+                    .unwrap()
+                    .complete()
+            );
+            std::fs::write(dest.join(".tilo-copy-abandoned"), b"preserve").unwrap();
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&journal)
+                .unwrap()
+                .write_all(b"torn")
+                .unwrap();
+            let before = std::fs::read(&journal).unwrap();
+            assert!(run(fresh(), None, &journal, &cancel, |_| {}).is_err());
+            assert_eq!(std::fs::read(&journal).unwrap(), before);
+            assert_eq!(
+                std::fs::read(dest.join(".tilo-copy-abandoned")).unwrap(),
+                b"preserve"
+            );
+        }
+
+        // Phase `changed_selection_does_not_repair_torn_native_journal`.
+        {
+            use std::io::Write;
             let (_temp, dest, journal) = fixture();
             let state = Rc::new(RefCell::new(State::default()));
             let cancel = Arc::new(AtomicBool::new(false));
@@ -1675,63 +1882,6 @@ mod tests {
                 .unwrap()
                 .complete()
             );
-            let target = dest.join("large.bin");
-            let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
-            let edited = target.clone();
-            state.borrow_mut().during_finish = Some(Box::new(move || {
-                if replace_name {
-                    std::fs::rename(&edited, edited.with_extension("retained")).unwrap();
-                }
-                std::fs::write(&edited, b"user edit during native Finish").unwrap();
-                std::fs::File::options()
-                    .write(true)
-                    .open(&edited)
-                    .unwrap()
-                    .set_times(std::fs::FileTimes::new().set_modified(changed_time))
-                    .unwrap();
-            }));
-            let report = run(
-                script(state, cancel.clone()),
-                None,
-                &journal,
-                &cancel,
-                |_| {},
-            )
-            .unwrap();
-            assert!(
-                !report.verified_files.contains(&PathBuf::from("large.bin")),
-                "edited output certified: {report:?}"
-            );
-            assert!(!report.failed.is_empty());
-            assert_eq!(
-                std::fs::metadata(&target).unwrap().modified().unwrap(),
-                changed_time
-            );
-            assert_eq!(
-                std::fs::read(&target).unwrap(),
-                b"user edit during native Finish"
-            );
-        }
-    }
-
-    #[test]
-    fn resume_preserves_changed_completed_directory_and_root_timestamps() {
-        use std::io::Write;
-        for relative in ["nested/empty-dir", ""] {
-            let (_temp, dest, journal) = fixture();
-            let cancel = Arc::new(AtomicBool::new(false));
-            let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
-            assert!(
-                run(fresh(), Some(&dest), &journal, &cancel, |_| {})
-                    .unwrap()
-                    .complete()
-            );
-            let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
-            let directory = dest.join(relative);
-            std::fs::File::open(&directory)
-                .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(changed_time))
-                .unwrap();
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(&journal)
@@ -1739,148 +1889,21 @@ mod tests {
                 .write_all(b"torn")
                 .unwrap();
             let before = std::fs::read(&journal).unwrap();
-            assert!(
-                run(fresh(), None, &journal, &cancel, |_| {}).is_err(),
-                "changed directory accepted: {relative}"
-            );
-            assert_eq!(
-                std::fs::metadata(directory).unwrap().modified().unwrap(),
-                changed_time
-            );
+            let mut source = script(state.clone(), cancel.clone());
+            source.identity.volume = "changed".into();
+            assert!(run(source, None, &journal, &cancel, |_| {}).is_err());
             assert_eq!(std::fs::read(&journal).unwrap(), before);
-        }
-    }
-
-    #[test]
-    fn resume_completes_previously_incomplete_directories() {
-        let (_temp, dest, journal) = fixture();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let state = Rc::new(RefCell::new(State {
-            fault: Some("read-cancel"),
-            ..State::default()
-        }));
-        assert!(
-            run(
-                script(state, cancel.clone()),
-                Some(&dest),
-                &journal,
-                &cancel,
-                |_| {}
-            )
-            .unwrap()
-            .cancelled
-        );
-        cancel.store(false, Ordering::Relaxed);
-        let report = run(
-            script(Rc::new(RefCell::new(State::default())), cancel.clone()),
-            None,
-            &journal,
-            &cancel,
-            |_| {},
-        )
-        .unwrap();
-        assert!(report.complete(), "{report:?}");
-        let expected = std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
-        assert_eq!(
-            std::fs::metadata(&dest).unwrap().modified().unwrap(),
-            expected
-        );
-        assert_eq!(
-            std::fs::metadata(dest.join("nested/empty-dir"))
-                .unwrap()
-                .modified()
-                .unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn native_budget_and_lossless_names_are_bounded() {
-        assert_eq!(request_cost(536_870_912, 4096).unwrap(), 1024);
-        assert!(request_cost(536_870_913, 4096).is_err());
-        assert!(request_cost(u64::MAX, 4096).is_err());
-        assert!(request_cost(1, 1).is_err());
-        assert_eq!(request_cost(0, 0).unwrap(), 0);
-        for name in [
-            vec![0xd800],
-            vec![0],
-            vec![47],
-            vec![92],
-            vec![46, 46],
-            vec![0x4e00; 100],
-        ] {
-            assert!(map_path(&vec![name]).is_err());
-        }
-        assert_eq!(
-            map_path(&vec!["café".encode_utf16().collect()]).unwrap(),
-            PathBuf::from("café")
-        );
-    }
-    #[test]
-    fn foreign_output_and_abandoned_temporary_block_resume_before_tail_repair() {
-        use std::io::Write;
-        let (_temp, dest, journal) = fixture();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
-        assert!(
-            run(fresh(), Some(&dest), &journal, &cancel, |_| {})
+            assert!(
+                run(
+                    script(state, cancel.clone()),
+                    None,
+                    &journal,
+                    &cancel,
+                    |_| {}
+                )
                 .unwrap()
                 .complete()
-        );
-        std::fs::write(dest.join(".tilo-copy-abandoned"), b"preserve").unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&journal)
-            .unwrap()
-            .write_all(b"torn")
-            .unwrap();
-        let before = std::fs::read(&journal).unwrap();
-        assert!(run(fresh(), None, &journal, &cancel, |_| {}).is_err());
-        assert_eq!(std::fs::read(&journal).unwrap(), before);
-        assert_eq!(
-            std::fs::read(dest.join(".tilo-copy-abandoned")).unwrap(),
-            b"preserve"
-        );
-    }
-
-    #[test]
-    fn changed_selection_does_not_repair_torn_native_journal() {
-        use std::io::Write;
-        let (_temp, dest, journal) = fixture();
-        let state = Rc::new(RefCell::new(State::default()));
-        let cancel = Arc::new(AtomicBool::new(false));
-        assert!(
-            run(
-                script(state.clone(), cancel.clone()),
-                Some(&dest),
-                &journal,
-                &cancel,
-                |_| {}
-            )
-            .unwrap()
-            .complete()
-        );
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&journal)
-            .unwrap()
-            .write_all(b"torn")
-            .unwrap();
-        let before = std::fs::read(&journal).unwrap();
-        let mut source = script(state.clone(), cancel.clone());
-        source.identity.volume = "changed".into();
-        assert!(run(source, None, &journal, &cancel, |_| {}).is_err());
-        assert_eq!(std::fs::read(&journal).unwrap(), before);
-        assert!(
-            run(
-                script(state, cancel.clone()),
-                None,
-                &journal,
-                &cancel,
-                |_| {}
-            )
-            .unwrap()
-            .complete()
-        );
+            );
+        }
     }
 }

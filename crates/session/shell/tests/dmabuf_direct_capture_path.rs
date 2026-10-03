@@ -21,57 +21,60 @@
 use shell::compositor::surface_readback::{CapturePath, SurfaceTracker};
 
 #[test]
-fn dmabuf_direct_path_is_taken_when_buffer_is_dmabuf() {
-    let mut tracker = SurfaceTracker::new();
+fn capture_takes_the_dmabuf_path_when_it_can_and_counts_shm_fallback() {
+    // Phase `dmabuf_direct_path_is_taken_when_buffer_is_dmabuf`.
+    {
+        let mut tracker = SurfaceTracker::new();
 
-    tracker.note_capture_path(1, CapturePath::DmabufDirect);
-    tracker.note_capture_path(1, CapturePath::DmabufDirect);
-    tracker.note_capture_path(1, CapturePath::DmabufDirect);
-
-    assert_eq!(
-        tracker.dmabuf_direct_count(),
-        3,
-        "three DMABUF commits should bump dmabuf_direct_count() to 3"
-    );
-    assert_eq!(
-        tracker.shm_readback_count(),
-        0,
-        "no SHM buffer was committed — shm_readback_count must stay 0"
-    );
-    assert_eq!(
-        tracker.last_capture_path(1),
-        Some(CapturePath::DmabufDirect),
-        "last observed capture path for the surface should reflect the \
-         DMABUF direct route"
-    );
-}
-
-#[test]
-fn mixed_dmabuf_and_shm_traffic_counts_independently() {
-    // Counters must not bleed across surfaces.
-    let mut tracker = SurfaceTracker::new();
-    for _ in 0..5 {
         tracker.note_capture_path(1, CapturePath::DmabufDirect);
-    }
-    for _ in 0..3 {
-        tracker.note_capture_path(2, CapturePath::ShmReadback);
+        tracker.note_capture_path(1, CapturePath::DmabufDirect);
+        tracker.note_capture_path(1, CapturePath::DmabufDirect);
+
+        assert_eq!(
+            tracker.dmabuf_direct_count(),
+            3,
+            "three DMABUF commits should bump dmabuf_direct_count() to 3"
+        );
+        assert_eq!(
+            tracker.shm_readback_count(),
+            0,
+            "no SHM buffer was committed — shm_readback_count must stay 0"
+        );
+        assert_eq!(
+            tracker.last_capture_path(1),
+            Some(CapturePath::DmabufDirect),
+            "last observed capture path for the surface should reflect the \
+             DMABUF direct route"
+        );
     }
 
-    assert_eq!(tracker.dmabuf_direct_count(), 5);
-    assert_eq!(tracker.shm_readback_count(), 3);
-    assert_eq!(
-        tracker.last_capture_path(1),
-        Some(CapturePath::DmabufDirect)
-    );
-    assert_eq!(tracker.last_capture_path(2), Some(CapturePath::ShmReadback));
-}
+    // Phase `mixed_dmabuf_and_shm_traffic_counts_independently`.
+    {
+        // Counters must not bleed across surfaces.
+        let mut tracker = SurfaceTracker::new();
+        for _ in 0..5 {
+            tracker.note_capture_path(1, CapturePath::DmabufDirect);
+        }
+        for _ in 0..3 {
+            tracker.note_capture_path(2, CapturePath::ShmReadback);
+        }
 
-#[test]
-fn shm_fallback_when_dmabuf_unavailable() {
-    let mut tracker = SurfaceTracker::new();
-    for _ in 0..7 {
-        tracker.note_capture_path(42, CapturePath::ShmReadback);
+        assert_eq!(tracker.dmabuf_direct_count(), 5);
+        assert_eq!(tracker.shm_readback_count(), 3);
+        assert_eq!(
+            tracker.last_capture_path(1),
+            Some(CapturePath::DmabufDirect)
+        );
+        assert_eq!(tracker.last_capture_path(2), Some(CapturePath::ShmReadback));
     }
-    assert_eq!(tracker.shm_readback_count(), 7);
-    assert_eq!(tracker.dmabuf_direct_count(), 0);
+
+    // Phase `shm_fallback_when_dmabuf_unavailable`.
+    {
+        let mut tracker = SurfaceTracker::new();
+        for _ in 0..7 {
+            tracker.note_capture_path(42, CapturePath::ShmReadback);
+        }
+        assert_eq!(tracker.shm_readback_count(), 7);
+        assert_eq!(tracker.dmabuf_direct_count(), 0);
+    }
 }

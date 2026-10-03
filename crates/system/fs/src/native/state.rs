@@ -398,108 +398,114 @@ mod tests {
     }
 
     #[test]
-    fn epochs_nodes_and_materialized_paths_survive_a_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("meta.redb");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn native_state_rows_survive_reopen_and_decode_older_layouts() {
+        // Phase `epochs_nodes_and_materialized_paths_survive_a_reopen`.
         {
-            let state = NativeState::open(&path).unwrap();
-            assert!(state.capture_state().unwrap().is_none());
-            state
-                .save_epoch(
-                    2,
-                    Path::new("/store/.epochs/r/0000000000000001"),
-                    41,
-                    NodeUpdate::Replace(vec![
-                        ("a".into(), node(1)),
-                        (
-                            "l".into(),
-                            NodeState {
-                                kind: NodeKind::Symlink("t".into()),
-                                ..node(2)
-                            },
-                        ),
-                    ]),
-                    &[(
-                        "a".into(),
-                        Some(Materialized {
-                            dir: false,
-                            hash: Some([9; 32]),
-                            size: 3,
-                            mtime_ms: 7,
-                            placeholder: true,
-                            local: Some(LocalStat {
-                                ino: 1,
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("meta.redb");
+            {
+                let state = NativeState::open(&path).unwrap();
+                assert!(state.capture_state().unwrap().is_none());
+                state
+                    .save_epoch(
+                        2,
+                        Path::new("/store/.epochs/r/0000000000000001"),
+                        41,
+                        NodeUpdate::Replace(vec![
+                            ("a".into(), node(1)),
+                            (
+                                "l".into(),
+                                NodeState {
+                                    kind: NodeKind::Symlink("t".into()),
+                                    ..node(2)
+                                },
+                            ),
+                        ]),
+                        &[(
+                            "a".into(),
+                            Some(Materialized {
+                                dir: false,
+                                hash: Some([9; 32]),
                                 size: 3,
-                                mtime_ns: 8,
+                                mtime_ms: 7,
+                                placeholder: true,
+                                local: Some(LocalStat {
+                                    ino: 1,
+                                    size: 3,
+                                    mtime_ns: 8,
+                                }),
+                                record: Some([4; 16]),
+                                mode: Some(0o644),
+                                symlink: false,
+                                fence: None,
+                                own: true,
                             }),
-                            record: Some([4; 16]),
-                            mode: Some(0o644),
-                            symlink: false,
-                            fence: None,
-                            own: true,
-                        }),
-                    )],
-                )
-                .unwrap();
-            state
-                .save_epoch(
-                    3,
-                    Path::new("/store/.epochs/r/0000000000000002"),
-                    50,
-                    NodeUpdate::Delta(vec![("b".into(), Some(node(3))), ("l".into(), None)]),
-                    &[],
-                )
-                .unwrap();
-        }
-        let state = NativeState::open(&path).unwrap();
-        let (capture, through) = state.capture_state().unwrap().unwrap();
-        assert_eq!(through, 50);
-        assert_eq!(capture.next_epoch, 3);
-        assert_eq!(
-            capture.snapshot,
-            Path::new("/store/.epochs/r/0000000000000002")
-        );
-        let mut nodes = capture.nodes;
-        nodes.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(nodes, vec![("a".into(), node(1)), ("b".into(), node(3))]);
-        assert_eq!(
-            state.materialized().unwrap()[Path::new("a")].hash,
-            Some([9; 32])
-        );
+                        )],
+                    )
+                    .unwrap();
+                state
+                    .save_epoch(
+                        3,
+                        Path::new("/store/.epochs/r/0000000000000002"),
+                        50,
+                        NodeUpdate::Delta(vec![("b".into(), Some(node(3))), ("l".into(), None)]),
+                        &[],
+                    )
+                    .unwrap();
+            }
+            let state = NativeState::open(&path).unwrap();
+            let (capture, through) = state.capture_state().unwrap().unwrap();
+            assert_eq!(through, 50);
+            assert_eq!(capture.next_epoch, 3);
+            assert_eq!(
+                capture.snapshot,
+                Path::new("/store/.epochs/r/0000000000000002")
+            );
+            let mut nodes = capture.nodes;
+            nodes.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(nodes, vec![("a".into(), node(1)), ("b".into(), node(3))]);
+            assert_eq!(
+                state.materialized().unwrap()[Path::new("a")].hash,
+                Some([9; 32])
+            );
 
-        state.clear_capture().unwrap();
-        assert!(state.capture_state().unwrap().is_none());
-        assert_eq!(state.materialized().unwrap().len(), 1);
-        assert_eq!(
-            state.materialized().unwrap()[Path::new("a")].record,
-            Some([4; 16])
-        );
-    }
-
-    #[test]
-    fn rows_written_before_records_were_kept_still_decode() {
-        #[derive(Serialize)]
-        struct Old {
-            dir: bool,
-            hash: Option<[u8; 32]>,
-            size: u64,
-            mtime_ms: u64,
-            placeholder: bool,
-            local: Option<LocalStat>,
+            state.clear_capture().unwrap();
+            assert!(state.capture_state().unwrap().is_none());
+            assert_eq!(state.materialized().unwrap().len(), 1);
+            assert_eq!(
+                state.materialized().unwrap()[Path::new("a")].record,
+                Some([4; 16])
+            );
         }
-        let raw = postcard::to_allocvec(&Old {
-            dir: false,
-            hash: Some([1; 32]),
-            size: 5,
-            mtime_ms: 6,
-            placeholder: false,
-            local: None,
-        })
-        .unwrap();
-        let m = decode_materialized(&raw).unwrap();
-        assert_eq!(
-            (m.hash, m.size, m.mtime_ms, m.record),
-            (Some([1; 32]), 5, 6, None)
-        );
+        // Phase `rows_written_before_records_were_kept_still_decode`.
+        {
+            #[derive(Serialize)]
+            struct Old {
+                dir: bool,
+                hash: Option<[u8; 32]>,
+                size: u64,
+                mtime_ms: u64,
+                placeholder: bool,
+                local: Option<LocalStat>,
+            }
+            let raw = postcard::to_allocvec(&Old {
+                dir: false,
+                hash: Some([1; 32]),
+                size: 5,
+                mtime_ms: 6,
+                placeholder: false,
+                local: None,
+            })
+            .unwrap();
+            let m = decode_materialized(&raw).unwrap();
+            assert_eq!(
+                (m.hash, m.size, m.mtime_ms, m.record),
+                (Some([1; 32]), 5, 6, None)
+            );
+        }
     }
 }

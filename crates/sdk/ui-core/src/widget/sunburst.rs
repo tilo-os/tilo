@@ -5,10 +5,11 @@
     reason = "radial hierarchy projection is bounded floating-point geometry"
 )]
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::ops::Range;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -118,6 +119,16 @@ struct Segment {
     end: f64,
     color: Option<Color>,
     family: usize,
+}
+
+/// Where a node sits in the hierarchy being flattened: its ring, the
+/// top-level family it descends from, its ancestors' label path and the
+/// colour it inherits when it names none.
+struct Lineage<'a> {
+    depth: usize,
+    family: usize,
+    path: &'a str,
+    color: Option<Color>,
 }
 
 pub struct SunburstChart {
@@ -246,12 +257,13 @@ impl SunburstChart {
             let sweep = child.effective_value() / total * TAU;
             self.flatten(
                 child,
-                1,
-                angle,
-                angle + sweep,
-                family,
-                &self.root.label,
-                None,
+                angle..angle + sweep,
+                Lineage {
+                    depth: 1,
+                    family,
+                    path: &self.root.label,
+                    color: None,
+                },
                 &mut output,
             );
             angle += sweep;
@@ -259,21 +271,21 @@ impl SunburstChart {
         output
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "recursive hierarchy flattening carries angular and inherited presentation context"
-    )]
+    /// Push `node`'s segment over the angular `span`, then its children's
+    /// across the same span in proportion to their values.
     fn flatten(
         &self,
         node: &SunburstNode,
-        depth: usize,
-        start: f64,
-        end: f64,
-        family: usize,
-        parent_path: &str,
-        inherited_color: Option<Color>,
+        span: Range<f64>,
+        lineage: Lineage<'_>,
         output: &mut Vec<Segment>,
     ) {
+        let Lineage {
+            depth,
+            family,
+            path: parent_path,
+            color: inherited_color,
+        } = lineage;
         if depth > self.depth() || node.effective_value() <= f64::EPSILON {
             return;
         }
@@ -283,6 +295,7 @@ impl SunburstChart {
             format!("{parent_path} › {}", node.label)
         };
         let color = node.color.or(inherited_color);
+        let Range { start, end } = span;
         output.push(Segment {
             id: node.id.clone(),
             detail: node.detail.clone(),
@@ -308,12 +321,13 @@ impl SunburstChart {
             let sweep = child.effective_value() * scale;
             self.flatten(
                 child,
-                depth.saturating_add(1),
-                angle,
-                angle + sweep,
-                family,
-                &path,
-                color,
+                angle..angle + sweep,
+                Lineage {
+                    depth: depth.saturating_add(1),
+                    family,
+                    path: &path,
+                    color,
+                },
                 output,
             );
             angle += sweep;
@@ -407,7 +421,6 @@ fn mix(start: Color, end: Color, amount: f64) -> Color {
 }
 
 impl Widget for SunburstChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -575,19 +588,8 @@ impl Widget for SunburstChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -599,8 +601,8 @@ impl Widget for SunburstChart {
                     self.hovered = self.hit_test(point);
                     if let Some(id) = &self.hovered {
                         self.activated = Some(id.clone());
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -609,7 +611,8 @@ impl Widget for SunburstChart {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self.hit_test(self.pointer);
                 self.keyboard_inspection = false;
             }
@@ -621,8 +624,8 @@ impl Widget for SunburstChart {
             } => {
                 if let Some(id) = &self.hovered {
                     self.activated = Some(id.clone());
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -643,8 +646,8 @@ impl Widget for SunburstChart {
                     self.keyboard_inspection = self.hovered.is_some();
                     self.update_inspection_anchor();
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -678,8 +681,8 @@ impl Widget for SunburstChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;

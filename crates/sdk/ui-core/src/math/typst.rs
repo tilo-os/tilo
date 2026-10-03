@@ -721,121 +721,122 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_typst_fraction_root_and_scripts() {
-        let parsed = parse_typst("frac(alpha_1 + x^2, root(3, 1-x))");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let Node::Frac { num, den } = &parsed.expr.root[0] else {
-            panic!()
-        };
-        assert!(matches!(num[0], Node::Char('α')));
-        assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
-    }
-
-    #[test]
-    fn parses_typst_matrix_and_vector_constructors() {
-        let parsed = parse_typst("mat(a, b; c, d) + vec(x, y, z)");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let Node::Delimited { body, .. } = &parsed.expr.root[0] else {
-            panic!()
-        };
-        let Node::Table { rows } = &body[0] else {
-            panic!()
-        };
-        assert_eq!((rows.len(), rows[0].len()), (2, 2));
-        assert!(parsed.expr.root.iter().any(|node| matches!(node, Node::Delimited { body, .. } if matches!(&body[0], Node::Table { rows } if rows.len() == 3))));
-    }
-
-    #[test]
-    fn vector_components_and_case_branches_are_vertical() {
-        let vector = parse_typst("$ vec(x, y, z) $");
-        let Node::Delimited { body, .. } = &vector.expr.root[0] else {
-            panic!()
-        };
-        assert!(
-            matches!(&body[0], Node::Table { rows } if rows.len() == 3 && rows.iter().all(|row| row.len() == 1))
-        );
-
-        let cases = parse_typst(r#"cases(x^2 & "if" x >= 0, -x & "otherwise")"#);
-        let Node::Delimited { body, .. } = &cases.expr.root[0] else {
-            panic!()
-        };
-        assert!(
-            matches!(&body[0], Node::Table { rows } if rows.len() == 2 && rows.iter().all(|row| row.len() == 2))
-        );
-        assert!(cases.diagnostics.is_empty(), "{:?}", cases.diagnostics);
-    }
-
-    #[test]
-    fn user_defined_function_calls_are_preserved_without_false_diagnostics() {
-        let parsed = parse_typst("f(x) + energy(t)");
-        assert!(parsed.diagnostics.is_empty());
-        assert!(
-            parsed
-                .expr
-                .root
-                .iter()
-                .any(|node| matches!(node, Node::Paren { .. }))
-        );
-    }
-
-    #[test]
-    fn parses_typst_large_operator_limits() {
-        let parsed = parse_typst("sum_(i=1)^n x_i");
-        assert!(parsed.diagnostics.is_empty());
-        assert!(matches!(
-            parsed.expr.root[0],
-            Node::UnderOver {
-                under: Some(_),
-                over: Some(_),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn practical_typst_formula_corpus_parses_without_loss() {
-        let formulas = [
-            "x = frac(-b plus.minus sqrt(b^2-4a c), 2a)",
-            "integral_0^infinity exp(-x^2) dot x",
-            "sum_(i=1)^n x_i",
-            "mat(a, b; c, d)",
-            "cases(x^2, x gt.eq 0; -x, x < 0)",
-            "hat(x) + arrow(v) + norm(x)",
-            "binom(n, k) = frac(n!, k! (n-k)!)",
-        ];
-        for source in formulas {
-            let parsed = parse_typst(source);
+    fn typst_parses_fractions_matrices_vectors_calls_and_operators() {
+        // phase: parses_typst_fraction_root_and_scripts
+        {
+            let parsed = parse_typst("frac(alpha_1 + x^2, root(3, 1-x))");
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            let Node::Frac { num, den } = &parsed.expr.root[0] else {
+                panic!()
+            };
+            assert!(matches!(num[0], Node::Char('α')));
+            assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
+        }
+        // phase: parses_typst_matrix_and_vector_constructors
+        {
+            let parsed = parse_typst("mat(a, b; c, d) + vec(x, y, z)");
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            let Node::Delimited { body, .. } = &parsed.expr.root[0] else {
+                panic!()
+            };
+            let Node::Table { rows } = &body[0] else {
+                panic!()
+            };
+            assert_eq!((rows.len(), rows[0].len()), (2, 2));
+            assert!(parsed.expr.root.iter().any(|node| matches!(node, Node::Delimited { body, .. } if matches!(&body[0], Node::Table { rows } if rows.len() == 3))));
+        }
+        // phase: vector_components_and_case_branches_are_vertical
+        {
+            let vector = parse_typst("$ vec(x, y, z) $");
+            let Node::Delimited { body, .. } = &vector.expr.root[0] else {
+                panic!()
+            };
             assert!(
-                parsed.diagnostics.is_empty(),
-                "{source}: {:?}",
-                parsed.diagnostics
+                matches!(&body[0], Node::Table { rows } if rows.len() == 3 && rows.iter().all(|row| row.len() == 1))
             );
-            assert!(!parsed.expr.root.is_empty(), "{source}");
+
+            let cases = parse_typst(r#"cases(x^2 & "if" x >= 0, -x & "otherwise")"#);
+            let Node::Delimited { body, .. } = &cases.expr.root[0] else {
+                panic!()
+            };
+            assert!(
+                matches!(&body[0], Node::Table { rows } if rows.len() == 2 && rows.iter().all(|row| row.len() == 2))
+            );
+            assert!(cases.diagnostics.is_empty(), "{:?}", cases.diagnostics);
+        }
+        // phase: user_defined_function_calls_are_preserved_without_false_diagnostics
+        {
+            let parsed = parse_typst("f(x) + energy(t)");
+            assert!(parsed.diagnostics.is_empty());
+            assert!(
+                parsed
+                    .expr
+                    .root
+                    .iter()
+                    .any(|node| matches!(node, Node::Paren { .. }))
+            );
+        }
+        // phase: parses_typst_large_operator_limits
+        {
+            let parsed = parse_typst("sum_(i=1)^n x_i");
+            assert!(parsed.diagnostics.is_empty());
+            assert!(matches!(
+                parsed.expr.root[0],
+                Node::UnderOver {
+                    under: Some(_),
+                    over: Some(_),
+                    ..
+                }
+            ));
         }
     }
 
     #[test]
-    fn visual_vector_and_cases_serialize_to_native_typst_constructs() {
-        for source in [
-            "vec(alpha, beta, gamma)",
-            r#"cases(x^2 & "if" x >= 0, -x & "otherwise")"#,
-        ] {
-            let parsed = parse_typst(source);
-            let canonical = serialize_typst(&parsed.expr);
-            assert!(
-                canonical.starts_with(if source.starts_with("vec") {
-                    "vec("
-                } else {
-                    "cases("
-                }),
-                "{canonical}"
-            );
-            let reparsed = parse_typst(&canonical);
-            assert!(
-                reparsed.diagnostics.is_empty(),
-                "{canonical}: {:?}",
-                reparsed.diagnostics
-            );
+    fn typst_round_trips_a_practical_corpus_and_visual_constructs() {
+        // phase: practical_typst_formula_corpus_parses_without_loss
+        {
+            let formulas = [
+                "x = frac(-b plus.minus sqrt(b^2-4a c), 2a)",
+                "integral_0^infinity exp(-x^2) dot x",
+                "sum_(i=1)^n x_i",
+                "mat(a, b; c, d)",
+                "cases(x^2, x gt.eq 0; -x, x < 0)",
+                "hat(x) + arrow(v) + norm(x)",
+                "binom(n, k) = frac(n!, k! (n-k)!)",
+            ];
+            for source in formulas {
+                let parsed = parse_typst(source);
+                assert!(
+                    parsed.diagnostics.is_empty(),
+                    "{source}: {:?}",
+                    parsed.diagnostics
+                );
+                assert!(!parsed.expr.root.is_empty(), "{source}");
+            }
+        }
+        // phase: visual_vector_and_cases_serialize_to_native_typst_constructs
+        {
+            for source in [
+                "vec(alpha, beta, gamma)",
+                r#"cases(x^2 & "if" x >= 0, -x & "otherwise")"#,
+            ] {
+                let parsed = parse_typst(source);
+                let canonical = serialize_typst(&parsed.expr);
+                assert!(
+                    canonical.starts_with(if source.starts_with("vec") {
+                        "vec("
+                    } else {
+                        "cases("
+                    }),
+                    "{canonical}"
+                );
+                let reparsed = parse_typst(&canonical);
+                assert!(
+                    reparsed.diagnostics.is_empty(),
+                    "{canonical}: {:?}",
+                    reparsed.diagnostics
+                );
+            }
         }
     }
 }

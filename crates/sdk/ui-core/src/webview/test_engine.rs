@@ -9,7 +9,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Frame, FrameSlot, MediaElementInfo, WebViewCommand, WebViewEngine, WebViewEvent};
+use super::{
+    Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
+    WebViewEngine, WebViewEvent,
+};
 
 /// Height of the darker "chrome" band painted at the top of every test
 /// page, in physical pixels.
@@ -27,6 +30,7 @@ struct Inner {
     events: Vec<WebViewEvent>,
     commands: Vec<WebViewCommand>,
     media_element: Option<MediaElementInfo>,
+    page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
 }
@@ -62,6 +66,30 @@ impl TestEngine {
     /// Configure the deterministic response to a media-element probe.
     pub fn set_media_element(&self, media: Option<MediaElementInfo>) {
         self.lock_inner().media_element = media;
+    }
+
+    /// Queue the answer to the next page request. Without one, an outline
+    /// is a single document line and every other request succeeds.
+    pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
+        self.lock_inner().page_replies.push_back(reply);
+    }
+
+    fn page_reply_locked(
+        inner: &mut Inner,
+        request: &PageRequest,
+    ) -> Result<PageReply, PageFailure> {
+        if let Some(reply) = inner.page_replies.pop_front() {
+            return reply;
+        }
+        let url = inner.history.get(inner.index).cloned().unwrap_or_default();
+        Ok(PageReply {
+            outline: matches!(request, PageRequest::Outline)
+                .then(|| format!("- document \"{url} — test page\"")),
+            message: "Done".into(),
+            url,
+            navigated: false,
+            loading: false,
+        })
     }
 
     /// Stable page colour for a URL — exposed so tests can compute the
@@ -294,6 +322,15 @@ impl WebViewEngine for TestEngine {
             } => {
                 Self::emit_media_locked(&mut inner, request_id, Some(element_id));
             }
+            WebViewCommand::Page {
+                request_id,
+                request,
+            } => {
+                let result = Self::page_reply_locked(&mut inner, &request);
+                inner
+                    .events
+                    .push(WebViewEvent::PageResult { request_id, result });
+            }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                     drop(inner);
@@ -352,192 +389,196 @@ mod tests {
     use super::*;
 
     #[test]
-    fn navigate_emits_full_event_sequence_and_renders() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://example.org".into()));
+    fn the_test_engine_navigates_renders_resizes_and_records_input() {
+        // phase: navigate_emits_full_event_sequence_and_renders
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://example.org".into()));
 
-        let events = engine.drain_events();
-        assert_eq!(
-            events[0],
-            WebViewEvent::UriChanged("https://example.org".into())
-        );
-        assert!(
-            matches!(events[1], WebViewEvent::TitleChanged(ref t) if t.contains("example.org"))
-        );
-        assert!(events.contains(&WebViewEvent::LoadFinished));
-        assert!(events.contains(&WebViewEvent::HistoryChanged {
-            can_go_back: false,
-            can_go_forward: false
-        }));
-        // Draining twice yields nothing new.
-        assert!(engine.drain_events().is_empty());
+            let events = engine.drain_events();
+            assert_eq!(
+                events[0],
+                WebViewEvent::UriChanged("https://example.org".into())
+            );
+            assert!(
+                matches!(events[1], WebViewEvent::TitleChanged(ref t) if t.contains("example.org"))
+            );
+            assert!(events.contains(&WebViewEvent::LoadFinished));
+            assert!(events.contains(&WebViewEvent::HistoryChanged {
+                can_go_back: false,
+                can_go_forward: false
+            }));
+            // Draining twice yields nothing new.
+            assert!(engine.drain_events().is_empty());
 
-        let frame = engine
-            .frames()
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("frame rendered");
-        assert_eq!((frame.width, frame.height), (800, 600));
-        let [r, g, b] = TestEngine::page_color("https://example.org");
-        // First pixel is in the header band; below it is the page colour.
-        let below = (HEADER_BAND_PX * frame.width * 4) as usize;
-        assert_eq!(&frame.rgba[below..below + 4], &[r, g, b, 0xFF]);
-        assert_eq!(&frame.rgba[0..4], &[r / 2, g / 2, b / 2, 0xFF]);
+            let frame = engine
+                .frames()
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("frame rendered");
+            assert_eq!((frame.width, frame.height), (800, 600));
+            let [r, g, b] = TestEngine::page_color("https://example.org");
+            // First pixel is in the header band; below it is the page colour.
+            let below = (HEADER_BAND_PX * frame.width * 4) as usize;
+            assert_eq!(&frame.rgba[below..below + 4], &[r, g, b, 0xFF]);
+            assert_eq!(&frame.rgba[0..4], &[r / 2, g / 2, b / 2, 0xFF]);
+        }
+        // phase: different_urls_render_different_colors
+        {
+            assert_ne!(
+                TestEngine::page_color("https://example.org"),
+                TestEngine::page_color("https://example.com"),
+            );
+        }
+        // phase: resize_rerenders_at_new_dimensions
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://example.org".into()));
+            engine.send(WebViewCommand::Resize {
+                width: 320,
+                height: 200,
+                scale_factor: 2.0,
+            });
+            let frame = engine.frames().lock().unwrap().clone().unwrap();
+            assert_eq!((frame.width, frame.height), (320, 200));
+            assert_eq!(frame.rgba.len(), 320 * 200 * 4);
+        }
+        // phase: input_commands_are_recorded
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
+            engine.send(WebViewCommand::SetFocused(true));
+            let cmds = engine.commands();
+            assert_eq!(cmds.len(), 2);
+            assert_eq!(cmds[0], WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
+        }
     }
 
     #[test]
-    fn media_probe_reports_configured_visible_element() {
-        let engine = TestEngine::new();
-        let element = MediaElementInfo {
-            element_id: "media:test".into(),
-            viewport_rect: [0.2, 0.1, 0.6, 0.5],
-            intrinsic_size: [1280, 720],
-            label: "Video".into(),
-        };
-        engine.set_media_element(Some(element.clone()));
-        engine.send(WebViewCommand::RequestMediaElement { request_id: 7 });
-        assert_eq!(
-            engine.drain_events(),
-            vec![WebViewEvent::MediaElement {
-                request_id: 7,
-                element: element.clone(),
-            }]
-        );
-        engine.send(WebViewCommand::RequestMediaElementById {
-            request_id: 8,
-            element_id: "media:test".into(),
-        });
-        assert_eq!(
-            engine.drain_events(),
-            vec![WebViewEvent::MediaElement {
+    fn the_test_engine_probes_media_and_guards_downloads() {
+        // phase: media_probe_reports_configured_visible_element
+        {
+            let engine = TestEngine::new();
+            let element = MediaElementInfo {
+                element_id: "media:test".into(),
+                viewport_rect: [0.2, 0.1, 0.6, 0.5],
+                intrinsic_size: [1280, 720],
+                label: "Video".into(),
+            };
+            engine.set_media_element(Some(element.clone()));
+            engine.send(WebViewCommand::RequestMediaElement { request_id: 7 });
+            assert_eq!(
+                engine.drain_events(),
+                vec![WebViewEvent::MediaElement {
+                    request_id: 7,
+                    element: element.clone(),
+                }]
+            );
+            engine.send(WebViewCommand::RequestMediaElementById {
                 request_id: 8,
-                element,
-            }]
-        );
+                element_id: "media:test".into(),
+            });
+            assert_eq!(
+                engine.drain_events(),
+                vec![WebViewEvent::MediaElement {
+                    request_id: 8,
+                    element,
+                }]
+            );
+        }
+        // phase: download_lifecycle_requires_web_url_and_absolute_portal_destination
+        {
+            #[cfg(windows)]
+            let destination = "C:/Temp/guide.pdf";
+            #[cfg(not(windows))]
+            let destination = "/tmp/guide.pdf";
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::StartDownload {
+                uri: "file:///etc/passwd".into(),
+            });
+            assert!(engine.drain_events().is_empty());
+
+            engine.send(WebViewCommand::StartDownload {
+                uri: "https://example.test/archive.zip".into(),
+            });
+            let requested = engine.drain_events();
+            let id = match requested.as_slice() {
+                [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
+                _ => panic!("expected one genuine download request"),
+            };
+            engine.send(WebViewCommand::SetDownloadDestination {
+                id: id.clone(),
+                path: "relative/archive.zip".into(),
+            });
+            assert!(engine.drain_events().is_empty());
+            engine.send(WebViewCommand::CancelDownload { id: id.clone() });
+            assert!(matches!(
+                engine.drain_events().as_slice(),
+                [WebViewEvent::DownloadFailed {
+                    id: failed_id,
+                    cancelled: true,
+                    ..
+                }] if failed_id == &id
+            ));
+
+            engine.send(WebViewCommand::StartDownload {
+                uri: "https://example.test/guide.pdf".into(),
+            });
+            let requested = engine.drain_events();
+            let id = match requested.as_slice() {
+                [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
+                _ => panic!("expected one genuine download request"),
+            };
+            engine.send(WebViewCommand::SetDownloadDestination {
+                id: id.clone(),
+                path: destination.into(),
+            });
+            assert!(matches!(
+                engine.drain_events().as_slice(),
+                [WebViewEvent::DownloadProgress { id: progress_id, .. }, WebViewEvent::DownloadFinished { id: finished_id, path }]
+                    if progress_id == &id && finished_id == &id && path == destination
+            ));
+        }
     }
 
     #[test]
-    fn different_urls_render_different_colors() {
-        assert_ne!(
-            TestEngine::page_color("https://example.org"),
-            TestEngine::page_color("https://example.com"),
-        );
-    }
+    fn the_test_engine_walks_and_truncates_history() {
+        // phase: history_back_forward_walks_and_reports_state
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            engine.drain_events();
 
-    #[test]
-    fn history_back_forward_walks_and_reports_state() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        engine.drain_events();
+            engine.send(WebViewCommand::GoBack);
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+            let events = engine.drain_events();
+            assert!(events.contains(&WebViewEvent::HistoryChanged {
+                can_go_back: false,
+                can_go_forward: true
+            }));
 
-        engine.send(WebViewCommand::GoBack);
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-        let events = engine.drain_events();
-        assert!(events.contains(&WebViewEvent::HistoryChanged {
-            can_go_back: false,
-            can_go_forward: true
-        }));
+            engine.send(WebViewCommand::GoForward);
+            assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
 
-        engine.send(WebViewCommand::GoForward);
-        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+            // At the tail: GoForward is a no-op and emits nothing.
+            engine.drain_events();
+            engine.send(WebViewCommand::GoForward);
+            assert!(engine.drain_events().is_empty());
+        }
+        // phase: navigate_after_back_truncates_forward_history
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            engine.send(WebViewCommand::GoBack);
+            engine.send(WebViewCommand::Navigate("https://c.test".into()));
+            engine.drain_events();
 
-        // At the tail: GoForward is a no-op and emits nothing.
-        engine.drain_events();
-        engine.send(WebViewCommand::GoForward);
-        assert!(engine.drain_events().is_empty());
-    }
-
-    #[test]
-    fn navigate_after_back_truncates_forward_history() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        engine.send(WebViewCommand::GoBack);
-        engine.send(WebViewCommand::Navigate("https://c.test".into()));
-        engine.drain_events();
-
-        // b.test is gone: back from c leads to a.
-        engine.send(WebViewCommand::GoBack);
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-    }
-
-    #[test]
-    fn download_lifecycle_requires_web_url_and_absolute_portal_destination() {
-        #[cfg(windows)]
-        let destination = "C:/Temp/guide.pdf";
-        #[cfg(not(windows))]
-        let destination = "/tmp/guide.pdf";
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::StartDownload {
-            uri: "file:///etc/passwd".into(),
-        });
-        assert!(engine.drain_events().is_empty());
-
-        engine.send(WebViewCommand::StartDownload {
-            uri: "https://example.test/archive.zip".into(),
-        });
-        let requested = engine.drain_events();
-        let id = match requested.as_slice() {
-            [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
-            _ => panic!("expected one genuine download request"),
-        };
-        engine.send(WebViewCommand::SetDownloadDestination {
-            id: id.clone(),
-            path: "relative/archive.zip".into(),
-        });
-        assert!(engine.drain_events().is_empty());
-        engine.send(WebViewCommand::CancelDownload { id: id.clone() });
-        assert!(matches!(
-            engine.drain_events().as_slice(),
-            [WebViewEvent::DownloadFailed {
-                id: failed_id,
-                cancelled: true,
-                ..
-            }] if failed_id == &id
-        ));
-
-        engine.send(WebViewCommand::StartDownload {
-            uri: "https://example.test/guide.pdf".into(),
-        });
-        let requested = engine.drain_events();
-        let id = match requested.as_slice() {
-            [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
-            _ => panic!("expected one genuine download request"),
-        };
-        engine.send(WebViewCommand::SetDownloadDestination {
-            id: id.clone(),
-            path: destination.into(),
-        });
-        assert!(matches!(
-            engine.drain_events().as_slice(),
-            [WebViewEvent::DownloadProgress { id: progress_id, .. }, WebViewEvent::DownloadFinished { id: finished_id, path }]
-                if progress_id == &id && finished_id == &id && path == destination
-        ));
-    }
-
-    #[test]
-    fn resize_rerenders_at_new_dimensions() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://example.org".into()));
-        engine.send(WebViewCommand::Resize {
-            width: 320,
-            height: 200,
-            scale_factor: 2.0,
-        });
-        let frame = engine.frames().lock().unwrap().clone().unwrap();
-        assert_eq!((frame.width, frame.height), (320, 200));
-        assert_eq!(frame.rgba.len(), 320 * 200 * 4);
-    }
-
-    #[test]
-    fn input_commands_are_recorded() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
-        engine.send(WebViewCommand::SetFocused(true));
-        let cmds = engine.commands();
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0], WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
+            // b.test is gone: back from c leads to a.
+            engine.send(WebViewCommand::GoBack);
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+        }
     }
 }

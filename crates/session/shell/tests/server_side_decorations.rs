@@ -254,53 +254,56 @@ fn negotiate(
     (names, out)
 }
 
-/// A toolkit that cannot see the global never asks — it decorates
-/// itself, and there is no negotiation to lose.
 #[test]
-fn the_decoration_manager_is_advertised() {
-    let (globals, _) = negotiate(None);
-    assert!(
-        !globals.is_empty(),
-        "the client saw no globals at all — the harness failed to talk to \
-         the compositor, so this test proved nothing."
-    );
-    assert!(
-        globals.iter().any(|g| g == "zxdg_decoration_manager_v1"),
-        "zxdg_decoration_manager_v1 is not advertised, so every client \
-         falls back to drawing its own title bar and keeps it out of the \
-         size this compositor gave it. Advertised: {globals:?}"
-    );
-}
+fn every_client_is_given_server_side_decorations() {
+    // Phase `the_decoration_manager_is_advertised`.
+    // A toolkit that cannot see the global never asks — it decorates
+    // itself, and there is no negotiation to lose.
+    {
+        let (globals, _) = negotiate(None);
+        assert!(
+            !globals.is_empty(),
+            "the client saw no globals at all — the harness failed to talk to \
+             the compositor, so this test proved nothing."
+        );
+        assert!(
+            globals.iter().any(|g| g == "zxdg_decoration_manager_v1"),
+            "zxdg_decoration_manager_v1 is not advertised, so every client \
+             falls back to drawing its own title bar and keeps it out of the \
+             size this compositor gave it. Advertised: {globals:?}"
+        );
+    }
 
-#[test]
-fn a_client_that_asks_for_server_side_is_given_server_side() {
-    let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ServerSide));
-    assert!(
-        !modes.is_empty(),
-        "the compositor configured no decoration mode at all. Advertised: \
-         {globals:?}"
-    );
-    assert!(
-        modes
-            .iter()
-            .all(|m| *m == zxdg_toplevel_decoration_v1::Mode::ServerSide),
-        "expected every configure to say ServerSide; got {modes:?}. A \
-         client told ClientSide draws its own title bar inside the tab \
-         this compositor already drew one for."
-    );
-}
+    // Phase `a_client_that_asks_for_server_side_is_given_server_side`.
+    {
+        let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ServerSide));
+        assert!(
+            !modes.is_empty(),
+            "the compositor configured no decoration mode at all. Advertised: \
+             {globals:?}"
+        );
+        assert!(
+            modes
+                .iter()
+                .all(|m| *m == zxdg_toplevel_decoration_v1::Mode::ServerSide),
+            "expected every configure to say ServerSide; got {modes:?}. A \
+             client told ClientSide draws its own title bar inside the tab \
+             this compositor already drew one for."
+        );
+    }
 
-#[test]
-fn a_client_that_asks_to_decorate_itself_is_still_given_server_side() {
-    let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ClientSide));
-    assert!(
-        !modes.is_empty(),
-        "the compositor configured no decoration mode at all. Advertised: \
-         {globals:?}"
-    );
-    assert!(
-        !modes.contains(&zxdg_toplevel_decoration_v1::Mode::ClientSide),
-        "the compositor agreed to client-side decoration; got {modes:?}. \
-         Tilo owns window chrome, so the answer to this request is no."
-    );
+    // Phase `a_client_that_asks_to_decorate_itself_is_still_given_server_side`.
+    {
+        let (globals, modes) = negotiate(Some(zxdg_toplevel_decoration_v1::Mode::ClientSide));
+        assert!(
+            !modes.is_empty(),
+            "the compositor configured no decoration mode at all. Advertised: \
+             {globals:?}"
+        );
+        assert!(
+            !modes.contains(&zxdg_toplevel_decoration_v1::Mode::ClientSide),
+            "the compositor agreed to client-side decoration; got {modes:?}. \
+             Tilo owns window chrome, so the answer to this request is no."
+        );
+    }
 }

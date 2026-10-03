@@ -93,27 +93,24 @@ pub fn rsync_modules(
     endpoint: &SshEndpoint,
     key: Option<&str>,
     staging: &str,
-) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![vmbuild::sh_quote(&ssh.program)];
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| vmbuild::sh_quote(a)));
+) -> Result<CommandLine, CliError> {
+    let rsh = vmbuild::rsync_rsh(endpoint, key)?;
     let dest = format!("{staging}/usr/lib/modules");
     let source = built
         .modules
         .parent()
         .map(|p| format!("{}/", p.display()))
         .unwrap_or_default();
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--checksum", "--compress"],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(format!("mkdir -p {dest} && rsync"))
     .arg(source)
-    .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host))
+    .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host)))
 }
 
 /// Pack the staged module tree as a layer: `usr/lib/modules/<kver>/`.
@@ -298,7 +295,7 @@ impl App {
             let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
             let id = vmbuild::worktree_id(worktree, crate::context::hostname().as_deref());
             let staging = vm_staging_dir(&id);
-            let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging);
+            let rsync = rsync_modules(built, &endpoint, vm.entry.key.as_deref(), &staging)?;
             eprintln!(
                 "tilo-vm: syncing {} to {}:{staging}",
                 built.modules.display(),
@@ -781,123 +778,135 @@ mod tests {
         }
     }
 
+    /// The build runs the manifest script, the result file parses, modules sync into the layer shape, a
+    /// packed layer holds one release under /usr, and direct boots take the running command line.
     #[test]
-    fn the_build_runs_the_manifest_script() {
-        let command = build_command(
-            "os/kernel/dev-build.sh",
-            Path::new("/t/r.json"),
-            Some(4),
-            true,
-        );
-        assert_eq!(
-            command.display(),
-            "bash os/kernel/dev-build.sh --result /t/r.json --jobs 4 --direct-initrd"
-        );
-        assert_eq!(
-            build_command(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn kernel_builds_run_the_manifest_and_pack_one_release_layer() {
+        // Phase: the_build_runs_the_manifest_script.
+        {
+            let command = build_command(
                 "os/kernel/dev-build.sh",
                 Path::new("/t/r.json"),
-                None,
-                false
+                Some(4),
+                true,
+            );
+            assert_eq!(
+                command.display(),
+                "bash os/kernel/dev-build.sh --result /t/r.json --jobs 4 --direct-initrd"
+            );
+            assert_eq!(
+                build_command(
+                    "os/kernel/dev-build.sh",
+                    Path::new("/t/r.json"),
+                    None,
+                    false
+                )
+                .display(),
+                "bash os/kernel/dev-build.sh --result /t/r.json"
+            );
+        }
+
+        // Phase: the_result_file_parses.
+        {
+            let json = serde_json::to_string(&built()).unwrap();
+            let back: Built = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.kver, "7.2.5-200.fc44.x86_64+dev");
+            let minimal: Built = serde_json::from_str(
+                r##"{"kver":"k","uts_version":"#1","modules":"/m","vmlinuz":"/m/vmlinuz","initrd":null,
+                    "cache":"/c","builder_image":"i","builder_image_id":"x","jobs":8,
+                    "build_seconds":1,"compile_seconds":1,"log":"/c/build.log"}"##,
             )
-            .display(),
-            "bash os/kernel/dev-build.sh --result /t/r.json"
-        );
-    }
+            .unwrap();
+            assert!(minimal.initrd.is_none());
+        }
 
-    #[test]
-    fn the_result_file_parses() {
-        let json = serde_json::to_string(&built()).unwrap();
-        let back: Built = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.kver, "7.2.5-200.fc44.x86_64+dev");
-        let minimal: Built = serde_json::from_str(
-            r##"{"kver":"k","uts_version":"#1","modules":"/m","vmlinuz":"/m/vmlinuz","initrd":null,
-                "cache":"/c","builder_image":"i","builder_image_id":"x","jobs":8,
-                "build_seconds":1,"compile_seconds":1,"log":"/c/build.log"}"##,
-        )
-        .unwrap();
-        assert!(minimal.initrd.is_none());
-    }
+        // Phase: modules_sync_into_the_layer_shape.
+        {
+            let endpoint = SshEndpoint {
+                user: "root".into(),
+                host: "127.0.0.1".into(),
+                port: 2223,
+            };
+            let command = rsync_modules(
+                &built(),
+                &endpoint,
+                Some("/k/id"),
+                &vm_staging_dir("wt-1a2b"),
+            )
+            .unwrap();
+            let text = command.display();
+            assert_eq!(
+                command.program,
+                crate::host::rsync_program().unwrap_or_else(|| "rsync".into())
+            );
+            assert!(
+                text.contains("--archive --delete --checksum --compress"),
+                "{text}"
+            );
+            assert!(
+                text.contains("mkdir -p /var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules && rsync"),
+                "{text}"
+            );
+            assert!(
+                text.contains(" /c/tilo-kernel/linux-7.2.5/out/stage/lib/modules/ root@127.0.0.1:/var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules/"),
+                "{text}"
+            );
+            assert!(text.contains("-p 2223"), "{text}");
+        }
 
-    #[test]
-    fn modules_sync_into_the_layer_shape() {
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "127.0.0.1".into(),
-            port: 2223,
-        };
-        let command = rsync_modules(
-            &built(),
-            &endpoint,
-            Some("/k/id"),
-            &vm_staging_dir("wt-1a2b"),
-        );
-        let text = command.display();
-        assert_eq!(
-            command.program,
-            crate::host::rsync_program().unwrap_or_else(|| "rsync".into())
-        );
-        assert!(
-            text.contains("--archive --delete --checksum --compress"),
-            "{text}"
-        );
-        assert!(
-            text.contains("mkdir -p /var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules && rsync"),
-            "{text}"
-        );
-        assert!(
-            text.contains(" /c/tilo-kernel/linux-7.2.5/out/stage/lib/modules/ root@127.0.0.1:/var/lib/tilo-vm/kernel/wt-1a2b/usr/lib/modules/"),
-            "{text}"
-        );
-        assert!(text.contains("-p 2223"), "{text}");
-    }
+        // Phase: a_packed_layer_holds_one_release_under_usr.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let modules = dir.path().join("lib/modules/7.2+dev");
+            std::fs::create_dir_all(modules.join("kernel")).unwrap();
+            std::fs::write(modules.join("vmlinuz"), b"k").unwrap();
+            std::fs::write(modules.join("kernel/a.ko.zst"), b"m").unwrap();
+            let mut b = built();
+            b.kver = "7.2+dev".into();
+            b.modules = modules;
+            let out = dir.path().join("layer.tar");
+            pack(&b, &out).unwrap();
+            let mut archive = tar::Archive::new(std::fs::File::open(&out).unwrap());
+            let paths: Vec<String> = archive
+                .entries()
+                .unwrap()
+                .map(|e| e.unwrap().path().unwrap().display().to_string())
+                .collect();
+            assert!(
+                paths.iter().any(|p| p == "usr/lib/modules/7.2+dev/vmlinuz"),
+                "{paths:?}"
+            );
+            assert!(
+                paths
+                    .iter()
+                    .any(|p| p == "usr/lib/modules/7.2+dev/kernel/a.ko.zst"),
+                "{paths:?}"
+            );
+            assert!(
+                paths
+                    .iter()
+                    .all(|p| p.starts_with("usr/lib/modules/7.2+dev")),
+                "{paths:?}"
+            );
+        }
 
-    #[test]
-    fn a_packed_layer_holds_one_release_under_usr() {
-        let dir = tempfile::tempdir().unwrap();
-        let modules = dir.path().join("lib/modules/7.2+dev");
-        std::fs::create_dir_all(modules.join("kernel")).unwrap();
-        std::fs::write(modules.join("vmlinuz"), b"k").unwrap();
-        std::fs::write(modules.join("kernel/a.ko.zst"), b"m").unwrap();
-        let mut b = built();
-        b.kver = "7.2+dev".into();
-        b.modules = modules;
-        let out = dir.path().join("layer.tar");
-        pack(&b, &out).unwrap();
-        let mut archive = tar::Archive::new(std::fs::File::open(&out).unwrap());
-        let paths: Vec<String> = archive
-            .entries()
-            .unwrap()
-            .map(|e| e.unwrap().path().unwrap().display().to_string())
-            .collect();
-        assert!(
-            paths.iter().any(|p| p == "usr/lib/modules/7.2+dev/vmlinuz"),
-            "{paths:?}"
-        );
-        assert!(
-            paths
-                .iter()
-                .any(|p| p == "usr/lib/modules/7.2+dev/kernel/a.ko.zst"),
-            "{paths:?}"
-        );
-        assert!(
-            paths
-                .iter()
-                .all(|p| p.starts_with("usr/lib/modules/7.2+dev")),
-            "{paths:?}"
-        );
-    }
-
-    #[test]
-    fn direct_boots_take_the_running_command_line() {
-        assert_eq!(
-            direct_cmdline("BOOT_IMAGE=(hd0,gpt2)/vmlinuz root=UUID=1 ro initrd=/x console=ttyS0"),
-            "root=UUID=1 ro console=ttyS0"
-        );
-        assert_eq!(
-            parse_running("7.2+dev\n#3 SMP PREEMPT_DYNAMIC x\n"),
-            Some(("7.2+dev".into(), "#3 SMP PREEMPT_DYNAMIC x".into()))
-        );
-        assert_eq!(parse_running("only\n"), None);
+        // Phase: direct_boots_take_the_running_command_line.
+        {
+            assert_eq!(
+                direct_cmdline(
+                    "BOOT_IMAGE=(hd0,gpt2)/vmlinuz root=UUID=1 ro initrd=/x console=ttyS0"
+                ),
+                "root=UUID=1 ro console=ttyS0"
+            );
+            assert_eq!(
+                parse_running("7.2+dev\n#3 SMP PREEMPT_DYNAMIC x\n"),
+                Some(("7.2+dev".into(), "#3 SMP PREEMPT_DYNAMIC x".into()))
+            );
+            assert_eq!(parse_running("only\n"), None);
+        }
     }
 }

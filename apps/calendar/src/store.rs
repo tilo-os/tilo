@@ -12,40 +12,11 @@ use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 
-/// Open Calendar through the shared host persistence lifecycle, preserving
-/// documents written by the former widget-owned store. The source is retained;
-/// merging its unchanged history again cannot resurrect a subsequently deleted
-/// event or replace a newer edit.
-pub fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
-    match default_path() {
-        Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
-        None => ui::persist::open(app_id),
-    }
-}
-
-/// Where the legacy calendar document is stored. Honors `TILO_CALENDAR_DATA` (used
-/// by tests and by callers who want an explicit location), then
-/// `XDG_DATA_HOME`, then `$HOME/.local/share`. Returns `None` only when no
-/// home can be resolved, in which case the app simply runs without
-/// legacy migration. New writes use the shared host store on every platform.
-pub fn default_path() -> Option<PathBuf> {
-    if let Some(over) = std::env::var_os("TILO_CALENDAR_DATA") {
-        return Some(PathBuf::from(over));
-    }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(
-        base.join("tilo")
-            .join("calendar")
-            .join("calendar.automerge"),
-    )
-}
-
 /// Load a previously-saved calendar document. Returns `None` when the file
 /// does not exist yet (first launch) or cannot be parsed.
 pub fn load(path: &Path) -> Option<AutoCommit> {
-    let bytes = std::fs::read(path).ok()?;
+    let (dir, name) = tilo_files::file_at(path).ok()?;
+    let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
     AutoCommit::load(&bytes).ok()
 }
 
@@ -57,10 +28,8 @@ pub fn load(path: &Path) -> Option<AutoCommit> {
 /// Returns an error if `path`'s parent directory cannot be created, or if
 /// the atomic write (temp file creation, write, or rename) fails.
 pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    atomic_file::write(path, &doc.save())
+    let (dir, name) = tilo_files::file_at(path).map_err(io::Error::other)?;
+    tilo_files::blocking::write_atomic(&dir, &name, &doc.save()).map_err(io::Error::other)
 }
 
 /// Directory the import/export actions read from and write to. In place of a
@@ -72,32 +41,42 @@ pub fn transfer_dir() -> PathBuf {
     if let Some(over) = std::env::var_os("TILO_CALENDAR_IMPORT_DIR") {
         return PathBuf::from(over);
     }
+    // Without a Downloads folder, the session's scratch directory; a page has
+    // neither, and its file operations on the relative path simply fail.
     ui::sysdirs::UserDirs::from_system()
         .downloads
-        .unwrap_or_else(std::env::temp_dir)
+        .or_else(|| {
+            tilo_paths::AppPaths::for_app("so.tilo.calendar")
+                .runtime()
+                .ok()
+                .and_then(|location| location.native_path().ok().map(PathBuf::from))
+        })
+        .unwrap_or_default()
 }
 
 /// The most-recently-modified `.ics` file in `dir`, if any. Backs the
 /// "Import" action so it pulls in the calendar file the user just
 /// downloaded rather than a bundled sample.
 pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
+    let mut best: Option<(ui::time::SystemTime, PathBuf)> = None;
+    let folder = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf())).ok()?;
+    let root = tilo_files::VPath::root();
+    for entry in tilo_files::blocking::list(&folder, &root).ok()? {
+        let path = dir.join(&entry.name);
         let is_ics = path
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("ics"));
-        if !is_ics {
+        if !is_ics || entry.kind != tilo_files::Kind::File {
             continue;
         }
-        let Ok(metadata) = entry.metadata() else {
+        let Ok(name) = tilo_files::VPath::new(&entry.name) else {
             continue;
         };
-        if !metadata.is_file() {
+        let Ok(metadata) = tilo_files::blocking::metadata(&folder, &name) else {
             continue;
-        }
-        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        };
+        let modified = metadata.modified;
         if best.as_ref().is_none_or(|(m, _)| modified > *m) {
             best = Some((modified, path));
         }
@@ -118,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trips_document() {
+    fn save_then_load_round_trips_and_a_missing_file_is_none() {
         let dir = tmp_dir();
         let path = dir.join("calendar.automerge");
         let mut doc = AutoCommit::new();
@@ -131,17 +110,16 @@ mod tests {
             Ok(Some((automerge::Value::Object(ObjType::Map), _)))
         ));
         std::fs::remove_dir_all(&dir).ok();
-    }
 
-    #[test]
-    fn load_missing_file_is_none() {
+        // Missing file.
         let dir = tmp_dir();
         assert!(load(&dir.join("nope.automerge")).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn newest_ics_picks_latest() {
+    fn newest_ics_picks_the_latest_calendar_file_and_ignores_directories() {
+        // Picks latest; ignores non-.ics files.
         let dir = tmp_dir();
         std::fs::write(dir.join("a.ics"), "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -150,10 +128,8 @@ mod tests {
         let picked = newest_ics(&dir).expect("an ics file");
         assert_eq!(picked.file_name().unwrap(), "b.ics");
         std::fs::remove_dir_all(&dir).ok();
-    }
 
-    #[test]
-    fn newest_ics_ignores_directories_named_like_calendar_files() {
+        // Ignores directories named like calendar files (fresh dir).
         let dir = tmp_dir();
         let file = dir.join("invite.ICS");
         std::fs::write(&file, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();

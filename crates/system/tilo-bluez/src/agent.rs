@@ -713,332 +713,395 @@ mod tests {
         ObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap()
     }
 
-    /// The prompt reaching the UI carries the passkey and the device's display name, and
-    /// accepting returns `Ok` to `BlueZ`.
     #[tokio::test]
-    async fn confirmation_prompt_reaches_the_ui_and_accepting_unblocks_bluez() {
-        let (a, mut rx) = agent();
-        let ui = tokio::spawn(async move {
-            let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else {
-                panic!("expected an Ask")
+    async fn pairing_prompts_reach_the_ui_and_answers_return_to_bluez() {
+        // Phase `confirmation_prompt_reaches_the_ui_and_accepting_unblocks_bluez`.
+        // The prompt reaching the UI carries the passkey and the device's display name, and
+        // accepting returns `Ok` to `BlueZ`.
+        {
+            let (a, mut rx) = agent();
+            let ui = tokio::spawn(async move {
+                let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else {
+                    panic!("expected an Ask")
+                };
+                assert_eq!(request.device_name, "Studio Headphones");
+                assert_eq!(
+                    request.prompt,
+                    PairingPrompt::ConfirmPasskey { passkey: 123_456 }
+                );
+                reply.send(PairingReply::Accept).unwrap();
+            });
+            a.request_confirmation(dev(), 123_456)
+                .await
+                .expect("accepted");
+            ui.await.unwrap();
+        }
+        // Phase `declining_returns_rejected`.
+        // Declining returns `org.bluez.Error.Rejected`, which aborts the pairing rather than
+        // leaving it hanging.
+        {
+            let (a, mut rx) = agent();
+            tokio::spawn(async move {
+                let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                    panic!()
+                };
+                reply.send(PairingReply::Reject).unwrap();
+            });
+            let err = a.request_confirmation(dev(), 1).await.unwrap_err();
+            assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
+        }
+        // Phase `typed_passkey_is_returned_verbatim`.
+        // A typed passkey comes back to `BlueZ` as the u32 it asked for.
+        {
+            let (a, mut rx) = agent();
+            tokio::spawn(async move {
+                let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else {
+                    panic!()
+                };
+                assert_eq!(request.prompt, PairingPrompt::RequestPasskey);
+                reply.send(PairingReply::Passkey(4321)).unwrap();
+            });
+            assert_eq!(a.request_passkey(dev()).await.unwrap(), 4321);
+        }
+        // Phase `typed_pin_is_returned_verbatim`.
+        {
+            let (a, mut rx) = agent();
+            tokio::spawn(async move {
+                let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                    panic!()
+                };
+                reply.send(PairingReply::PinCode("0000".into())).unwrap();
+            });
+            assert_eq!(a.request_pin_code(dev()).await.unwrap(), "0000");
+        }
+        // Phase `display_passkey_returns_at_once_and_still_notifies`.
+        // Display-only prompts return immediately and still tell the UI what to put on screen.
+        {
+            let (a, mut rx) = agent();
+            a.display_passkey(dev(), 42, 3);
+            let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
+                panic!()
             };
-            assert_eq!(request.device_name, "Studio Headphones");
             assert_eq!(
                 request.prompt,
-                PairingPrompt::ConfirmPasskey { passkey: 123_456 }
+                PairingPrompt::DisplayPasskey {
+                    passkey: 42,
+                    entered: 3
+                }
             );
-            reply.send(PairingReply::Accept).unwrap();
-        });
-        a.request_confirmation(dev(), 123_456)
-            .await
-            .expect("accepted");
-        ui.await.unwrap();
-    }
-
-    /// Declining returns `org.bluez.Error.Rejected`, which aborts the pairing rather than
-    /// leaving it hanging.
-    #[tokio::test]
-    async fn declining_returns_rejected() {
-        let (a, mut rx) = agent();
-        tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+            assert_eq!(request.prompt.passkey_text().as_deref(), Some("000042"));
+        }
+        // Phase `cancel_and_release_reach_the_ui`.
+        {
+            let (a, mut rx) = agent();
+            a.cancel();
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
+            a.release();
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
+        }
+        // Phase `unknown_devices_are_named_by_address`.
+        // An unknown device still gets a nameable prompt — the address decoded from the path —
+        // rather than an empty title.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_timeout(DeviceNames::new(), Duration::from_millis(50));
+            a.display_passkey(dev(), 1, 0);
+            let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
                 panic!()
             };
-            reply.send(PairingReply::Reject).unwrap();
-        });
-        let err = a.request_confirmation(dev(), 1).await.unwrap_err();
-        assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
+            assert_eq!(request.device_name, "AA:BB:CC:DD:EE:FF");
+        }
     }
 
-    /// A typed passkey comes back to `BlueZ` as the u32 it asked for.
+    /// Each `org.bluez.Agent1` method raises exactly its prompt, and the
+    /// answer comes back in the shape that method returns.
     #[tokio::test]
-    async fn typed_passkey_is_returned_verbatim() {
+    async fn every_agent1_method_maps_to_its_prompt() {
+        const UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
         let (a, mut rx) = agent();
-        tokio::spawn(async move {
-            let AgentEvent::Ask { request, reply } = rx.recv().await.unwrap() else {
-                panic!()
-            };
-            assert_eq!(request.prompt, PairingPrompt::RequestPasskey);
-            reply.send(PairingReply::Passkey(4321)).unwrap();
-        });
-        assert_eq!(a.request_passkey(dev()).await.unwrap(), 4321);
-    }
-
-    #[tokio::test]
-    async fn typed_pin_is_returned_verbatim() {
-        let (a, mut rx) = agent();
-        tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-                panic!()
-            };
-            reply.send(PairingReply::PinCode("0000".into())).unwrap();
+        let ui = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..5 {
+                let Some(AgentEvent::Ask { request, reply }) = rx.recv().await else {
+                    panic!("every asking method raises a prompt")
+                };
+                let answer = match request.prompt {
+                    PairingPrompt::RequestPinCode => PairingReply::PinCode("0000".into()),
+                    PairingPrompt::RequestPasskey => PairingReply::Passkey(123_456),
+                    _ => PairingReply::Accept,
+                };
+                seen.push(request.prompt);
+                reply.send(answer).unwrap();
+            }
+            (seen, rx)
         });
         assert_eq!(a.request_pin_code(dev()).await.unwrap(), "0000");
-    }
-
-    /// Nobody answering must not wedge `bluetoothd` — it gets `Canceled`.
-    #[tokio::test]
-    async fn an_unanswered_prompt_times_out_as_canceled() {
-        let (a, _rx) = agent();
-        let err = a.request_confirmation(dev(), 1).await.unwrap_err();
-        assert!(matches!(err, AgentError::Canceled(_)), "{err:?}");
-    }
-
-    /// A UI that closes the prompt without answering is a refusal, never a silent accept.
-    #[tokio::test]
-    async fn a_dismissed_prompt_is_a_refusal() {
-        let (a, mut rx) = agent();
-        tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-                panic!()
-            };
-            drop(reply);
-        });
-        let err = a.request_authorization(dev()).await.unwrap_err();
-        assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
-    }
-
-    /// With no UI attached at all the agent refuses rather than accepting — otherwise a
-    /// headless session would auto-pair anything nearby.
-    #[tokio::test]
-    async fn no_ui_attached_refuses_instead_of_accepting() {
-        let (a, rx) = agent();
-        drop(rx);
-        let err = a.request_confirmation(dev(), 1).await.unwrap_err();
-        assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
-    }
-
-    /// A UI that answers the wrong shape is a failed pairing, not a passkey of nonsense handed
-    /// to the daemon.
-    #[tokio::test]
-    async fn a_mismatched_reply_cancels_rather_than_guessing() {
-        let (a, mut rx) = agent();
-        tokio::spawn(async move {
-            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-                panic!()
-            };
-            reply.send(PairingReply::Accept).unwrap();
-        });
-        let err = a.request_passkey(dev()).await.unwrap_err();
-        assert!(matches!(err, AgentError::Canceled(_)), "{err:?}");
-    }
-
-    /// Display-only prompts return immediately and still tell the UI what to put on screen.
-    #[tokio::test]
-    async fn display_passkey_returns_at_once_and_still_notifies() {
-        let (a, mut rx) = agent();
-        a.display_passkey(dev(), 42, 3);
-        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
-            panic!()
-        };
+        assert_eq!(a.request_passkey(dev()).await.unwrap(), 123_456);
+        a.request_confirmation(dev(), 424_242).await.unwrap();
+        a.request_authorization(dev()).await.unwrap();
+        a.authorize_service(dev(), UUID.into()).await.unwrap();
+        let (seen, mut rx) = ui.await.unwrap();
         assert_eq!(
-            request.prompt,
+            seen,
+            vec![
+                PairingPrompt::RequestPinCode,
+                PairingPrompt::RequestPasskey,
+                PairingPrompt::ConfirmPasskey { passkey: 424_242 },
+                PairingPrompt::ConfirmPairing,
+                PairingPrompt::AuthorizeService { uuid: UUID.into() },
+            ]
+        );
+
+        // The display methods return at once, carrying the code to show.
+        a.display_passkey(dev(), 42, 2);
+        a.display_pin_code(dev(), "1234".into());
+        for expected in [
             PairingPrompt::DisplayPasskey {
                 passkey: 42,
-                entered: 3
-            }
-        );
-        assert_eq!(request.prompt.passkey_text().as_deref(), Some("000042"));
-    }
+                entered: 2,
+            },
+            PairingPrompt::DisplayPinCode { pin: "1234".into() },
+        ] {
+            let Some(AgentEvent::Ask { request, .. }) = rx.recv().await else {
+                panic!("a display method notifies the UI")
+            };
+            assert_eq!(request.prompt, expected);
+            assert!(!request.prompt.expects_answer());
+        }
 
-    #[tokio::test]
-    async fn cancel_and_release_reach_the_ui() {
-        let (a, mut rx) = agent();
+        // `Cancel` withdraws whatever is on screen.
         a.cancel();
         assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
-        a.release();
-        assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
-    }
-
-    /// An unknown device still gets a nameable prompt — the address decoded from the path —
-    /// rather than an empty title.
-    #[tokio::test]
-    async fn unknown_devices_are_named_by_address() {
-        let (a, mut rx) = PairingAgent::with_timeout(DeviceNames::new(), Duration::from_millis(50));
-        a.display_passkey(dev(), 1, 0);
-        let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
-            panic!()
-        };
-        assert_eq!(request.device_name, "AA:BB:CC:DD:EE:FF");
     }
 
     #[tokio::test]
-    async fn a_full_event_queue_rejects_authorization_instead_of_accumulating_work() {
-        let (a, _rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        // Display-only events do not grant consent, so they may occupy the sole queue slot.  A
-        // request that would authorise a device is rejected rather than being buffered without
-        // bound or silently dropped.
-        a.display_passkey(dev(), 1, 0);
-        let err = a.request_confirmation(dev(), 1).await.unwrap_err();
-        assert!(matches!(err, AgentError::Rejected(message) if message == "pairing UI is busy"));
+    async fn unanswered_dismissed_or_mismatched_prompts_refuse_pairing() {
+        // Phase `an_unanswered_prompt_times_out_as_canceled`.
+        // Nobody answering must not wedge `bluetoothd` — it gets `Canceled`.
+        {
+            let (a, _rx) = agent();
+            let err = a.request_confirmation(dev(), 1).await.unwrap_err();
+            assert!(matches!(err, AgentError::Canceled(_)), "{err:?}");
+        }
+        // Phase `a_dismissed_prompt_is_a_refusal`.
+        // A UI that closes the prompt without answering is a refusal, never a silent accept.
+        {
+            let (a, mut rx) = agent();
+            tokio::spawn(async move {
+                let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                    panic!()
+                };
+                drop(reply);
+            });
+            let err = a.request_authorization(dev()).await.unwrap_err();
+            assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
+        }
+        // Phase `no_ui_attached_refuses_instead_of_accepting`.
+        // With no UI attached at all the agent refuses rather than accepting — otherwise a
+        // headless session would auto-pair anything nearby.
+        {
+            let (a, rx) = agent();
+            drop(rx);
+            let err = a.request_confirmation(dev(), 1).await.unwrap_err();
+            assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
+        }
+        // Phase `a_mismatched_reply_cancels_rather_than_guessing`.
+        // A UI that answers the wrong shape is a failed pairing, not a passkey of nonsense handed
+        // to the daemon.
+        {
+            let (a, mut rx) = agent();
+            tokio::spawn(async move {
+                let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                    panic!()
+                };
+                reply.send(PairingReply::Accept).unwrap();
+            });
+            let err = a.request_passkey(dev()).await.unwrap_err();
+            assert!(matches!(err, AgentError::Canceled(_)), "{err:?}");
+        }
+        // Phase `dropping_the_agent_rejects_retained_pairing_replies`.
+        {
+            let (a, _rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            let (ui_reply, reply_rx) = PairingReplySender::channel();
+            a.insert_reply(0, ui_reply.clone()).unwrap();
+            drop(a);
+            assert_eq!(reply_rx.await.unwrap(), PairingReply::Reject);
+        }
     }
 
     #[tokio::test]
-    async fn request_id_exhaustion_never_wraps_or_replaces_an_active_reply() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 2);
-        a.next_request_id.store(u64::MAX - 1, Ordering::Relaxed);
-        let a = Arc::new(a);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn the_bounded_event_queue_rejects_overflow_and_drains_on_shutdown() {
+        // Phase `a_full_event_queue_rejects_authorization_instead_of_accumulating_work`.
+        {
+            let (a, _rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            // Display-only events do not grant consent, so they may occupy the sole queue slot.  A
+            // request that would authorise a device is rejected rather than being buffered without
+            // bound or silently dropped.
+            a.display_passkey(dev(), 1, 0);
+            let err = a.request_confirmation(dev(), 1).await.unwrap_err();
+            assert!(
+                matches!(err, AgentError::Rejected(message) if message == "pairing UI is busy")
+            );
+        }
+        // Phase `request_id_exhaustion_never_wraps_or_replaces_an_active_reply`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 2);
+            a.next_request_id.store(u64::MAX - 1, Ordering::Relaxed);
+            let a = Arc::new(a);
 
-        let first_request = {
-            let a = Arc::clone(&a);
-            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
-        };
-        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-            panic!("the final usable request ID should be admitted once");
-        };
-        assert!(
-            a.active_replies
-                .lock()
-                .is_ok_and(|replies| replies.contains_key(&(u64::MAX - 1)))
-        );
+            let first_request = {
+                let a = Arc::clone(&a);
+                tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+            };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!("the final usable request ID should be admitted once");
+            };
+            assert!(
+                a.active_replies
+                    .lock()
+                    .is_ok_and(|replies| replies.contains_key(&(u64::MAX - 1)))
+            );
 
-        let err = a.request_confirmation(dev(), 2).await.unwrap_err();
-        assert!(
-            matches!(err, AgentError::Rejected(message) if message == "pairing request ID space exhausted")
-        );
-        assert!(
-            a.active_replies
-                .lock()
-                .is_ok_and(|replies| replies.len() == 1 && replies.contains_key(&(u64::MAX - 1)))
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            let err = a.request_confirmation(dev(), 2).await.unwrap_err();
+            assert!(
+                matches!(err, AgentError::Rejected(message) if message == "pairing request ID space exhausted")
+            );
+            assert!(
+                a.active_replies.lock().is_ok_and(
+                    |replies| replies.len() == 1 && replies.contains_key(&(u64::MAX - 1))
+                )
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), rx.recv())
+                    .await
+                    .is_err(),
+                "an exhausted ID must not admit a second event"
+            );
+
+            reply.send(PairingReply::Reject).unwrap();
+            assert!(matches!(
+                first_request.await.unwrap(),
+                Err(AgentError::Rejected(_))
+            ));
+        }
+        // Phase `draining_a_bounded_queue_admits_the_next_pairing_request`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            let a = Arc::new(a);
+            a.display_passkey(dev(), 1, 0);
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
+
+            let asking = {
+                let a = Arc::clone(&a);
+                tokio::spawn(async move { a.request_confirmation(dev(), 2).await })
+            };
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!("expected the drained queue to admit an Ask");
+            };
+            reply.send(PairingReply::Accept).unwrap();
+            assert!(asking.await.unwrap().is_ok());
+        }
+        // Phase `cancel_is_delivered_and_rejects_an_ask_even_when_the_queue_is_full`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            let a = Arc::new(a);
+            let asking = {
+                let a = Arc::clone(&a);
+                tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+            };
+            tokio::task::yield_now().await;
+            a.cancel();
+
+            // Lifecycle is carried by a latest-state signal, rather than joining the already-full
+            // prompt queue, so the compositor can always dismiss its current dialog.
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
+            let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+                panic!("the queued Ask should still be drainable after cancellation");
+            };
+            assert_eq!(reply.send(PairingReply::Accept), Err(PairingReply::Accept));
+            assert!(matches!(
+                asking.await.unwrap(),
+                Err(AgentError::Rejected(_))
+            ));
+        }
+        // Phase `release_rejects_pending_work_and_prevents_new_requests`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            let a = Arc::new(a);
+            let asking = {
+                let a = Arc::clone(&a);
+                tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+            };
+            tokio::task::yield_now().await;
+            a.release();
+
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
+            assert!(matches!(
+                asking.await.unwrap(),
+                Err(AgentError::Rejected(_))
+            ));
+            let err = a.request_confirmation(dev(), 2).await.unwrap_err();
+            assert!(
+                matches!(err, AgentError::Rejected(message) if message == "pairing agent released")
+            );
+        }
+        // Phase `receiver_shutdown_drains_admitted_events_then_closes`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            a.display_passkey(dev(), 1, 0);
+            rx.close();
+            // Closing the receiver is a clean UI shutdown: already-admitted work is observable,
+            // but no later D-Bus call can add more state.
+            assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
+            drop(a);
+            assert!(rx.recv().await.is_none());
+        }
+        // Phase `oversized_daemon_strings_do_not_enter_the_event_queue`.
+        {
+            let (a, mut rx) =
+                PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+            a.display_pin_code(dev(), "x".repeat(MAX_PIN_CODE_BYTES + 1));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), rx.recv())
+                    .await
+                    .is_err()
+            );
+
+            let err = a
+                .authorize_service(dev(), "x".repeat(MAX_SERVICE_UUID_BYTES + 1))
                 .await
-                .is_err(),
-            "an exhausted ID must not admit a second event"
-        );
-
-        reply.send(PairingReply::Reject).unwrap();
-        assert!(matches!(
-            first_request.await.unwrap(),
-            Err(AgentError::Rejected(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn draining_a_bounded_queue_admits_the_next_pairing_request() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        let a = Arc::new(a);
-        a.display_passkey(dev(), 1, 0);
-        assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
-
-        let asking = {
-            let a = Arc::clone(&a);
-            tokio::spawn(async move { a.request_confirmation(dev(), 2).await })
-        };
-        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-            panic!("expected the drained queue to admit an Ask");
-        };
-        reply.send(PairingReply::Accept).unwrap();
-        assert!(asking.await.unwrap().is_ok());
-    }
-
-    #[tokio::test]
-    async fn cancel_is_delivered_and_rejects_an_ask_even_when_the_queue_is_full() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        let a = Arc::new(a);
-        let asking = {
-            let a = Arc::clone(&a);
-            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
-        };
-        tokio::task::yield_now().await;
-        a.cancel();
-
-        // Lifecycle is carried by a latest-state signal, rather than joining the already-full
-        // prompt queue, so the compositor can always dismiss its current dialog.
-        assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
-        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
-            panic!("the queued Ask should still be drainable after cancellation");
-        };
-        assert_eq!(reply.send(PairingReply::Accept), Err(PairingReply::Accept));
-        assert!(matches!(
-            asking.await.unwrap(),
-            Err(AgentError::Rejected(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn release_rejects_pending_work_and_prevents_new_requests() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        let a = Arc::new(a);
-        let asking = {
-            let a = Arc::clone(&a);
-            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
-        };
-        tokio::task::yield_now().await;
-        a.release();
-
-        assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
-        assert!(matches!(
-            asking.await.unwrap(),
-            Err(AgentError::Rejected(_))
-        ));
-        let err = a.request_confirmation(dev(), 2).await.unwrap_err();
-        assert!(
-            matches!(err, AgentError::Rejected(message) if message == "pairing agent released")
-        );
-    }
-
-    #[tokio::test]
-    async fn receiver_shutdown_drains_admitted_events_then_closes() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        a.display_passkey(dev(), 1, 0);
-        rx.close();
-        // Closing the receiver is a clean UI shutdown: already-admitted work is observable,
-        // but no later D-Bus call can add more state.
-        assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
-        drop(a);
-        assert!(rx.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn oversized_daemon_strings_do_not_enter_the_event_queue() {
-        let (a, mut rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        a.display_pin_code(dev(), "x".repeat(MAX_PIN_CODE_BYTES + 1));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), rx.recv())
-                .await
-                .is_err()
-        );
-
-        let err = a
-            .authorize_service(dev(), "x".repeat(MAX_SERVICE_UUID_BYTES + 1))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::Canceled(_)));
+                .unwrap_err();
+            assert!(matches!(err, AgentError::Canceled(_)));
+        }
     }
 
     #[test]
-    fn oversized_names_are_not_retained_in_the_cache() {
-        let names = DeviceNames::new();
-        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-        names.set(path, &"x".repeat(MAX_DEVICE_NAME_BYTES + 1));
-        assert_eq!(names.get(path), "AA:BB:CC:DD:EE:FF");
-    }
-
-    #[test]
-    fn a_full_name_cache_uses_the_address_for_new_devices() {
-        let names = DeviceNames::with_capacity(1);
-        names.set("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "first");
-        let second = "/org/bluez/hci0/dev_11_22_33_44_55_66";
-        names.set(second, "second");
-        assert_eq!(names.get(second), "11:22:33:44:55:66");
-    }
-
-    #[tokio::test]
-    async fn dropping_the_agent_rejects_retained_pairing_replies() {
-        let (a, _rx) =
-            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
-        let (ui_reply, reply_rx) = PairingReplySender::channel();
-        a.insert_reply(0, ui_reply.clone()).unwrap();
-        drop(a);
-        assert_eq!(reply_rx.await.unwrap(), PairingReply::Reject);
+    fn the_name_cache_is_bounded_and_falls_back_to_addresses() {
+        // Phase `oversized_names_are_not_retained_in_the_cache`.
+        {
+            let names = DeviceNames::new();
+            let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+            names.set(path, &"x".repeat(MAX_DEVICE_NAME_BYTES + 1));
+            assert_eq!(names.get(path), "AA:BB:CC:DD:EE:FF");
+        }
+        // Phase `a_full_name_cache_uses_the_address_for_new_devices`.
+        {
+            let names = DeviceNames::with_capacity(1);
+            names.set("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "first");
+            let second = "/org/bluez/hci0/dev_11_22_33_44_55_66";
+            names.set(second, "second");
+            assert_eq!(names.get(second), "11:22:33:44:55:66");
+        }
     }
 }

@@ -9,7 +9,7 @@
 //! button/scrim/Esc self-routing.
 
 use crate::time::Instant;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -912,9 +912,9 @@ impl NavShell {
     /// reaches `adjust_layout_with_measure` first and never lands here.
     fn resolve_panes_fallback(&mut self) {
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_children(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_children(&theme, tr)
+        });
     }
 
     fn apply_child_layout(
@@ -1077,17 +1077,9 @@ impl NavShell {
 }
 
 impl Widget for NavShell {
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = child.has_action_control_bindings();
-            }
-        });
-        found
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.overview.sync(state, path);
         if let Some(d) = self.detail.as_mut() {
             d.sync(state, path);
@@ -1229,7 +1221,7 @@ impl Widget for NavShell {
         false
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         // Slides advance from the draw path (`self_tick`). The admitted
         // primary-frame update forwards model/momentum updates to every pane.
         let mut any = self.overview.update(state, path);
@@ -1328,21 +1320,11 @@ impl Widget for NavShell {
         self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1356,12 +1338,12 @@ impl Widget for NavShell {
                 // Dismiss the overlay drawer, else pop the pushed detail.
                 if self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
                     self.show_overview();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1379,7 +1361,7 @@ impl Widget for NavShell {
                         Affordance::Back => self.show_overview(),
                         Affordance::None => {}
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // 2. A scrim click dismisses the overlay drawer.
@@ -1390,7 +1372,7 @@ impl Widget for NavShell {
                     && !self.sidebar_rect.contains(self.last_cursor)
                 {
                     self.close_sidebar();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // 3. Record which content pane the user engaged (a press over
@@ -1410,18 +1392,10 @@ impl Widget for NavShell {
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
-        self.route_event_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-        );
+        self.route_event_to_children(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1542,6 +1516,18 @@ impl Widget for NavShell {
     }
 }
 
+impl crate::widget::controls::ActionControls for NavShell {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = crate::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
+    }
+}
+
 impl NavShell {
     /// Routes `event` to child panes in front-to-back order: an open overlay
     /// drawer is topmost so it routes first; otherwise the front content
@@ -1549,20 +1535,10 @@ impl NavShell {
     /// for a sidebar-plus-content shell but must not stop the sidebar/
     /// overview panes from being routed to. Split out of `handle_event` to
     /// keep that under the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards Widget::handle_event's own parameter list to route to the right \
-                  child pane; bundling it would mean bundling the trait method too"
-    )]
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         enum Which {
             Sidebar,
@@ -1599,7 +1575,7 @@ impl NavShell {
         }
 
         for (which, child_node) in order {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
             let target: &mut dyn Widget = match which {
@@ -1615,14 +1591,10 @@ impl NavShell {
             };
             target.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    taffy,
+                    ..ctx.reborrow(ctx.path, child_node)
+                },
             );
         }
     }
@@ -1670,6 +1642,7 @@ impl NavShell {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use automerge::AutoCommit;
     use vello_encoding::DrawTag;
 
     /// A leaf pane that proves which retained pane received an input event.
@@ -1697,8 +1670,6 @@ mod tests {
         fn next_wake_deadline(&self) -> Option<Instant> {
             self.deadline
         }
-
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
         fn build_layout(
             &mut self,
@@ -1737,18 +1708,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }
 
@@ -1783,62 +1743,112 @@ mod tests {
     }
 
     #[test]
-    fn host_registration_tracks_modal_drawers_and_replaced_panels() {
-        let mut ns = shell(420.0, true);
-        ns.close_sidebar();
-        ns.show_overview();
-        ns.snap();
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut map);
-        let children = taffy.children(node).unwrap();
-        assert_eq!(
-            children.len(),
-            1,
-            "hidden panels must not enter host focus order"
-        );
-        assert!(std::ptr::addr_eq(
-            map[&children[0]],
-            ns.overview.as_ref() as *const dyn Widget
-        ));
-        assert!(!ns.take_structure_dirty());
+    fn host_registration_and_presence_track_modal_drawers() {
+        // Case `host_registration_tracks_modal_drawers_and_replaced_panels`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.close_sidebar();
+            ns.show_overview();
+            ns.snap();
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut map);
+            let children = taffy.children(node).unwrap();
+            assert_eq!(
+                children.len(),
+                1,
+                "hidden panels must not enter host focus order"
+            );
+            assert!(std::ptr::addr_eq(
+                map[&children[0]],
+                ns.overview.as_ref() as *const dyn Widget
+            ));
+            assert!(!ns.take_structure_dirty());
 
-        ns.show_detail();
-        assert!(
-            ns.take_structure_dirty(),
-            "push navigation changes host focus targets"
-        );
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut map);
-        let children = taffy.children(node).unwrap();
-        assert_eq!(children.len(), 1);
-        assert!(std::ptr::addr_eq(
-            map[&children[0]],
-            ns.detail.as_deref().unwrap() as *const dyn Widget
-        ));
-        assert!(!ns.take_structure_dirty());
+            ns.show_detail();
+            assert!(
+                ns.take_structure_dirty(),
+                "push navigation changes host focus targets"
+            );
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut map);
+            let children = taffy.children(node).unwrap();
+            assert_eq!(children.len(), 1);
+            assert!(std::ptr::addr_eq(
+                map[&children[0]],
+                ns.detail.as_deref().unwrap() as *const dyn Widget
+            ));
+            assert!(!ns.take_structure_dirty());
 
-        ns.open_sidebar();
-        ns.snap();
-        assert!(ns.take_structure_dirty());
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut map);
-        let children = taffy.children(node).unwrap();
-        assert_eq!(children.len(), 1);
-        let sidebar = ns.sidebar.as_deref().unwrap();
-        assert!(std::ptr::addr_eq(
-            map[&children[0]],
-            sidebar as *const dyn Widget
-        ));
-        assert!(!ns.take_structure_dirty());
+            ns.open_sidebar();
+            ns.snap();
+            assert!(ns.take_structure_dirty());
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut map);
+            let children = taffy.children(node).unwrap();
+            assert_eq!(children.len(), 1);
+            let sidebar = ns.sidebar.as_deref().unwrap();
+            assert!(std::ptr::addr_eq(
+                map[&children[0]],
+                sidebar as *const dyn Widget
+            ));
+            assert!(!ns.take_structure_dirty());
 
-        ns.set_overview(Box::new(Text::new("replacement")));
-        assert!(ns.take_structure_dirty());
-        ns.close_sidebar();
-        assert!(ns.take_structure_dirty());
+            ns.set_overview(Box::new(Text::new("replacement")));
+            assert!(ns.take_structure_dirty());
+            ns.close_sidebar();
+            assert!(ns.take_structure_dirty());
+        }
+
+        // Case `opaque_hold_deadline_reaches_host_through_modal_nav_shell`.
+        {
+            let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
+            let mut content = EventProbe::new("content", Default::default());
+            content.deadline = Some(deadline);
+            let mut ns =
+                NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
+            lay_out(&mut ns, 420.0, 500.0);
+            ns.snap_sidebar(true);
+            assert!(ns.overlay_sidebar_is_modal());
+            assert_eq!(
+                ns.next_wake_deadline(),
+                Some(deadline),
+                "a live backdrop must still wake for its fade"
+            );
+        }
+
+        // Case `control_presence_modal_exposure_matches_full_inventory`.
+        {
+            let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "go",
+                    "Go",
+                    tilo_actions::OperationKind::View,
+                    "test.go",
+                    &(),
+                )
+                .unwrap(),
+            );
+            let button = crate::widget::Button::new("go", "Go", None)
+                .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
+            let mut ns =
+                NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
+            lay_out(&mut ns, 420.0, 500.0);
+            for open in [false, true, false] {
+                ns.snap_sidebar(open);
+                let inventory = crate::widget::controls::control_action_bindings(&ns)
+                    .iter()
+                    .any(|b| matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
+                assert_eq!(
+                    crate::widget::controls::has_action_control_bindings(&ns),
+                    inventory
+                );
+                assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
+            }
+        }
     }
 
     fn lay_out(ns: &mut NavShell, w: f64, h: f64) {
@@ -1859,213 +1869,244 @@ mod tests {
     }
 
     #[test]
-    fn translated_scroll_layout_reuses_measured_child_tree_without_new_fonts() {
-        use crate::widget::Scrollable;
-        let content = Scrollable::new_vertical().with_child(Box::new(Text::new(
-            &"file row with a measured label\n".repeat(100),
-        )));
-        let mut ns = NavShell::sidebar_over_content(
-            Box::new(Text::new("Places\nHome\nDownloads")),
-            Box::new(content),
-        );
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::Definite(500.0),
-                },
+    fn measured_panes_are_reused_until_scale_theme_size_or_children_change() {
+        // Case `translated_scroll_layout_reuses_measured_child_tree_without_new_fonts`.
+        {
+            use crate::widget::Scrollable;
+            let content = Scrollable::new_vertical().with_child(Box::new(Text::new(
+                &"file row with a measured label\n".repeat(100),
+            )));
+            let mut ns = NavShell::sidebar_over_content(
+                Box::new(Text::new("Places\nHome\nDownloads")),
+                Box::new(content),
+            );
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1000.0),
+                        height: taffy::AvailableSpace::Definite(500.0),
+                    },
+                )
+                .unwrap();
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            ns.mark_drawn();
+            let old_child = ns.overview.children()[0].get_rect();
+            let old_node = ns.overview_node;
+            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+            for _ in 1..=4 {
+                ns.overview
+                    .as_any_mut()
+                    .unwrap()
+                    .downcast_mut::<Scrollable>()
+                    .unwrap()
+                    .scroll_by(0.0, 20.0);
+                assert!(ns.is_layout_dirty(), "scroll must reposition children");
+                assert!(
+                    !ns.layout_needs_measure(),
+                    "scroll leaves intrinsic sizes intact"
+                );
+                ns.apply_layout(&taffy, node, Point::new(12.0, 7.0));
+                ns.mark_drawn();
+            }
+            let child = ns.overview.children()[0].get_rect();
+            assert_eq!(child.x0, old_child.x0 + 12.0);
+            assert_eq!(child.y0, old_child.y0 + 7.0 - 80.0);
+            assert_eq!(ns.overview_node, old_node);
+            assert_eq!(
+                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+                0,
+                "translation-only layout must not reload system fonts"
+            );
+        }
+
+        // Case `modal_drawer_remeasures_changed_backdrop_panes`.
+        {
+            use automerge::transaction::Transactable;
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "label", "first line").unwrap();
+            let mut ns = NavShell::sidebar_over_content(
+                Box::new(Text::new("places")),
+                Box::new(Text::from_document_string("label")),
+            );
+            ns.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut ns, 420.0, 500.0);
+            ns.snap_sidebar(true);
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut HashMap::new());
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(420.0),
+                        height: taffy::AvailableSpace::Definite(500.0),
+                    },
+                )
+                .unwrap();
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            ns.overview.mark_drawn();
+            ns.sidebar.as_mut().unwrap().mark_drawn();
+            let before = ns.overview.get_rect();
+            doc.put(
+                automerge::ROOT,
+                "label",
+                "first line\nsecond line\nthird line",
             )
             .unwrap();
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        ns.mark_drawn();
-        let old_child = ns.overview.children()[0].get_rect();
-        let old_node = ns.overview_node;
-        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-        for _ in 1..=4 {
-            ns.overview
-                .as_any_mut()
-                .unwrap()
-                .downcast_mut::<Scrollable>()
-                .unwrap()
-                .scroll_by(0.0, 20.0);
-            assert!(ns.is_layout_dirty(), "scroll must reposition children");
+            ns.sync(&mut doc, &automerge::ROOT);
+            assert!(ns.overlay_sidebar_is_modal());
+            assert!(ns.overview.layout_needs_measure());
             assert!(
                 !ns.layout_needs_measure(),
-                "scroll leaves intrinsic sizes intact"
+                "modal traversal exposes only the clean sidebar"
             );
-            ns.apply_layout(&taffy, node, Point::new(12.0, 7.0));
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            let reused = ns.overview.get_rect();
+            assert!(
+                reused.height() > before.height(),
+                "live backdrop must receive changed text geometry"
+            );
+            // Force the authoritative full path and compare its complete rectangle.
+            ns.inner_taffy = None;
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert_eq!(reused, ns.overview.get_rect());
+        }
+
+        // Case `measured_shell_rebuilds_after_theme_resize_and_child_replacement`.
+        {
+            let mut ns = NavShell::new(
+                Box::new(Text::new("overview")),
+                Box::new(Text::new("detail")),
+            );
+            lay_out(&mut ns, 1000.0, 500.0);
             ns.mark_drawn();
+            let original = ns.overview.get_rect();
+            let mut theme = Theme::dark();
+            theme.text_scale = 1.5;
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1200.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert!(ns.overview.get_rect().height() > original.height());
+            let mut fresh = NavShell::new(
+                Box::new(Text::new("overview")),
+                Box::new(Text::new("detail")),
+            );
+            let mut fresh_taffy = TaffyTree::new();
+            let fresh_node = fresh.build_layout(&mut fresh_taffy, &theme, &mut HashMap::new());
+            fresh_taffy
+                .compute_layout(
+                    fresh_node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1200.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            fresh.apply_layout(&fresh_taffy, fresh_node, Point::ZERO);
+            assert_eq!(ns.overview.get_rect(), fresh.overview.get_rect());
+            ns.mark_drawn();
+            // Swapping a previously laid-out, clean pane must invalidate the
+            // retained tree even though the incoming widget needs no measurement.
+            let mut replacement = NavShell::new(
+                Box::new(Text::new("replacement\nsecond line")),
+                Box::new(Text::new("detail")),
+            );
+            lay_out(&mut replacement, 1200.0, 600.0);
+            replacement.mark_drawn();
+            assert!(!replacement.overview.layout_needs_measure());
+            ns.set_overview(replacement.overview);
+            assert!(!ns.layout_needs_measure());
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert!(ns.overview.get_rect().height() > fresh.overview.get_rect().height());
         }
-        let child = ns.overview.children()[0].get_rect();
-        assert_eq!(child.x0, old_child.x0 + 12.0);
-        assert_eq!(child.y0, old_child.y0 + 7.0 - 80.0);
-        assert_eq!(ns.overview_node, old_node);
-        assert_eq!(
-            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
-            0,
-            "translation-only layout must not reload system fonts"
-        );
-    }
 
-    #[test]
-    fn opaque_hold_deadline_reaches_host_through_modal_nav_shell() {
-        let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
-        let mut content = EventProbe::new("content", Default::default());
-        content.deadline = Some(deadline);
-        let mut ns =
-            NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
-        lay_out(&mut ns, 420.0, 500.0);
-        ns.snap_sidebar(true);
-        assert!(ns.overlay_sidebar_is_modal());
-        assert_eq!(
-            ns.next_wake_deadline(),
-            Some(deadline),
-            "a live backdrop must still wake for its fade"
-        );
-    }
-
-    #[test]
-    fn control_presence_modal_exposure_matches_full_inventory() {
-        let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
-            tilo_actions::ActionSpec::operation(
-                "go",
-                "Go",
-                tilo_actions::OperationKind::View,
-                "test.go",
-                &(),
-            )
-            .unwrap(),
-        );
-        let button = crate::widget::Button::new("go", "Go", None)
-            .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
-        let mut ns =
-            NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
-        lay_out(&mut ns, 420.0, 500.0);
-        for open in [false, true, false] {
-            ns.snap_sidebar(open);
-            let inventory = ns
-                .control_action_bindings()
-                .iter()
-                .any(|b| matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
-            assert_eq!(ns.has_action_control_bindings(), inventory);
-            assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
+        // Case `panes_measure_at_the_host_text_scale_without_loading_fonts`.
+        // The panes are solved with the theme the outer tree was built with and
+        // the host's renderer, so a `Text` in a pane is twice as tall at 2× and
+        // the shared-host path loads no font system of its own.
+        {
+            let height_at = |scale: f32| {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                renderer.set_text_scale(scale);
+                let mut ns = NavShell::new(
+                    Box::new(Text::new("overview")),
+                    Box::new(Text::new("detail")),
+                );
+                let mut taffy = TaffyTree::<()>::new();
+                let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let root = ns.build_layout(&mut taffy, &theme, &mut nodes);
+                let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+                // SAFETY: the tree and maps come from this exact live build and
+                // `ns` is exclusively owned for the whole solve.
+                unsafe {
+                    bindings.rebuild(&ns, &taffy, root, &nodes);
+                    crate::widget::compute_widget_layout(
+                        &mut taffy,
+                        root,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(1200.0),
+                            height: taffy::AvailableSpace::Definite(600.0),
+                        },
+                        &nodes,
+                        &bindings,
+                        &mut renderer,
+                    )
+                    .unwrap();
+                }
+                ns.apply_layout(&taffy, root, Point::ZERO);
+                assert_eq!(
+                    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+                    0,
+                    "the host path must measure with the host's renderer, not load fonts of its own"
+                );
+                ns.overview.get_rect().height()
+            };
+            let one = height_at(1.0);
+            let two = height_at(2.0);
+            assert!(one > 0.0);
+            assert!(
+                (two / one - 2.0).abs() < 0.05,
+                "an overview Text line is {two} px at 2× against {one} px at 1×; it must double"
+            );
         }
-    }
 
-    #[test]
-    fn modal_drawer_remeasures_changed_backdrop_panes() {
-        use automerge::transaction::Transactable;
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "label", "first line").unwrap();
-        let mut ns = NavShell::sidebar_over_content(
-            Box::new(Text::new("places")),
-            Box::new(Text::from_document_string("label")),
-        );
-        ns.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut ns, 420.0, 500.0);
-        ns.snap_sidebar(true);
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut HashMap::new());
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(420.0),
-                    height: taffy::AvailableSpace::Definite(500.0),
-                },
+        // Case `mutable_children_match_immutable_children_in_logical_order`.
+        {
+            let mut ns = NavShell::new(
+                Box::new(Text::new("overview").with_id("overview")),
+                Box::new(Text::new("detail").with_id("detail")),
             )
-            .unwrap();
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        ns.overview.mark_drawn();
-        ns.sidebar.as_mut().unwrap().mark_drawn();
-        let before = ns.overview.get_rect();
-        doc.put(
-            automerge::ROOT,
-            "label",
-            "first line\nsecond line\nthird line",
-        )
-        .unwrap();
-        ns.sync(&mut doc, &automerge::ROOT);
-        assert!(ns.overlay_sidebar_is_modal());
-        assert!(ns.overview.layout_needs_measure());
-        assert!(
-            !ns.layout_needs_measure(),
-            "modal traversal exposes only the clean sidebar"
-        );
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        let reused = ns.overview.get_rect();
-        assert!(
-            reused.height() > before.height(),
-            "live backdrop must receive changed text geometry"
-        );
-        // Force the authoritative full path and compare its complete rectangle.
-        ns.inner_taffy = None;
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert_eq!(reused, ns.overview.get_rect());
-    }
+            .with_sidebar(Box::new(Text::new("sidebar").with_id("sidebar")));
 
-    #[test]
-    fn measured_shell_rebuilds_after_theme_resize_and_child_replacement() {
-        let mut ns = NavShell::new(
-            Box::new(Text::new("overview")),
-            Box::new(Text::new("detail")),
-        );
-        lay_out(&mut ns, 1000.0, 500.0);
-        ns.mark_drawn();
-        let original = ns.overview.get_rect();
-        let mut theme = Theme::dark();
-        theme.text_scale = 1.5;
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1200.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert!(ns.overview.get_rect().height() > original.height());
-        let mut fresh = NavShell::new(
-            Box::new(Text::new("overview")),
-            Box::new(Text::new("detail")),
-        );
-        let mut fresh_taffy = TaffyTree::new();
-        let fresh_node = fresh.build_layout(&mut fresh_taffy, &theme, &mut HashMap::new());
-        fresh_taffy
-            .compute_layout(
-                fresh_node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1200.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        fresh.apply_layout(&fresh_taffy, fresh_node, Point::ZERO);
-        assert_eq!(ns.overview.get_rect(), fresh.overview.get_rect());
-        ns.mark_drawn();
-        // Swapping a previously laid-out, clean pane must invalidate the
-        // retained tree even though the incoming widget needs no measurement.
-        let mut replacement = NavShell::new(
-            Box::new(Text::new("replacement\nsecond line")),
-            Box::new(Text::new("detail")),
-        );
-        lay_out(&mut replacement, 1200.0, 600.0);
-        replacement.mark_drawn();
-        assert!(!replacement.overview.layout_needs_measure());
-        ns.set_overview(replacement.overview);
-        assert!(!ns.layout_needs_measure());
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert!(ns.overview.get_rect().height() > fresh.overview.get_rect().height());
+            let immutable: Vec<String> = Widget::children(&ns)
+                .into_iter()
+                .map(|child| child.test_id().unwrap_or_default().to_string())
+                .collect();
+            let mutable: Vec<String> = Widget::children_mut(&mut ns)
+                .into_iter()
+                .map(|child| child.test_id().unwrap_or_default().to_string())
+                .collect();
+
+            assert_eq!(immutable, vec!["overview", "detail", "sidebar"]);
+            assert_eq!(mutable, immutable);
+        }
     }
 
     fn sidebar_content_shell(w: f64) -> NavShell {
@@ -2080,746 +2121,871 @@ mod tests {
         ns
     }
 
-    #[test]
-    fn mutable_children_match_immutable_children_in_logical_order() {
-        let mut ns = NavShell::new(
-            Box::new(Text::new("overview").with_id("overview")),
-            Box::new(Text::new("detail").with_id("detail")),
-        )
-        .with_sidebar(Box::new(Text::new("sidebar").with_id("sidebar")));
-
-        let immutable: Vec<String> = Widget::children(&ns)
-            .into_iter()
-            .map(|child| child.test_id().unwrap_or_default().to_string())
-            .collect();
-        let mutable: Vec<String> = Widget::children_mut(&mut ns)
-            .into_iter()
-            .map(|child| child.test_id().unwrap_or_default().to_string())
-            .collect();
-
-        assert_eq!(immutable, vec!["overview", "detail", "sidebar"]);
-        assert_eq!(mutable, immutable);
-    }
-
     // --- the chip's band over the content --------------------------------
 
     #[test]
-    fn narrow_content_starts_below_the_chip_that_floats_over_it() {
-        let ns = sidebar_content_shell(600.0);
-        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-        let pane = ns.overview_rect();
-        let child = ns.content_child_rect(pane);
-        assert_eq!(
-            child.y0,
-            pane.y0 + CHIP_INSET * 2.0 + CHIP_SIZE,
-            "the content has to start below the chip, not under it",
-        );
-        assert!(
-            child.y0 >= ns.affordance_rect.y1,
-            "the reserved band must clear the chip's own rect ({:?})",
-            ns.affordance_rect,
-        );
-        assert_eq!(
-            (child.x0, child.x1),
-            (pane.x0, pane.x1),
-            "the band is vertical only",
-        );
-    }
-
-    #[test]
-    fn the_public_content_rects_are_what_the_layout_uses() {
-        for width in [600.0_f64, 1200.0] {
-            let ns = sidebar_content_shell(width);
+    fn content_rects_clear_the_floating_chip_and_follow_the_responsive_scale() {
+        // Case `narrow_content_starts_below_the_chip_that_floats_over_it`.
+        {
+            let ns = sidebar_content_shell(600.0);
+            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+            let pane = ns.overview_rect();
+            let child = ns.content_child_rect(pane);
             assert_eq!(
-                ns.overview_content_rect(),
-                ns.content_child_rect(ns.overview_rect()),
-                "overview accessor disagrees with the laid-out child at {width}",
+                child.y0,
+                pane.y0 + CHIP_INSET * 2.0 + CHIP_SIZE,
+                "the content has to start below the chip, not under it",
+            );
+            assert!(
+                child.y0 >= ns.affordance_rect.y1,
+                "the reserved band must clear the chip's own rect ({:?})",
+                ns.affordance_rect,
             );
             assert_eq!(
-                ns.detail_content_rect(),
-                ns.content_child_rect(ns.detail_rect()),
-                "detail accessor disagrees with the laid-out child at {width}",
+                (child.x0, child.x1),
+                (pane.x0, pane.x1),
+                "the band is vertical only",
             );
         }
-    }
 
-    #[test]
-    fn wide_content_keeps_its_full_height_because_the_sidebar_holds_the_corner() {
-        let ns = sidebar_content_shell(1200.0);
-        assert_eq!(ns.mode(), ShellMode::Wide);
-        let pane = ns.overview_rect();
-        assert_eq!(
-            ns.content_child_rect(pane),
-            pane,
-            "a docked sidebar owns the top-left corner; the content is untouched",
-        );
+        // Case `the_public_content_rects_are_what_the_layout_uses`.
+        {
+            for width in [600.0_f64, 1200.0] {
+                let ns = sidebar_content_shell(width);
+                assert_eq!(
+                    ns.overview_content_rect(),
+                    ns.content_child_rect(ns.overview_rect()),
+                    "overview accessor disagrees with the laid-out child at {width}",
+                );
+                assert_eq!(
+                    ns.detail_content_rect(),
+                    ns.content_child_rect(ns.detail_rect()),
+                    "detail accessor disagrees with the laid-out child at {width}",
+                );
+            }
+        }
+
+        // Case `wide_content_keeps_its_full_height_because_the_sidebar_holds_the_corner`.
+        {
+            let ns = sidebar_content_shell(1200.0);
+            assert_eq!(ns.mode(), ShellMode::Wide);
+            let pane = ns.overview_rect();
+            assert_eq!(
+                ns.content_child_rect(pane),
+                pane,
+                "a docked sidebar owns the top-left corner; the content is untouched",
+            );
+        }
+
+        // Case `docked_sidebar_keeps_its_full_height_so_its_header_aligns_with_the_content_panes`.
+        // F1 round one V-01: docked, the sidebar's header started one chip band
+        // (60 px) below the overview and detail headers because the band was
+        // reserved above the sidebar even though the chip sits in its header
+        // row (which the fixture and mail clear horizontally). Docked keeps the
+        // sidebar's full height; the overlay drawer still starts under the chip.
+        {
+            let wide = shell(1200.0, true);
+            assert_eq!(wide.top_left_affordance(), Affordance::SidebarToggle);
+            assert_eq!(
+                wide.sidebar_content_rect(),
+                wide.sidebar_rect(),
+                "the docked sidebar's content starts at the pane top, level with the overview",
+            );
+            assert_eq!(
+                wide.sidebar_content_rect().y0,
+                wide.overview_content_rect().y0,
+                "the three panes' headers share one top edge",
+            );
+            assert!(
+                wide.collapse_button_rect().y1 <= wide.sidebar_rect().y0 + wide.chip_band(),
+                "the chip still lives in the sidebar's header row",
+            );
+
+            let mut narrow = shell(600.0, true);
+            narrow.open_sidebar();
+            narrow.snap();
+            assert_eq!(narrow.sidebar_layout(), Some(SplitLayout::Overlay));
+            let drawer = narrow.sidebar_rect();
+            assert_eq!(
+                narrow.sidebar_content_rect().y0,
+                drawer.y0 + narrow.chip_band(),
+                "an overlay drawer slides in under the chip, so its first row starts below the band",
+            );
+        }
+
+        // Case `authored_inputs_and_chip_follow_the_responsive_scale`.
+        // HIG §9.6: breakpoint and text-sized pane widths are authored at 1×
+        // and resolved by the shell (`× ui_scale × text_scale.max(1.0)`); the
+        // token defaults follow the `ui_scale`d metrics; an icon rail follows
+        // `ui_scale` only; the chip grows with the body line, not the scale.
+        {
+            let authored = || {
+                NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+                    .with_sidebar(Box::new(Text::new("s")))
+                    .with_breakpoint(860.0)
+                    .with_sidebar_width(260.0)
+                    .with_overview_width(340.0)
+            };
+            let mut one = authored();
+            lay_out_with(&mut one, &Theme::dark(), 1400.0, 700.0);
+            assert_eq!(
+                (one.breakpoint(), one.sidebar_width(), one.overview_width()),
+                (860.0, 260.0, 340.0),
+                "1× is the authored geometry",
+            );
+            assert_eq!(
+                (one.chip_inset, one.chip_size, one.back_chip_width),
+                (12.0, 36.0, 104.0)
+            );
+            assert_eq!(one.mode(), ShellMode::Wide);
+
+            let two = Theme::dark().with_text_scale(2.0);
+            let mut large = authored();
+            lay_out_with(&mut large, &two, 1400.0, 700.0);
+            assert_eq!(
+                (
+                    large.breakpoint(),
+                    large.sidebar_width(),
+                    large.overview_width()
+                ),
+                (1720.0, 520.0, 680.0),
+            );
+            assert_eq!(
+                large.mode(),
+                ShellMode::Narrow,
+                "a 1400 px window at 2× has the room a 700 px window has at 1×",
+            );
+            let grown = crate::widget::text_control_height(CHIP_SIZE, &two);
+            assert!(
+                grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE,
+                "chip grows by the line, not 2×"
+            );
+            assert_eq!(large.chip_size, grown);
+            assert_eq!(large.chip_inset, 12.0, "the inset is spacing, not text");
+            assert_eq!(
+                large.back_chip_width,
+                grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0
+            );
+            assert_eq!(
+                large.collapse_button_rect().height(),
+                grown,
+                "the hit rect is the grown chip"
+            );
+
+            let mut rail = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+                .with_icon_overview_width(68.0);
+            lay_out_with(&mut rail, &two, 1400.0, 700.0);
+            assert_eq!(
+                rail.overview_width(),
+                68.0,
+                "an icon rail never grows with the text"
+            );
+
+            let mut defaults = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+                .with_sidebar(Box::new(Text::new("s")));
+            lay_out_with(
+                &mut defaults,
+                &Theme::dark().with_ui_scale(1.5),
+                2000.0,
+                700.0,
+            );
+            let metrics = Theme::dark().with_ui_scale(1.5).tokens.metrics;
+            assert!((defaults.sidebar_width() - f64::from(metrics.sidebar_width)).abs() < 1e-6);
+            assert!((defaults.overview_width() - f64::from(metrics.overview_width)).abs() < 1e-6);
+            assert!(
+                (defaults.breakpoint() - 1050.0).abs() < 1e-6,
+                "700 authored × ui 1.5"
+            );
+            assert!((defaults.chip_inset - 18.0).abs() < 1e-6, "s3 at ui 1.5");
+        }
     }
 
     // --- sidebar + single content pane (HIG §1a, no §1b split) -----------
 
     #[test]
-    fn narrow_sidebar_over_content_keeps_the_content_full_width() {
-        let ns = sidebar_content_shell(600.0);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(ns.content_layout(), ContentLayout::Single);
-        assert_eq!(
-            ns.overview_rect().width(),
-            600.0,
-            "the content pane must span the whole narrow window",
-        );
-        assert_eq!(
-            ns.overview_rect().x0,
-            0.0,
-            "and start at the window's left edge, not offset by a sidebar",
-        );
-        assert!(!ns.is_detail_shown(), "there is no detail pane to push in");
-        assert_eq!(
-            ns.detail_rect(),
-            Rect::ZERO,
-            "no detail pane means no detail geometry",
-        );
-    }
-
-    #[test]
-    fn narrow_sidebar_starts_closed_and_opens_as_an_overlay_drawer() {
-        let mut ns = sidebar_content_shell(600.0);
-        assert!(!ns.is_sidebar_open(), "the drawer is closed by default");
-        assert_eq!(
-            ns.scrim_rect(),
-            Rect::ZERO,
-            "no scrim while the drawer is closed",
-        );
-        assert_eq!(
-            ns.top_left_affordance(),
-            Affordance::SidebarToggle,
-            "the corner offers the hamburger, never a Back arrow",
-        );
-
-        ns.open_sidebar();
-        ns.snap();
-        assert!(ns.is_sidebar_open());
-        assert!(ns.sidebar_rect().width() > 0.0, "the drawer is on screen");
-        assert_eq!(
-            ns.overview_rect().width(),
-            600.0,
-            "the drawer draws OVER the content — the content does not shrink \
-             or slide away",
-        );
-        assert!(
-            ns.scrim_rect().width() > 0.0,
-            "an open drawer dims the content behind a scrim",
-        );
-    }
-
-    #[test]
-    fn open_overlay_drawer_exposes_and_routes_only_its_sidebar() {
-        let sidebar_events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let content_events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut ns = NavShell::sidebar_over_content(
-            Box::new(EventProbe::new(
-                "sidebar",
-                std::rc::Rc::clone(&sidebar_events),
-            )),
-            Box::new(EventProbe::new(
-                "content",
-                std::rc::Rc::clone(&content_events),
-            )),
-        );
-        lay_out(&mut ns, 600.0, 640.0);
-        ns.open_sidebar();
-        ns.snap();
-
-        let visible_children: Vec<&str> = Widget::children(&ns)
-            .into_iter()
-            .filter_map(Widget::test_id)
-            .collect();
-        assert_eq!(visible_children, vec!["sidebar"]);
-
-        let mut handled = false;
-        let drawer_center = ns.sidebar_rect().center();
-        dispatch(&mut ns, &cursor_at(drawer_center), &mut handled);
-        assert!(sidebar_events.get() > 0, "drawer child receives its input");
-        assert_eq!(
-            content_events.get(),
-            0,
-            "the covered content must not receive pointer or assistive traversal input"
-        );
-    }
-
-    #[test]
-    fn narrow_drawer_width_can_exceed_the_docked_sidebar_without_shrinking_content() {
-        let mut ns = NavShell::sidebar_over_content(
-            Box::new(Text::new("places")),
-            Box::new(Text::new("files")),
-        )
-        .with_sidebar_width(200.0)
-        .with_narrow_sidebar_width(320.0);
-        lay_out(&mut ns, 390.0, 640.0);
-        ns.snap();
-        assert_eq!(
-            ns.overview_rect().width(),
-            390.0,
-            "closed content stays full width"
-        );
-        ns.open_sidebar();
-        ns.snap();
-        assert_eq!(ns.sidebar_rect().width(), 320.0);
-        assert_eq!(
-            ns.overview_rect().width(),
-            390.0,
-            "the overlay drawer never displaces the live content pane"
-        );
-        lay_out(&mut ns, 1200.0, 640.0);
-        ns.snap();
-        assert_eq!(
-            ns.sidebar_rect().width(),
-            200.0,
-            "desktop docking stays compact"
-        );
-    }
-
-    #[test]
-    fn wide_sidebar_over_content_docks_beside_a_full_height_content_pane() {
-        let ns = sidebar_content_shell(1200.0);
-        assert_eq!(ns.mode(), ShellMode::Wide);
-        assert_eq!(ns.content_layout(), ContentLayout::Single);
-        assert!(ns.sidebar_rect().width() > 0.0, "the sidebar is docked");
-        assert_eq!(
-            ns.overview_rect().x0,
-            ns.sidebar_rect().x1,
-            "the content starts where the sidebar ends",
-        );
-        assert_eq!(
-            ns.overview_rect().x1,
-            1200.0,
-            "and runs to the window's right edge",
-        );
-        assert_eq!(ns.detail_rect(), Rect::ZERO);
-    }
-
-    #[test]
-    fn sidebar_over_content_reflows_across_the_breakpoint_both_ways() {
-        let mut ns = sidebar_content_shell(1200.0);
-        assert_eq!(ns.mode(), ShellMode::Wide);
-        for w in [600.0, 1200.0, 480.0, 900.0] {
-            lay_out(&mut ns, w, 640.0);
-            ns.snap();
+    fn sidebar_over_content_docks_wide_and_overlays_narrow() {
+        // Case `narrow_sidebar_over_content_keeps_the_content_full_width`.
+        {
+            let ns = sidebar_content_shell(600.0);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(ns.content_layout(), ContentLayout::Single);
             assert_eq!(
-                ns.overview_rect().x1,
-                w,
-                "the content pane must reach the right edge at width {w}",
+                ns.overview_rect().width(),
+                600.0,
+                "the content pane must span the whole narrow window",
+            );
+            assert_eq!(
+                ns.overview_rect().x0,
+                0.0,
+                "and start at the window's left edge, not offset by a sidebar",
+            );
+            assert!(!ns.is_detail_shown(), "there is no detail pane to push in");
+            assert_eq!(
+                ns.detail_rect(),
+                Rect::ZERO,
+                "no detail pane means no detail geometry",
+            );
+        }
+
+        // Case `narrow_sidebar_starts_closed_and_opens_as_an_overlay_drawer`.
+        {
+            let mut ns = sidebar_content_shell(600.0);
+            assert!(!ns.is_sidebar_open(), "the drawer is closed by default");
+            assert_eq!(
+                ns.scrim_rect(),
+                Rect::ZERO,
+                "no scrim while the drawer is closed",
+            );
+            assert_eq!(
+                ns.top_left_affordance(),
+                Affordance::SidebarToggle,
+                "the corner offers the hamburger, never a Back arrow",
+            );
+
+            ns.open_sidebar();
+            ns.snap();
+            assert!(ns.is_sidebar_open());
+            assert!(ns.sidebar_rect().width() > 0.0, "the drawer is on screen");
+            assert_eq!(
+                ns.overview_rect().width(),
+                600.0,
+                "the drawer draws OVER the content — the content does not shrink \
+             or slide away",
             );
             assert!(
-                ns.overview_rect().width() > 0.0,
-                "the content pane must never be laid out to zero width at {w}",
+                ns.scrim_rect().width() > 0.0,
+                "an open drawer dims the content behind a scrim",
             );
+        }
+
+        // Case `open_overlay_drawer_exposes_and_routes_only_its_sidebar`.
+        {
+            let sidebar_events = std::rc::Rc::new(std::cell::Cell::new(0));
+            let content_events = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut ns = NavShell::sidebar_over_content(
+                Box::new(EventProbe::new(
+                    "sidebar",
+                    std::rc::Rc::clone(&sidebar_events),
+                )),
+                Box::new(EventProbe::new(
+                    "content",
+                    std::rc::Rc::clone(&content_events),
+                )),
+            );
+            lay_out(&mut ns, 600.0, 640.0);
+            ns.open_sidebar();
+            ns.snap();
+
+            let visible_children: Vec<&str> = Widget::children(&ns)
+                .into_iter()
+                .filter_map(Widget::test_id)
+                .collect();
+            assert_eq!(visible_children, vec!["sidebar"]);
+
+            let mut handled = false;
+            let drawer_center = ns.sidebar_rect().center();
+            dispatch(&mut ns, &cursor_at(drawer_center), &mut handled);
+            assert!(sidebar_events.get() > 0, "drawer child receives its input");
+            assert_eq!(
+                content_events.get(),
+                0,
+                "the covered content must not receive pointer or assistive traversal input"
+            );
+        }
+
+        // Case `narrow_drawer_width_can_exceed_the_docked_sidebar_without_shrinking_content`.
+        {
+            let mut ns = NavShell::sidebar_over_content(
+                Box::new(Text::new("places")),
+                Box::new(Text::new("files")),
+            )
+            .with_sidebar_width(200.0)
+            .with_narrow_sidebar_width(320.0);
+            lay_out(&mut ns, 390.0, 640.0);
+            ns.snap();
+            assert_eq!(
+                ns.overview_rect().width(),
+                390.0,
+                "closed content stays full width"
+            );
+            ns.open_sidebar();
+            ns.snap();
+            assert_eq!(ns.sidebar_rect().width(), 320.0);
+            assert_eq!(
+                ns.overview_rect().width(),
+                390.0,
+                "the overlay drawer never displaces the live content pane"
+            );
+            lay_out(&mut ns, 1200.0, 640.0);
+            ns.snap();
+            assert_eq!(
+                ns.sidebar_rect().width(),
+                200.0,
+                "desktop docking stays compact"
+            );
+        }
+
+        // Case `wide_sidebar_over_content_docks_beside_a_full_height_content_pane`.
+        {
+            let ns = sidebar_content_shell(1200.0);
+            assert_eq!(ns.mode(), ShellMode::Wide);
+            assert_eq!(ns.content_layout(), ContentLayout::Single);
+            assert!(ns.sidebar_rect().width() > 0.0, "the sidebar is docked");
+            assert_eq!(
+                ns.overview_rect().x0,
+                ns.sidebar_rect().x1,
+                "the content starts where the sidebar ends",
+            );
+            assert_eq!(
+                ns.overview_rect().x1,
+                1200.0,
+                "and runs to the window's right edge",
+            );
+            assert_eq!(ns.detail_rect(), Rect::ZERO);
+        }
+
+        // Case `sidebar_over_content_reflows_across_the_breakpoint_both_ways`.
+        {
+            let mut ns = sidebar_content_shell(1200.0);
+            assert_eq!(ns.mode(), ShellMode::Wide);
+            for w in [600.0, 1200.0, 480.0, 900.0] {
+                lay_out(&mut ns, w, 640.0);
+                ns.snap();
+                assert_eq!(
+                    ns.overview_rect().x1,
+                    w,
+                    "the content pane must reach the right edge at width {w}",
+                );
+                assert!(
+                    ns.overview_rect().width() > 0.0,
+                    "the content pane must never be laid out to zero width at {w}",
+                );
+            }
         }
     }
 
     // --- mode resolution -------------------------------------------------
 
     #[test]
-    fn breakpoint_boundary_is_inclusive_wide() {
-        assert_eq!(ShellMode::from_width(700.0, 700.0), ShellMode::Wide);
-        assert_eq!(ShellMode::from_width(699.0, 700.0), ShellMode::Narrow);
-    }
+    fn breakpoint_selects_side_by_side_or_push_mode() {
+        // Case `breakpoint_boundary_is_inclusive_wide`.
+        {
+            assert_eq!(ShellMode::from_width(700.0, 700.0), ShellMode::Wide);
+            assert_eq!(ShellMode::from_width(699.0, 700.0), ShellMode::Narrow);
+        }
 
-    #[test]
-    fn wide_is_side_by_side_with_docked_sidebar() {
-        let ns = shell(1200.0, true);
-        assert_eq!(ns.mode(), ShellMode::Wide);
-        assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
-        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Docked));
-        assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
-        assert!(ns.sidebar_rect().width() > 1.0, "docked sidebar has width");
-        assert!(
-            ns.overview_rect().x0 >= ns.sidebar_rect().x1 - 0.5,
-            "overview sits right of the sidebar"
-        );
-        assert!(
-            ns.detail_rect().x0 >= ns.overview_rect().x1 - 0.5,
-            "detail sits right of the overview"
-        );
-        assert!(ns.detail_rect().width() >= MIN_DETAIL_WIDTH - 1.0);
-        assert_eq!(ns.scrim_rect(), Rect::ZERO, "no scrim in wide mode");
-    }
+        // Case `wide_is_side_by_side_with_docked_sidebar`.
+        {
+            let ns = shell(1200.0, true);
+            assert_eq!(ns.mode(), ShellMode::Wide);
+            assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
+            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Docked));
+            assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
+            assert!(ns.sidebar_rect().width() > 1.0, "docked sidebar has width");
+            assert!(
+                ns.overview_rect().x0 >= ns.sidebar_rect().x1 - 0.5,
+                "overview sits right of the sidebar"
+            );
+            assert!(
+                ns.detail_rect().x0 >= ns.overview_rect().x1 - 0.5,
+                "detail sits right of the overview"
+            );
+            assert!(ns.detail_rect().width() >= MIN_DETAIL_WIDTH - 1.0);
+            assert_eq!(ns.scrim_rect(), Rect::ZERO, "no scrim in wide mode");
+        }
 
-    #[test]
-    fn narrow_is_push_with_overlay_sidebar() {
-        let ns = shell(420.0, true);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(ns.content_layout(), ContentLayout::Push);
-        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-        assert!(
-            !ns.is_sidebar_open(),
-            "overlay sidebar is closed by default"
-        );
-        assert!(
-            (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-            "overview is full-width by default"
-        );
-        assert!(
-            ns.detail_rect().x0 >= ns.get_rect().x1 - 1.0,
-            "detail is parked off-screen to the right until pushed"
-        );
-    }
+        // Case `narrow_is_push_with_overlay_sidebar`.
+        {
+            let ns = shell(420.0, true);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(ns.content_layout(), ContentLayout::Push);
+            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
+            assert!(
+                !ns.is_sidebar_open(),
+                "overlay sidebar is closed by default"
+            );
+            assert!(
+                (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+                "overview is full-width by default"
+            );
+            assert!(
+                ns.detail_rect().x0 >= ns.get_rect().x1 - 1.0,
+                "detail is parked off-screen to the right until pushed"
+            );
+        }
 
-    #[test]
-    fn content_only_shell_has_no_sidebar() {
-        let ns = shell(1200.0, false);
-        assert!(!ns.has_sidebar());
-        assert_eq!(ns.sidebar_layout(), None);
-        assert!(!ns.is_sidebar_open());
-        assert!((ns.overview_rect().x0 - ns.get_rect().x0).abs() < 0.5);
+        // Case `content_only_shell_has_no_sidebar`.
+        {
+            let ns = shell(1200.0, false);
+            assert!(!ns.has_sidebar());
+            assert_eq!(ns.sidebar_layout(), None);
+            assert!(!ns.is_sidebar_open());
+            assert!((ns.overview_rect().x0 - ns.get_rect().x0).abs() < 0.5);
+        }
+
+        // Case `resize_across_breakpoint_returns_sidebar_to_auto`.
+        {
+            // wide+open, user collapses, resize narrow (auto closed), resize
+            // back wide (auto open again — stale preference dropped).
+            let mut ns = shell(1200.0, true);
+            ns.toggle_sidebar();
+            assert!(!ns.is_sidebar_open());
+            lay_out(&mut ns, 420.0, 640.0);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert!(!ns.is_sidebar_open(), "narrow default is closed");
+            lay_out(&mut ns, 1200.0, 640.0);
+            assert!(
+                ns.is_sidebar_open(),
+                "crossing the breakpoint drops the stale collapse preference"
+            );
+        }
     }
 
     // --- push / pop ------------------------------------------------------
 
     #[test]
-    fn narrow_push_shows_detail_then_pops_back() {
-        let mut ns = shell(420.0, true);
-        assert_eq!(ns.pane(), NavPane::Overview);
-        ns.show_detail();
-        ns.snap_pane(NavPane::Detail);
-        assert_eq!(ns.pane(), NavPane::Detail);
-        assert!(ns.is_detail_shown());
-        assert!(
-            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "pushed detail occupies the pane"
-        );
-        assert!(
-            ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
-            "overview slid off-screen left"
-        );
-        ns.show_overview();
-        ns.snap_pane(NavPane::Overview);
-        assert_eq!(ns.pane(), NavPane::Overview);
-        assert!(
-            (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "overview back in place"
-        );
-    }
+    fn push_navigation_shows_detail_narrow_and_both_panes_wide() {
+        // Case `narrow_push_shows_detail_then_pops_back`.
+        {
+            let mut ns = shell(420.0, true);
+            assert_eq!(ns.pane(), NavPane::Overview);
+            ns.show_detail();
+            ns.snap_pane(NavPane::Detail);
+            assert_eq!(ns.pane(), NavPane::Detail);
+            assert!(ns.is_detail_shown());
+            assert!(
+                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "pushed detail occupies the pane"
+            );
+            assert!(
+                ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
+                "overview slid off-screen left"
+            );
+            ns.show_overview();
+            ns.snap_pane(NavPane::Overview);
+            assert_eq!(ns.pane(), NavPane::Overview);
+            assert!(
+                (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "overview back in place"
+            );
+        }
 
-    #[test]
-    fn wide_shows_both_content_panes_regardless_of_push_target() {
-        let mut ns = shell(1200.0, true);
-        ns.show_detail(); // sets target, but wide keeps both abreast
-        ns.snap();
-        assert!(
-            ns.overview_rect().width() > 1.0,
-            "overview still visible wide"
-        );
-        assert!(ns.detail_rect().width() > 1.0, "detail still visible wide");
+        // Case `wide_shows_both_content_panes_regardless_of_push_target`.
+        {
+            let mut ns = shell(1200.0, true);
+            ns.show_detail(); // sets target, but wide keeps both abreast
+            ns.snap();
+            assert!(
+                ns.overview_rect().width() > 1.0,
+                "overview still visible wide"
+            );
+            assert!(ns.detail_rect().width() > 1.0, "detail still visible wide");
+        }
+
+        // Case `swapping_panes_preserves_push_state_and_relayouts_new_child`.
+        {
+            let mut ns = shell(420.0, false);
+            ns.snap_pane(NavPane::Detail);
+            assert!(ns.is_detail_shown(), "pushed to detail before the swap");
+
+            ns.set_overview(Box::new(Text::new("new-overview")));
+            ns.set_detail(Box::new(Text::new("new-detail")));
+            assert!(
+                ns.is_detail_shown(),
+                "the swap kept the shell showing the detail"
+            );
+
+            lay_out(&mut ns, 420.0, 640.0);
+            ns.snap_pane(NavPane::Detail);
+            assert!(
+                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "the swapped-in detail is laid out in the pane"
+            );
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let perms = crate::permissions::PermissionContext::permissive();
+            let mut scene = Scene::new();
+            ns.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &perms,
+            );
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(fills >= 1, "the swapped children paint after the swap");
+        }
     }
 
     // --- affordance is a collapse control, NEVER an X --------------------
 
     #[test]
-    fn affordance_is_sidebar_toggle_in_wide_with_sidebar() {
-        let ns = shell(1200.0, true);
-        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-        assert!(ns.collapse_button_rect().width() > 0.0);
-        assert_eq!(ns.back_button_rect(), Rect::ZERO);
-    }
+    fn navigation_affordance_matches_mode_and_push_state() {
+        // Case `affordance_is_sidebar_toggle_in_wide_with_sidebar`.
+        {
+            let ns = shell(1200.0, true);
+            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+            assert!(ns.collapse_button_rect().width() > 0.0);
+            assert_eq!(ns.back_button_rect(), Rect::ZERO);
+        }
 
-    #[test]
-    fn affordance_is_hamburger_to_summon_narrow_drawer() {
-        let ns = shell(420.0, true);
-        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
-        assert!(
-            !ns.is_sidebar_open(),
-            "glyph should be the hamburger (closed)"
-        );
-    }
+        // Case `affordance_is_hamburger_to_summon_narrow_drawer`.
+        {
+            let ns = shell(420.0, true);
+            assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+            assert!(
+                !ns.is_sidebar_open(),
+                "glyph should be the hamburger (closed)"
+            );
+        }
 
-    #[test]
-    fn affordance_becomes_back_when_detail_pushed_narrow() {
-        let mut ns = shell(420.0, true);
-        ns.snap_pane(NavPane::Detail);
-        assert_eq!(ns.top_left_affordance(), Affordance::Back);
-        assert!(ns.back_button_rect().width() > 0.0);
-        assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
-    }
+        // Case `affordance_becomes_back_when_detail_pushed_narrow`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.snap_pane(NavPane::Detail);
+            assert_eq!(ns.top_left_affordance(), Affordance::Back);
+            assert!(ns.back_button_rect().width() > 0.0);
+            assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
+        }
 
-    #[test]
-    fn content_only_wide_has_no_affordance() {
-        let ns = shell(1200.0, false);
-        assert_eq!(ns.top_left_affordance(), Affordance::None);
-        assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
-        assert_eq!(ns.back_button_rect(), Rect::ZERO);
+        // Case `content_only_wide_has_no_affordance`.
+        {
+            let ns = shell(1200.0, false);
+            assert_eq!(ns.top_left_affordance(), Affordance::None);
+            assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
+            assert_eq!(ns.back_button_rect(), Rect::ZERO);
+        }
     }
 
     // --- collapse -------------------------------------------------------
 
     #[test]
-    fn toggle_collapses_docked_sidebar_and_reclaims_width() {
-        let mut ns = shell(1200.0, true);
-        let overview_x_open = ns.overview_rect().x0;
-        ns.toggle_sidebar();
-        ns.snap_sidebar(false);
-        assert!(!ns.is_sidebar_open());
-        assert!(
-            ns.overview_rect().x0 < overview_x_open - 1.0,
-            "collapsing the docked sidebar reclaims its width for content"
-        );
-        assert_eq!(
-            ns.scrim_rect(),
-            Rect::ZERO,
-            "docked collapse shows no scrim"
-        );
-    }
+    fn toggles_escape_scrim_and_buttons_open_dismiss_and_pop() {
+        // Case `toggle_collapses_docked_sidebar_and_reclaims_width`.
+        {
+            let mut ns = shell(1200.0, true);
+            let overview_x_open = ns.overview_rect().x0;
+            ns.toggle_sidebar();
+            ns.snap_sidebar(false);
+            assert!(!ns.is_sidebar_open());
+            assert!(
+                ns.overview_rect().x0 < overview_x_open - 1.0,
+                "collapsing the docked sidebar reclaims its width for content"
+            );
+            assert_eq!(
+                ns.scrim_rect(),
+                Rect::ZERO,
+                "docked collapse shows no scrim"
+            );
+        }
 
-    #[test]
-    fn toggle_opens_narrow_drawer_with_scrim() {
-        let mut ns = shell(420.0, true);
-        ns.toggle_sidebar();
-        ns.snap_sidebar(true);
-        assert!(ns.is_sidebar_open());
-        assert!(
-            ns.scrim_rect().width() > 0.0,
-            "open drawer dims the content"
-        );
-        assert!(
-            (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "revealed drawer sits flush at the left edge"
-        );
+        // Case `toggle_opens_narrow_drawer_with_scrim`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.toggle_sidebar();
+            ns.snap_sidebar(true);
+            assert!(ns.is_sidebar_open());
+            assert!(
+                ns.scrim_rect().width() > 0.0,
+                "open drawer dims the content"
+            );
+            assert!(
+                (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "revealed drawer sits flush at the left edge"
+            );
+        }
+
+        // Case `esc_dismisses_open_narrow_drawer`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.open_sidebar();
+            ns.snap_sidebar(true);
+            assert!(ns.is_sidebar_open());
+            let mut handled = false;
+            dispatch(&mut ns, &esc_event(), &mut handled);
+            assert!(handled, "Esc on an open drawer is consumed");
+            assert!(!ns.is_sidebar_open(), "Esc closes the drawer");
+        }
+
+        // Case `esc_pops_pushed_detail`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.snap_pane(NavPane::Detail);
+            let mut handled = false;
+            dispatch(&mut ns, &esc_event(), &mut handled);
+            assert!(handled, "Esc on a pushed detail is consumed");
+            assert_eq!(ns.pane(), NavPane::Overview, "Esc pops back to overview");
+        }
+
+        // Case `scrim_click_dismisses_narrow_drawer`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.open_sidebar();
+            ns.snap_sidebar(true);
+            // Click to the right of the drawer, in the scrim.
+            let pt = Point::new(ns.get_rect().x1 - 20.0, 320.0);
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(pt), &mut handled);
+            dispatch(&mut ns, &left_press(), &mut handled);
+            assert!(handled, "scrim click is consumed");
+            assert!(!ns.is_sidebar_open(), "scrim click closes the drawer");
+        }
+
+        // Case `collapse_button_click_toggles_sidebar`.
+        {
+            let mut ns = shell(1200.0, true);
+            assert!(ns.is_sidebar_open());
+            let c = ns.collapse_button_rect().center();
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(c), &mut handled);
+            dispatch(&mut ns, &left_press(), &mut handled);
+            assert!(handled, "the collapse chip owns its click");
+            assert!(
+                !ns.is_sidebar_open(),
+                "clicking the collapse button collapses the sidebar"
+            );
+        }
+
+        // Case `back_button_click_pops_detail`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.snap_pane(NavPane::Detail);
+            let c = ns.back_button_rect().center();
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(c), &mut handled);
+            dispatch(&mut ns, &left_press(), &mut handled);
+            assert!(handled, "the back chip owns its click");
+            assert_eq!(ns.pane(), NavPane::Overview, "Back pops to overview");
+        }
     }
 
     // --- self-routing ----------------------------------------------------
 
-    #[test]
-    fn esc_dismisses_open_narrow_drawer() {
-        let mut ns = shell(420.0, true);
-        ns.open_sidebar();
-        ns.snap_sidebar(true);
-        assert!(ns.is_sidebar_open());
-        let mut handled = false;
-        dispatch(&mut ns, &esc_event(), &mut handled);
-        assert!(handled, "Esc on an open drawer is consumed");
-        assert!(!ns.is_sidebar_open(), "Esc closes the drawer");
-    }
-
-    #[test]
-    fn esc_pops_pushed_detail() {
-        let mut ns = shell(420.0, true);
-        ns.snap_pane(NavPane::Detail);
-        let mut handled = false;
-        dispatch(&mut ns, &esc_event(), &mut handled);
-        assert!(handled, "Esc on a pushed detail is consumed");
-        assert_eq!(ns.pane(), NavPane::Overview, "Esc pops back to overview");
-    }
-
-    #[test]
-    fn scrim_click_dismisses_narrow_drawer() {
-        let mut ns = shell(420.0, true);
-        ns.open_sidebar();
-        ns.snap_sidebar(true);
-        // Click to the right of the drawer, in the scrim.
-        let pt = Point::new(ns.get_rect().x1 - 20.0, 320.0);
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(pt), &mut handled);
-        dispatch(&mut ns, &left_press(), &mut handled);
-        assert!(handled, "scrim click is consumed");
-        assert!(!ns.is_sidebar_open(), "scrim click closes the drawer");
-    }
-
-    #[test]
-    fn collapse_button_click_toggles_sidebar() {
-        let mut ns = shell(1200.0, true);
-        assert!(ns.is_sidebar_open());
-        let c = ns.collapse_button_rect().center();
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(c), &mut handled);
-        dispatch(&mut ns, &left_press(), &mut handled);
-        assert!(handled, "the collapse chip owns its click");
-        assert!(
-            !ns.is_sidebar_open(),
-            "clicking the collapse button collapses the sidebar"
-        );
-    }
-
-    #[test]
-    fn back_button_click_pops_detail() {
-        let mut ns = shell(420.0, true);
-        ns.snap_pane(NavPane::Detail);
-        let c = ns.back_button_rect().center();
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(c), &mut handled);
-        dispatch(&mut ns, &left_press(), &mut handled);
-        assert!(handled, "the back chip owns its click");
-        assert_eq!(ns.pane(), NavPane::Overview, "Back pops to overview");
-    }
-
     // --- breakpoint reconcile -------------------------------------------
-
-    #[test]
-    fn resize_across_breakpoint_returns_sidebar_to_auto() {
-        // wide+open, user collapses, resize narrow (auto closed), resize
-        // back wide (auto open again — stale preference dropped).
-        let mut ns = shell(1200.0, true);
-        ns.toggle_sidebar();
-        assert!(!ns.is_sidebar_open());
-        lay_out(&mut ns, 420.0, 640.0);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert!(!ns.is_sidebar_open(), "narrow default is closed");
-        lay_out(&mut ns, 1200.0, 640.0);
-        assert!(
-            ns.is_sidebar_open(),
-            "crossing the breakpoint drops the stale collapse preference"
-        );
-    }
 
     // --- rendering -------------------------------------------------------
 
     #[test]
-    fn draw_emits_fills() {
-        let mut ns = shell(1200.0, true);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        ns.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(fills >= 1, "a laid-out shell must paint something");
-    }
+    fn push_and_drawer_animate_or_snap_deterministically() {
+        // Case `draw_emits_fills`.
+        {
+            let mut ns = shell(1200.0, true);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let perms = crate::permissions::PermissionContext::permissive();
+            let mut scene = Scene::new();
+            ns.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &perms,
+            );
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(fills >= 1, "a laid-out shell must paint something");
+        }
 
-    #[test]
-    fn push_slides_across_frames_then_settles() {
-        let mut ns = shell(420.0, true);
-        ns.snap_pane(NavPane::Overview);
-        ns.show_detail();
+        // Case `push_slides_across_frames_then_settles`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.snap_pane(NavPane::Overview);
+            ns.show_detail();
 
-        draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
-        assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
+            draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
+            assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
 
-        elapse(&mut ns, 16);
-        draw_frame(&mut ns);
-        let r = ns.push.reveal();
-        assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
-        assert!(
-            ns.needs_animation_frame(),
-            "mid-slide keeps requesting frames"
-        );
-
-        for _ in 0..240 {
             elapse(&mut ns, 16);
             draw_frame(&mut ns);
-            if !ns.push.is_animating(SplitLayout::Docked) {
-                break;
+            let r = ns.push.reveal();
+            assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
+            assert!(
+                ns.needs_animation_frame(),
+                "mid-slide keeps requesting frames"
+            );
+
+            for _ in 0..240 {
+                elapse(&mut ns, 16);
+                draw_frame(&mut ns);
+                if !ns.push.is_animating(SplitLayout::Docked) {
+                    break;
+                }
             }
+            assert!(
+                (ns.push.reveal() - 1.0).abs() < 0.01,
+                "slide settles fully in"
+            );
+            assert!(
+                !ns.needs_animation_frame(),
+                "a settled shell requests no frames"
+            );
         }
-        assert!(
-            (ns.push.reveal() - 1.0).abs() < 0.01,
-            "slide settles fully in"
-        );
-        assert!(
-            !ns.needs_animation_frame(),
-            "a settled shell requests no frames"
-        );
-    }
 
-    #[test]
-    fn reduced_motion_snaps_push_and_drawer_to_their_targets() {
-        let mut ns = shell(420.0, true);
-        ns.snap_pane(NavPane::Overview);
-        ns.show_detail();
-        ns.open_sidebar();
+        // Case `reduced_motion_snaps_push_and_drawer_to_their_targets`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.snap_pane(NavPane::Overview);
+            ns.show_detail();
+            ns.open_sidebar();
 
-        let theme = Theme::dark().with_reduce_motion(true);
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let permissions = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        ns.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &permissions,
-        );
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let permissions = crate::permissions::PermissionContext::permissive();
+            let mut scene = Scene::new();
+            ns.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &permissions,
+            );
 
-        assert_eq!(ns.push.reveal(), 1.0);
-        assert_eq!(ns.sidebar_flap.reveal(), 1.0);
-        assert!(!ns.needs_animation_frame());
-    }
+            assert_eq!(ns.push.reveal(), 1.0);
+            assert_eq!(ns.sidebar_flap.reveal(), 1.0);
+            assert!(!ns.needs_animation_frame());
+        }
 
-    #[test]
-    fn snap_stays_deterministic_through_draw() {
-        let mut ns = shell(420.0, true);
-        ns.show_detail();
-        ns.snap();
-        assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
-        elapse(&mut ns, 20);
-        draw_frame(&mut ns);
-        assert_eq!(
-            ns.push.reveal(),
-            1.0,
-            "a snapped shell must not drift on draw"
-        );
-        assert!(
-            !ns.needs_animation_frame(),
-            "a settled shell requests no frames"
-        );
-    }
-
-    #[test]
-    fn swapping_panes_preserves_push_state_and_relayouts_new_child() {
-        let mut ns = shell(420.0, false);
-        ns.snap_pane(NavPane::Detail);
-        assert!(ns.is_detail_shown(), "pushed to detail before the swap");
-
-        ns.set_overview(Box::new(Text::new("new-overview")));
-        ns.set_detail(Box::new(Text::new("new-detail")));
-        assert!(
-            ns.is_detail_shown(),
-            "the swap kept the shell showing the detail"
-        );
-
-        lay_out(&mut ns, 420.0, 640.0);
-        ns.snap_pane(NavPane::Detail);
-        assert!(
-            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "the swapped-in detail is laid out in the pane"
-        );
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        ns.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(fills >= 1, "the swapped children paint after the swap");
+        // Case `snap_stays_deterministic_through_draw`.
+        {
+            let mut ns = shell(420.0, true);
+            ns.show_detail();
+            ns.snap();
+            assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
+            elapse(&mut ns, 20);
+            draw_frame(&mut ns);
+            assert_eq!(
+                ns.push.reveal(),
+                1.0,
+                "a snapped shell must not drift on draw"
+            );
+            assert!(
+                !ns.needs_animation_frame(),
+                "a settled shell requests no frames"
+            );
+        }
     }
 
     // --- three-pane collapse keeps content, never the sidebar -----------
 
     #[test]
-    fn three_pane_cold_collapse_keeps_the_rightmost_content_and_overlays_the_sidebar() {
-        let mut ns = shell(1200.0, true); // wide, sidebar + overview + detail
-        assert_eq!(ns.mode(), ShellMode::Wide);
-        assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
+    fn collapse_keeps_the_hinted_or_last_interacted_pane() {
+        // Case `three_pane_cold_collapse_keeps_the_rightmost_content_and_overlays_the_sidebar`.
+        {
+            let mut ns = shell(1200.0, true); // wide, sidebar + overview + detail
+            assert_eq!(ns.mode(), ShellMode::Wide);
+            assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
 
-        // Resize narrow, then settle the reveal easing to the frame
-        // `--shots` / headless renders.
-        lay_out(&mut ns, 520.0, 640.0);
-        ns.snap();
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(ns.content_layout(), ContentLayout::Push);
+            // Resize narrow, then settle the reveal easing to the frame
+            // `--shots` / headless renders.
+            lay_out(&mut ns, 520.0, 640.0);
+            ns.snap();
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(ns.content_layout(), ContentLayout::Push);
 
-        assert_eq!(
-            ns.pane(),
-            NavPane::Detail,
-            "a cold collapse keeps the right-most content, not the sidebar"
-        );
-        assert!(
-            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0
-                && (ns.detail_rect().width() - ns.get_rect().width()).abs() < 1.0,
-            "the content pane spans the whole narrow window",
-        );
-        assert!(
-            ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
-            "the overview is pushed off-screen to the left",
-        );
+            assert_eq!(
+                ns.pane(),
+                NavPane::Detail,
+                "a cold collapse keeps the right-most content, not the sidebar"
+            );
+            assert!(
+                (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0
+                    && (ns.detail_rect().width() - ns.get_rect().width()).abs() < 1.0,
+                "the content pane spans the whole narrow window",
+            );
+            assert!(
+                ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
+                "the overview is pushed off-screen to the left",
+            );
 
-        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
-        assert!(
-            !ns.is_sidebar_open(),
-            "the sidebar collapses to a closed drawer, not the shown pane"
-        );
-        assert_eq!(ns.scrim_rect(), Rect::ZERO, "a closed drawer lays no scrim");
-        // `Back` wins the top-left while detail is pushed, so summon by call.
-        ns.toggle_sidebar();
-        ns.snap();
-        assert!(
-            ns.is_sidebar_open(),
-            "the collapsed sidebar is still summonable as a drawer"
-        );
-    }
+            assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
+            assert!(
+                !ns.is_sidebar_open(),
+                "the sidebar collapses to a closed drawer, not the shown pane"
+            );
+            assert_eq!(ns.scrim_rect(), Rect::ZERO, "a closed drawer lays no scrim");
+            // `Back` wins the top-left while detail is pushed, so summon by call.
+            ns.toggle_sidebar();
+            ns.snap();
+            assert!(
+                ns.is_sidebar_open(),
+                "the collapsed sidebar is still summonable as a drawer"
+            );
+        }
 
-    #[test]
-    fn three_pane_collapse_hint_overview_overrides_the_rightmost_default() {
-        let mut ns = shell(1200.0, true);
-        ns.hint_active_pane(NavPane::Overview);
-        lay_out(&mut ns, 520.0, 640.0);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(
-            ns.pane(),
-            NavPane::Overview,
-            "the hinted master content overrides the right-most default"
-        );
-        assert!(
-            (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0
-                && (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-            "the overview spans the whole narrow window",
-        );
-        assert!(
-            !ns.is_sidebar_open(),
-            "the sidebar is still a closed overlay drawer"
-        );
-    }
+        // Case `three_pane_collapse_hint_overview_overrides_the_rightmost_default`.
+        {
+            let mut ns = shell(1200.0, true);
+            ns.hint_active_pane(NavPane::Overview);
+            lay_out(&mut ns, 520.0, 640.0);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(
+                ns.pane(),
+                NavPane::Overview,
+                "the hinted master content overrides the right-most default"
+            );
+            assert!(
+                (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0
+                    && (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+                "the overview spans the whole narrow window",
+            );
+            assert!(
+                !ns.is_sidebar_open(),
+                "the sidebar is still a closed overlay drawer"
+            );
+        }
 
-    #[test]
-    fn three_pane_collapse_keeps_the_last_interacted_pane() {
-        let mut ns = shell(1200.0, true);
-        let ov = ns.overview_rect();
-        assert!(
-            ov.width() > 1.0,
-            "wide side-by-side shows an overview column"
-        );
-        let pt = Point::new(ov.x0.midpoint(ov.x1), ov.y0.midpoint(ov.y1));
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(pt), &mut handled);
-        dispatch(&mut ns, &left_press(), &mut handled);
+        // Case `three_pane_collapse_keeps_the_last_interacted_pane`.
+        {
+            let mut ns = shell(1200.0, true);
+            let ov = ns.overview_rect();
+            assert!(
+                ov.width() > 1.0,
+                "wide side-by-side shows an overview column"
+            );
+            let pt = Point::new(ov.x0.midpoint(ov.x1), ov.y0.midpoint(ov.y1));
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(pt), &mut handled);
+            dispatch(&mut ns, &left_press(), &mut handled);
 
-        lay_out(&mut ns, 520.0, 640.0);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(
-            ns.pane(),
-            NavPane::Overview,
-            "the pane the user last engaged survives the collapse, overriding the right-most default",
-        );
-        assert!(
-            (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
-            "the overview fills the narrow window",
-        );
-    }
+            lay_out(&mut ns, 520.0, 640.0);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(
+                ns.pane(),
+                NavPane::Overview,
+                "the pane the user last engaged survives the collapse, overriding the right-most default",
+            );
+            assert!(
+                (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+                "the overview fills the narrow window",
+            );
+        }
 
-    #[test]
-    fn content_only_collapse_keeps_the_overview_first_default() {
-        let mut ns = shell(1200.0, false); // no sidebar
-        lay_out(&mut ns, 520.0, 640.0);
-        assert_eq!(ns.mode(), ShellMode::Narrow);
-        assert_eq!(
-            ns.pane(),
-            NavPane::Overview,
-            "a sidebar-less master/detail collapses to the overview, unchanged",
-        );
+        // Case `content_only_collapse_keeps_the_overview_first_default`.
+        {
+            let mut ns = shell(1200.0, false); // no sidebar
+            lay_out(&mut ns, 520.0, 640.0);
+            assert_eq!(ns.mode(), ShellMode::Narrow);
+            assert_eq!(
+                ns.pane(),
+                NavPane::Overview,
+                "a sidebar-less master/detail collapses to the overview, unchanged",
+            );
+        }
     }
 
     // --- scaffolding -----------------------------------------------------
@@ -2887,14 +3053,16 @@ mod tests {
         let root = automerge::ROOT;
         ns.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -2914,179 +3082,5 @@ mod tests {
             )
             .unwrap();
         ns.apply_layout(&taffy, node, Point::ZERO);
-    }
-
-    /// F1 round one V-01: docked, the sidebar's header started one chip band
-    /// (60 px) below the overview and detail headers because the band was
-    /// reserved above the sidebar even though the chip sits in its header
-    /// row (which the fixture and mail clear horizontally). Docked keeps the
-    /// sidebar's full height; the overlay drawer still starts under the chip.
-    #[test]
-    fn docked_sidebar_keeps_its_full_height_so_its_header_aligns_with_the_content_panes() {
-        let wide = shell(1200.0, true);
-        assert_eq!(wide.top_left_affordance(), Affordance::SidebarToggle);
-        assert_eq!(
-            wide.sidebar_content_rect(),
-            wide.sidebar_rect(),
-            "the docked sidebar's content starts at the pane top, level with the overview",
-        );
-        assert_eq!(
-            wide.sidebar_content_rect().y0,
-            wide.overview_content_rect().y0,
-            "the three panes' headers share one top edge",
-        );
-        assert!(
-            wide.collapse_button_rect().y1 <= wide.sidebar_rect().y0 + wide.chip_band(),
-            "the chip still lives in the sidebar's header row",
-        );
-
-        let mut narrow = shell(600.0, true);
-        narrow.open_sidebar();
-        narrow.snap();
-        assert_eq!(narrow.sidebar_layout(), Some(SplitLayout::Overlay));
-        let drawer = narrow.sidebar_rect();
-        assert_eq!(
-            narrow.sidebar_content_rect().y0,
-            drawer.y0 + narrow.chip_band(),
-            "an overlay drawer slides in under the chip, so its first row starts below the band",
-        );
-    }
-
-    /// HIG §9.6: breakpoint and text-sized pane widths are authored at 1×
-    /// and resolved by the shell (`× ui_scale × text_scale.max(1.0)`); the
-    /// token defaults follow the `ui_scale`d metrics; an icon rail follows
-    /// `ui_scale` only; the chip grows with the body line, not the scale.
-    #[test]
-    fn authored_inputs_and_chip_follow_the_responsive_scale() {
-        let authored = || {
-            NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-                .with_sidebar(Box::new(Text::new("s")))
-                .with_breakpoint(860.0)
-                .with_sidebar_width(260.0)
-                .with_overview_width(340.0)
-        };
-        let mut one = authored();
-        lay_out_with(&mut one, &Theme::dark(), 1400.0, 700.0);
-        assert_eq!(
-            (one.breakpoint(), one.sidebar_width(), one.overview_width()),
-            (860.0, 260.0, 340.0),
-            "1× is the authored geometry",
-        );
-        assert_eq!(
-            (one.chip_inset, one.chip_size, one.back_chip_width),
-            (12.0, 36.0, 104.0)
-        );
-        assert_eq!(one.mode(), ShellMode::Wide);
-
-        let two = Theme::dark().with_text_scale(2.0);
-        let mut large = authored();
-        lay_out_with(&mut large, &two, 1400.0, 700.0);
-        assert_eq!(
-            (
-                large.breakpoint(),
-                large.sidebar_width(),
-                large.overview_width()
-            ),
-            (1720.0, 520.0, 680.0),
-        );
-        assert_eq!(
-            large.mode(),
-            ShellMode::Narrow,
-            "a 1400 px window at 2× has the room a 700 px window has at 1×",
-        );
-        let grown = crate::widget::text_control_height(CHIP_SIZE, &two);
-        assert!(
-            grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE,
-            "chip grows by the line, not 2×"
-        );
-        assert_eq!(large.chip_size, grown);
-        assert_eq!(large.chip_inset, 12.0, "the inset is spacing, not text");
-        assert_eq!(
-            large.back_chip_width,
-            grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0
-        );
-        assert_eq!(
-            large.collapse_button_rect().height(),
-            grown,
-            "the hit rect is the grown chip"
-        );
-
-        let mut rail = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-            .with_icon_overview_width(68.0);
-        lay_out_with(&mut rail, &two, 1400.0, 700.0);
-        assert_eq!(
-            rail.overview_width(),
-            68.0,
-            "an icon rail never grows with the text"
-        );
-
-        let mut defaults = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
-            .with_sidebar(Box::new(Text::new("s")));
-        lay_out_with(
-            &mut defaults,
-            &Theme::dark().with_ui_scale(1.5),
-            2000.0,
-            700.0,
-        );
-        let metrics = Theme::dark().with_ui_scale(1.5).tokens.metrics;
-        assert!((defaults.sidebar_width() - f64::from(metrics.sidebar_width)).abs() < 1e-6);
-        assert!((defaults.overview_width() - f64::from(metrics.overview_width)).abs() < 1e-6);
-        assert!(
-            (defaults.breakpoint() - 1050.0).abs() < 1e-6,
-            "700 authored × ui 1.5"
-        );
-        assert!((defaults.chip_inset - 18.0).abs() < 1e-6, "s3 at ui 1.5");
-    }
-
-    /// The panes are solved with the theme the outer tree was built with and
-    /// the host's renderer, so a `Text` in a pane is twice as tall at 2× and
-    /// the shared-host path loads no font system of its own.
-    #[test]
-    fn panes_measure_at_the_host_text_scale_without_loading_fonts() {
-        let height_at = |scale: f32| {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            renderer.set_text_scale(scale);
-            let mut ns = NavShell::new(
-                Box::new(Text::new("overview")),
-                Box::new(Text::new("detail")),
-            );
-            let mut taffy = TaffyTree::<()>::new();
-            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let root = ns.build_layout(&mut taffy, &theme, &mut nodes);
-            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
-            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-            // SAFETY: the tree and maps come from this exact live build and
-            // `ns` is exclusively owned for the whole solve.
-            unsafe {
-                bindings.rebuild(&ns, &taffy, root, &nodes);
-                crate::widget::compute_widget_layout(
-                    &mut taffy,
-                    root,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(1200.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                    &nodes,
-                    &bindings,
-                    &mut renderer,
-                )
-                .unwrap();
-            }
-            ns.apply_layout(&taffy, root, Point::ZERO);
-            assert_eq!(
-                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
-                0,
-                "the host path must measure with the host's renderer, not load fonts of its own"
-            );
-            ns.overview.get_rect().height()
-        };
-        let one = height_at(1.0);
-        let two = height_at(2.0);
-        assert!(one > 0.0);
-        assert!(
-            (two / one - 2.0).abs() < 0.05,
-            "an overview Text line is {two} px at 2× against {one} px at 1×; it must double"
-        );
     }
 }

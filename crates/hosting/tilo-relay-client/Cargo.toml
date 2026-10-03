@@ -2,19 +2,20 @@
 name = "tilo-relay-client"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-description = "Client side of the Tilo host + relay: the authenticated relay session, the co-edit session over it, and the length-prefixed frame codec both ends of the relay stream use."
+publish = true
+description = "Client side of the Tilo host + relay every peer shares: the frame codec both ends of a relay stream use, the co-edit payloads, device certification and the device-signer seam."
 license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
 
-# Devices (the shell, workspace tools) dial a relay through this crate without
-# linking the daemon. The daemon depends on it too, for its federation dials
-# and for the frame codec, so the wire logic exists once. Storage, sandboxing
-# and the accept side stay in `tilo-relay`.
+# The relay session and co-edit clients live in `tilo-relay`, next to the
+# delivery, join and transport records they speak. This crate holds what a
+# browser peer needs as well: the frame codec, the co-edit payloads, the
+# signer seam and (with `iroh`) the certification dialer.
 [dependencies]
-tilo-relay-protocol = { path = "../tilo-relay-protocol" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-clock = { path = "../../system/tilo-clock" }
-iroh.workspace = true
+tilo-relay-protocol = { version = "0.1.0", path = "../tilo-relay-protocol" }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+iroh = { workspace = true, optional = true }
 iroh-base.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 ed25519-dalek.workspace = true
@@ -22,11 +23,21 @@ rand.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
-wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+# Task spawning and timers on tokio natively and on the page's event loop in a
+# browser, the same runtime split iroh uses.
+n0-future = { version = "0.3", optional = true }
+# A wall clock that does not panic in a browser.
+web-time = { version = "1", optional = true }
 
-[dev-dependencies]
-# Proves a raw Automerge delta is never mistaken for a co-edit payload.
-automerge.workspace = true
+[features]
+default = ["iroh"]
+# The iroh dialer: the v1 session client and certification over the ALPN.
+iroh = ["dep:iroh", "dep:n0-future", "dep:web-time"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

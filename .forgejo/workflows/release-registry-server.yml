@@ -1,0 +1,167 @@
+name: Release / registry server image
+
+# The public registry is deployed by digest. Pull requests build and exercise
+# the exact production image without writing to the registry; main publishes
+# one immutable x86_64 tag and a digest receipt for the GitOps repository.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/packaging/registry-server/**"
+      - "crates/packaging/registry-types/**"
+      - "crates/packaging/app-registry/**"
+      - "crates/packaging/tilo-app-package/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/tilo-native-certs/**"
+      - "vendor/genawaiter-proc-macro/**"
+      - ".forgejo/workflows/release-registry-server.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - "crates/packaging/registry-server/**"
+      - "crates/packaging/registry-types/**"
+      - "crates/packaging/app-registry/**"
+      - "crates/packaging/tilo-app-package/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/tilo-native-certs/**"
+      - "vendor/genawaiter-proc-macro/**"
+      - ".forgejo/workflows/release-registry-server.yml"
+
+concurrency:
+  group: registry-server-image-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    runs-on: runner
+    timeout-minutes: 90
+    env:
+      IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-registry-server
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The production cluster is amd64 today. Add arm64 as a separately tested
+      # native child before publishing a multi-platform index under this name.
+      IMAGE_PLATFORM: linux/amd64
+    steps:
+      - name: Checkout the exact image source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Materialize the pinned compiler-cache client
+        uses: ./.forgejo/actions/cache-github-assets
+        with:
+          key: registry-server-sccache-v1
+          assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+
+      # The runner's compiler cache (sccache over the Actions cache protocol,
+      # infra docs/ci-caching.md) reaches the compile as two BuildKit
+      # secrets. A slot without it compiles without the cache.
+      - name: Bind the runner compiler cache
+        id: compiler-cache
+        run: |
+          set -euo pipefail
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+            {
+              echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+              echo 'actions_cache_url=ACTIONS_CACHE_URL'
+              echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
+              echo 'TILO_COMPILER_CACHE_SECRETS'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo 'secret-envs=' >> "$GITHUB_OUTPUT"
+            echo "::notice::this slot provides no compiler cache; compiling without it"
+          fi
+
+      - name: Set up the pinned BuildKit frontend
+        uses: ./.forgejo/actions/setup-buildx
+        with:
+          # Layers and the cargo registry/target cache mounts stay on the
+          # runner slot; only main pushes, which publish, use the trusted builder.
+          persistent: true
+
+      - name: Build the production image without publication
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: crates/packaging/registry-server/container/Containerfile
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          platforms: ${{ env.IMAGE_PLATFORM }}
+          push: false
+          load: true
+          provenance: false
+          build-args: |
+            SOURCE_REVISION=${{ env.SOURCE_REVISION }}
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
+          tags: ${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SOURCE_REVISION }}
+          cache-from: type=gha,scope=registry-server
+          cache-to: type=gha,scope=registry-server,mode=max,ignore-error=true
+
+      - name: Exercise the non-root read-only runtime and health endpoint
+        run: >-
+          bash crates/packaging/registry-server/container/test-image.sh
+          "$IMAGE_REPOSITORY:sha-$SOURCE_REVISION"
+          "$SOURCE_REVISION"
+
+      - name: Log in for main publication
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the exact image that passed the smoke test
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        id: publish
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REPOSITORY:sha-$SOURCE_REVISION"
+          output=$(docker push "$image" 2>&1)
+          printf '%s\n' "$output"
+          digest=$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' <<<"$output" | tail -1)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write the deployment digest receipt
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p registry-server-image-receipt
+          jq -n \
+            --arg repository "$IMAGE_REPOSITORY" \
+            --arg tag "sha-$SOURCE_REVISION" \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg image "$IMAGE_REPOSITORY@$IMAGE_DIGEST" \
+            --arg sourceRevision "$SOURCE_REVISION" \
+            --arg platform "$IMAGE_PLATFORM" \
+            '{schemaVersion:1,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceRevision:$sourceRevision,platform:$platform}' \
+            > registry-server-image-receipt/registry-server-image.json
+          jq -e \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg source "$SOURCE_REVISION" \
+            '.schemaVersion == 1 and .digest == $digest and .sourceRevision == $source' \
+            registry-server-image-receipt/registry-server-image.json >/dev/null
+          printf '### Registry server image\n\n`%s@%s`\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the immutable digest receipt
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: registry-server-image-receipt
+          path: registry-server-image-receipt/registry-server-image.json
+          if-no-files-found: error

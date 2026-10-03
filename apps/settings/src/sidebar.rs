@@ -23,8 +23,8 @@
 //! (that lives in the app's top strip).
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -178,6 +178,9 @@ impl RowGeometry {
 )]
 pub struct SidebarRow {
     category: Category,
+    /// The category's label in the active locale: painted, measured, spoken
+    /// and used as the row's `test_id`.
+    label: String,
     /// Whether this row is the currently-selected category — drives the active
     /// highlight. Passed in at build time from the app's selection.
     active: bool,
@@ -208,6 +211,7 @@ impl SidebarRow {
     ) -> Self {
         Self {
             category,
+            label: category.label(),
             active,
             selection_request,
             rect: Rect::ZERO,
@@ -247,11 +251,8 @@ impl SidebarRow {
     /// bottom — never below [`ROW_HEIGHT`], so 1× rows stay exactly that.
     fn measured_height(&self, text_renderer: &mut TextRenderer, row_w: f64) -> f32 {
         let size = self.renderer_label_size(text_renderer);
-        let (_, line_height) = text_renderer.measure(
-            self.category.label(),
-            size,
-            Some(Self::label_max_width(row_w)),
-        );
+        let (_, line_height) =
+            text_renderer.measure(&self.label, size, Some(Self::label_max_width(row_w)));
         (line_height + 4.0 * spacing().s1).max(ROW_HEIGHT)
     }
 
@@ -264,7 +265,7 @@ impl SidebarRow {
 }
 
 impl Widget for SidebarRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    ui::provides!(dyn ui::undo::UndoPoints);
 
     fn build_layout(
         &mut self,
@@ -358,7 +359,7 @@ impl Widget for SidebarRow {
         // were laid out with — the default toolkit scale, because the sidebar
         // tree is composed before a theme is resolved. Reading a theme-retuned
         // `s2` here would detach the pill from the search field it aligns to.
-        let label = self.category.label();
+        let label = self.label.as_str();
         let label_size = self.renderer_label_size(text_renderer);
         // Shaped against the same width `measure` used, so a label that wraps
         // under large text is centred as the two-line box the row grew for.
@@ -453,25 +454,15 @@ impl Widget for SidebarRow {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -483,18 +474,18 @@ impl Widget for SidebarRow {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
                         // Fire selection on release (matches Button semantics).
                         if !pressed {
                             self.activate();
                         }
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -506,7 +497,7 @@ impl Widget for SidebarRow {
                     ) =>
             {
                 self.activate();
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -519,13 +510,13 @@ impl Widget for SidebarRow {
     /// Addressable by the category's display label so interaction tests can
     /// resolve a row's on-screen rect and click it.
     fn test_id(&self) -> Option<&str> {
-        Some(self.category.label())
+        Some(&self.label)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
-                .with_name(self.category.label())
+                .with_name(&self.label)
                 .with_action_target(crate::actions::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
@@ -535,18 +526,6 @@ impl Widget for SidebarRow {
                     ..Default::default()
                 }),
         )
-    }
-
-    /// Expose the active state so a rebuilt tree can be inspected — used by
-    /// the interaction tests to confirm the highlight followed the click. The
-    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
-    /// place for this read-only snapshot.
-    fn get_state(&self) -> Option<String> {
-        Some(if self.active {
-            "active".into()
-        } else {
-            "inactive".into()
-        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -574,8 +553,8 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::Activate => {
@@ -584,6 +563,20 @@ impl Widget for SidebarRow {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::undo::UndoPoints for SidebarRow {
+    /// Expose the active state so a rebuilt tree can be inspected — used by
+    /// the interaction tests to confirm the highlight followed the click. The
+    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
+    /// place for this read-only snapshot.
+    fn get_state(&self) -> Option<String> {
+        Some(if self.active {
+            "active".into()
+        } else {
+            "inactive".into()
+        })
     }
 }
 
@@ -635,7 +628,7 @@ pub fn build(
     if trimmed.is_empty() {
         for section in Section::ALL.iter().copied() {
             let rows: Vec<El> = Category::in_section(section).map(row).collect();
-            col = col.push(section_block(section.label(), rows));
+            col = col.push(section_block(&section.label(), rows));
         }
     } else {
         // Filtered results — a flat list of matching categories under a
@@ -710,6 +703,7 @@ fn section_block(label: &str, rows: Vec<El>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn count_rows(w: &dyn Widget) -> usize {
         let mut n = usize::from(w.name() == "SidebarRow");
@@ -719,46 +713,39 @@ mod tests {
         n
     }
 
+    /// The sidebar lists exactly the categories matching its query, and each
+    /// row is addressable by its category label.
     #[test]
-    fn empty_query_lists_every_category() {
-        let sb = build(Category::Network, "", &ui::LocalState::new(None));
-        assert_eq!(
-            count_rows(sb.as_ref()),
-            Category::ALL.len(),
-            "the unfiltered sidebar lists all categories"
-        );
-    }
-
-    #[test]
-    fn query_filters_the_sidebar_to_matching_categories() {
-        // "night" is a Displays-only keyword, so exactly one row survives.
-        let sb = build(Category::Displays, "night", &ui::LocalState::new(None));
-        let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
-        assert_eq!(count_rows(sb.as_ref()), expected);
+    fn sidebar_query_filters_rows_and_rows_are_addressable() {
+        let night = Category::ALL.iter().filter(|c| c.matches("night")).count();
         assert!(
-            expected >= 1 && expected < Category::ALL.len(),
+            night >= 1 && night < Category::ALL.len(),
             "genuinely filtered"
         );
-    }
+        // (case, selected, query, rows)
+        for (case, selected, query, rows) in [
+            (
+                "unfiltered lists all categories",
+                Category::Network,
+                "",
+                Category::ALL.len(),
+            ),
+            // "night" is a Displays-only keyword.
+            ("keyword filters", Category::Displays, "night", night),
+            ("no match lists no rows", Category::Network, "zzzznope", 0),
+        ] {
+            let sb = build(selected, query, &ui::LocalState::new(None));
+            assert_eq!(count_rows(sb.as_ref()), rows, "case {case}");
+        }
 
-    #[test]
-    fn no_match_query_shows_no_rows() {
-        let sb = build(Category::Network, "zzzznope", &ui::LocalState::new(None));
-        assert_eq!(
-            count_rows(sb.as_ref()),
-            0,
-            "an empty result set lists no rows"
-        );
-    }
-
-    #[test]
-    fn row_is_addressable_by_category_label() {
         let row = SidebarRow::new(Category::MouseKeyboard, false);
         assert_eq!(Widget::test_id(&row), Some("Mouse & Keyboard"));
     }
 
+    /// Row geometry: the pill inset, centred icon column, glyph-independent
+    /// label start, centred line box, and the shared shell field edge.
     #[test]
-    fn row_geometry_aligns_icon_and_label_inside_the_pill() {
+    fn row_geometry_aligns_icon_label_and_pill_to_shared_edges() {
         let sp = spacing();
         // A representative row rect (full sidebar width, one ROW_HEIGHT tall).
         let rect = Rect::new(0.0, 100.0, SIDEBAR_WIDTH, 100.0 + f64::from(ROW_HEIGHT));
@@ -810,13 +797,9 @@ mod tests {
             (top_slack - bottom_slack).abs() < 0.001,
             "text line box must be vertically centred (top={top_slack}, bottom={bottom_slack})"
         );
-    }
 
-    #[test]
-    fn row_geometry_label_start_is_glyph_width_independent() {
         // Two rows whose icon glyphs measure differently must still align their
         // labels to the same x — the point of the fixed icon column.
-        let sp = spacing();
         let rect = Rect::new(0.0, 0.0, SIDEBAR_WIDTH, f64::from(ROW_HEIGHT));
         let narrow = RowGeometry::compute(rect, 8.0, 17.5, &sp);
         let wide = RowGeometry::compute(rect, 18.0, 17.5, &sp);
@@ -824,14 +807,10 @@ mod tests {
             (narrow.label_x - wide.label_x).abs() < f64::EPSILON,
             "labels must start at the same x regardless of glyph advance width"
         );
-    }
 
-    #[test]
-    fn pill_shares_the_shell_search_fields_left_edge() {
         // The row margin plus the pill inset must land on the shell's field
         // inset, so the selection highlight and the search field read as one
         // column edge instead of two.
-        let sp = spacing();
         let row = Rect::new(
             f64::from(row_margin_x()),
             0.0,
@@ -893,73 +872,80 @@ mod tests {
         }
     }
 
+    /// Rows request local selection on release and cover keyboard/assistive activation, never touching the document.
     #[test]
-    fn row_requests_local_selection_on_release_without_mutating_the_document() {
-        let request = ui::LocalState::new(None);
-        let mut row = SidebarRow::with_selection_request(Category::About, false, request.clone());
-        // Seat a rect and pretend the cursor is inside it.
-        row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
-        row.is_hovered = true;
+    fn sidebar_rows_select_locally_and_expose_semantics() {
+        // Case `row_requests_local_selection_on_release_without_mutating_the_document`.
+        {
+            let request = ui::LocalState::new(None);
+            let mut row =
+                SidebarRow::with_selection_request(Category::About, false, request.clone());
+            // Seat a rect and pretend the cursor is inside it.
+            row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+            row.is_hovered = true;
 
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
 
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
-        for ev in [&press, &release] {
-            let mut handled = false;
-            let mut focus = None;
-            row.handle_event(
-                ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            let release = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            };
+            for ev in [&press, &release] {
+                let mut handled = false;
+                let mut focus = None;
+                row.handle_event(
+                    ev,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+            }
+
+            assert_eq!(request.with(|selection| *selection), Some(Category::About));
+            assert!(
+                doc.get_heads().is_empty(),
+                "navigation must not create a replicated click-flag change"
             );
         }
 
-        assert_eq!(request.with(|selection| *selection), Some(Category::About));
-        assert!(
-            doc.get_heads().is_empty(),
-            "navigation must not create a replicated click-flag change"
-        );
-    }
+        // Case `row_activation_and_semantics_cover_keyboard_and_assistive_technology`.
+        {
+            let request = ui::LocalState::new(None);
+            let mut row =
+                SidebarRow::with_selection_request(Category::Accessibility, false, request.clone());
+            row.set_focus(true);
+            let node = row.accessibility().expect("sidebar row has semantics");
+            assert_eq!(node.role, ui::a11y::Role::RadioButton);
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+            assert_eq!(node.state.checked, Some(false));
 
-    #[test]
-    fn row_activation_and_semantics_cover_keyboard_and_assistive_technology() {
-        let request = ui::LocalState::new(None);
-        let mut row =
-            SidebarRow::with_selection_request(Category::Accessibility, false, request.clone());
-        row.set_focus(true);
-        let node = row.accessibility().expect("sidebar row has semantics");
-        assert_eq!(node.role, ui::a11y::Role::RadioButton);
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-        assert_eq!(node.state.checked, Some(false));
-
-        let mut doc = AutoCommit::new();
-        assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
-        assert_eq!(
-            request.with(|selection| *selection),
-            Some(Category::Accessibility),
-            "the semantic activation uses the same local navigation request as a pointer click"
-        );
-        assert!(doc.get_heads().is_empty());
+            let mut doc = AutoCommit::new();
+            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+            assert_eq!(
+                request.with(|selection| *selection),
+                Some(Category::Accessibility),
+                "the semantic activation uses the same local navigation request as a pointer click"
+            );
+            assert!(doc.get_heads().is_empty());
+        }
     }
 }
 
@@ -980,7 +966,7 @@ mod incoming_large_text_tests {
         let rect = Rect::new(0.0, 0.0, width, height);
         let size = row.renderer_label_size(&tr);
         let (_, line_box) = tr.measure(
-            row.category.label(),
+            &row.category.label(),
             size,
             Some(SidebarRow::label_max_width(width)),
         );

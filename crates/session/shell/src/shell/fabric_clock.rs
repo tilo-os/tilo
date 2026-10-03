@@ -1,7 +1,10 @@
 //! Peer clock offset and skew over the personal device fabric.
 //!
-//! Every health probe round trip carries four `CLOCK_MONOTONIC` microsecond
-//! timestamps: `t1` when this device sent the probe, `t2` when the peer
+//! The clock has its own probe and report, which carry timestamps and
+//! nothing else, and are part of Media continuity: speaker groups and remote
+//! audio are what need it. It runs only toward peers something holds in sync
+//! (see [`FabricClockCore::hold`]). Every round trip carries four
+//! `CLOCK_MONOTONIC` microsecond timestamps: `t1` when this device sent the probe, `t2` when the peer
 //! received it, `t3` when the peer sent its report and `t4` when this device
 //! received that report. Per round trip:
 //!
@@ -21,9 +24,27 @@
 //! with the model restart the window instead of being averaged in.
 //!
 //! Everything here is deterministic and free of I/O; the fabric runtime reads
-//! the clock and feeds samples in.
+//! the clock, sends the probes and feeds the reports in.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::shell::device_fabric::PersonalFabricAction;
+use crate::shell::personal_continuity::DeviceId;
+
+/// Probe cadence toward a peer while something holds its clock in sync.
+pub const CLOCK_SYNC_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a held peer may go without one usable report before the holder
+/// is told it cannot play in time, and why.
+pub const CLOCK_SYNC_DEADLINE: Duration = Duration::from_secs(5);
+/// A probe unanswered for this long no longer counts; longer round trips
+/// carry no timing information anyway.
+const CLOCK_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Probes awaiting a report per peer: enough that the slowest usable round
+/// trip still completes at the synchronised cadence.
+const MAX_OUTSTANDING_CLOCK_PROBES: usize = 8;
 
 /// Round trips kept per peer. At the 4 Hz synchronised cadence this spans a
 /// minute, long enough to resolve skew to a few ppm.
@@ -427,6 +448,306 @@ fn round_us(value: f64) -> Option<i64> {
     (rounded.is_finite() && rounded.abs() < 9.0e18).then_some(rounded as i64)
 }
 
+/// Reply to one clock probe, nothing but timestamps. `probe_sent_us`
+/// echoes the prober's clock; `received_us` and `replied_us` are read from
+/// the reporter's clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockReport {
+    pub probe_nonce: [u8; 16],
+    pub probe_sent_us: u64,
+    pub received_us: u64,
+    pub replied_us: u64,
+}
+
+impl ClockReport {
+    #[must_use]
+    pub fn valid(self) -> bool {
+        self.probe_nonce != [0; 16] && self.replied_us >= self.received_us
+    }
+}
+
+/// Why a held peer's clock is not known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClockSyncFailure {
+    /// Media continuity is off on this device, so no clock probe is sent or
+    /// answered.
+    MediaDisabled,
+    /// The peer sent no usable clock report within [`CLOCK_SYNC_DEADLINE`].
+    NoReply,
+}
+
+impl ClockSyncFailure {
+    /// The shell string that explains this to a person.
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::MediaDisabled => "clock-sync-failure-media-disabled",
+            Self::NoReply => "clock-sync-failure-no-reply",
+        }
+    }
+}
+
+/// Whether audio scheduled against a peer's clock can play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClockSyncState {
+    /// No usable report yet; still inside [`CLOCK_SYNC_DEADLINE`].
+    Syncing,
+    /// An estimate exists and timed audio follows it.
+    Ready,
+    Failed(ClockSyncFailure),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingClockProbe {
+    nonce: [u8; 16],
+    sent: Instant,
+    sent_us: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HeldPeer {
+    holders: usize,
+    /// When the peer was first held, or when Media continuity came back on:
+    /// the start of its [`CLOCK_SYNC_DEADLINE`].
+    since: Instant,
+}
+
+/// The fabric clock for every peer something holds in sync: which probes
+/// are due, which reports answer them, and each peer's estimate.
+///
+/// Probes go only to held peers, and only while Media continuity is on;
+/// turning it off forgets every estimate. Reports are accepted only for an
+/// outstanding nonce sent to that exact peer, and releasing the last hold on
+/// a peer forgets its estimate too.
+#[derive(Debug, Default)]
+pub struct FabricClockCore {
+    enabled: bool,
+    held: BTreeMap<DeviceId, HeldPeer>,
+    pending: BTreeMap<DeviceId, VecDeque<PendingClockProbe>>,
+    clocks: BTreeMap<DeviceId, PeerClockEstimator>,
+    last_round: Option<Instant>,
+}
+
+impl FabricClockCore {
+    /// Apply the Media continuity switch. Turning it off drops every
+    /// outstanding probe and estimate; turning it back on restarts each held
+    /// peer's deadline.
+    pub fn set_enabled(&mut self, enabled: bool, now: Instant) {
+        if !enabled {
+            self.pending.clear();
+            self.clocks.clear();
+            self.last_round = None;
+        } else if !self.enabled {
+            for held in self.held.values_mut() {
+                held.since = now;
+            }
+        }
+        self.enabled = enabled;
+    }
+
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Start (or count one more reason for) keeping `peer` in sync. The
+    /// next [`Self::due_probes`] probes at once.
+    pub fn hold(&mut self, peer: DeviceId, now: Instant) {
+        let held = self.held.entry(peer).or_insert(HeldPeer {
+            holders: 0,
+            since: now,
+        });
+        held.holders = held.holders.saturating_add(1);
+        self.last_round = None;
+    }
+
+    /// Drop one hold. The last one stops probing `peer` and forgets its
+    /// estimate.
+    pub fn release(&mut self, peer: &DeviceId) {
+        let Some(held) = self.held.get_mut(peer) else {
+            return;
+        };
+        held.holders = held.holders.saturating_sub(1);
+        if held.holders == 0 {
+            self.held.remove(peer);
+            self.pending.remove(peer);
+            self.clocks.remove(peer);
+        }
+    }
+
+    #[must_use]
+    pub fn is_held(&self, peer: &DeviceId) -> bool {
+        self.held.contains_key(peer)
+    }
+
+    /// The probes due at `now` (`now_us` on the local monotonic clock): one
+    /// to every held peer `online` accepts, once per
+    /// [`CLOCK_SYNC_PROBE_INTERVAL`]. Each is recorded as outstanding.
+    pub fn due_probes(
+        &mut self,
+        online: impl Fn(&DeviceId) -> bool,
+        now: Instant,
+        now_us: u64,
+        mut nonce: impl FnMut() -> [u8; 16],
+    ) -> Vec<(DeviceId, PersonalFabricAction)> {
+        if !self.enabled || self.held.is_empty() {
+            return Vec::new();
+        }
+        if self.last_round.is_some_and(|last| {
+            now.checked_duration_since(last)
+                .is_some_and(|age| age < CLOCK_SYNC_PROBE_INTERVAL)
+        }) {
+            return Vec::new();
+        }
+        self.last_round = Some(now);
+        self.prune(now);
+        let peers = self
+            .held
+            .keys()
+            .filter(|peer| online(peer))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut probes = Vec::with_capacity(peers.len());
+        for peer in peers {
+            let nonce = nonce();
+            if nonce == [0; 16] {
+                continue;
+            }
+            let outstanding = self.pending.entry(peer.clone()).or_default();
+            if outstanding.len() >= MAX_OUTSTANDING_CLOCK_PROBES {
+                outstanding.pop_front();
+            }
+            outstanding.push_back(PendingClockProbe {
+                nonce,
+                sent: now,
+                sent_us: now_us,
+            });
+            probes.push((
+                peer,
+                PersonalFabricAction::FabricClockProbe {
+                    nonce,
+                    sent_us: now_us,
+                },
+            ));
+        }
+        probes
+    }
+
+    /// Forget one probe that never left this device.
+    pub fn abandon(&mut self, peer: &DeviceId, nonce: [u8; 16]) {
+        if let Some(outstanding) = self.pending.get_mut(peer) {
+            outstanding.retain(|probe| probe.nonce != nonce);
+            if outstanding.is_empty() {
+                self.pending.remove(peer);
+            }
+        }
+    }
+
+    /// The report answering a peer's probe that arrived at `received_us` and
+    /// is answered at `replied_us`, both on the local monotonic clock.
+    /// `None` while Media continuity is off.
+    #[must_use]
+    pub fn answer(
+        &self,
+        nonce: [u8; 16],
+        sent_us: u64,
+        received_us: u64,
+        replied_us: u64,
+    ) -> Option<PersonalFabricAction> {
+        (self.enabled && nonce != [0; 16]).then_some(PersonalFabricAction::FabricClockReport {
+            report: ClockReport {
+                probe_nonce: nonce,
+                probe_sent_us: sent_us,
+                received_us,
+                replied_us: replied_us.max(received_us),
+            },
+        })
+    }
+
+    /// Feed a report from `peer` that arrived at `now`, `received_us` on the
+    /// local monotonic clock. Only a reply to an outstanding probe to that
+    /// exact peer counts, and each probe counts once.
+    pub fn accept(
+        &mut self,
+        peer: &DeviceId,
+        report: ClockReport,
+        now: Instant,
+        received_us: u64,
+    ) -> bool {
+        self.prune(now);
+        if !self.enabled || !report.valid() || !self.held.contains_key(peer) {
+            return false;
+        }
+        let Some(outstanding) = self.pending.get_mut(peer) else {
+            return false;
+        };
+        let Some(index) = outstanding.iter().position(|probe| {
+            probe.nonce == report.probe_nonce
+                && probe.sent_us == report.probe_sent_us
+                && now >= probe.sent
+        }) else {
+            return false;
+        };
+        let Some(probe) = outstanding.remove(index) else {
+            return false;
+        };
+        if outstanding.is_empty() {
+            self.pending.remove(peer);
+        }
+        self.clocks
+            .entry(peer.clone())
+            .or_default()
+            .observe(ClockSample {
+                t1: probe.sent_us,
+                t2: report.received_us,
+                t3: report.replied_us,
+                t4: received_us,
+            })
+    }
+
+    /// The peer's clock model as of `now_us` on the local monotonic clock.
+    #[must_use]
+    pub fn estimate(&self, peer: &DeviceId, now_us: u64) -> Option<ClockEstimate> {
+        self.clocks.get(peer)?.estimate(now_us)
+    }
+
+    /// Whether audio timed against `peer` can play at `now`.
+    #[must_use]
+    pub fn state(&self, peer: &DeviceId, now: Instant, now_us: u64) -> ClockSyncState {
+        if !self.enabled {
+            return ClockSyncState::Failed(ClockSyncFailure::MediaDisabled);
+        }
+        if self.estimate(peer, now_us).is_some() {
+            return ClockSyncState::Ready;
+        }
+        let expired = self.held.get(peer).is_some_and(|held| {
+            now.checked_duration_since(held.since)
+                .is_some_and(|waited| waited >= CLOCK_SYNC_DEADLINE)
+        });
+        if expired {
+            ClockSyncState::Failed(ClockSyncFailure::NoReply)
+        } else {
+            ClockSyncState::Syncing
+        }
+    }
+
+    /// Drop probes and estimates for peers the fabric no longer knows.
+    pub fn retain_peers(&mut self, mut keep: impl FnMut(&DeviceId) -> bool) {
+        self.pending.retain(|peer, _| keep(peer));
+        self.clocks.retain(|peer, _| keep(peer));
+    }
+
+    fn prune(&mut self, now: Instant) {
+        self.pending.retain(|_, outstanding| {
+            outstanding.retain(|probe| {
+                now.checked_duration_since(probe.sent)
+                    .is_some_and(|age| age <= CLOCK_PROBE_TIMEOUT)
+            });
+            !outstanding.is_empty()
+        });
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::arithmetic_side_effects,
@@ -680,5 +1001,180 @@ mod tests {
         let clock = estimate.playout_clock();
         let leader = clock.local_to_leader_ns(6_000_000_000);
         assert_eq!(leader, 6_000_000_000 + 2_000_000_000);
+    }
+
+    fn device(name: &str) -> DeviceId {
+        DeviceId::new(name).unwrap()
+    }
+
+    fn probe_of(action: &PersonalFabricAction) -> ([u8; 16], u64) {
+        match action {
+            PersonalFabricAction::FabricClockProbe { nonce, sent_us } => (*nonce, *sent_us),
+            other => panic!("expected a clock probe, got {other:?}"),
+        }
+    }
+
+    fn report_of(action: PersonalFabricAction) -> ClockReport {
+        match action {
+            PersonalFabricAction::FabricClockReport { report } => report,
+            other => panic!("expected a clock report, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_clock_probes_only_held_peers_and_one_report_makes_it_ready() {
+        let now = Instant::now();
+        let later = |ms| now + Duration::from_millis(ms);
+        let speaker = device("speaker");
+        let idle = device("idle");
+        let mut holder = FabricClockCore::default();
+        let mut peer = FabricClockCore::default();
+        holder.set_enabled(true, now);
+        peer.set_enabled(true, now);
+        let mut next = 0_u8;
+        let mut nonce = || {
+            next += 1;
+            [next; 16]
+        };
+        assert!(
+            holder
+                .due_probes(|_| true, now, 1_000_000, &mut nonce)
+                .is_empty(),
+            "nothing is probed until something holds a peer"
+        );
+
+        holder.hold(speaker.clone(), now);
+        assert_eq!(
+            holder.state(&speaker, now, 1_000_000),
+            ClockSyncState::Syncing
+        );
+        let probes = holder.due_probes(|_| true, now, 1_000_000, &mut nonce);
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].0, speaker);
+        assert!(!probes.iter().any(|(target, _)| target == &idle));
+        assert!(
+            holder
+                .due_probes(|_| true, later(100), 1_100_000, &mut nonce)
+                .is_empty(),
+            "one round per cadence"
+        );
+
+        let (probe_nonce, sent_us) = probe_of(&probes[0].1);
+        let report = report_of(
+            peer.answer(probe_nonce, sent_us, 70_000_000, 70_000_200)
+                .expect("an enabled peer answers"),
+        );
+        assert_eq!(report.probe_sent_us, 1_000_000);
+        for forged in [
+            ClockReport {
+                probe_nonce: [0x7f; 16],
+                ..report
+            },
+            ClockReport {
+                probe_sent_us: 999_999,
+                ..report
+            },
+            ClockReport {
+                replied_us: 69_999_999,
+                ..report
+            },
+        ] {
+            assert!(!holder.accept(&speaker, forged, later(12), 1_012_000));
+        }
+        assert!(
+            !holder.accept(&idle, report, later(12), 1_012_000),
+            "a report from a peer nobody probed never counts"
+        );
+        assert!(holder.accept(&speaker, report, later(12), 1_012_000));
+        assert!(
+            !holder.accept(&speaker, report, later(13), 1_013_000),
+            "each probe counts once"
+        );
+        assert_eq!(
+            holder.state(&speaker, later(12), 1_012_000),
+            ClockSyncState::Ready
+        );
+        let estimate = holder.estimate(&speaker, 1_012_000).expect("an estimate");
+        // ((70_000_000 - 1_000_000) + (70_000_200 - 1_012_000)) / 2
+        assert_eq!(estimate.offset_us(1_006_000), Some(68_994_100));
+
+        holder.release(&speaker);
+        assert!(
+            holder.estimate(&speaker, 1_012_000).is_none(),
+            "the last release forgets the estimate"
+        );
+        assert!(
+            holder
+                .due_probes(|_| true, later(1_000), 2_000_000, &mut nonce)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_unanswered_peer_fails_with_a_reason_after_the_deadline() {
+        let now = Instant::now();
+        let speaker = device("speaker");
+        let mut core = FabricClockCore::default();
+        core.set_enabled(true, now);
+        core.hold(speaker.clone(), now);
+        core.hold(speaker.clone(), now);
+        assert_eq!(core.due_probes(|_| true, now, 1, || [3; 16]).len(), 1);
+        let deadline = now + CLOCK_SYNC_DEADLINE;
+        assert_eq!(
+            core.state(
+                &speaker,
+                deadline.checked_sub(Duration::from_millis(1)).unwrap(),
+                2
+            ),
+            ClockSyncState::Syncing
+        );
+        assert_eq!(
+            core.state(&speaker, deadline, 3),
+            ClockSyncState::Failed(ClockSyncFailure::NoReply)
+        );
+        core.release(&speaker);
+        assert!(core.is_held(&speaker), "one hold is still alive");
+        core.release(&speaker);
+        assert!(!core.is_held(&speaker));
+    }
+
+    #[test]
+    fn media_off_stops_probing_answering_and_forgets_every_estimate() {
+        let now = Instant::now();
+        let speaker = device("speaker");
+        let mut core = FabricClockCore::default();
+        core.set_enabled(true, now);
+        core.hold(speaker.clone(), now);
+        let probes = core.due_probes(|_| true, now, 1_000_000, || [5; 16]);
+        let (nonce, sent_us) = probe_of(&probes[0].1);
+        let report = ClockReport {
+            probe_nonce: nonce,
+            probe_sent_us: sent_us,
+            received_us: 2_000_000,
+            replied_us: 2_000_100,
+        };
+        assert!(core.accept(&speaker, report, now, 1_000_400));
+        assert_eq!(core.state(&speaker, now, 1_000_400), ClockSyncState::Ready);
+
+        let off = now + Duration::from_secs(1);
+        core.set_enabled(false, off);
+        assert!(core.estimate(&speaker, 1_000_400).is_none());
+        assert_eq!(
+            core.state(&speaker, off, 1_000_400),
+            ClockSyncState::Failed(ClockSyncFailure::MediaDisabled)
+        );
+        assert!(
+            core.due_probes(|_| true, off, 2_000_000, || [6; 16])
+                .is_empty()
+        );
+        assert!(core.answer([7; 16], 1, 2, 3).is_none());
+
+        let on = off + Duration::from_secs(60);
+        core.set_enabled(true, on);
+        assert_eq!(
+            core.state(&speaker, on, 3_000_000),
+            ClockSyncState::Syncing,
+            "turning Media back on restarts the deadline"
+        );
     }
 }

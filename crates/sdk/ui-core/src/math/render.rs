@@ -4,7 +4,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Stroke};
 use vello::peniko::Color;
 
-use crate::text_render::{FontChoice, TextRenderer, TextWeight, UI_MATH_FAMILY};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
 
 use super::layout::{Box2d, BoxKind, Layout};
 
@@ -56,29 +56,23 @@ fn draw_box(
         BoxKind::Glyph { ch, size } => {
             let mut buffer = [0u8; 4];
             let text = ch.encode_utf8(&mut buffer);
-            text_renderer.draw_text_font(
+            text_renderer.draw_style(
                 scene,
                 text,
-                *size,
                 color,
                 translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::Named(UI_MATH_FAMILY.into()),
+                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
             );
         }
         BoxKind::Name { text, size } => {
-            text_renderer.draw_text_font(
+            text_renderer.draw_style(
                 scene,
                 text,
-                *size,
                 color,
                 translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::Named(UI_MATH_FAMILY.into()),
+                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
             );
         }
         BoxKind::Paren { open, size } => {
@@ -140,7 +134,6 @@ fn draw_box(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_accent(
     scene: &mut Scene,
     transform: Affine,
@@ -227,7 +220,6 @@ fn draw_accent(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_delimiter(
     scene: &mut Scene,
     transform: Affine,

@@ -14,12 +14,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 /// See module docs for variant semantics.
 #[derive(Clone, Debug)]
@@ -200,8 +198,6 @@ fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
 }
 
 impl Widget for Badge {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -342,21 +338,6 @@ impl Widget for Badge {
         self.cache_rect == Rect::ZERO
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Badges are purely informational — no input handling.
-    }
-
     fn name(&self) -> &'static str {
         "Badge"
     }
@@ -396,101 +377,109 @@ mod tests {
             .count()
     }
 
-    /// Asserting via the Vello encoding is the strongest possible check: if
-    /// any code path leaks a stray fill (pill, dot, glyph), it's caught.
     #[test]
-    fn badge_count_zero_paints_nothing() {
-        let mut b = Badge::count(0);
-        let fills = color_fill_count(&mut b);
-        assert_eq!(
-            fills, 0,
-            "Badge::count(0) must not emit any COLOR draw tags (got {fills})",
-        );
-    }
+    fn badge_paints_count_dot_and_pill_variants() {
+        /// Asserting via the Vello encoding is the strongest possible check: if
+        /// any code path leaks a stray fill (pill, dot, glyph), it's caught.
+        fn badge_count_zero_paints_nothing() {
+            let mut b = Badge::count(0);
+            let fills = color_fill_count(&mut b);
+            assert_eq!(
+                fills, 0,
+                "Badge::count(0) must not emit any COLOR draw tags (got {fills})",
+            );
+        }
 
-    #[test]
-    fn immediate_pill_uses_the_shared_badge_painter() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        Badge::paint_at(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 72.0, 20.0),
-            "Owner",
-            theme.tokens.colors.accent[5],
-            &mut tr,
-            &theme,
-        );
-        assert!(
-            scene.encoding().draw_tags.contains(&DrawTag::COLOR),
-            "the immediate badge bridge must paint its pill rather than becoming a no-op"
-        );
-    }
+        fn badge_count_one_hundred_paints_99plus() {
+            assert_eq!(
+                Badge::count(100).display_text().as_deref(),
+                Some("99+"),
+                "values >= 100 must clamp to the \"99+\" overflow string",
+            );
+            // A larger value, so a future "only 100 is special" off-by-one doesn't slip by.
+            assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"),);
+            // The boundary just below: `99` must NOT clamp.
+            assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"),);
+        }
 
-    #[test]
-    fn badge_count_one_hundred_paints_99plus() {
-        assert_eq!(
-            Badge::count(100).display_text().as_deref(),
-            Some("99+"),
-            "values >= 100 must clamp to the \"99+\" overflow string",
-        );
-        // A larger value, so a future "only 100 is special" off-by-one doesn't slip by.
-        assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"),);
-        // The boundary just below: `99` must NOT clamp.
-        assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"),);
-    }
-
-    #[test]
-    fn accessibility_reports_static_text_role_and_value() {
-        use crate::a11y::Role;
-        let b = Badge::count(3);
-        let node = Widget::accessibility(&b).expect("badge is not presentational");
-        assert_eq!(node.role, Role::StaticText);
-        assert_eq!(node.value.as_deref(), Some("3"));
-        assert!(!node.state.focusable, "a badge is not focusable");
-
-        // Overflow clamps in the value too.
-        let over = Badge::count(250);
-        assert_eq!(
-            Widget::accessibility(&over).unwrap().value.as_deref(),
-            Some("99+")
-        );
-
-        // Dot variant carries no text → no accessible value.
-        let dot = Badge::dot();
-        assert_eq!(Widget::accessibility(&dot).unwrap().value, None);
-    }
-
-    #[test]
-    fn pill_uses_tint_text_uses_danger_default() {
-        let theme = Theme::dark();
-        let tint = Color::from_rgb8(10, 200, 90);
-        let pill = Badge::pill("ONLINE", tint);
-        assert_eq!(pill.background(&theme), tint, "pill must paint its tint");
-        assert_eq!(pill.display_text().as_deref(), Some("ONLINE"));
-
-        let plain = Badge::text("NEW");
-        assert_eq!(
-            plain.background(&theme),
-            theme.tokens.colors.semantic.danger,
-            "plain text badge keeps the notification-red default",
-        );
-
-        // `with_tint` overrides a count badge's colour too.
-        let counted = Badge::count(3).with_tint(tint);
-        assert_eq!(counted.background(&theme), tint);
-    }
-
-    /// Exactly one fill — the circle. No pill background, no glyphs, no shadow.
-    #[test]
-    fn badge_dot_paints_filled_circle() {
-        let mut b = Badge::dot();
-        let fills = color_fill_count(&mut b);
-        assert_eq!(
-            fills, 1,
-            "Badge::dot() must emit exactly one COLOR draw tag (the \
+        /// Exactly one fill — the circle. No pill background, no glyphs, no shadow.
+        fn badge_dot_paints_filled_circle() {
+            let mut b = Badge::dot();
+            let fills = color_fill_count(&mut b);
+            assert_eq!(
+                fills, 1,
+                "Badge::dot() must emit exactly one COLOR draw tag (the \
              filled circle); got {fills}",
-        );
+            );
+        }
+
+        fn immediate_pill_uses_the_shared_badge_painter() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            Badge::paint_at(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 72.0, 20.0),
+                "Owner",
+                theme.tokens.colors.accent[5],
+                &mut tr,
+                &theme,
+            );
+            assert!(
+                scene.encoding().draw_tags.contains(&DrawTag::COLOR),
+                "the immediate badge bridge must paint its pill rather than becoming a no-op"
+            );
+        }
+
+        badge_count_zero_paints_nothing();
+        badge_count_one_hundred_paints_99plus();
+        badge_dot_paints_filled_circle();
+        immediate_pill_uses_the_shared_badge_painter();
+    }
+
+    #[test]
+    fn badge_semantics_and_theme_colours() {
+        fn accessibility_reports_static_text_role_and_value() {
+            use crate::a11y::Role;
+            let b = Badge::count(3);
+            let node = Widget::accessibility(&b).expect("badge is not presentational");
+            assert_eq!(node.role, Role::StaticText);
+            assert_eq!(node.value.as_deref(), Some("3"));
+            assert!(!node.state.focusable, "a badge is not focusable");
+
+            // Overflow clamps in the value too.
+            let over = Badge::count(250);
+            assert_eq!(
+                Widget::accessibility(&over).unwrap().value.as_deref(),
+                Some("99+")
+            );
+
+            // Dot variant carries no text → no accessible value.
+            let dot = Badge::dot();
+            assert_eq!(Widget::accessibility(&dot).unwrap().value, None);
+        }
+
+        fn pill_uses_tint_text_uses_danger_default() {
+            let theme = Theme::dark();
+            let tint = Color::from_rgb8(10, 200, 90);
+            let pill = Badge::pill("ONLINE", tint);
+            assert_eq!(pill.background(&theme), tint, "pill must paint its tint");
+            assert_eq!(pill.display_text().as_deref(), Some("ONLINE"));
+
+            let plain = Badge::text("NEW");
+            assert_eq!(
+                plain.background(&theme),
+                theme.tokens.colors.semantic.danger,
+                "plain text badge keeps the notification-red default",
+            );
+
+            // `with_tint` overrides a count badge's colour too.
+            let counted = Badge::count(3).with_tint(tint);
+            assert_eq!(counted.background(&theme), tint);
+        }
+
+        accessibility_reports_static_text_role_and_value();
+        pill_uses_tint_text_uses_danger_default();
     }
 }

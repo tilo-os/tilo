@@ -24,7 +24,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use code_editor::lsp::{LspClient, LspEvent};
 use code_editor::model::Language;
@@ -66,9 +66,9 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
         clippy::arithmetic_side_effects,
         reason = "test value, cannot overflow: BUDGET is a fixed few-minute Duration added to the current Instant"
     )]
-    let deadline = Instant::now() + BUDGET;
+    let deadline = ui::time::now() + BUDGET;
     let mut seen = Vec::new();
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         for ev in client.poll() {
             // Fold progress through the client the way the app does, so the
             // task table under test is the one the status bar reads.
@@ -98,6 +98,12 @@ fn require_binary(name: &str) {
 }
 
 #[test]
+fn rust_analyzer_indexes_visibly_and_reports_a_real_error_in_a_real_project() {
+    // Each phase builds its own fixture project and starts its own server.
+    rust_analyzer_reports_a_real_error_in_a_real_project();
+    indexing_is_visible_while_it_happens();
+}
+
 fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     let mut wake_scope = ui::wake::WakeScope::new();
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
@@ -186,7 +192,6 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     assert!(panel.message.contains("parse_limitt") || panel.message.contains("cannot find"));
 }
 
-#[test]
 fn indexing_is_visible_while_it_happens() {
     // The other half of the fix: a server that takes minutes must not be
     // indistinguishable from a broken one. rust-analyzer only sends

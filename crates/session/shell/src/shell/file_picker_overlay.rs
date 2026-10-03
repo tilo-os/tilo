@@ -6,11 +6,10 @@
 //! where this modal sits in the global z-order.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
+use taffy::TaffyTree;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -72,7 +71,10 @@ impl FilePickerOverlay {
                 let _ = request.reply.send(None);
                 continue;
             }
-            let scope = picker_scope_for(chrome, &request.caller);
+            let scope = request
+                .scope
+                .clone()
+                .unwrap_or_else(|| picker_scope_for(chrome, &request.caller));
             let active = ActiveFilePicker::mount(request, scope);
             tracing::info!(
                 app = %active.app_id,
@@ -107,20 +109,13 @@ impl FilePickerOverlay {
     /// Routes an event to the active picker and reports whether the modal
     /// consumed the shell's input. An active picker always consumes input,
     /// even when its inner widget has no action for a particular event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "file-picker routing adds viewport bounds to the Widget event, CRDT state and focus output parameters"
-    )]
+    /// The picker is dispatched on a tree of its own; `ctx.node_id` and
+    /// `ctx.taffy` are not forwarded.
     pub(crate) fn handle_event(
         &mut self,
         viewport: Rect,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(active) = self.active.as_mut() else {
             return false;
@@ -135,16 +130,18 @@ impl FilePickerOverlay {
         };
         active.widget.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *ctx.state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 }
@@ -304,35 +301,88 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
-    fn picker_rect_is_centered_and_clamped_to_viewport() {
-        let viewport = Rect::new(30.0, 40.0, 330.0, 240.0);
-        let picker = file_picker_rect(viewport);
-        assert_eq!(picker, viewport);
+    fn file_picker_is_clamped_and_replies_with_the_requested_kind_and_count() {
+        fn picker_rect_is_centered_and_clamped_to_viewport() {
+            let viewport = Rect::new(30.0, 40.0, 330.0, 240.0);
+            let picker = file_picker_rect(viewport);
+            assert_eq!(picker, viewport);
 
-        let viewport = Rect::new(10.0, 20.0, 2010.0, 1220.0);
-        let picker = file_picker_rect(viewport);
-        assert_eq!(picker.width(), 900.0);
-        assert_eq!(picker.height(), 640.0);
-        assert_eq!(picker.center(), viewport.center());
+            let viewport = Rect::new(10.0, 20.0, 2010.0, 1220.0);
+            let picker = file_picker_rect(viewport);
+            assert_eq!(picker.width(), 900.0);
+            assert_eq!(picker.height(), 640.0);
+            assert_eq!(picker.center(), viewport.center());
+        }
+
+        fn single_file_request_cannot_receive_multiple_paths() {
+            let paths = vec!["first".into(), "second".into()];
+            assert_eq!(constrain_selection(Some(paths), false).unwrap().len(), 1);
+
+            let paths = vec!["first".into(), "second".into()];
+            assert_eq!(constrain_selection(Some(paths), true).unwrap().len(), 2);
+            assert_eq!(constrain_selection(None, false), None);
+        }
+
+        fn directory_request_flows_through_overlay_to_folder_reply() {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().to_path_buf();
+            let child = root.join("folder");
+            std::fs::create_dir(&child).unwrap();
+            std::fs::write(root.join("file.txt"), b"file").unwrap();
+
+            let tree = WorkspaceTree::bootstrap_demo();
+            let workspace = tree
+                .desktop
+                .active_workspace()
+                .expect("active workspace")
+                .id;
+            let chrome = ChromeState::new(tree);
+            chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
+                initial_dir: root.clone(),
+                roots: vec![root],
+            });
+
+            let queue = crate::portal::FilePickerQueue::new();
+            let (reply, mut received) = oneshot::channel();
+            queue.spawn(FilePickerRequest {
+                caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+                title: "Choose project".into(),
+                save: false,
+                directory: true,
+                multiple: false,
+                accept_label: Some("Attach folder".into()),
+                current_name: None,
+                filters: Vec::new(),
+                scope: None,
+                reply,
+            });
+
+            let mut overlay = FilePickerOverlay::default();
+            overlay.set_queue(queue);
+            assert!(overlay.pump(Some(&chrome)));
+            let widget = overlay.widget_mut().expect("mounted picker");
+            assert_eq!(widget.confirm_label(), "Attach folder");
+            assert_eq!(widget.entries().len(), 1, "files must be hidden");
+            assert!(widget.select_by_path(&child));
+            widget.click_open();
+            assert!(overlay.pump(Some(&chrome)));
+
+            assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
+        }
+
+        picker_rect_is_centered_and_clamped_to_viewport();
+        single_file_request_cannot_receive_multiple_paths();
+        directory_request_flows_through_overlay_to_folder_reply();
     }
 
     #[test]
-    fn single_file_request_cannot_receive_multiple_paths() {
-        let paths = vec!["first".into(), "second".into()];
-        assert_eq!(constrain_selection(Some(paths), false).unwrap().len(), 1);
-
-        let paths = vec!["first".into(), "second".into()];
-        assert_eq!(constrain_selection(Some(paths), true).unwrap().len(), 2);
-        assert_eq!(constrain_selection(None, false), None);
-    }
-
-    #[test]
-    fn directory_request_flows_through_overlay_to_folder_reply() {
+    fn a_scope_decided_with_the_request_replaces_the_users_directories() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().to_path_buf();
-        let child = root.join("folder");
-        std::fs::create_dir(&child).unwrap();
-        std::fs::write(root.join("file.txt"), b"file").unwrap();
+        let granted = temp.path().join("in");
+        std::fs::create_dir(&granted).unwrap();
+        std::fs::write(granted.join("x.xlsx"), b"sheet").unwrap();
+        let elsewhere = temp.path().join("home");
+        std::fs::create_dir(&elsewhere).unwrap();
 
         let tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree
@@ -342,34 +392,32 @@ mod tests {
             .id;
         let chrome = ChromeState::new(tree);
         chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
-            initial_dir: root.clone(),
-            roots: vec![root],
+            initial_dir: elsewhere.clone(),
+            roots: vec![elsewhere],
         });
 
         let queue = crate::portal::FilePickerQueue::new();
-        let (reply, mut received) = oneshot::channel();
+        let (reply, _received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "org.example"),
-            title: "Choose project".into(),
+            title: "Import".into(),
             save: false,
-            directory: true,
+            directory: false,
             multiple: false,
-            accept_label: Some("Attach folder".into()),
+            accept_label: None,
             current_name: None,
             filters: Vec::new(),
+            scope: Some(crate::portal::PickerScope {
+                initial_dir: granted.clone(),
+                roots: vec![granted.clone()],
+            }),
             reply,
         });
-
         let mut overlay = FilePickerOverlay::default();
         overlay.set_queue(queue);
         assert!(overlay.pump(Some(&chrome)));
         let widget = overlay.widget_mut().expect("mounted picker");
-        assert_eq!(widget.confirm_label(), "Attach folder");
-        assert_eq!(widget.entries().len(), 1, "files must be hidden");
-        assert!(widget.select_by_path(&child));
-        widget.click_open();
-        assert!(overlay.pump(Some(&chrome)));
-
-        assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
+        assert_eq!(widget.current_dir(), granted.as_path());
+        assert!(widget.select_by_path(&granted.join("x.xlsx")));
     }
 }

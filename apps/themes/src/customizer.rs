@@ -12,13 +12,15 @@
 //! widget on demand.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::LocalState;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing, TypeScale};
 use ui::widget::{Button, ColorPicker, Dropdown, Slider, Widget};
@@ -56,7 +58,8 @@ fn gap() -> f32 {
 /// stacked/scrolling layout, where the panel can't claim `percent(1.0)`)
 /// matches what the controls actually take. A stale mirror here under-
 /// reserved the stack by 4 px and the column squeezed the font dropdown to
-/// 38 px beside 40 px action buttons.
+/// 38 px beside 40 px action buttons. The eight sliders (radius, spacing,
+/// motion, materials, icons, chrome, character, tint) are each one `SLIDER_H` row.
 const PICKER_H: f32 = 220.0;
 /// `Slider` lays out on `metrics.min_pointer_target`.
 const SLIDER_H: f32 = Metrics::BASE.min_pointer_target;
@@ -131,9 +134,9 @@ pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f
     let scale = text_scale.max(1.0);
     PAD * 2.0
         + chip_grid_height_scaled(panel_width - PAD * 2.0, scale)
-        + gap() * scale * 5.0
+        + gap() * scale * 11.0
         + PICKER_H
-        + SLIDER_H * 2.0
+        + SLIDER_H * 8.0
         + DROPDOWN_H
         + ACTIONS_H
 }
@@ -175,11 +178,23 @@ pub struct Customizer {
     color_picker: ColorPicker,
     radius_slider: Slider,
     spacing_slider: Slider,
+    motion_slider: Slider,
+    material_slider: Slider,
+    icon_slider: Slider,
+    chrome_slider: Slider,
+    character_slider: Slider,
+    tint_slider: Slider,
     font_dropdown: Dropdown,
     buttons: Vec<Button>,
     color_state: LocalState<Color>,
     radius_state: LocalState<f64>,
     spacing_state: LocalState<f64>,
+    motion_state: LocalState<f64>,
+    material_state: LocalState<f64>,
+    icon_state: LocalState<f64>,
+    chrome_state: LocalState<f64>,
+    character_state: LocalState<f64>,
+    tint_state: LocalState<f64>,
     font_state: LocalState<String>,
     action_theme: Option<String>,
     pending_edit_token: Option<TokenId>,
@@ -195,6 +210,12 @@ pub struct Customizer {
     picker_node: Option<NodeId>,
     radius_node: Option<NodeId>,
     spacing_node: Option<NodeId>,
+    motion_node: Option<NodeId>,
+    material_node: Option<NodeId>,
+    icon_node: Option<NodeId>,
+    chrome_node: Option<NodeId>,
+    character_node: Option<NodeId>,
+    tint_node: Option<NodeId>,
     font_node: Option<NodeId>,
     actions_node: Option<NodeId>,
     chip_rects: Vec<(TokenId, Rect)>,
@@ -222,9 +243,17 @@ impl Default for Customizer {
 
 impl Customizer {
     pub fn new() -> Self {
-        let color_state = LocalState::new(Color::from_rgb8(99, 102, 241));
+        // Before a spec is loaded the picker shows the default theme's
+        // accent. `load_picker` replaces it with the token being edited.
+        let color_state = LocalState::new(Theme::default().accent_primary);
         let radius_state = LocalState::new(0.5);
         let spacing_state = LocalState::new(0.5);
+        let motion_state = LocalState::new(f64::from(model::MOTION_NORM_AT_STOCK));
+        let material_state = LocalState::new(f64::from(model::MATERIAL_NORM_AT_STOCK));
+        let icon_state = LocalState::new(f64::from(model::ICON_NORM_AT_STOCK));
+        let chrome_state = LocalState::new(f64::from(model::CHROME_NORM_AT_STOCK));
+        let character_state = LocalState::new(f64::from(model::CHARACTER_NORM_AT_STOCK));
+        let tint_state = LocalState::new(0.0);
         let font_state = LocalState::new(String::from("Inter"));
         Self {
             color_picker: ColorPicker::from_state(&color_state),
@@ -234,6 +263,24 @@ impl Customizer {
             spacing_slider: Slider::from_state(&spacing_state)
                 .with_id("spacing_slider")
                 .with_accessible_name("Interface spacing"),
+            motion_slider: Slider::from_state(&motion_state)
+                .with_id("motion_slider")
+                .with_accessible_name("Motion"),
+            material_slider: Slider::from_state(&material_state)
+                .with_id("material_slider")
+                .with_accessible_name("Materials"),
+            icon_slider: Slider::from_state(&icon_state)
+                .with_id("icon_slider")
+                .with_accessible_name("Icons"),
+            chrome_slider: Slider::from_state(&chrome_state)
+                .with_id("chrome_slider")
+                .with_accessible_name("Chrome weight"),
+            character_slider: Slider::from_state(&character_state)
+                .with_id("character_slider")
+                .with_accessible_name("Motion character"),
+            tint_slider: Slider::from_state(&tint_state)
+                .with_id("tint_slider")
+                .with_accessible_name("Material tint"),
             font_dropdown: Dropdown::from_state(
                 FONTS.iter().map(std::string::ToString::to_string).collect(),
                 &font_state,
@@ -249,6 +296,12 @@ impl Customizer {
             color_state,
             radius_state,
             spacing_state,
+            motion_state,
+            material_state,
+            icon_state,
+            chrome_state,
+            character_state,
+            tint_state,
             font_state,
             action_theme: None,
             pending_edit_token: None,
@@ -261,6 +314,12 @@ impl Customizer {
             picker_node: None,
             radius_node: None,
             spacing_node: None,
+            motion_node: None,
+            material_node: None,
+            icon_node: None,
+            chrome_node: None,
+            character_node: None,
+            tint_node: None,
             font_node: None,
             actions_node: None,
             chip_rects: Vec::new(),
@@ -335,12 +394,42 @@ impl Customizer {
     pub fn spacing(&self) -> f64 {
         self.spacing_state.get()
     }
+    pub fn motion(&self) -> f64 {
+        self.motion_state.get()
+    }
+    pub fn material(&self) -> f64 {
+        self.material_state.get()
+    }
+    pub fn icon(&self) -> f64 {
+        self.icon_state.get()
+    }
+    pub fn chrome(&self) -> f64 {
+        self.chrome_state.get()
+    }
+    pub fn character(&self) -> f64 {
+        self.character_state.get()
+    }
+    pub fn tint(&self) -> f64 {
+        self.tint_state.get()
+    }
     pub fn font(&self) -> String {
         self.font_state.get()
     }
     pub fn load_controls(&self, spec: &ThemeSpec) {
         self.radius_state.set(f64::from(spec.radius_norm));
         self.spacing_state.set(f64::from(spec.spacing_norm));
+        self.motion_state
+            .set(f64::from(model::motion_norm(spec.motion_scale)));
+        self.material_state
+            .set(f64::from(model::material_norm(spec.material_scale)));
+        self.icon_state
+            .set(f64::from(model::icon_norm(spec.icon_scale)));
+        self.chrome_state
+            .set(f64::from(model::chrome_norm(spec.chrome_weight)));
+        self.character_state
+            .set(f64::from(model::character_norm(spec.motion_character)));
+        self.tint_state
+            .set(f64::from(model::tint_norm(spec.material_tint)));
         self.font_state.set(spec.font.clone());
     }
     pub fn bind_actions(
@@ -387,10 +476,16 @@ impl Customizer {
 }
 
 impl Widget for Customizer {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.color_picker.sync(state, path);
         self.radius_slider.sync(state, path);
         self.spacing_slider.sync(state, path);
+        self.motion_slider.sync(state, path);
+        self.material_slider.sync(state, path);
+        self.icon_slider.sync(state, path);
+        self.chrome_slider.sync(state, path);
+        self.character_slider.sync(state, path);
+        self.tint_slider.sync(state, path);
         self.font_dropdown.sync(state, path);
         for b in &mut self.buttons {
             b.sync(state, path);
@@ -426,6 +521,18 @@ impl Widget for Customizer {
         self.radius_node = Some(radius);
         let spacing = self.spacing_slider.build_layout(taffy, theme, node_map);
         self.spacing_node = Some(spacing);
+        let motion = self.motion_slider.build_layout(taffy, theme, node_map);
+        self.motion_node = Some(motion);
+        let material = self.material_slider.build_layout(taffy, theme, node_map);
+        self.material_node = Some(material);
+        let icon = self.icon_slider.build_layout(taffy, theme, node_map);
+        self.icon_node = Some(icon);
+        let chrome = self.chrome_slider.build_layout(taffy, theme, node_map);
+        self.chrome_node = Some(chrome);
+        let character = self.character_slider.build_layout(taffy, theme, node_map);
+        self.character_node = Some(character);
+        let tint = self.tint_slider.build_layout(taffy, theme, node_map);
+        self.tint_node = Some(tint);
         let font = self.font_dropdown.build_layout(taffy, theme, node_map);
         self.font_node = Some(font);
 
@@ -477,7 +584,10 @@ impl Widget for Customizer {
                 },
                 ..Default::default()
             },
-            &[grid, picker, radius, spacing, font, actions],
+            &[
+                grid, picker, radius, spacing, motion, material, icon, chrome, character, tint,
+                font, actions,
+            ],
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
@@ -513,6 +623,24 @@ impl Widget for Customizer {
         }
         if let Some(n) = self.spacing_node {
             self.spacing_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.motion_node {
+            self.motion_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.material_node {
+            self.material_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.icon_node {
+            self.icon_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.chrome_node {
+            self.chrome_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.character_node {
+            self.character_slider.apply_layout(taffy, n, o);
+        }
+        if let Some(n) = self.tint_node {
+            self.tint_slider.apply_layout(taffy, n, o);
         }
         if let Some(n) = self.font_node {
             self.font_dropdown.apply_layout(taffy, n, o);
@@ -575,61 +703,27 @@ impl Widget for Customizer {
         self.font_dropdown.draw_overlay(scene, t, tr, theme, p);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the Widget event signature carries input, CRDT location, handled/focus outputs and layout context to child controls"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+            self.cursor = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
         }
 
-        if self.editable
-            && self.handle_pointer_capture(
-                event,
-                scale,
-                *m,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            )
-        {
+        if self.editable && self.handle_pointer_capture(event, ctx) {
             return;
         }
 
-        if self.handle_chip_selection(event, state, path, handled) {
+        if self.handle_chip_selection(event, ctx.state, ctx.path, ctx.handled) {
             return;
         }
 
-        if self.editable
-            && self.handle_control_events(
-                event,
-                scale,
-                *m,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            )
-        {
+        if self.editable && self.handle_control_events(event, ctx) {
             return;
         }
 
-        self.handle_button_events(event, scale, *m, state, path, handled, focus_target, taffy);
+        self.handle_button_events(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -647,6 +741,12 @@ impl Widget for Customizer {
             &self.color_picker,
             &self.radius_slider,
             &self.spacing_slider,
+            &self.motion_slider,
+            &self.material_slider,
+            &self.icon_slider,
+            &self.chrome_slider,
+            &self.character_slider,
+            &self.tint_slider,
             &self.font_dropdown,
         ];
         for b in &self.buttons {
@@ -659,6 +759,12 @@ impl Widget for Customizer {
             &mut self.color_picker,
             &mut self.radius_slider,
             &mut self.spacing_slider,
+            &mut self.motion_slider,
+            &mut self.material_slider,
+            &mut self.icon_slider,
+            &mut self.chrome_slider,
+            &mut self.character_slider,
+            &mut self.tint_slider,
             &mut self.font_dropdown,
         ];
         for b in &mut self.buttons {
@@ -677,7 +783,13 @@ impl Widget for Customizer {
         self.editable
             && (self.color_picker.wants_pointer_capture()
                 || self.radius_slider.wants_pointer_capture()
-                || self.spacing_slider.wants_pointer_capture())
+                || self.spacing_slider.wants_pointer_capture()
+                || self.motion_slider.wants_pointer_capture()
+                || self.material_slider.wants_pointer_capture()
+                || self.icon_slider.wants_pointer_capture()
+                || self.chrome_slider.wants_pointer_capture()
+                || self.character_slider.wants_pointer_capture()
+                || self.tint_slider.wants_pointer_capture())
     }
 }
 
@@ -710,16 +822,12 @@ impl Customizer {
         let scale = self.scale();
         let title_size = Self::renderer_size(tr, theme.tokens.typography.scale.lg);
         let small_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
-        draw::text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Customize",
-            title_size,
+            &TextStyle::new(title_size).with_weight(TextWeight::Bold),
             theme.text_primary,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 2.0 * scale,
-            TextWeight::Bold,
+            Point::new(self.grid_rect.x0, self.grid_rect.y0 + 2.0 * scale),
+            None,
         );
         draw::text(
             tr,
@@ -732,16 +840,12 @@ impl Customizer {
             self.grid_rect.y0 + 22.0 * scale,
         );
 
-        draw::text_w(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "COLORS",
-            small_size,
+            &TextStyle::new(small_size).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 40.0 * scale,
-            TextWeight::Semibold,
+            Point::new(self.grid_rect.x0, self.grid_rect.y0 + 40.0 * scale),
+            None,
         );
     }
 
@@ -759,18 +863,66 @@ impl Customizer {
         if let Some(spec) = &self.spec {
             let hex = model::hex(spec.token(self.edit_token));
             let cap = format!("{} · {}", self.edit_token.label(), hex);
-            draw::text_w(
-                tr,
-                scene,
-                t,
+            let style = TextStyle::new(Self::renderer_size(tr, theme.tokens.typography.scale.sm))
+                .with_weight(TextWeight::Medium);
+            PaintCtx::new(scene, t, tr, theme).text(
                 &cap,
-                Self::renderer_size(tr, theme.tokens.typography.scale.sm),
+                &style,
                 theme.text_primary,
-                self.grid_rect.x0,
-                self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
-                TextWeight::Medium,
+                Point::new(
+                    self.grid_rect.x0,
+                    self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
+                ),
+                None,
             );
         }
+    }
+
+    fn draw_individual_labels(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        label_size: f32,
+        label_offset: f64,
+    ) {
+        let Some(spec) = &self.spec else {
+            return;
+        };
+        let chrome_r = self.chrome_slider.get_rect();
+        let character_r = self.character_slider.get_rect();
+        let tint_r = self.tint_slider.get_rect();
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("Chrome — {:.0}px", spec.chrome_weight),
+            label_size,
+            theme.text_dim,
+            chrome_r.x0,
+            chrome_r.y0 - label_offset,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("Character — {:.0}%", spec.motion_character * 100.0),
+            label_size,
+            theme.text_dim,
+            character_r.x0,
+            character_r.y0 - label_offset,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("Tint — {:.0}%", spec.material_tint * 100.0),
+            label_size,
+            theme.text_dim,
+            tint_r.x0,
+            tint_r.y0 - label_offset,
+        );
     }
 
     /// The real picker / sliders / dropdown / action buttons and their
@@ -815,6 +967,40 @@ impl Customizer {
                 spacing_r.x0,
                 spacing_r.y0 - label_offset,
             );
+            let motion_r = self.motion_slider.get_rect();
+            let material_r = self.material_slider.get_rect();
+            let icon_r = self.icon_slider.get_rect();
+            draw::text(
+                tr,
+                scene,
+                t,
+                &format!("Motion — {:.0}%", spec.motion_scale * 100.0),
+                label_size,
+                theme.text_dim,
+                motion_r.x0,
+                motion_r.y0 - label_offset,
+            );
+            draw::text(
+                tr,
+                scene,
+                t,
+                &format!("Materials — {:.0}%", spec.material_scale * 100.0),
+                label_size,
+                theme.text_dim,
+                material_r.x0,
+                material_r.y0 - label_offset,
+            );
+            draw::text(
+                tr,
+                scene,
+                t,
+                &format!("Icons — {:.0}%", spec.icon_scale * 100.0),
+                label_size,
+                theme.text_dim,
+                icon_r.x0,
+                icon_r.y0 - label_offset,
+            );
+            self.draw_individual_labels(scene, t, tr, theme, label_size, label_offset);
         }
         draw::text(
             tr,
@@ -829,6 +1015,12 @@ impl Customizer {
 
         self.radius_slider.draw(scene, t, tr, theme, p);
         self.spacing_slider.draw(scene, t, tr, theme, p);
+        self.motion_slider.draw(scene, t, tr, theme, p);
+        self.material_slider.draw(scene, t, tr, theme, p);
+        self.icon_slider.draw(scene, t, tr, theme, p);
+        self.chrome_slider.draw(scene, t, tr, theme, p);
+        self.character_slider.draw(scene, t, tr, theme, p);
+        self.tint_slider.draw(scene, t, tr, theme, p);
         self.font_dropdown.draw(scene, t, tr, theme, p);
         for b in &mut self.buttons {
             b.draw(scene, t, tr, theme, p);
@@ -855,17 +1047,16 @@ impl Customizer {
         );
         draw::fill_rect(scene, t, veil, theme.bg_app.multiply_alpha(0.55));
         draw::text_center(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Preset — Duplicate to edit",
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            veil.x0,
-            veil.x1,
-            veil.center().y - 8.0,
-            veil.center().y + 8.0,
-            TextWeight::Semibold,
+            Rect::new(
+                veil.x0,
+                veil.center().y - 8.0,
+                veil.x1,
+                veil.center().y + 8.0,
+            ),
         );
     }
 
@@ -874,66 +1065,71 @@ impl Customizer {
     /// captured control owns the event, in which case the caller must stop
     /// dispatching regardless of `*handled` (a capture still claims the
     /// event even while the pointer strays outside the control's rect).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_pointer_capture(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.color_picker.wants_pointer_capture() {
             if let Some(n) = self.picker_node {
-                self.color_picker.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.color_picker
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
         if self.radius_slider.wants_pointer_capture() {
             if let Some(n) = self.radius_node {
-                self.radius_slider.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.radius_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
         if self.spacing_slider.wants_pointer_capture() {
             if let Some(n) = self.spacing_node {
-                self.spacing_slider.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.spacing_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.motion_slider.wants_pointer_capture() {
+            if let Some(n) = self.motion_node {
+                self.motion_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.material_slider.wants_pointer_capture() {
+            if let Some(n) = self.material_node {
+                self.material_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.icon_slider.wants_pointer_capture() {
+            if let Some(n) = self.icon_node {
+                self.icon_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.chrome_slider.wants_pointer_capture() {
+            if let Some(n) = self.chrome_node {
+                self.chrome_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.character_slider.wants_pointer_capture() {
+            if let Some(n) = self.character_node {
+                self.character_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
+            return true;
+        }
+        if self.tint_slider.wants_pointer_capture() {
+            if let Some(n) = self.tint_node {
+                self.tint_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
@@ -976,82 +1172,78 @@ impl Customizer {
     /// Forward the event into the picker / sliders / dropdown, in order
     /// (part of [`Widget::handle_event`], editable only). Returns `true`
     /// once one of them sets `*handled`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_control_events(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if let Some(n) = self.picker_node {
-            self.color_picker.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.color_picker
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.radius_node {
-            self.radius_slider.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.radius_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.spacing_node {
-            self.spacing_slider.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.spacing_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.motion_node {
+            self.motion_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.material_node {
+            self.material_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.icon_node {
+            self.icon_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.chrome_node {
+            self.chrome_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.character_node {
+            self.character_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.tint_node {
+            self.tint_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.font_node {
-            self.font_dropdown.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.font_dropdown
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
@@ -1061,40 +1253,16 @@ impl Customizer {
     /// Forward the event into the action buttons, always active so
     /// Duplicate works on a read-only preset too (part of
     /// [`Widget::handle_event`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
-    fn handle_button_events(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_button_events(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let Some(an) = self.actions_node else {
             return;
         };
-        let Ok(bchildren) = taffy.children(an) else {
+        let Ok(bchildren) = ctx.taffy.children(an) else {
             return;
         };
         for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
-            b.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                *c,
-                taffy,
-            );
-            if *handled {
+            b.handle_event(event, &mut ctx.reborrow(ctx.path, *c));
+            if *ctx.handled {
                 break;
             }
         }

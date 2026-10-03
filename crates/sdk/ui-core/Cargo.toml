@@ -2,38 +2,58 @@
 name = "tilo-ui"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 autoexamples = false
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
-# dependency enables the Tilo presentation-feedback feature in the patched HAL.
-ignored = ["pkg-config", "wgpu-hal"]
+# dependency marks `presentation-feedback`, which uses the Metal observer of
+# the patched HAL (vendor/wgpu-hal).
+# getrandom02 only selects the browser entropy backend for transitive crypto.
+ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
 # The native desktop runner and host services: the winit event loop with its
 # AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
-# warmup, and the `ui::native` backends. Without it the crate is the portable
+# warmup, the desktop appearance a standalone app follows, and the
+# `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+# two-face's grammars for the code editor's highlighting (about 0.9 MB of
+# data). Without it every language highlights as plain text; the browser
+# toolkit core leaves it out.
+syntax-definitions = ["dep:two-face"]
+# Clients of the local session daemons: the runtime portal's inherited
+# service descriptors and the runtime identity service with its on-disk
+# identity. Without it the host installs a `local_identity::LocalIdentitySource`
+# (default: none). Settings are not gated here: `settings-store` reads
+# `settings.json` unless the host installs a `settings_store::SettingsSource`.
+local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
 # The collaboration manager's built-in transport: the Tilo collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["runtime-collab/client", "dep:capnp", "dep:capnp-rpc"]
-test-support = []
+broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
 # can exercise the path.
 realtime-video = ["media/realtime"]
 presentation-feedback = ["dep:wgpu-hal"]
+# Persist DXC-compiled shaders between runs on Windows. It needs the patched
+# wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
+# for apps built on the published SDK.
+dx12-shader-cache = []
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
@@ -52,37 +72,51 @@ webview-wpe = ["dep:ash", "dmabuf-import"]
 # `ash` for the raw-Vulkan interop, so it stays opt-in for builds that need
 # neither.
 dmabuf-import = ["dep:ash"]
-# GPU video frames: the dmabuf import above plus the YUV->RGB conversion a
-# hardware decoder's NV12/P010 output needs before it can be painted.
+# Zero-copy GPU video frames: the dmabuf import above for a hardware
+# decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)
+# are always built; without this, frames are uploaded instead.
 gpu-video = ["dmabuf-import"]
 # Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
+# `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
 mpris = ["native", "tilo-host/mpris"]
-# Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
-# Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
-# save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
-# parts always compile, so headless tests drive the exact per-frame drain path
-# with no portal, and a feature-less build degrades to a clean
-# `PortalOutcome::Failed` rather than failing to link.
+# Publish an address book's priority contacts to the Tilo shell
+# (`ui::priority_contacts`) over the Unix session bus.
+priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
+# Location and screen capture through the XDG Desktop Portal (Linux). The SDK's
+# native runner enables it on Linux targets; apps do not. File choosers
+# (`ui::portal`) and notifications (`ui::notify`) need no feature: their
+# platform crates select each target's backend.
 portal = ["native", "tilo-host/portal"]
 notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+mime_guess.workspace = true
+fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
-tilo-host = { path = "../tilo-host" }
-private-fs = { path = "../../system/private-fs" }
-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-ui-graph = { path = "../../dev/ui-graph" }
-tilo-font-catalog = { path = "../font-catalog" }
-atomic-file = { path = "../../system/atomic-file" }
-settings-store = { path = "../../system/settings-store" }
+tilo-host = { version = "0.1.0", path = "../tilo-host" }
+# The desktop's light/dark, accent, contrast and motion preferences, which a
+# standalone app outside Tilo OS follows (`host_appearance`).
+tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
+# A host search result the OS wakes this app for goes to the runtime.
+tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search", optional = true }
+# Test builds bound the pairing broker exchange with the shared hang bound.
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+# The content store a host lends a component (`HostContext::content`), in every
+# build; the unix `native` build adds the launcher's device store below.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# `storage`: app files through tilo-files in tilo-paths' per-app locations.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
 # host must not resolve to a local path — and must be testable in every
@@ -90,9 +124,10 @@ settings-store = { path = "../../system/settings-store" }
 url.workspace = true
 # The two halves of `uri`: RFC 3986 percent-decoding and the
 # x-www-form-urlencoded dialect that also reads `+` as a space.
-percent-encoding = "2"
-form_urlencoded = "1"
-tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
+percent-encoding.workspace = true
+form_urlencoded.workspace = true
+# First-frame marks are shared with the greeter's startup metrics capture.
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
@@ -101,28 +136,27 @@ adblock = { version = "0.12", optional = true, default-features = false, feature
 # runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.
-runtime-collab = { path = "../../runtime/runtime-collab", default-features = false }
+runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
-runtime-portal = { path = "../../runtime/runtime-portal" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
-wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
-app-state = { path = "../../system/app-state" }
-durable-store = { path = "../../system/durable-store" }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
+runtime-identity = { version = "0.1.0", path = "../../runtime/runtime-identity", optional = true }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-spellcheck = { path = "../../text/spellcheck" }
+tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
 # tokenizer over two-face's extended syntax set, the packed set Typst already
 # links for raw blocks, so the runtime carries those bytes once.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
-two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
+two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"], optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-rustls.workspace = true
 # Invite-redemption secrets are sealed at rest through the shared construction.
-tilo-seal = { path = "../../system/tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
@@ -134,30 +168,31 @@ rustc-hash.workspace = true
 # `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-tokio = { workspace = true, features = ["full"] }
+# The portable toolkit needs tasks and channels only; tokio refuses its
+# socket, file and thread features on wasm, so `native` and
+# `broker-transport` enable them.
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tilo-rt.workspace = true
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 fluent.workspace = true
-tilo-headless-schema = { path = "../../dev/headless-schema" }
+tilo-headless-schema = { version = "0.1.0", path = "../../dev/headless-schema" }
 unic-langid.workspace = true
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
-# Compatibility decomposition behind search folding: `ｃａｆé` and `cafe`
-# find each other. Already in the toolkit's tree through `bip39`.
-unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
 # word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
-# Myanmar, CJK).
+# Myanmar, CJK); natively only, see text_break.rs.
 icu_segmenter = "2.3"
 # TeX/Liang hyphenation patterns with language-specific minima. The same
 # implementation is already used by the workspace's Typst document engine;
 # making it direct lets UI paragraphs opt in without runtime dictionary I/O.
-hypher = "0.1.7"
+# Every language natively; see the wasm32 table for the browser's subset.
+hypher = { version = "0.1.7", default-features = false, features = ["alloc", "english", "german"] }
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
@@ -168,26 +203,32 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
-media = { path = "../../media/core" }
+media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media" }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
-collab-types = { path = "../../collab/collab-types" }
-channel-crypto = { path = "../../collab/channel-crypto" }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
-# change graph through `qdoc::history` (`versions` / `materialize_at`) and
+# change graph through `tilo_resource::history`, materialises past versions
+# with `tilo_doc::snapshot::at` and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
-# uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
+# uses `tilo-doc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc" }
+# Version history, stamped commits and replay of any document.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# Every catalogue and text index is a tantivy index through the shared
+# search layer.
+tilo-search = { version = "0.1.0", path = "../search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # Window-group widths and drop targets are the desktop model's own types.
-tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned
@@ -197,7 +238,7 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
 # `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
-threshold-identity = { path = "../../collab/threshold-identity" }
+threshold-identity = { version = "0.1.0", path = "../../collab/threshold-identity" }
 # `widget::qr` encodes both the
 # pairing-channel JSON payload (screen 3) and the `tilo://invite/...`
 # URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
@@ -215,6 +256,8 @@ sha2.workspace = true
 # SIMD compiler fingerprinting and integrity for the private DX12 cache.
 blake3.workspace = true
 unicode-script = "=0.5.8"
+# Emoji presentation decides when the browser must fetch the colour emoji face.
+unicode-properties = "=0.1.4"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
 # and authenticates the exchanged DKG payloads.
@@ -240,18 +283,32 @@ rand_core.workspace = true
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = { version = "0.34.0", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
+# Built on tilo-winit, so it shares the toolkit's winit types when published.
+accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-tts = { path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).
-tilo-content = { path = "../../system/content", optional = true }
+tilo-content = { version = "0.1.0", path = "../../system/content", optional = true, features = ["device"] }
+# Session-bus client for `priority-contacts`; runs on the workspace's tokio.
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(windows)'.dependencies]
+# The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
+windows = { version = "0.62.2", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [build-dependencies]
@@ -260,6 +317,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 pkg-config = "0.3"
 
 [dev-dependencies]
+serial_test.workspace = true
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
@@ -275,47 +334,14 @@ tempfile.workspace = true
 # Tests whose interface is the process environment (launcher variables such
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+# The scoped chooser and URI fixtures the invocation-scope tests select.
+tilo-host = { path = "../tilo-host", features = ["test-support"] }
 # The `collaboration` shim tests stand up a fake capnp broker on one end
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
 capnp.workspace = true
 tokio-util.workspace = true
-
-[[example]]
-name = "ui-lab"
-path = "examples/ui_lab.rs"
-
-[[example]]
-name = "ui-shots"
-path = "examples/ui_shots.rs"
-
-[[example]]
-name = "ui-perf"
-path = "examples/ui_perf.rs"
-
-[[example]]
-name = "ui-managed-history-probe"
-path = "examples/managed_history_probe.rs"
-
-[[example]]
-name = "ui-native-input-probe"
-path = "examples/native_input_probe.rs"
-
-[[example]]
-name = "native-file-picker"
-path = "examples/native_file_picker.rs"
-required-features = ["portal"]
-
-[[example]]
-name = "windows-host"
-path = "examples/windows_host.rs"
-required-features = ["notifications"]
-
-[[example]]
-name = "ui-wpe"
-path = "examples/ui_wpe.rs"
-required-features = ["webview-wpe"]
 
 [[test]]
 name = "it"
@@ -335,17 +361,69 @@ path = "tests/held_memory.rs"
 [lints]
 workspace = true
 
-[[example]]
-name = "card-composition-shots"
-path = "examples/card_composition_shots.rs"
-
-[[example]]
-name = "form-composition-shots"
-path = "examples/form_composition_shots.rs"
-
-[[example]]
-name = "manual-composition-shots"
-path = "examples/manual_composition_shots.rs"
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+# The APK's asset manager, which holds the font catalog (`font_catalog::android`).
+ndk = { version = "0.9.0", default-features = false }
+# Soft-keyboard input reaches the runner through the activity's
+# `TiloTextInput` view (`app/android_text_input`).
+jni = { version = "0.21.1", optional = true }
+ndk-context = { version = "0.1.1", optional = true }
+# TalkBack reads the AccessKit tree through a node provider injected into the
+# NativeActivity's window (`accesskit_android_adapter.rs`). accesskit_winit's
+# own Android glue expects GameActivity's `mSurfaceView`, so the injecting
+# adapter is driven directly. `embedded-dex` carries its Java delegate inside
+# the library, so the APK needs no extra class.
+accesskit_android = { version = "0.8.0", optional = true, features = ["embedded-dex"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
+wgpu-hal = { version = "29", default-features = false, features = ["metal"], optional = true }
+# The menu bar and title-bar search field History and Search live in
+# (`host_chrome/macos.rs`). The generation arboard already brings in.
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSObject", "NSProcessInfo", "NSString"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSControl",
+    "NSEvent",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSSearchField",
+    "NSSearchToolbarItem",
+    "NSText",
+    "NSTextField",
+    "NSToolbar",
+    "NSToolbarItem",
+    "NSView",
+    "NSWindow",
+], optional = true }
+
+# Private files and the pairing flow's TLS client need an OS; the browser
+# supplies both through its host instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+private-fs = { version = "0.1.0", path = "../../system/private-fs" }
+rustls.workspace = true
+# Hyphenation patterns for every language. The browser toolkit core keeps
+# English and German only (the common table): the rest would add about 1 MB
+# downloaded before anything runs; other languages there are not hyphenated.
+hypher = { version = "0.1.7", features = ["full"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# Browser entropy, clocks and time zones for the portable wasm32 build. These
+# select third-party platform backends only; toolkit behaviour stays behind
+# the `native` feature.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
+# The RustCrypto stack under channel-crypto and tilo-seal still draws entropy
+# through getrandom 0.2, which needs its JS backend named in the browser.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
+
+# wasm32 without atomics runs on one thread; this lets the renderer keep its
+# compile-time `Send` checks. The browser host must still render on the page's
+# thread instead of spawning `ui-render`.
+wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }

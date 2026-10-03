@@ -322,6 +322,21 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
     groups
 }
 
+/// Every group's unlocalised values, for the other key-file formats that share
+/// this grammar (an icon theme's `index.theme`).
+pub(crate) fn unlocalised_groups(contents: &str) -> BTreeMap<String, BTreeMap<String, String>> {
+    parse_groups(contents)
+        .into_iter()
+        .map(|(name, group)| {
+            let values = group
+                .into_iter()
+                .map(|(key, value)| (key, value.default))
+                .collect();
+            (name, values)
+        })
+        .collect()
+}
+
 /// The best value for `key` given the caller's locale preference list. `locales` is already
 /// ordered most-specific-first, so this is a straight first-hit lookup with the unlocalised
 /// value as the floor.
@@ -432,141 +447,151 @@ X-Flatpak=com.spotify.Client
     }
 
     #[test]
-    fn parses_a_real_flatpak_export() {
-        let e = parse_str(SPOTIFY, "com.spotify.Client");
-        assert_eq!(e.name, "Spotify");
-        assert_eq!(e.entry_type, EntryType::Application);
-        assert_eq!(
-            e.source,
-            EntrySource::Flatpak {
-                app_id: "com.spotify.Client".into()
-            }
-        );
-        assert_eq!(e.startup_wm_class.as_deref(), Some("spotify"));
-        assert_eq!(e.categories, vec!["Audio", "Music", "Player", "AudioVideo"]);
-        assert_eq!(e.mime_types, vec!["x-scheme-handler/spotify"]);
-        assert!(!e.terminal);
-        assert!(!e.no_display);
-    }
-
-    /// The identity list is what window correlation matches on. For a Flatpak it must never
-    /// include `flatpak` — that's the launcher, not the app, and every Flatpak would collide on it.
-    #[test]
-    fn window_identities_skip_the_flatpak_binary() {
-        let e = parse_str(SPOTIFY, "com.spotify.Client");
-        let ids = e.window_identities();
-        assert_eq!(ids, vec!["spotify", "com.spotify.Client"]);
-        assert!(!ids.iter().any(|i| i == "flatpak"));
-    }
-
-    #[test]
-    fn a_plain_host_entry_offers_its_exec_basename() {
-        let e = parse_str(
-            "[Desktop Entry]\nType=Application\nName=Files\nExec=/usr/bin/nautilus %U\n",
-            "org.gnome.Nautilus",
-        );
-        assert_eq!(e.source, EntrySource::Host);
-        assert_eq!(
-            e.window_identities(),
-            vec!["org.gnome.Nautilus", "nautilus"]
-        );
-    }
-
-    #[test]
-    fn hidden_and_nodisplay_are_distinct_and_both_hide() {
-        let hidden = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nHidden=true\n",
-            "x",
-        );
-        let nodisplay = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n",
-            "x",
-        );
-        assert!(hidden.hidden && !hidden.no_display);
-        assert!(nodisplay.no_display && !nodisplay.hidden);
-        assert!(!hidden.is_visible_in(&["tilo".into()]));
-        assert!(!nodisplay.is_visible_in(&["tilo".into()]));
-    }
-
-    #[test]
-    fn only_show_in_and_not_show_in_filter_on_the_current_desktop() {
-        let gnome_only = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=GNOME;\n",
-            "x",
-        );
-        assert!(!gnome_only.is_visible_in(&["tilo".into()]));
-        assert!(gnome_only.is_visible_in(&["GNOME".into()]));
-
-        let not_tilo = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",
-            "x",
-        );
-        assert!(!not_tilo.is_visible_in(&["tilo".into()]));
-        assert!(not_tilo.is_visible_in(&["GNOME".into()]));
+    fn flatpak_and_host_entries_expose_their_launch_identities() {
+        // Phase `parses_a_real_flatpak_export`.
+        {
+            let e = parse_str(SPOTIFY, "com.spotify.Client");
+            assert_eq!(e.name, "Spotify");
+            assert_eq!(e.entry_type, EntryType::Application);
+            assert_eq!(
+                e.source,
+                EntrySource::Flatpak {
+                    app_id: "com.spotify.Client".into()
+                }
+            );
+            assert_eq!(e.startup_wm_class.as_deref(), Some("spotify"));
+            assert_eq!(e.categories, vec!["Audio", "Music", "Player", "AudioVideo"]);
+            assert_eq!(e.mime_types, vec!["x-scheme-handler/spotify"]);
+            assert!(!e.terminal);
+            assert!(!e.no_display);
+        }
+        // Phase `window_identities_skip_the_flatpak_binary`.
+        // The identity list is what window correlation matches on. For a Flatpak it must never
+        // include `flatpak` — that's the launcher, not the app, and every Flatpak would collide on it.
+        {
+            let e = parse_str(SPOTIFY, "com.spotify.Client");
+            let ids = e.window_identities();
+            assert_eq!(ids, vec!["spotify", "com.spotify.Client"]);
+            assert!(!ids.iter().any(|i| i == "flatpak"));
+        }
+        // Phase `a_plain_host_entry_offers_its_exec_basename`.
+        {
+            let e = parse_str(
+                "[Desktop Entry]\nType=Application\nName=Files\nExec=/usr/bin/nautilus %U\n",
+                "org.gnome.Nautilus",
+            );
+            assert_eq!(e.source, EntrySource::Host);
+            assert_eq!(
+                e.window_identities(),
+                vec!["org.gnome.Nautilus", "nautilus"]
+            );
+        }
+        // Phase `a_flatpak_export_path_is_detected_without_the_x_flatpak_key`.
+        {
+            let e = parse(
+                "[Desktop Entry]\nType=Application\nName=Old\nExec=x\n",
+                "org.old.App",
+                Path::new("/var/lib/flatpak/exports/share/applications/org.old.App.desktop"),
+                &[],
+            )
+            .unwrap();
+            assert_eq!(
+                e.source,
+                EntrySource::Flatpak {
+                    app_id: "org.old.App".into()
+                }
+            );
+        }
     }
 
     #[test]
-    fn locale_lookup_prefers_the_most_specific_match() {
-        let src = "[Desktop Entry]\nType=Application\nName=Text Editor\n\
-                   Name[de]=Texteditor\nName[de_AT]=Texteditor (AT)\nExec=x\n";
-        let path = Path::new("/tmp/x.desktop");
-        let de_at = parse(src, "x", path, &["de_AT".into(), "de".into()]).unwrap();
-        assert_eq!(de_at.name, "Texteditor (AT)");
-        let de = parse(src, "x", path, &["de".into()]).unwrap();
-        assert_eq!(de.name, "Texteditor");
-        let c = parse(src, "x", path, &[]).unwrap();
-        assert_eq!(c.name, "Text Editor");
+    fn visibility_keys_filter_entries_on_the_current_desktop() {
+        // Phase `hidden_and_nodisplay_are_distinct_and_both_hide`.
+        {
+            let hidden = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nHidden=true\n",
+                "x",
+            );
+            let nodisplay = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n",
+                "x",
+            );
+            assert!(hidden.hidden && !hidden.no_display);
+            assert!(nodisplay.no_display && !nodisplay.hidden);
+            assert!(!hidden.is_visible_in(&["tilo".into()]));
+            assert!(!nodisplay.is_visible_in(&["tilo".into()]));
+        }
+        // Phase `only_show_in_and_not_show_in_filter_on_the_current_desktop`.
+        {
+            let gnome_only = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=GNOME;\n",
+                "x",
+            );
+            assert!(!gnome_only.is_visible_in(&["tilo".into()]));
+            assert!(gnome_only.is_visible_in(&["GNOME".into()]));
+            assert!(
+                gnome_only.is_visible_in(&crate::scan::current_desktops()),
+                "Tilo offers GNOME-only applications rather than hiding them"
+            );
+            let kde_only = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=KDE;\n",
+                "x",
+            );
+            assert!(!kde_only.is_visible_in(&crate::scan::current_desktops()));
+
+            let not_tilo = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",
+                "x",
+            );
+            assert!(!not_tilo.is_visible_in(&["tilo".into()]));
+            assert!(not_tilo.is_visible_in(&["GNOME".into()]));
+        }
     }
 
     #[test]
-    fn escaped_semicolons_stay_inside_one_list_item() {
-        let e = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=A\\;B;C;\n",
-            "x",
-        );
-        assert_eq!(e.categories, vec!["A;B", "C"]);
-    }
-
-    #[test]
-    fn a_file_with_no_desktop_entry_group_is_not_an_entry() {
-        assert!(parse("[Desktop Action foo]\nName=x\n", "x", Path::new("/x"), &[]).is_none());
-    }
-
-    #[test]
-    fn desktop_actions_are_collected() {
-        let e = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nActions=new;\n\
-             [Desktop Action new]\nName=New Window\nExec=x --new\n",
-            "x",
-        );
-        assert_eq!(e.actions.len(), 1);
-        assert_eq!(e.actions[0].id, "new");
-        assert_eq!(e.actions[0].name, "New Window");
-        assert_eq!(e.actions[0].exec.as_deref(), Some("x --new"));
-    }
-
-    /// An entry with no `Name=` still has to be launchable — the id is the fallback, not an
-    /// empty row in the palette.
-    #[test]
-    fn a_missing_name_falls_back_to_the_id() {
-        let e = parse_str("[Desktop Entry]\nType=Application\nExec=x\n", "org.x.Thing");
-        assert_eq!(e.name, "org.x.Thing");
-    }
-
-    #[test]
-    fn a_flatpak_export_path_is_detected_without_the_x_flatpak_key() {
-        let e = parse(
-            "[Desktop Entry]\nType=Application\nName=Old\nExec=x\n",
-            "org.old.App",
-            Path::new("/var/lib/flatpak/exports/share/applications/org.old.App.desktop"),
-            &[],
-        )
-        .unwrap();
-        assert_eq!(
-            e.source,
-            EntrySource::Flatpak {
-                app_id: "org.old.App".into()
-            }
-        );
+    fn entry_fields_parse_locales_lists_actions_and_fallbacks() {
+        // Phase `locale_lookup_prefers_the_most_specific_match`.
+        {
+            let src = "[Desktop Entry]\nType=Application\nName=Text Editor\n\
+                       Name[de]=Texteditor\nName[de_AT]=Texteditor (AT)\nExec=x\n";
+            let path = Path::new("/tmp/x.desktop");
+            let de_at = parse(src, "x", path, &["de_AT".into(), "de".into()]).unwrap();
+            assert_eq!(de_at.name, "Texteditor (AT)");
+            let de = parse(src, "x", path, &["de".into()]).unwrap();
+            assert_eq!(de.name, "Texteditor");
+            let c = parse(src, "x", path, &[]).unwrap();
+            assert_eq!(c.name, "Text Editor");
+        }
+        // Phase `escaped_semicolons_stay_inside_one_list_item`.
+        {
+            let e = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nCategories=A\\;B;C;\n",
+                "x",
+            );
+            assert_eq!(e.categories, vec!["A;B", "C"]);
+        }
+        // Phase `a_file_with_no_desktop_entry_group_is_not_an_entry`.
+        {
+            assert!(parse("[Desktop Action foo]\nName=x\n", "x", Path::new("/x"), &[]).is_none());
+        }
+        // Phase `desktop_actions_are_collected`.
+        {
+            let e = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nActions=new;\n\
+                 [Desktop Action new]\nName=New Window\nExec=x --new\n",
+                "x",
+            );
+            assert_eq!(e.actions.len(), 1);
+            assert_eq!(e.actions[0].id, "new");
+            assert_eq!(e.actions[0].name, "New Window");
+            assert_eq!(e.actions[0].exec.as_deref(), Some("x --new"));
+        }
+        // Phase `a_missing_name_falls_back_to_the_id`.
+        // An entry with no `Name=` still has to be launchable — the id is the fallback, not an
+        // empty row in the palette.
+        {
+            let e = parse_str("[Desktop Entry]\nType=Application\nExec=x\n", "org.x.Thing");
+            assert_eq!(e.name, "org.x.Thing");
+        }
     }
 }

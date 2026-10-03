@@ -17,6 +17,7 @@ path = "src/main.rs"
 # a PAM system. This keeps the helper buildable on hosts without pam-devel
 # and keeps the OS image's compile-time deps unchanged.
 libc = "0.2"
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

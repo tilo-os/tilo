@@ -346,6 +346,10 @@ pub fn warm_up_language(language: &str) {
         return;
     }
     STARTED.get_or_init(|| {
+        // A browser page has no threads; its first check builds the data.
+        if cfg!(target_family = "wasm") {
+            return;
+        }
         let _ = std::thread::Builder::new()
             .name("spellcheck-warmup".to_string())
             .spawn(|| {
@@ -526,234 +530,229 @@ mod tests {
     }
 
     #[test]
-    fn teh_is_flagged_and_suggests_the() {
-        let dict = builtin();
-        let result = check(&dict, "teh");
-        assert_eq!(result.len(), 1, "‘teh’ should be flagged once");
-        assert_eq!(result[0].word, "teh");
-        assert!(
-            result[0].suggestions.iter().any(|s| s == "the"),
-            "expected ‘the’ among suggestions, got {:?}",
-            result[0].suggestions
-        );
-    }
-
-    #[test]
-    fn correct_sentence_has_no_misspellings() {
-        let dict = builtin();
-        let text = "the quick brown fox jumps over the lazy dog";
-        let result = check(&dict, text);
-        assert!(
-            result.is_empty(),
-            "expected zero misspellings, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn conversational_english_accepts_contractions_smart_quotes_and_common_names() {
-        let dict = builtin();
-        for word in ["I'm", "I\u{2019}m", "James", "Emma", "Michael", "Sophia"] {
+    fn check_flags_misspellings_but_accepts_conversational_english_and_names() {
+        // Phase `teh_is_flagged_and_suggests_the`.
+        {
+            let dict = builtin();
+            let result = check(&dict, "teh");
+            assert_eq!(result.len(), 1, "‘teh’ should be flagged once");
+            assert_eq!(result[0].word, "teh");
             assert!(
-                spans(&dict, word).is_empty(),
-                "embedded fallback should accept {word:?}"
+                result[0].suggestions.iter().any(|s| s == "the"),
+                "expected ‘the’ among suggestions, got {:?}",
+                result[0].suggestions
             );
+        }
+        // Phase `correct_sentence_has_no_misspellings`.
+        {
+            let dict = builtin();
+            let text = "the quick brown fox jumps over the lazy dog";
+            let result = check(&dict, text);
             assert!(
-                spans_for_language("en_US", word).is_empty(),
-                "language checker should accept {word:?}"
+                result.is_empty(),
+                "expected zero misspellings, got {result:?}"
+            );
+        }
+        // Phase `conversational_english_accepts_contractions_smart_quotes_and_common_names`.
+        {
+            let dict = builtin();
+            for word in ["I'm", "I\u{2019}m", "James", "Emma", "Michael", "Sophia"] {
+                assert!(
+                    spans(&dict, word).is_empty(),
+                    "embedded fallback should accept {word:?}"
+                );
+                assert!(
+                    spans_for_language("en_US", word).is_empty(),
+                    "language checker should accept {word:?}"
+                );
+            }
+        }
+        // Phase `titlecase_unknowns_are_treated_as_names_only_inside_a_sentence`.
+        {
+            let dict = builtin();
+            assert!(spans(&dict, "I met Qwordz today").is_empty());
+            assert_eq!(spans(&dict, "Qwordz arrived"), vec![(0, 6)]);
+            assert_eq!(spans(&dict, "Hello. Qwordz arrived"), vec![(7, 13)]);
+            assert_eq!(spans(&dict, "Hello\nQwordz arrived"), vec![(6, 12)]);
+        }
+        // Phase `mixed_case_identifiers_and_brands_are_not_spellchecked`.
+        {
+            let dict = builtin();
+            assert!(spans(&dict, "TextInput iPhone GitHub").is_empty());
+        }
+        // Phase `unknown_word_with_suggestions_records_span`.
+        {
+            let dict = builtin();
+            let text = "a wrold of color";
+            let result = check(&dict, text);
+            assert_eq!(result.len(), 1, "got {result:?}");
+            let m = &result[0];
+            assert_eq!(m.word, "wrold");
+            assert_eq!(&text[m.start..m.end], "wrold");
+            assert!(
+                m.suggestions.iter().any(|s| s == "world"),
+                "expected ‘world’, got {:?}",
+                m.suggestions
             );
         }
     }
 
     #[test]
-    fn titlecase_unknowns_are_treated_as_names_only_inside_a_sentence() {
-        let dict = builtin();
-        assert!(spans(&dict, "I met Qwordz today").is_empty());
-        assert_eq!(spans(&dict, "Qwordz arrived"), vec![(0, 6)]);
-        assert_eq!(spans(&dict, "Hello. Qwordz arrived"), vec![(7, 13)]);
-        assert_eq!(spans(&dict, "Hello\nQwordz arrived"), vec![(6, 12)]);
-    }
-
-    #[test]
-    fn mixed_case_identifiers_and_brands_are_not_spellchecked() {
-        let dict = builtin();
-        assert!(spans(&dict, "TextInput iPhone GitHub").is_empty());
-    }
-
-    /// The squiggle comes from `spans` and the correction menu from `check`, so
-    /// a disagreement means a word underlined with nothing to offer, or a
-    /// correction offered with no underline. The fixture mixes a number, an
-    /// acronym and a URL so every is-this-judgeable rule runs on both paths.
-    #[test]
-    fn spans_flag_the_same_words_check_does() {
-        let dict = builtin();
-        let text = "The recieve date is 2026 for NASA at https://example.com/x and teh rest.";
-        let full: Vec<(usize, usize)> = check(&dict, text)
-            .iter()
-            .map(|m| (m.start, m.end))
-            .collect();
-        assert_eq!(spans(&dict, text), full);
-        assert!(!full.is_empty(), "the fixture has to contain a misspelling");
-        // Guards against both paths agreeing on the same wrong answer.
-        let flagged: Vec<&str> = full.iter().map(|&(s, e)| &text[s..e]).collect();
-        assert_eq!(flagged, vec!["recieve", "teh"]);
-    }
-
-    /// Every prefix of a word is a misspelling, which is why the draw path hit
-    /// this on every keystroke.
-    #[test]
-    fn spans_agree_with_check_on_every_prefix_of_a_word() {
-        let dict = builtin();
-        let word = "rehearsal";
-        for n in 1..=word.len() {
-            let partial = &word[..n];
-            let full: Vec<(usize, usize)> = check(&dict, partial)
+    fn spans_agree_with_check_and_skip_numbers_urls_and_acronyms() {
+        // Phase `spans_flag_the_same_words_check_does`.
+        // The squiggle comes from `spans` and the correction menu from `check`, so
+        // a disagreement means a word underlined with nothing to offer, or a
+        // correction offered with no underline. The fixture mixes a number, an
+        // acronym and a URL so every is-this-judgeable rule runs on both paths.
+        {
+            let dict = builtin();
+            let text = "The recieve date is 2026 for NASA at https://example.com/x and teh rest.";
+            let full: Vec<(usize, usize)> = check(&dict, text)
                 .iter()
                 .map(|m| (m.start, m.end))
                 .collect();
-            assert_eq!(
-                spans(&dict, partial),
-                full,
-                "the two paths disagree on {partial:?}"
-            );
+            assert_eq!(spans(&dict, text), full);
+            assert!(!full.is_empty(), "the fixture has to contain a misspelling");
+            // Guards against both paths agreeing on the same wrong answer.
+            let flagged: Vec<&str> = full.iter().map(|&(s, e)| &text[s..e]).collect();
+            assert_eq!(flagged, vec!["recieve", "teh"]);
         }
-    }
-
-    #[test]
-    fn numbers_urls_and_allcaps_are_skipped() {
-        let dict = builtin();
-        let text = "Visit https://example.com or email me@example.com about NASA and 12345 or 3.14";
-        let result = check(&dict, text);
-        let flagged: Vec<&str> = result.iter().map(|m| m.word.as_str()).collect();
-        assert!(
-            flagged.is_empty(),
-            "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {flagged:?}"
-        );
-    }
-
-    #[test]
-    fn allcaps_acronym_alone_is_skipped() {
-        let dict = builtin();
-        assert!(check(&dict, "NASA").is_empty());
-        assert!(check(&dict, "HTML").is_empty());
-        // A single capital is a real one-letter word, still checked (and valid).
-        assert!(check(&dict, "I").is_empty());
-    }
-
-    #[test]
-    fn pure_numbers_skipped() {
-        let dict = builtin();
-        for n in ["0", "42", "3.14", "1,000", "2024", "100th"] {
+        // Phase `spans_agree_with_check_on_every_prefix_of_a_word`.
+        // Every prefix of a word is a misspelling, which is why the draw path hit
+        // this on every keystroke.
+        {
+            let dict = builtin();
+            let word = "rehearsal";
+            for n in 1..=word.len() {
+                let partial = &word[..n];
+                let full: Vec<(usize, usize)> = check(&dict, partial)
+                    .iter()
+                    .map(|m| (m.start, m.end))
+                    .collect();
+                assert_eq!(
+                    spans(&dict, partial),
+                    full,
+                    "the two paths disagree on {partial:?}"
+                );
+            }
+        }
+        // Phase `numbers_urls_and_allcaps_are_skipped`.
+        {
+            let dict = builtin();
+            let text =
+                "Visit https://example.com or email me@example.com about NASA and 12345 or 3.14";
+            let result = check(&dict, text);
+            let flagged: Vec<&str> = result.iter().map(|m| m.word.as_str()).collect();
             assert!(
-                check(&dict, n).is_empty(),
-                "number-like token {n:?} should not be flagged"
+                flagged.is_empty(),
+                "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {flagged:?}"
             );
         }
-    }
-
-    #[test]
-    fn tokenize_offsets_round_trip_a_slice() {
-        let text = "Hello, world! It's a   test.";
-        for tok in tokenize(text) {
-            // The recorded span must slice back to exactly the token text.
-            assert_eq!(&text[tok.start..tok.end], tok.text);
+        // Phase `allcaps_acronym_alone_is_skipped`.
+        {
+            let dict = builtin();
+            assert!(check(&dict, "NASA").is_empty());
+            assert!(check(&dict, "HTML").is_empty());
+            // A single capital is a real one-letter word, still checked (and valid).
+            assert!(check(&dict, "I").is_empty());
         }
-        // And the specific words we expect are present, in order, with apostrophe.
-        let words: Vec<&str> = tokenize(text).iter().map(|t| t.text).collect();
-        assert_eq!(words, vec!["Hello", "world", "It's", "a", "test"]);
+        // Phase `pure_numbers_skipped`.
+        {
+            let dict = builtin();
+            for n in ["0", "42", "3.14", "1,000", "2024", "100th"] {
+                assert!(
+                    check(&dict, n).is_empty(),
+                    "number-like token {n:?} should not be flagged"
+                );
+            }
+        }
+        // Phase `tokenize_offsets_round_trip_a_slice`.
+        {
+            let text = "Hello, world! It's a   test.";
+            for tok in tokenize(text) {
+                // The recorded span must slice back to exactly the token text.
+                assert_eq!(&text[tok.start..tok.end], tok.text);
+            }
+            // And the specific words we expect are present, in order, with apostrophe.
+            let words: Vec<&str> = tokenize(text).iter().map(|t| t.text).collect();
+            assert_eq!(words, vec!["Hello", "world", "It's", "a", "test"]);
+        }
     }
 
     #[test]
-    fn case_insensitive_membership() {
-        let dict = builtin();
-        // Mixed/upper case of a known word must not be flagged.
-        assert!(check(&dict, "The Quick Brown Fox").is_empty());
-    }
-
-    #[test]
-    fn unknown_word_with_suggestions_records_span() {
-        let dict = builtin();
-        let text = "a wrold of color";
-        let result = check(&dict, text);
-        assert_eq!(result.len(), 1, "got {result:?}");
-        let m = &result[0];
-        assert_eq!(m.word, "wrold");
-        assert_eq!(&text[m.start..m.end], "wrold");
-        assert!(
-            m.suggestions.iter().any(|s| s == "world"),
-            "expected ‘world’, got {:?}",
-            m.suggestions
-        );
-    }
-
-    #[test]
-    fn add_word_removes_a_word_from_check_results() {
-        let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
-        // "tilo" is unknown → flagged.
-        let before = check(&dict, "the tilo fox");
-        assert_eq!(before.len(), 1, "got {before:?}");
-        assert_eq!(before[0].word, "tilo");
-        // Accept it into the user dictionary.
-        assert!(dict.add_word("tilo"));
-        // Re-check: no longer flagged.
-        let after = check(&dict, "the tilo fox");
-        assert!(
-            after.is_empty(),
-            "expected no misspellings after add_word, got {after:?}"
-        );
-    }
-
-    #[test]
-    fn from_words_builds_a_usable_dictionary() {
-        let dict = Dictionary::from_words(["alpha", "beta", "gamma"]);
-        assert!(dict.contains("ALPHA"));
-        assert!(!dict.contains("delta"));
-        let result = check(&dict, "alpha delat");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].word, "delat");
-        // None of the three short, distant words is within edit distance 2.
-        assert!(result[0].suggestions.is_empty());
-    }
-
-    #[test]
-    fn suggestions_are_ranked_by_distance_then_length() {
-        // Build a small dictionary where ordering is deterministic and checkable.
-        let dict = Dictionary::from_words(["cat", "cart", "cats", "scat", "cataract"]);
-        let s = suggest(&dict, "cot", 5);
-        // "cat" is distance 1; the 4-letter ones are distance >= 1 too but longer.
-        assert_eq!(s.first().map(String::as_str), Some("cat"));
-    }
-
-    #[test]
-    fn probable_corrections_are_conservative_and_preserve_case() {
-        assert_eq!(probable_correction("en_US", "teh").as_deref(), Some("the"));
-        assert_eq!(
-            probable_correction("en_US", "Wrold").as_deref(),
-            Some("World")
-        );
-        assert_eq!(
-            probable_correction("en_US", "TEH"),
-            None,
-            "all-caps tokens may be acronyms and are never auto-corrected"
-        );
-        assert_eq!(probable_correction("en_US", "cot"), None);
-        assert_eq!(probable_correction("en_US", "the"), None);
-        assert_eq!(
-            probable_correction("en_US", "adress"),
-            Some("address".to_string())
-        );
-        assert_eq!(
-            probable_correction("en_US", "Tomorow"),
-            Some("Tomorrow".to_string())
-        );
-    }
-
-    #[test]
-    fn builtin_dictionary_is_substantial() {
-        let dict = builtin();
-        assert!(
-            dict.len() > 10_000,
-            "builtin dictionary unexpectedly small: {}",
-            dict.len()
-        );
+    fn dictionaries_and_corrections_are_usable_ranked_and_conservative() {
+        // Phase `case_insensitive_membership`.
+        {
+            let dict = builtin();
+            // Mixed/upper case of a known word must not be flagged.
+            assert!(check(&dict, "The Quick Brown Fox").is_empty());
+        }
+        // Phase `add_word_removes_a_word_from_check_results`.
+        {
+            let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
+            // "tilo" is unknown → flagged.
+            let before = check(&dict, "the tilo fox");
+            assert_eq!(before.len(), 1, "got {before:?}");
+            assert_eq!(before[0].word, "tilo");
+            // Accept it into the user dictionary.
+            assert!(dict.add_word("tilo"));
+            // Re-check: no longer flagged.
+            let after = check(&dict, "the tilo fox");
+            assert!(
+                after.is_empty(),
+                "expected no misspellings after add_word, got {after:?}"
+            );
+        }
+        // Phase `from_words_builds_a_usable_dictionary`.
+        {
+            let dict = Dictionary::from_words(["alpha", "beta", "gamma"]);
+            assert!(dict.contains("ALPHA"));
+            assert!(!dict.contains("delta"));
+            let result = check(&dict, "alpha delat");
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].word, "delat");
+            // None of the three short, distant words is within edit distance 2.
+            assert!(result[0].suggestions.is_empty());
+        }
+        // Phase `suggestions_are_ranked_by_distance_then_length`.
+        {
+            // Build a small dictionary where ordering is deterministic and checkable.
+            let dict = Dictionary::from_words(["cat", "cart", "cats", "scat", "cataract"]);
+            let s = suggest(&dict, "cot", 5);
+            // "cat" is distance 1; the 4-letter ones are distance >= 1 too but longer.
+            assert_eq!(s.first().map(String::as_str), Some("cat"));
+        }
+        // Phase `probable_corrections_are_conservative_and_preserve_case`.
+        {
+            assert_eq!(probable_correction("en_US", "teh").as_deref(), Some("the"));
+            assert_eq!(
+                probable_correction("en_US", "Wrold").as_deref(),
+                Some("World")
+            );
+            assert_eq!(
+                probable_correction("en_US", "TEH"),
+                None,
+                "all-caps tokens may be acronyms and are never auto-corrected"
+            );
+            assert_eq!(probable_correction("en_US", "cot"), None);
+            assert_eq!(probable_correction("en_US", "the"), None);
+            assert_eq!(
+                probable_correction("en_US", "adress"),
+                Some("address".to_string())
+            );
+            assert_eq!(
+                probable_correction("en_US", "Tomorow"),
+                Some("Tomorrow".to_string())
+            );
+        }
+        // Phase `builtin_dictionary_is_substantial`.
+        {
+            let dict = builtin();
+            assert!(
+                dict.len() > 10_000,
+                "builtin dictionary unexpectedly small: {}",
+                dict.len()
+            );
+        }
     }
 }

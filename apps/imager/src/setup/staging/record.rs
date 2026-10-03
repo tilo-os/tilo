@@ -148,8 +148,8 @@ pub enum RecordStatus {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
@@ -433,35 +433,23 @@ fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Write `bytes` to `dir/name` atomically: a fresh temp file, fsync, rename
-/// over the target, fsync the directory. `public` selects 0644 over 0600.
+/// Write `bytes` to `dir/name` durably and atomically. `public` selects 0644
+/// over 0600.
 pub fn write_atomic(dir: &Path, name: &str, bytes: &[u8], public: bool) -> std::io::Result<()> {
-    use std::io::Write;
-    let temp = dir.join(format!(".{name}.{}.tmp", super::random_guid()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    let path = dir.join(name);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(if public { 0o644 } else { 0o600 });
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        tilo_files::native::atomic::write_with_mode(
+            &path,
+            bytes,
+            if public { 0o644 } else { 0o600 },
+        )
     }
     #[cfg(not(unix))]
-    let _ = public;
-    let result = (|| {
-        let mut file = options.open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, dir.join(name))?;
-        #[cfg(unix)]
-        std::fs::File::open(dir)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    {
+        let _ = public;
+        tilo_files::native::atomic::write(&path, bytes)
     }
-    result
 }
 
 #[cfg(unix)]
@@ -681,124 +669,133 @@ mod tests {
         )
     }
 
+    /// Record state machine, store round trip, removal/corruption and ownership.
     #[test]
-    fn state_machine_tracks_one_entry_per_step_and_merges_detail() {
-        let mut r = sample_record("op-1");
-        assert_eq!(r.status(), RecordStatus::InProgress);
-        let mut d = serde_json::Map::new();
-        d.insert("partition_guid".into(), "g".into());
-        r.intend(Step::CreateEsp, d);
-        assert!(r.has_intended());
-        r.failed(Step::CreateEsp, "boom");
-        assert_eq!(r.state(Step::CreateEsp), Some(StepState::Failed));
-        assert_eq!(r.detail_str(Step::CreateEsp, "partition_guid"), Some("g"));
-        r.done(Step::CreateEsp, serde_json::Map::new());
-        assert_eq!(r.steps.len(), 1);
-        assert!(!r.has_intended());
-        assert_eq!(r.resume_point(&Step::STAGE), Some(Step::Shrink));
-        for s in Step::STAGE {
-            r.done(s, serde_json::Map::new());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn staging_records_track_steps_persist_atomically_and_reject_foreign_owners() {
+        // Phase `state_machine_tracks_one_entry_per_step_and_merges_detail`.
+        {
+            let mut r = sample_record("op-1");
+            assert_eq!(r.status(), RecordStatus::InProgress);
+            let mut d = serde_json::Map::new();
+            d.insert("partition_guid".into(), "g".into());
+            r.intend(Step::CreateEsp, d);
+            assert!(r.has_intended());
+            r.failed(Step::CreateEsp, "boom");
+            assert_eq!(r.state(Step::CreateEsp), Some(StepState::Failed));
+            assert_eq!(r.detail_str(Step::CreateEsp, "partition_guid"), Some("g"));
+            r.done(Step::CreateEsp, serde_json::Map::new());
+            assert_eq!(r.steps.len(), 1);
+            assert!(!r.has_intended());
+            assert_eq!(r.resume_point(&Step::STAGE), Some(Step::Shrink));
+            for s in Step::STAGE {
+                r.done(s, serde_json::Map::new());
+            }
+            assert_eq!(r.resume_point(&Step::STAGE), None);
+            assert_eq!(r.status(), RecordStatus::Staged);
+            r.intend(Step::RemoveBootNext, serde_json::Map::new());
+            assert_eq!(r.status(), RecordStatus::InProgress);
+            for s in Step::REMOVE {
+                r.done(s, serde_json::Map::new());
+            }
+            assert_eq!(r.status(), RecordStatus::Removed);
         }
-        assert_eq!(r.resume_point(&Step::STAGE), None);
-        assert_eq!(r.status(), RecordStatus::Staged);
-        r.intend(Step::RemoveBootNext, serde_json::Map::new());
-        assert_eq!(r.status(), RecordStatus::InProgress);
-        for s in Step::REMOVE {
-            r.done(s, serde_json::Map::new());
-        }
-        assert_eq!(r.status(), RecordStatus::Removed);
-    }
 
-    #[test]
-    fn store_round_trips_atomically_and_mirrors_publicly() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = RecordStore::at(tmp.path());
-        let r = sample_record("0f0e0d0c-0000-4000-8000-000000000001");
-        store.save(&r).unwrap();
-        store.save(&r).unwrap();
-        assert_eq!(store.load(&r.operation_id).unwrap(), Some(r.clone()));
-        assert_eq!(store.list().unwrap(), vec![r.clone()]);
-        assert_eq!(
-            pending_in(store.public_dir.as_ref().unwrap()),
-            vec![r.clone()]
-        );
-        let leftovers: Vec<_> = std::fs::read_dir(&store.dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert_eq!(
-            leftovers,
-            vec![format!("{}.json", r.operation_id)],
-            "no temp files"
-        );
+        // Phase `store_round_trips_atomically_and_mirrors_publicly`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = RecordStore::at(tmp.path());
+            let r = sample_record("0f0e0d0c-0000-4000-8000-000000000001");
+            store.save(&r).unwrap();
+            store.save(&r).unwrap();
+            assert_eq!(store.load(&r.operation_id).unwrap(), Some(r.clone()));
+            assert_eq!(store.list().unwrap(), vec![r.clone()]);
+            assert_eq!(
+                pending_in(store.public_dir.as_ref().unwrap()),
+                vec![r.clone()]
+            );
+            let leftovers: Vec<_> = std::fs::read_dir(&store.dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            assert_eq!(
+                leftovers,
+                vec![format!("{}.json", r.operation_id)],
+                "no temp files"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode(&store.dir), 0o700);
+                assert_eq!(
+                    mode(&store.dir.join(format!("{}.json", r.operation_id))),
+                    0o600
+                );
+                let public = store.public_dir.clone().unwrap();
+                assert_eq!(mode(&public), 0o755);
+                assert_eq!(
+                    mode(&public.join(format!("{}.json", r.operation_id))),
+                    0o644
+                );
+            }
+            assert_eq!(store.load("missing-op").unwrap(), None);
+        }
+
+        // Phase `removed_records_are_not_pending_and_corrupt_ones_fail_listing`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = RecordStore::at(tmp.path());
+            let mut r = sample_record("op-removed");
+            for s in Step::REMOVE {
+                r.done(s, serde_json::Map::new());
+            }
+            store.save(&r).unwrap();
+            assert!(pending_in(store.public_dir.as_ref().unwrap()).is_empty());
+            let mut tampered = sample_record("op-tampered");
+            tampered.plan.target_extent.last_lba += 1;
+            std::fs::write(
+                store.dir.join("op-tampered.json"),
+                serde_json::to_vec(&tampered).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                store.list().is_err(),
+                "a tampered record must not be skipped silently"
+            );
+            assert!(store.load("../etc").is_err());
+        }
+
+        // Phase `privileged_store_rejects_records_not_owned_by_root`.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&store.dir), 0o700);
-            assert_eq!(
-                mode(&store.dir.join(format!("{}.json", r.operation_id))),
-                0o600
-            );
-            let public = store.public_dir.clone().unwrap();
-            assert_eq!(mode(&public), 0o755);
-            assert_eq!(
-                mode(&public.join(format!("{}.json", r.operation_id))),
-                0o644
-            );
-        }
-        assert_eq!(store.load("missing-op").unwrap(), None);
-    }
-
-    #[test]
-    fn removed_records_are_not_pending_and_corrupt_ones_fail_listing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = RecordStore::at(tmp.path());
-        let mut r = sample_record("op-removed");
-        for s in Step::REMOVE {
-            r.done(s, serde_json::Map::new());
-        }
-        store.save(&r).unwrap();
-        assert!(pending_in(store.public_dir.as_ref().unwrap()).is_empty());
-        let mut tampered = sample_record("op-tampered");
-        tampered.plan.target_extent.last_lba += 1;
-        std::fs::write(
-            store.dir.join("op-tampered.json"),
-            serde_json::to_vec(&tampered).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            store.list().is_err(),
-            "a tampered record must not be skipped silently"
-        );
-        assert!(store.load("../etc").is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn privileged_store_rejects_records_not_owned_by_root() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = RecordStore::at(tmp.path());
-        let r = sample_record("op-user");
-        store.save(&r).unwrap();
-        store.require_privileged_owner = true;
-        // Temp dirs are not root-only (0700 but owned by the test user, or
-        // under a world-writable parent when run as root): refuse either way.
-        let mut parent_open = store.clone();
-        parent_open.dir = tmp.path().to_path_buf();
-        std::fs::copy(
-            store.dir.join("op-user.json"),
-            tmp.path().join("op-user.json"),
-        )
-        .unwrap();
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } == 0 {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-            assert!(parent_open.load("op-user").is_err());
-        } else {
-            assert!(store.load("op-user").is_err());
-            assert!(parent_open.load("op-user").is_err());
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = RecordStore::at(tmp.path());
+            let r = sample_record("op-user");
+            store.save(&r).unwrap();
+            store.require_privileged_owner = true;
+            // Temp dirs are not root-only (0700 but owned by the test user, or
+            // under a world-writable parent when run as root): refuse either way.
+            let mut parent_open = store.clone();
+            parent_open.dir = tmp.path().to_path_buf();
+            std::fs::copy(
+                store.dir.join("op-user.json"),
+                tmp.path().join("op-user.json"),
+            )
+            .unwrap();
+            // SAFETY: geteuid has no preconditions.
+            if unsafe { libc::geteuid() } == 0 {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
+                    .unwrap();
+                assert!(parent_open.load("op-user").is_err());
+            } else {
+                assert!(store.load("op-user").is_err());
+                assert!(parent_open.load("op-user").is_err());
+            }
         }
     }
 }

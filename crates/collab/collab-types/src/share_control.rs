@@ -133,68 +133,74 @@ pub enum ShareControlErrorCode {
 mod tests {
     use super::*;
 
-    /// The share-control socket frames: a big-endian `u32` length, at most
-    /// 128 KiB, never empty. Files, the launcher and the filesystem daemon
-    /// are built separately and must agree.
+    /// The share-control socket framing is pinned and the revoke fixture has stable canonical bytes
+    /// and round-trips.
     #[test]
-    fn share_control_framing_is_pinned() {
-        assert_eq!(
-            SHARE_CONTROL_FRAMING.encode(b"ab").unwrap(),
-            [0, 0, 0, 2, b'a', b'b']
-        );
-        assert!(SHARE_CONTROL_FRAMING.encode(&[]).is_err());
-        assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024]).is_ok());
-        assert!(
-            SHARE_CONTROL_FRAMING
-                .encode(&vec![0; 128 * 1024 + 1])
-                .is_err()
-        );
-        assert!(
-            SHARE_CONTROL_FRAMING
-                .read(&mut &[0_u8, 0, 0, 0][..])
-                .is_err()
-        );
-    }
+    fn share_control_frames_and_fixtures_are_pinned() {
+        // Phase: share_control_framing_is_pinned.
+        // The share-control socket frames: a big-endian `u32` length, at most
+        // 128 KiB, never empty. Files, the launcher and the filesystem daemon
+        // are built separately and must agree.
+        {
+            assert_eq!(
+                SHARE_CONTROL_FRAMING.encode(b"ab").unwrap(),
+                [0, 0, 0, 2, b'a', b'b']
+            );
+            assert!(SHARE_CONTROL_FRAMING.encode(&[]).is_err());
+            assert!(SHARE_CONTROL_FRAMING.encode(&vec![0; 128 * 1024]).is_ok());
+            assert!(
+                SHARE_CONTROL_FRAMING
+                    .encode(&vec![0; 128 * 1024 + 1])
+                    .is_err()
+            );
+            assert!(
+                SHARE_CONTROL_FRAMING
+                    .read(&mut &[0_u8, 0, 0, 0][..])
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn revoke_fixture_has_stable_canonical_bytes_and_round_trips() {
-        let grant_id = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
-        let request = ShareControlRequestV1 {
-            protocol_version: SHARE_CONTROL_VERSION,
-            operation: ShareControlOperationV1::Revoke { grant_id },
-        };
-        let request_bytes = crate::canonical_bytes(&request).unwrap();
-        assert_eq!(
-            request_bytes,
-            [
-                2, 2, 16, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255,
-            ]
-        );
-        assert_eq!(
-            crate::canonical::from_canonical_bytes::<ShareControlRequestV1>(&request_bytes)
-                .unwrap(),
-            request
-        );
+        // Phase: revoke_fixture_has_stable_canonical_bytes_and_round_trips.
+        {
+            let grant_id = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
+            let request = ShareControlRequestV1 {
+                protocol_version: SHARE_CONTROL_VERSION,
+                operation: ShareControlOperationV1::Revoke { grant_id },
+            };
+            let request_bytes = crate::canonical_bytes(&request).unwrap();
+            assert_eq!(
+                request_bytes,
+                [
+                    2, 2, 16, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238,
+                    255,
+                ]
+            );
+            assert_eq!(
+                crate::canonical::from_canonical_bytes::<ShareControlRequestV1>(&request_bytes)
+                    .unwrap(),
+                request
+            );
 
-        let response = ShareControlResponseV1 {
-            protocol_version: SHARE_CONTROL_VERSION,
-            result: ShareControlResultV1::Revoked {
-                grant_id,
-                revoked: true,
-            },
-        };
-        let response_bytes = crate::canonical_bytes(&response).unwrap();
-        assert_eq!(
-            response_bytes,
-            [
-                2, 2, 16, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255,
-                1,
-            ]
-        );
-        assert_eq!(
-            crate::canonical::from_canonical_bytes::<ShareControlResponseV1>(&response_bytes)
-                .unwrap(),
-            response
-        );
+            let response = ShareControlResponseV1 {
+                protocol_version: SHARE_CONTROL_VERSION,
+                result: ShareControlResultV1::Revoked {
+                    grant_id,
+                    revoked: true,
+                },
+            };
+            let response_bytes = crate::canonical_bytes(&response).unwrap();
+            assert_eq!(
+                response_bytes,
+                [
+                    2, 2, 16, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238,
+                    255, 1,
+                ]
+            );
+            assert_eq!(
+                crate::canonical::from_canonical_bytes::<ShareControlResponseV1>(&response_bytes)
+                    .unwrap(),
+                response
+            );
+        }
     }
 }

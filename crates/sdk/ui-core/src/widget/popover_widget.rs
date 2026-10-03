@@ -10,9 +10,9 @@
 //! owned by [`crate::overlay::popover::Popover`] (a tiny positioning hint,
 //! not a `Widget`). Don't collide.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -335,7 +335,7 @@ impl<C: Widget> PopoverWidget<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverWidget<C> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pass through even when closed — otherwise re-opening reveals a stale frame.
         self.content.sync(state, path);
     }
@@ -367,10 +367,10 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         // resolver needs one. Match its scale to the captured outer theme so
         // pre-paint hit testing and accessibility geometry are already exact.
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.recompute_layout(&theme, &mut tr);
-        self.place_content(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.recompute_layout(&theme, tr);
+            self.place_content(&theme, tr);
+        });
     }
 
     fn draw(
@@ -423,24 +423,14 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -451,7 +441,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
                     && let Some(cb) = self.on_dismiss.as_mut()
                 {
                     cb();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -471,6 +461,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
     use winit::event::DeviceId;
 
@@ -494,8 +485,6 @@ mod tests {
     }
 
     impl Widget for TestContent {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -550,20 +539,6 @@ mod tests {
             );
         }
 
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
-        }
-
         fn name(&self) -> &'static str {
             "TestContent"
         }
@@ -598,188 +573,202 @@ mod tests {
     }
 
     #[test]
-    fn retained_layout_preserves_large_text_before_the_first_draw() {
-        let mut p = PopoverWidget::new(
-            Rect::new(100.0, 100.0, 200.0, 130.0),
-            Text::new("Scaled popover").with_scaled_size(20.0),
-            PopoverSide::Below,
-        )
-        .open(true)
-        .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        lay_out_with_theme(&mut p, &Theme::dark().with_text_scale(2.0));
-
-        assert!(
-            p.content.get_rect().height() >= 49.0,
-            "popover content must reserve its 200% line height before paint, got {:?}",
-            p.content.get_rect()
-        );
-    }
-
-    /// Anchor at (100, 100, 200, 130) with `Below` and a generous viewport
-    /// must place `rect.y0` at least `anchor.y1 + spacing.s2` — fully
-    /// below the anchor with the themed gap honoured.
-    #[test]
-    fn popover_anchored_below_positions_under_anchor() {
-        let theme = Theme::dark();
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut p = PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
+    fn popover_positions_below_or_flips_with_retained_scale() {
+        // Case `retained_layout_preserves_large_text_before_the_first_draw`.
+        {
+            let mut p = PopoverWidget::new(
+                Rect::new(100.0, 100.0, 200.0, 130.0),
+                Text::new("Scaled popover").with_scaled_size(20.0),
+                PopoverSide::Below,
+            )
             .open(true)
-            .with_viewport(viewport);
-        lay_out(&mut p);
+            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            lay_out_with_theme(&mut p, &Theme::dark().with_text_scale(2.0));
 
-        assert_eq!(
-            p.resolved_side(),
-            PopoverSide::Below,
-            "ample room below → must stay on the requested `Below` side"
-        );
-        let body = p.rect();
-        assert!(
-            body.y0 >= 130.0 + gap,
-            "popover.rect.y0 ({}) must be >= anchor.y1 ({}) + gap ({}); got body={:?}",
-            body.y0,
-            130.0,
-            gap,
-            body,
-        );
+            assert!(
+                p.content.get_rect().height() >= 49.0,
+                "popover content must reserve its 200% line height before paint, got {:?}",
+                p.content.get_rect()
+            );
+        }
+
+        // Case `popover_anchored_below_positions_under_anchor`.
+        // Anchor at (100, 100, 200, 130) with `Below` and a generous viewport
+        // must place `rect.y0` at least `anchor.y1 + spacing.s2` — fully
+        // below the anchor with the themed gap honoured.
+        {
+            let theme = Theme::dark();
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut p =
+                PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
+                    .open(true)
+                    .with_viewport(viewport);
+            lay_out(&mut p);
+
+            assert_eq!(
+                p.resolved_side(),
+                PopoverSide::Below,
+                "ample room below → must stay on the requested `Below` side"
+            );
+            let body = p.rect();
+            assert!(
+                body.y0 >= 130.0 + gap,
+                "popover.rect.y0 ({}) must be >= anchor.y1 ({}) + gap ({}); got body={:?}",
+                body.y0,
+                130.0,
+                gap,
+                body,
+            );
+        }
+
+        // Case `popover_flips_when_no_room_below`.
+        // Anchor near the bottom of the viewport with `Below` requested must
+        // flip to `Above`; the flipped popover's `y1` must sit above the
+        // anchor's `y0` with the themed gap between them.
+        {
+            let anchor = Rect::new(100.0, 580.0, 200.0, 595.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // Content tall enough that placing it below would clip past
+            // the viewport's `y1` (600). 80 px content + the themed gap
+            // (8 px) → would land at y1 ≈ 595 + 8 + 80 = 683, past 600.
+            let mut p =
+                PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
+                    .open(true)
+                    .with_viewport(viewport);
+            lay_out(&mut p);
+
+            assert_eq!(
+                p.resolved_side(),
+                PopoverSide::Above,
+                "no room below → must flip to `Above`"
+            );
+            let body = p.rect();
+            assert!(
+                body.y1 < anchor.y0,
+                "after flipping, popover.rect.y1 ({}) must be < anchor.y0 ({}); got body={:?}",
+                body.y1,
+                anchor.y0,
+                body,
+            );
+        }
     }
 
-    /// Anchor near the bottom of the viewport with `Below` requested must
-    /// flip to `Above`; the flipped popover's `y1` must sit above the
-    /// anchor's `y0` with the themed gap between them.
     #[test]
-    fn popover_flips_when_no_room_below() {
-        let anchor = Rect::new(100.0, 580.0, 200.0, 595.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Content tall enough that placing it below would clip past
-        // the viewport's `y1` (600). 80 px content + the themed gap
-        // (8 px) → would land at y1 ≈ 595 + 8 + 80 = 683, past 600.
-        let mut p = PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
-            .open(true)
-            .with_viewport(viewport);
-        lay_out(&mut p);
+    fn popover_dismisses_outside_and_closed_paints_nothing() {
+        // Case `popover_dismiss_on_outside_click`.
+        // A `MouseInput { Pressed, Left }` whose cursor sits *outside* the
+        // popover body must invoke the dismiss callback exactly once.
+        {
+            use std::cell::RefCell;
+            use std::rc::Rc;
 
-        assert_eq!(
-            p.resolved_side(),
-            PopoverSide::Above,
-            "no room below → must flip to `Above`"
-        );
-        let body = p.rect();
-        assert!(
-            body.y1 < anchor.y0,
-            "after flipping, popover.rect.y1 ({}) must be < anchor.y0 ({}); got body={:?}",
-            body.y1,
-            anchor.y0,
-            body,
-        );
-    }
+            let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let dismiss_count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+            let dc = Rc::clone(&dismiss_count);
+            let mut p =
+                PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
+                    .open(true)
+                    .with_viewport(viewport)
+                    .on_dismiss(move || *dc.borrow_mut() += 1);
+            lay_out(&mut p);
 
-    /// A `MouseInput { Pressed, Left }` whose cursor sits *outside* the
-    /// popover body must invoke the dismiss callback exactly once.
-    #[test]
-    fn popover_dismiss_on_outside_click() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
+            // Cursor far outside the popover (top-left of the viewport).
+            // The body sits well inside (100..220, 138..218) at the dark
+            // theme's `s2` gap of 8, so (10, 10) is safely outside.
+            let outside = Point::new(10.0, 10.0);
+            assert!(
+                !p.rect().contains(outside),
+                "test cursor must be outside the popover body for the assertion to be meaningful",
+            );
 
-        let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let dismiss_count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-        let dc = Rc::clone(&dismiss_count);
-        let mut p = PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
-            .open(true)
-            .with_viewport(viewport)
-            .on_dismiss(move || *dc.borrow_mut() += 1);
-        lay_out(&mut p);
+            let mut tree: TaffyTree<()> = TaffyTree::new();
+            let node = tree.leaf_node(Style::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut focus_target = None;
 
-        // Cursor far outside the popover (top-left of the viewport).
-        // The body sits well inside (100..220, 138..218) at the dark
-        // theme's `s2` gap of 8, so (10, 10) is safely outside.
-        let outside = Point::new(10.0, 10.0);
-        assert!(
-            !p.rect().contains(outside),
-            "test cursor must be outside the popover body for the assertion to be meaningful",
-        );
+            // Move the cursor first so the popover caches the outside
+            // position, then press the left mouse button.
+            let cursor_evt = WindowEvent::CursorMoved {
+                device_id: synth_device(),
+                position: winit::dpi::PhysicalPosition::new(outside.x, outside.y),
+            };
+            p.handle_event(
+                &cursor_evt,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
 
-        let mut tree: TaffyTree<()> = TaffyTree::new();
-        let node = tree.leaf_node(Style::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus_target = None;
+            let press_evt = WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            p.handle_event(
+                &press_evt,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
 
-        // Move the cursor first so the popover caches the outside
-        // position, then press the left mouse button.
-        let cursor_evt = WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(outside.x, outside.y),
-        };
-        p.handle_event(
-            &cursor_evt,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
-        );
+            assert_eq!(
+                *dismiss_count.borrow(),
+                1,
+                "outside click must dispatch the dismiss callback exactly once (got {})",
+                *dismiss_count.borrow(),
+            );
+        }
 
-        let press_evt = WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        p.handle_event(
-            &press_evt,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
-        );
+        // Case `popover_closed_paints_nothing`.
+        // `open == false` is the empty-paint contract: `draw` emits zero
+        // `DrawTag::COLOR` entries — any stray chrome would show up as a fill.
+        {
+            use vello_encoding::DrawTag;
 
-        assert_eq!(
-            *dismiss_count.borrow(),
-            1,
-            "outside click must dispatch the dismiss callback exactly once (got {})",
-            *dismiss_count.borrow(),
-        );
-    }
+            let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut p =
+                PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
+                    .open(false)
+                    .with_viewport(viewport);
+            lay_out(&mut p);
 
-    /// `open == false` is the empty-paint contract: `draw` emits zero
-    /// `DrawTag::COLOR` entries — any stray chrome would show up as a fill.
-    #[test]
-    fn popover_closed_paints_nothing() {
-        use vello_encoding::DrawTag;
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut p = PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
-            .open(false)
-            .with_viewport(viewport);
-        lay_out(&mut p);
-
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert_eq!(
-            fills, 0,
-            "closed popover must emit zero COLOR draw tags (got {fills})",
-        );
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert_eq!(
+                fills, 0,
+                "closed popover must emit zero COLOR draw tags (got {fills})",
+            );
+        }
     }
 }

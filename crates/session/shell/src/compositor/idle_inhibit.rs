@@ -89,7 +89,7 @@ pub fn sync_idle_inhibitors(state: &mut State, fb: &FrameBuilder, registry: &Inh
             .map(|window| {
                 let name = crate::shell::tab_binding::app_id_for_surface(&tree, window)
                     .map_or_else(
-                        || "An app".to_string(),
+                        || crate::shell::i18n::t("idle-inhibit-unnamed-app"),
                         crate::shell::tab_binding::tab_label_for_foreign,
                     );
                 (window, name)

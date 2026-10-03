@@ -13,6 +13,10 @@ use crate::hardware::DisplayOutputSnapshot;
 
 /// How long each display shows its number.
 pub const IDENTIFY_MS: u64 = 3_000;
+/// How old a request may be when the compositor first sees it and still
+/// answer it. The request is stamped before its write, which a loaded disk
+/// can hold up for seconds; a restarted compositor must not replay it.
+pub const IDENTIFY_FRESH_MS: u64 = 10_000;
 
 /// One request to show display numbers. The id is the request time, so a
 /// compositor that restarts never replays an old request as new.
@@ -46,6 +50,13 @@ impl IdentifyRequest {
             return None;
         }
         serde_json::from_value(serde_json::Value::Object(section)).ok()
+    }
+
+    /// Whether a compositor seeing this request first at `now_unix_ms`
+    /// should still answer it (for the whole [`IDENTIFY_MS`]).
+    pub fn is_fresh(self, now_unix_ms: u64) -> bool {
+        now_unix_ms >= self.requested_unix_ms
+            && now_unix_ms.saturating_sub(self.requested_unix_ms) <= IDENTIFY_FRESH_MS
     }
 
     /// Milliseconds of the identify window left at `now_unix_ms`, if any.
@@ -117,6 +128,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: mode,
+            scale: 1.0,
             builtin,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -145,5 +157,15 @@ mod tests {
         assert_eq!(request.remaining_ms(10_000), Some(IDENTIFY_MS));
         assert_eq!(request.remaining_ms(12_500), Some(500));
         assert_eq!(request.remaining_ms(13_000), None);
+        assert!(
+            request.is_fresh(13_000),
+            "a request whose write was slow is still answered"
+        );
+        assert!(request.is_fresh(10_000 + IDENTIFY_FRESH_MS));
+        assert!(
+            !request.is_fresh(10_001 + IDENTIFY_FRESH_MS),
+            "nor replayed after a restart"
+        );
+        assert!(!request.is_fresh(9_999));
     }
 }

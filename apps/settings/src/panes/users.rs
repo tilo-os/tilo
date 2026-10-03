@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
@@ -17,9 +18,10 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 use zeroize::Zeroizing;
 
+use crate::i18n::{t, t_args};
 use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
 };
@@ -276,27 +278,31 @@ impl UsersPane {
         let mut cards: Vec<El> = Vec::new();
         if let Some(error) = &self.error {
             cards.push(card(
-                "Could not apply that change",
+                &t("settings-users-error-title"),
                 rows(vec![caption(error)]),
             ));
         }
         if self.form_open {
             cards.push(self.add_form());
         }
-        let add = Box::new(Button::new("settings.users.add", "Add user", Some(ADD_KEY)));
+        let add = Box::new(Button::new(
+            "settings.users.add",
+            &t("settings-users-add"),
+            Some(ADD_KEY),
+        ));
         let people = if self.users.is_empty() {
-            rows(vec![caption(
-                "No regular login accounts found on this device.",
-            )])
+            rows(vec![caption(&t("settings-users-empty-accounts"))])
         } else {
             rows(self.users.iter().map(|u| self.user_row(u)).collect())
         };
-        cards.push(card_with_action("Login accounts", add, people));
+        cards.push(card_with_action(
+            &t("settings-users-login-accounts"),
+            add,
+            people,
+        ));
 
         let identity_rows = if self.identities.is_empty() {
-            rows(vec![caption(
-                "No signing identity is available. Identity setup runs in your personal session; it never runs as root.",
-            )])
+            rows(vec![caption(&t("settings-users-empty-identities"))])
         } else {
             rows(
                 self.identities
@@ -305,34 +311,30 @@ impl UsersPane {
                     .collect(),
             )
         };
-        cards.push(card("Your Tilo identities", identity_rows));
-        let mut protection_rows: Vec<El> = vec![caption(
-            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; Tilo never silently copies that key into an app.",
-        )];
+        cards.push(card(&t("settings-users-identities-title"), identity_rows));
+        let mut protection_rows: Vec<El> =
+            vec![caption(&t("settings-users-protection-secret-service"))];
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::BrokerFile)
         {
-            protection_rows.push(caption(
-                "This session is using the compatible private-file fallback for at least one identity. It is isolated from apps by the signing broker, but is not encrypted at rest. Install and unlock a freedesktop Secret Service to protect future identities in the desktop keyring.",
-            ));
+            protection_rows.push(caption(&t("settings-users-protection-broker-file")));
         }
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::HardwareBacked)
         {
-            protection_rows.push(caption(
-                "Hardware-backed means the installed provider actually sealed this identity. The presence of a TPM alone is never treated as proof.",
-            ));
+            protection_rows.push(caption(&t("settings-users-protection-hardware")));
         }
-        cards.push(card("Signing protection", rows(protection_rows)));
         cards.push(card(
-            "Identity boundary",
-            rows(vec![caption(
-                "A login account may have several identities. The active identity is used only by newly launched apps; running apps keep their existing author. Workspaces may restrict which identity can enter, but cannot read another identity's key. Apps receive a short-lived signing connection for the selected identity—never the private key or identity directory.",
-            )]),
+            &t("settings-users-protection-title"),
+            rows(protection_rows),
+        ));
+        cards.push(card(
+            &t("settings-users-boundary-title"),
+            rows(vec![caption(&t("settings-users-boundary-body"))]),
         ));
         crate::widgets::cards(cards)
     }
@@ -360,42 +362,40 @@ impl UsersPane {
             .with_kind(TextInputKind::Name)
             .with_id(FULL_NAME_KEY)
             .with_on_change_path(FULL_NAME_KEY)
-            .with_placeholder("Full name")
+            .with_placeholder(&t("settings-users-placeholder-full-name"))
             .with_font_size(13.0);
         let user = TextInput::new(Vec::new())
             .with_kind(TextInputKind::Username)
             .with_id(USERNAME_KEY)
             .with_on_change_path(USERNAME_KEY)
-            .with_placeholder("login-name")
+            .with_placeholder(&t("settings-users-placeholder-username"))
             .with_font_size(13.0);
         let password = TextInput::local()
             .with_kind(TextInputKind::Password)
             .with_id("users.form.password")
             .with_external_buffer(self.password_buffer.clone())
             .with_secret(true)
-            .with_placeholder("At least 10 characters")
+            .with_placeholder(&t("settings-users-placeholder-password"))
             .with_font_size(13.0);
         let buttons = Row::new()
             .push(Box::new(Button::new(
                 "settings.users.save",
-                "Create",
+                &t("settings-users-create"),
                 Some(SAVE_KEY),
             )))
             .push(Box::new(Button::new(
                 "settings.users.cancel",
-                "Cancel",
+                &t("settings-users-cancel"),
                 Some(CANCEL_KEY),
             )))
             .push(Box::new(Spacer::new()));
         card(
-            "Add login account",
+            &t("settings-users-add-form-title"),
             rows(vec![
-                setting_row("Full name", Box::new(full)),
-                setting_row("User name", Box::new(user)),
-                setting_row("Password", Box::new(password)),
-                caption(
-                    "The password is scrubbed from Settings state before it crosses the authenticated system boundary. New accounts start as Standard.",
-                ),
+                setting_row(&t("settings-users-full-name"), Box::new(full)),
+                setting_row(&t("settings-users-username"), Box::new(user)),
+                setting_row(&t("settings-users-password"), Box::new(password)),
+                caption(&t("settings-users-password-note")),
                 Box::new(buttons),
             ]),
         )
@@ -409,51 +409,57 @@ impl UsersPane {
         let keep_key = format!("settings.users.confirm_remove_keep.{}", user.username);
         let mut actions = Row::new().push(Box::new(Spacer::new()));
         if !user.current {
+            let role_action = if user.admin {
+                t("settings-users-make-standard")
+            } else {
+                t("settings-users-make-administrator")
+            };
+            let auto_action = if user.automatic_login {
+                t("settings-users-disable-autologin")
+            } else {
+                t("settings-users-enable-autologin")
+            };
             actions = actions
                 .push(Box::new(Button::new(
                     &role_key,
-                    if user.admin {
-                        "Make standard"
-                    } else {
-                        "Make administrator"
-                    },
+                    &role_action,
                     Some(&role_key),
                 )))
                 .push(Box::new(Button::new(
                     &auto_key,
-                    if user.automatic_login {
-                        "Disable automatic login"
-                    } else {
-                        "Enable automatic login"
-                    },
+                    &auto_action,
                     Some(&auto_key),
                 )));
             actions = if self.confirm_remove_user.as_deref() == Some(user.username.as_str()) {
                 actions
                     .push(Box::new(Button::new(
                         &keep_key,
-                        "Remove, keep files",
+                        &t("settings-users-remove-keep-files"),
                         Some(&keep_key),
                     )))
                     .push(Box::new(Button::new(
                         &confirm_key,
-                        "Remove account and files",
+                        &t("settings-users-remove-account-and-files"),
                         Some(&confirm_key),
                     )))
             } else {
                 actions.push(Box::new(Button::new(
                     &remove_key,
-                    "Remove…",
+                    &t("settings-users-remove-ellipsis"),
                     Some(&remove_key),
                 )))
             };
         }
         let role = if user.admin {
-            "Administrator"
+            t("settings-users-role-administrator")
         } else {
-            "Standard"
+            t("settings-users-role-standard")
         };
-        let you = if user.current { " · signed in" } else { "" };
+        let you = if user.current {
+            t("settings-users-signed-in")
+        } else {
+            String::new()
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -463,7 +469,7 @@ impl UsersPane {
                         .push(Box::new(Text::new(&user.full_name).with_size(13.0)))
                         .push(Box::new(Spacer::new()))
                         .push(semantic_status_pill(
-                            role,
+                            &role,
                             if user.admin {
                                 StatusTone::Success
                             } else {
@@ -472,9 +478,16 @@ impl UsersPane {
                         )),
                 ))
                 .push(Box::new(
-                    Text::new(&format!("{} · UID {}{}", user.username, user.uid, you))
-                        .with_size(11.0)
-                        .dimmed(),
+                    Text::new(&t_args(
+                        "settings-users-uid-line",
+                        &[
+                            ("username", user.username.as_str().into()),
+                            ("uid", user.uid.into()),
+                            ("you", you.as_str().into()),
+                        ],
+                    ))
+                    .with_size(11.0)
+                    .dimmed(),
                 ))
                 .push(Box::new(actions)),
         )
@@ -491,11 +504,16 @@ impl UsersPane {
             &id.display_name
         };
         let key = hex::encode(&id.public_key[..4]);
+        let status = if id.active {
+            t("settings-users-identity-active")
+        } else {
+            t("settings-users-identity-available")
+        };
         let mut top = Row::new()
             .push(Box::new(Text::new(name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(
-                if id.active { "Active" } else { "Available" },
+                &status,
                 if id.active {
                     StatusTone::Success
                 } else {
@@ -503,21 +521,29 @@ impl UsersPane {
                 },
             ));
         if !id.active {
-            top = top.push(Box::new(Button::new(&activate, "Use", Some(&activate))));
+            top = top.push(Box::new(Button::new(
+                &activate,
+                &t("settings-users-identity-use"),
+                Some(&activate),
+            )));
             top = if self.confirm_remove_identity.as_deref() == Some(id.id.as_str()) {
                 top.push(Box::new(Button::new(
                     &confirm,
-                    "Remove identity",
+                    &t("settings-users-identity-remove"),
                     Some(&confirm),
                 )))
             } else {
-                top.push(Box::new(Button::new(&remove, "Remove…", Some(&remove))))
+                top.push(Box::new(Button::new(
+                    &remove,
+                    &t("settings-users-remove-ellipsis"),
+                    Some(&remove),
+                )))
             };
         }
         if id.protection == KeyProtection::LegacyPlaintext {
             top = top.push(Box::new(Button::new(
                 &protect,
-                "Protect now",
+                &t("settings-users-identity-protect"),
                 Some(&protect),
             )));
         }
@@ -528,9 +554,15 @@ impl UsersPane {
                 .with_intrinsic_height()
                 .push(Box::new(top))
                 .push(Box::new(
-                    Text::new(&format!(
-                        "{} · key {}… · {}-of-{} · {}",
-                        id.id, key, id.threshold, id.total_shares, protection
+                    Text::new(&t_args(
+                        "settings-users-identity-detail",
+                        &[
+                            ("id", id.id.as_str().into()),
+                            ("key", key.as_str().into()),
+                            ("threshold", id.threshold.into()),
+                            ("total", id.total_shares.into()),
+                            ("protection", protection.into()),
+                        ],
                     ))
                     .with_size(11.0)
                     .dimmed(),
@@ -552,7 +584,7 @@ impl UsersPane {
             self.operation_status.set(match &result {
                 Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
                     token,
-                    message: "User account updated.".into(),
+                    message: t("settings-users-updated"),
                 },
                 Err(error) => crate::actions::LocalOperationStatus::Failed {
                     token,
@@ -645,7 +677,7 @@ impl UsersPane {
                 let result = self
                     .identity_admin
                     .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .ok_or_else(|| t("settings-users-identity-store-unavailable"))
                     .and_then(|admin| admin.activate(&id.id));
                 self.apply(result);
             }
@@ -658,7 +690,7 @@ impl UsersPane {
                 let result = self
                     .identity_admin
                     .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .ok_or_else(|| t("settings-users-identity-store-unavailable"))
                     .and_then(|admin| admin.remove(&id.id));
                 self.apply(result);
             }
@@ -666,7 +698,7 @@ impl UsersPane {
                 let result = self
                     .identity_admin
                     .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .ok_or_else(|| t("settings-users-identity-store-unavailable"))
                     .and_then(|admin| admin.protect(&id.id));
                 self.apply(result);
             }
@@ -699,7 +731,8 @@ fn clear_form(state: &mut AutoCommit, root: &ObjId) {
 }
 
 impl Widget for UsersPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -729,7 +762,7 @@ impl Widget for UsersPane {
                 .find(|user| user.username == *username && !user.current)
                 .cloned();
             if !token_matches {
-                self.error = Some("Ignored a stale user-management command.".into());
+                self.error = Some(t("settings-users-stale-command"));
                 self.structure_dirty = true;
             } else if let Some(user) = user {
                 let result = match operation {
@@ -753,7 +786,7 @@ impl Widget for UsersPane {
                 };
                 self.apply(result);
             } else {
-                self.apply(Err("User account is no longer available.".into()));
+                self.apply(Err(t("settings-users-account-gone")));
             }
         }
         self.sync_form(&mut state, &root);
@@ -828,33 +861,12 @@ impl Widget for UsersPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 
@@ -959,99 +971,103 @@ mod tests {
         }
     }
 
+    /// Login-user parsing, two-stage removal, identity switching/protection and passwords kept out of the document.
     #[test]
-    fn parses_real_login_users() {
-        let admins = admins_from_group("wheel:x:10:ada\n");
-        let users = read_passwd_users(
-            "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
-            Some("ada"),
-            &admins,
-        );
-        assert_eq!(users.len(), 1);
-        assert!(users[0].admin && users[0].current);
-        assert_eq!(users[0].uid, 1000);
-    }
+    fn user_accounts_parse_and_mutate_through_narrow_backends() {
+        // Case `parses_real_login_users`.
+        {
+            let admins = admins_from_group("wheel:x:10:ada\n");
+            let users = read_passwd_users(
+                "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
+                Some("ada"),
+                &admins,
+            );
+            assert_eq!(users.len(), 1);
+            assert!(users[0].admin && users[0].current);
+            assert_eq!(users[0].uid, 1000);
+        }
 
-    #[test]
-    fn removal_is_two_stage_and_never_targets_current_user() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true), user("bob", false)],
-            vec![identity("personal", true)],
-            users.clone(),
-            ids,
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        doc.put(&root, "settings.users.remove.bob", true).unwrap();
-        pane.sync(&mut doc, &root);
-        assert!(users.0.lock().unwrap().is_empty());
-        doc.put(&root, "settings.users.confirm_remove.bob", true)
+        // Case `removal_is_two_stage_and_never_targets_current_user`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true), user("bob", false)],
+                vec![identity("personal", true)],
+                users.clone(),
+                ids,
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            doc.put(&root, "settings.users.remove.bob", true).unwrap();
+            pane.sync(&mut doc, &root);
+            assert!(users.0.lock().unwrap().is_empty());
+            doc.put(&root, "settings.users.confirm_remove.bob", true)
+                .unwrap();
+            pane.sync(&mut doc, &root);
+            assert_eq!(users.0.lock().unwrap().as_slice(), ["delete:bob:true"]);
+        }
+
+        // Case `identity_switch_uses_narrow_backend`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true)],
+                vec![identity("personal", true), identity("work", false)],
+                users,
+                ids.clone(),
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(
+                &automerge::ROOT,
+                "settings.users.identity.activate.work",
+                true,
+            )
             .unwrap();
-        pane.sync(&mut doc, &root);
-        assert_eq!(users.0.lock().unwrap().as_slice(), ["delete:bob:true"]);
-    }
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(ids.0.lock().unwrap().as_slice(), ["activate:work"]);
+        }
 
-    #[test]
-    fn identity_switch_uses_narrow_backend() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true)],
-            vec![identity("personal", true), identity("work", false)],
-            users,
-            ids.clone(),
-        );
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            "settings.users.identity.activate.work",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(ids.0.lock().unwrap().as_slice(), ["activate:work"]);
-    }
+        // Case `legacy_identity_protection_uses_the_narrow_backend`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut legacy = identity("personal", true);
+            legacy.protection = KeyProtection::LegacyPlaintext;
+            let mut pane =
+                UsersPane::with_data(vec![user("ada", true)], vec![legacy], users, ids.clone());
+            let mut doc = AutoCommit::new();
+            doc.put(
+                &automerge::ROOT,
+                "settings.users.identity.protect.personal",
+                true,
+            )
+            .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(ids.0.lock().unwrap().as_slice(), ["protect:personal"]);
+        }
 
-    #[test]
-    fn legacy_identity_protection_uses_the_narrow_backend() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut legacy = identity("personal", true);
-        legacy.protection = KeyProtection::LegacyPlaintext;
-        let mut pane =
-            UsersPane::with_data(vec![user("ada", true)], vec![legacy], users, ids.clone());
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            "settings.users.identity.protect.personal",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(ids.0.lock().unwrap().as_slice(), ["protect:personal"]);
-    }
-
-    #[test]
-    fn account_password_never_enters_the_settings_document() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true)],
-            vec![identity("personal", true)],
-            users,
-            ids,
-        );
-        *pane.password_buffer.lock().unwrap() = "correct horse battery staple".into();
-        let mut doc = AutoCommit::new();
-        doc.put(&automerge::ROOT, SAVE_KEY, true).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            doc.get(&automerge::ROOT, "users.form.password")
-                .unwrap()
-                .is_none()
-        );
-        assert!(pane.password_buffer.lock().unwrap().is_empty());
+        // Case `account_password_never_enters_the_settings_document`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true)],
+                vec![identity("personal", true)],
+                users,
+                ids,
+            );
+            *pane.password_buffer.lock().unwrap() = "correct horse battery staple".into();
+            let mut doc = AutoCommit::new();
+            doc.put(&automerge::ROOT, SAVE_KEY, true).unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                doc.get(&automerge::ROOT, "users.form.password")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(pane.password_buffer.lock().unwrap().is_empty());
+        }
     }
 }

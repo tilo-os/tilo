@@ -155,43 +155,43 @@ mod tests {
     }
 
     #[test]
-    fn prompt_roundtrips() {
-        roundtrip(AuthUpdate::Prompt {
-            text: "Place your finger on the reader".to_string(),
-            is_error: false,
-        });
-        roundtrip(AuthUpdate::Prompt {
-            text: "Swipe didn't match, try again".to_string(),
-            is_error: true,
-        });
-    }
-
-    #[test]
-    fn failed_roundtrips_with_and_without_detail() {
-        roundtrip(AuthUpdate::Failed {
-            message: "Incorrect username or password".to_string(),
-            detail: None,
-        });
-        roundtrip(AuthUpdate::Failed {
-            message: "Could not start the session".to_string(),
-            detail: Some("session slot busy".to_string()),
-        });
-    }
-
-    #[test]
-    fn prompt_text_with_separator_survives() {
-        // Defensive: even if a prompt contained the separator, splitn(3)
-        // keeps the remainder intact so the text isn't truncated.
-        roundtrip(AuthUpdate::Prompt {
-            text: format!("weird{SEP}prompt"),
-            is_error: false,
-        });
-    }
-
-    #[test]
-    fn garbage_decodes_to_none() {
-        assert_eq!(AuthUpdate::decode(""), None);
-        assert_eq!(AuthUpdate::decode("hello world"), None);
-        assert_eq!(AuthUpdate::decode("X\u{1f}1\u{1f}foo"), None);
+    fn auth_frames_roundtrip_and_garbage_decodes_to_none() {
+        // Phase `prompt_roundtrips`.
+        {
+            roundtrip(AuthUpdate::Prompt {
+                text: "Place your finger on the reader".to_string(),
+                is_error: false,
+            });
+            roundtrip(AuthUpdate::Prompt {
+                text: "Swipe didn't match, try again".to_string(),
+                is_error: true,
+            });
+        }
+        // Phase `failed_roundtrips_with_and_without_detail`.
+        {
+            roundtrip(AuthUpdate::Failed {
+                message: "Incorrect username or password".to_string(),
+                detail: None,
+            });
+            roundtrip(AuthUpdate::Failed {
+                message: "Could not start the session".to_string(),
+                detail: Some("session slot busy".to_string()),
+            });
+        }
+        // Phase `prompt_text_with_separator_survives`.
+        {
+            // Defensive: even if a prompt contained the separator, splitn(3)
+            // keeps the remainder intact so the text isn't truncated.
+            roundtrip(AuthUpdate::Prompt {
+                text: format!("weird{SEP}prompt"),
+                is_error: false,
+            });
+        }
+        // Phase `garbage_decodes_to_none`.
+        {
+            assert_eq!(AuthUpdate::decode(""), None);
+            assert_eq!(AuthUpdate::decode("hello world"), None);
+            assert_eq!(AuthUpdate::decode("X\u{1f}1\u{1f}foo"), None);
+        }
     }
 }

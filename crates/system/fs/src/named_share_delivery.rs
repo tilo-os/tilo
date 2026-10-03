@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::RevocationList;
 use uuid::Uuid;
+use wire_frame::Framing;
 
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
 
@@ -397,7 +399,7 @@ impl NamedShareOutbox {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -643,19 +645,27 @@ impl NamedShareDeliveryClient {
     }
 }
 
+/// Each delivery request and response: a big-endian `u32` length, then the
+/// canonical encoding. Empty frames are invalid.
+const NAMED_SHARE_DELIVERY_FRAMING: Framing =
+    Framing::big_endian(MAX_NAMED_SHARE_ENVELOPE_BYTES).reject_empty();
+
+impl From<CanonicalFrameError> for NamedShareDeliveryError {
+    fn from(error: CanonicalFrameError) -> Self {
+        match error {
+            CanonicalFrameError::Io(error) => Self::Io(error),
+            CanonicalFrameError::Empty | CanonicalFrameError::TooLarge(_) => Self::EnvelopeTooLarge,
+            CanonicalFrameError::Encode(_) | CanonicalFrameError::Decode(_) => Self::MalformedWire,
+        }
+    }
+}
+
 async fn write_wire<W: tokio::io::AsyncWrite + Unpin, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> Result<(), NamedShareDeliveryError> {
     use tokio::io::AsyncWriteExt;
-    let bytes = canonical_bytes(value).map_err(|_| NamedShareDeliveryError::MalformedWire)?;
-    if bytes.len() > MAX_NAMED_SHARE_ENVELOPE_BYTES {
-        return Err(NamedShareDeliveryError::EnvelopeTooLarge);
-    }
-    let length =
-        u32::try_from(bytes.len()).map_err(|_| NamedShareDeliveryError::EnvelopeTooLarge)?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
+    canonical_frame::write(NAMED_SHARE_DELIVERY_FRAMING, writer, value).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -663,17 +673,7 @@ async fn write_wire<W: tokio::io::AsyncWrite + Unpin, T: Serialize + Sync>(
 async fn read_wire<R: tokio::io::AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<T, NamedShareDeliveryError> {
-    use tokio::io::AsyncReadExt;
-    let mut length = [0; 4];
-    reader.read_exact(&mut length).await?;
-    let length = u32::from_be_bytes(length) as usize;
-    if length == 0 || length > MAX_NAMED_SHARE_ENVELOPE_BYTES {
-        return Err(NamedShareDeliveryError::EnvelopeTooLarge);
-    }
-    let mut bytes = vec![0; length];
-    reader.read_exact(&mut bytes).await?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| NamedShareDeliveryError::MalformedWire)
+    Ok(canonical_frame::read_required(NAMED_SHARE_DELIVERY_FRAMING, reader).await?)
 }
 
 #[derive(Debug, Error)]
@@ -807,7 +807,7 @@ impl NamedShareInbox {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -900,6 +900,59 @@ mod tests {
 
     const NOW: u64 = 10_000;
 
+    #[tokio::test]
+    async fn delivery_frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_wire(&mut wire, &DeliveryResponseV1::Refused)
+            .await
+            .unwrap();
+        assert_eq!(wire, [0, 0, 0, 1, 1]);
+
+        let mut wire: Vec<u8> = vec![0, 0, 0, 19, 0, 16];
+        wire.extend_from_slice(&[0x22; 16]);
+        wire.push(1);
+        let response: DeliveryResponseV1 = read_wire(&mut wire.as_slice()).await.unwrap();
+        assert_eq!(
+            response,
+            DeliveryResponseV1::Accepted {
+                grant_id: Uuid::from_bytes([0x22; 16]),
+                inserted: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_frames_reject_empty_oversized_and_truncated_wire() {
+        let limit = u32::try_from(MAX_NAMED_SHARE_ENVELOPE_BYTES).unwrap();
+        for prefix in [0, limit + 1] {
+            let wire = prefix.to_be_bytes();
+            let result: Result<DeliveryResponseV1, _> = read_wire(&mut &wire[..]).await;
+            assert!(matches!(
+                result,
+                Err(NamedShareDeliveryError::EnvelopeTooLarge)
+            ));
+        }
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 2, 0][..]] {
+            let result: Result<DeliveryResponseV1, _> = read_wire(&mut &wire[..]).await;
+            assert!(
+                matches!(result, Err(NamedShareDeliveryError::Io(ref error)) if error.kind() == std::io::ErrorKind::UnexpectedEof),
+                "{wire:?}"
+            );
+        }
+        let result: Result<DeliveryResponseV1, _> = read_wire(&mut &[0, 0, 0, 1, 9][..]).await;
+        assert!(matches!(
+            result,
+            Err(NamedShareDeliveryError::MalformedWire)
+        ));
+        let mut wire = Vec::new();
+        let oversized = vec![0_u8; MAX_NAMED_SHARE_ENVELOPE_BYTES];
+        assert!(matches!(
+            write_wire(&mut wire, &oversized).await,
+            Err(NamedShareDeliveryError::EnvelopeTooLarge)
+        ));
+        assert!(wire.is_empty());
+    }
+
     fn envelope(person: Ed25519PublicKey, id_seed: u128) -> NamedShareEnvelopeV1 {
         let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let invite = mint_file_invite(
@@ -920,82 +973,83 @@ mod tests {
     }
 
     #[test]
-    fn durable_inbox_is_idempotent_private_and_subject_bound() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("inbox.json");
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let entry = envelope(person, 2);
-        let inbox = NamedShareInbox::open_at(&path, person, NOW).unwrap();
-        assert!(inbox.accept_at(entry.clone(), NOW).unwrap());
-        assert!(!inbox.accept_at(entry.clone(), NOW).unwrap());
-        drop(inbox);
-        let reopened = NamedShareInbox::open_at(&path, person, NOW).unwrap();
-        assert_eq!(reopened.entries_at(NOW), vec![entry.clone()]);
-        assert!(
-            entry
-                .validate_for_at(Ed25519PublicKey::from_bytes([3; 32]), NOW)
-                .is_err()
-        );
-        assert!(reopened.entries_at(NOW + 100).is_empty());
-        #[cfg(unix)]
+    fn named_inbox_and_outbox_are_durable_idempotent_and_subject_bound() {
+        // Phase `durable_inbox_is_idempotent_private_and_subject_bound`.
         {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("inbox.json");
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
             );
+            let entry = envelope(person, 2);
+            let inbox = NamedShareInbox::open_at(&path, person, NOW).unwrap();
+            assert!(inbox.accept_at(entry.clone(), NOW).unwrap());
+            assert!(!inbox.accept_at(entry.clone(), NOW).unwrap());
+            drop(inbox);
+            let reopened = NamedShareInbox::open_at(&path, person, NOW).unwrap();
+            assert_eq!(reopened.entries_at(NOW), vec![entry.clone()]);
+            assert!(
+                entry
+                    .validate_for_at(Ed25519PublicKey::from_bytes([3; 32]), NOW)
+                    .is_err()
+            );
+            assert!(reopened.entries_at(NOW + 100).is_empty());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
         }
-    }
-
-    #[test]
-    fn bearer_invite_is_never_admitted_to_named_inbox() {
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let mut entry = envelope(person, 3);
-        entry.invite.subject = FileInviteSubject::Bearer {
-            secret_hash: [1; 32],
-        };
-        assert!(entry.validate_for_at(person, NOW).is_err());
-    }
-
-    #[test]
-    fn outbox_survives_offline_attempt_and_restart_until_acceptance() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("outbox.json");
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let device = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[10; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let entry = envelope(person, 7);
-        let grant_id = entry.invite.id;
-        let outbox = NamedShareOutbox::open(&path).unwrap();
-        assert!(outbox.enqueue(entry, vec![device]).unwrap());
-        outbox.record_attempt(grant_id, None, NOW).unwrap();
-        drop(outbox);
-        let reopened = NamedShareOutbox::open(&path).unwrap();
-        assert_eq!(reopened.pending_at(NOW).len(), 1);
-        assert_eq!(reopened.get(grant_id).unwrap().attempts, 1);
-        reopened
-            .record_attempt(grant_id, Some(device), NOW + 1)
-            .unwrap();
-        assert!(reopened.pending_at(NOW + 1).is_empty());
-        drop(reopened);
-        let final_state = NamedShareOutbox::open(path).unwrap().get(grant_id).unwrap();
-        assert_eq!(final_state.delivered_to, Some(device));
-        assert_eq!(final_state.attempts, 2);
+        // Phase `bearer_invite_is_never_admitted_to_named_inbox`.
+        {
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let mut entry = envelope(person, 3);
+            entry.invite.subject = FileInviteSubject::Bearer {
+                secret_hash: [1; 32],
+            };
+            assert!(entry.validate_for_at(person, NOW).is_err());
+        }
+        // Phase `outbox_survives_offline_attempt_and_restart_until_acceptance`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("outbox.json");
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let device = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[10; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let entry = envelope(person, 7);
+            let grant_id = entry.invite.id;
+            let outbox = NamedShareOutbox::open(&path).unwrap();
+            assert!(outbox.enqueue(entry, vec![device]).unwrap());
+            outbox.record_attempt(grant_id, None, NOW).unwrap();
+            drop(outbox);
+            let reopened = NamedShareOutbox::open(&path).unwrap();
+            assert_eq!(reopened.pending_at(NOW).len(), 1);
+            assert_eq!(reopened.get(grant_id).unwrap().attempts, 1);
+            reopened
+                .record_attempt(grant_id, Some(device), NOW + 1)
+                .unwrap();
+            assert!(reopened.pending_at(NOW + 1).is_empty());
+            drop(reopened);
+            let final_state = NamedShareOutbox::open(path).unwrap().get(grant_id).unwrap();
+            assert_eq!(final_state.delivered_to, Some(device));
+            assert_eq!(final_state.attempts, 2);
+        }
     }
 
     struct Party {
@@ -1024,9 +1078,12 @@ mod tests {
         write_device_cert(&paths.device_cert, &cert).unwrap();
         let certified = crate::identity::load_certified_mount_identity(&paths, now).unwrap();
         let (mount, credentials) = certified.into_parts();
-        let endpoint = Endpoint::builder(presets::N0)
+        let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(mount.secret)
+            .relay_mode(iroh::RelayMode::Disabled)
             .address_lookup(MemoryLookup::new())
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
             .bind()
             .await
             .unwrap();
@@ -1067,13 +1124,10 @@ mod tests {
             &owner.root,
         )
         .unwrap();
-        let envelope = NamedShareEnvelopeV1::bind_at(
-            owner.endpoint.addr(),
-            invite,
-            &owner.root,
-            unix_now_ms(),
-        )
-        .unwrap();
+        let bound_at = unix_now_ms();
+        let envelope =
+            NamedShareEnvelopeV1::bind_at(owner.endpoint.addr(), invite, &owner.root, bound_at)
+                .unwrap();
         let client = NamedShareDeliveryClient::new(
             owner.endpoint.clone(),
             owner.credentials,
@@ -1094,8 +1148,10 @@ mod tests {
         );
         router.shutdown().await.unwrap();
         drop(inbox);
-        let reopened = NamedShareInbox::open_at(inbox_path, person, unix_now_ms()).unwrap();
-        assert_eq!(reopened.entries_at(unix_now_ms()), vec![envelope]);
+        // Read back at the bind instant: the invite expires on the wall
+        // clock, and a slow delivery must not decide what durability means.
+        let reopened = NamedShareInbox::open_at(inbox_path, person, bound_at).unwrap();
+        assert_eq!(reopened.entries_at(bound_at), vec![envelope]);
         owner.endpoint.close().await;
     }
 }

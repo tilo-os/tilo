@@ -5,7 +5,7 @@
 //! painted pixels come from the bar, not from the content.
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
-//! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
+//! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(
     clippy::unwrap_used,
@@ -135,7 +135,7 @@ fn scrollbar_paints_along_right_edge() {
          (with={with_px}, without={without_px})",
     );
 
-    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         for (name, buf) in [
             ("scrollbar_on", &rgba_with),

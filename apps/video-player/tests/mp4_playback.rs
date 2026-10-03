@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use media::gst::prelude::*;
 use ui::widget::Widget;
@@ -27,17 +27,21 @@ fn frame_pts(app: &PlayerApp) -> Option<u64> {
         .map(|frame| frame.pts_ms)
 }
 
-fn invoke(app: &mut PlayerApp, doc: &automerge::AutoCommit, operation: &PlayerOperation) {
-    assert!(
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::Effect,
-            OPERATION_TYPE,
-            &serde_json::to_vec(operation).unwrap(),
+fn invoke(app: &mut PlayerApp, doc: &mut automerge::AutoCommit, operation: &PlayerOperation) {
+    assert!(matches!(
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                OPERATION_TYPE,
+                &serde_json::to_vec(operation).unwrap()
+            ),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
-        .expect("production playback action")
-    );
+        .expect("production playback action"),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
 }
 
 fn wait_for(
@@ -46,16 +50,14 @@ fn wait_for(
     description: &str,
     ready: impl Fn(&PlayerApp) -> bool,
 ) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(15))
-        .expect("deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(doc, &automerge::ROOT);
         if ready(app) {
             return;
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "timed out waiting for {description}"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -70,8 +72,8 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         exercise_app(Path::new(&root));
         return;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nonce = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let root =
@@ -100,6 +102,12 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         "MP4 playback child failed: {}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
+    );
+    // libtest exits 0 when `--exact` selects nothing; require the child ran.
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("test result: ok. 1 passed"),
+        "the child ran no test: {}",
+        String::from_utf8_lossy(&result.stdout)
     );
 }
 
@@ -161,9 +169,9 @@ fn exercise_app(root: &Path) {
     assert_eq!(app.player().engine().unwrap().audio_tracks().len(), 1);
     assert!(app.player().is_playing());
 
-    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
+    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
     assert!(!app.player().is_playing());
-    invoke(&mut app, &doc, &PlayerOperation::SeekSeconds(2.0));
+    invoke(&mut app, &mut doc, &PlayerOperation::SeekSeconds(2.0));
     wait_for(
         &mut app,
         &mut doc,
@@ -171,10 +179,10 @@ fn exercise_app(root: &Path) {
         |app| frame_pts(app).is_some_and(|pts| (1_960..=2_040).contains(&pts)),
     );
     let paused_pts = frame_pts(&app).unwrap();
-    let hold_until = Instant::now()
+    let hold_until = ui::time::now()
         .checked_add(Duration::from_millis(200))
         .expect("hold deadline is representable");
-    while Instant::now() < hold_until {
+    while ui::time::now() < hold_until {
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(frame_pts(&app).unwrap(), paused_pts);
         assert!(!app.player().is_playing());
@@ -182,7 +190,7 @@ fn exercise_app(root: &Path) {
     }
 
     let audio_before_resume = audio_buffers.load(Ordering::Relaxed);
-    invoke(&mut app, &doc, &PlayerOperation::TogglePlayback);
+    invoke(&mut app, &mut doc, &PlayerOperation::TogglePlayback);
     wait_for(
         &mut app,
         &mut doc,

@@ -1076,116 +1076,118 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_fraction_root_scripts_and_greek() {
-        let parsed = parse_tex(r"\frac{\alpha_1 + x^2}{\sqrt[3]{1-x}}");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let Node::Frac { num, den } = &parsed.expr.root[0] else {
-            panic!()
-        };
-        assert!(matches!(num[0], Node::Char('α')));
-        assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
-    }
-
-    #[test]
-    fn accepts_common_math_wrappers_and_prime_scripts() {
-        for source in [r"$f'(x)$", r"\(f''(x)\)", r"\[f'''(x)\]"] {
-            let parsed = parse_tex(source);
+    fn tex_parses_fractions_scripts_environments_and_operators() {
+        // phase: parses_fraction_root_scripts_and_greek
+        {
+            let parsed = parse_tex(r"\frac{\alpha_1 + x^2}{\sqrt[3]{1-x}}");
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            let Node::Frac { num, den } = &parsed.expr.root[0] else {
+                panic!()
+            };
+            assert!(matches!(num[0], Node::Char('α')));
+            assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
+        }
+        // phase: accepts_common_math_wrappers_and_prime_scripts
+        {
+            for source in [r"$f'(x)$", r"\(f''(x)\)", r"\[f'''(x)\]"] {
+                let parsed = parse_tex(source);
+                assert!(
+                    parsed.diagnostics.is_empty(),
+                    "{source}: {:?}",
+                    parsed.diagnostics
+                );
+                assert!(matches!(parsed.expr.root[1], Node::Sup { .. }));
+            }
+        }
+        // phase: parses_left_right_and_matrix_environments
+        {
+            let parsed = parse_tex(r"\left[\begin{matrix}a&b\\c&d\end{matrix}\right]");
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            let Node::Delimited { open, close, body } = &parsed.expr.root[0] else {
+                panic!()
+            };
+            assert_eq!((*open, *close), (Some('['), Some(']')));
+            let Node::Table { rows } = &body[0] else {
+                panic!()
+            };
+            assert_eq!((rows.len(), rows[0].len()), (2, 2));
+        }
+        // phase: parses_large_operator_limits_and_cases
+        {
+            let parsed =
+                parse_tex(r"\sum_{i=1}^{n} x_i + \begin{cases}x^2&x>0\\0&x\le0\end{cases}");
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            assert!(matches!(
+                parsed.expr.root[0],
+                Node::UnderOver {
+                    under: Some(_),
+                    over: Some(_),
+                    ..
+                }
+            ));
+            assert!(parsed.expr.root.iter().any(|node| matches!(
+                node,
+                Node::Delimited {
+                    open: Some('{'),
+                    close: None,
+                    ..
+                }
+            )));
+        }
+        // phase: unknown_commands_survive_and_report_diagnostic
+        {
+            let parsed = parse_tex(r"x + \packageMacro{y}");
+            assert_eq!(parsed.diagnostics.len(), 1);
             assert!(
-                parsed.diagnostics.is_empty(),
-                "{source}: {:?}",
-                parsed.diagnostics
+                parsed
+                    .expr
+                    .root
+                    .iter()
+                    .any(|node| matches!(node, Node::Text(name) if name == "packageMacro"))
             );
-            assert!(matches!(parsed.expr.root[1], Node::Sup { .. }));
         }
     }
 
     #[test]
-    fn parses_left_right_and_matrix_environments() {
-        let parsed = parse_tex(r"\left[\begin{matrix}a&b\\c&d\end{matrix}\right]");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let Node::Delimited { open, close, body } = &parsed.expr.root[0] else {
-            panic!()
-        };
-        assert_eq!((*open, *close), (Some('['), Some(']')));
-        let Node::Table { rows } = &body[0] else {
-            panic!()
-        };
-        assert_eq!((rows.len(), rows[0].len()), (2, 2));
-    }
-
-    #[test]
-    fn parses_large_operator_limits_and_cases() {
-        let parsed = parse_tex(r"\sum_{i=1}^{n} x_i + \begin{cases}x^2&x>0\\0&x\le0\end{cases}");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        assert!(matches!(
-            parsed.expr.root[0],
-            Node::UnderOver {
-                under: Some(_),
-                over: Some(_),
-                ..
+    fn tex_round_trips_a_practical_corpus_and_visual_edits() {
+        // phase: practical_tex_formula_corpus_parses_without_loss
+        {
+            let formulas = [
+                r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}",
+                r"e^{i\pi}+1=0",
+                r"\int_0^\infty e^{-x^2}\,dx=\frac{\sqrt\pi}{2}",
+                r"\lim_{n\to\infty}\left(1+\frac1n\right)^n=e",
+                r"\begin{pmatrix}a&b\\c&d\end{pmatrix}^{-1}",
+                r"f(x)=\begin{cases}x^2&x\ge0\\-x&x<0\end{cases}",
+                r"\mathbb{R}^n\subseteq\mathbb{C}^n",
+                r"\hat x+\vec v+\overline{AB}+\dot y",
+                r"\binom nk=\frac{n!}{k!(n-k)!}",
+                r"\begin{array}{rcl}a&=&b+c\\d&=&e-f\end{array}",
+            ];
+            for source in formulas {
+                let parsed = parse_tex(source);
+                assert!(
+                    parsed.diagnostics.is_empty(),
+                    "{source}: {:?}",
+                    parsed.diagnostics
+                );
+                assert!(!parsed.expr.root.is_empty(), "{source}");
             }
-        ));
-        assert!(parsed.expr.root.iter().any(|node| matches!(
-            node,
-            Node::Delimited {
-                open: Some('{'),
-                close: None,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn unknown_commands_survive_and_report_diagnostic() {
-        let parsed = parse_tex(r"x + \packageMacro{y}");
-        assert_eq!(parsed.diagnostics.len(), 1);
-        assert!(
-            parsed
-                .expr
-                .root
-                .iter()
-                .any(|node| matches!(node, Node::Text(name) if name == "packageMacro"))
-        );
-    }
-
-    #[test]
-    fn practical_tex_formula_corpus_parses_without_loss() {
-        let formulas = [
-            r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}",
-            r"e^{i\pi}+1=0",
-            r"\int_0^\infty e^{-x^2}\,dx=\frac{\sqrt\pi}{2}",
-            r"\lim_{n\to\infty}\left(1+\frac1n\right)^n=e",
-            r"\begin{pmatrix}a&b\\c&d\end{pmatrix}^{-1}",
-            r"f(x)=\begin{cases}x^2&x\ge0\\-x&x<0\end{cases}",
-            r"\mathbb{R}^n\subseteq\mathbb{C}^n",
-            r"\hat x+\vec v+\overline{AB}+\dot y",
-            r"\binom nk=\frac{n!}{k!(n-k)!}",
-            r"\begin{array}{rcl}a&=&b+c\\d&=&e-f\end{array}",
-        ];
-        for source in formulas {
-            let parsed = parse_tex(source);
-            assert!(
-                parsed.diagnostics.is_empty(),
-                "{source}: {:?}",
-                parsed.diagnostics
-            );
-            assert!(!parsed.expr.root.is_empty(), "{source}");
         }
-    }
-
-    #[test]
-    fn visually_edited_tree_serializes_back_to_parseable_tex() {
-        let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]+");
-        let source = serialize_tex(&parsed.expr);
-        let reparsed = parse_tex(&source);
-        assert!(
-            reparsed.diagnostics.is_empty(),
-            "{source}: {:?}",
-            reparsed.diagnostics
-        );
-        assert_eq!(
-            super::row_plain(&reparsed.expr.root),
-            super::row_plain(&parsed.expr.root)
-        );
+        // phase: visually_edited_tree_serializes_back_to_parseable_tex
+        {
+            let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]+");
+            let source = serialize_tex(&parsed.expr);
+            let reparsed = parse_tex(&source);
+            assert!(
+                reparsed.diagnostics.is_empty(),
+                "{source}: {:?}",
+                reparsed.diagnostics
+            );
+            assert_eq!(
+                super::row_plain(&reparsed.expr.root),
+                super::row_plain(&parsed.expr.root)
+            );
+        }
     }
 }

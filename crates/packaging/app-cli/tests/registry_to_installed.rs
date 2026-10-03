@@ -39,7 +39,7 @@ mod authoring;
 /// Locate the `tilo-install` binary this workspace builds. A missing
 /// binary **fails** the test rather than skipping it; without the binary the
 /// installation path cannot be exercised.
-fn tilo_install_bin() -> PathBuf {
+pub(crate) fn tilo_install_bin() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .ancestors()
@@ -73,7 +73,11 @@ fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     author_tapp_version(package_id, "1.4.0", identity)
 }
 
-fn author_tapp_version(package_id: &str, version: &str, identity: &SigningIdentity) -> Vec<u8> {
+pub(crate) fn author_tapp_version(
+    package_id: &str,
+    version: &str,
+    identity: &SigningIdentity,
+) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
@@ -116,7 +120,7 @@ type = "gui"
 }
 
 /// Manifest key/value and registry wire label for the runner's architecture.
-fn native_target() -> (&'static str, &'static str, &'static str) {
+pub(crate) fn native_target() -> (&'static str, &'static str, &'static str) {
     #[cfg(target_arch = "x86_64")]
     {
         ("x86_64", "baseline", "x86_64")
@@ -129,7 +133,7 @@ fn native_target() -> (&'static str, &'static str, &'static str) {
     compile_error!("registry installation tests require a supported package architecture");
 }
 
-fn test_publisher() -> SigningIdentity {
+pub(crate) fn test_publisher() -> SigningIdentity {
     SigningIdentity::from_signing_key(SigningKey::from_bytes(&[11_u8; 32]))
 }
 
@@ -292,7 +296,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
 
 /// Point every relevant environment variable at scratch directories, restoring them when the
 /// returned scope drops.
-fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
+pub(crate) fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
     for (k, v) in vars {
         env.set(k, v);
@@ -303,138 +307,37 @@ fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
 const PACKAGE_ID: &str = "so.tilo.catalogue-e2e";
 
 #[test]
-fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
-    let publisher = test_publisher();
-    let owner = SigningKey::from_bytes(&[12; 32]);
-    let tapp = author_tapp(PACKAGE_ID, &publisher);
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn registry_entries_install_update_and_refuse_corrupted_downloads() {
+    // Phase `a_registry_entry_becomes_an_installed_app_the_desktop_can_see`.
+    {
+        let publisher = test_publisher();
+        let owner = SigningKey::from_bytes(&[12; 32]);
+        let tapp = author_tapp(PACKAGE_ID, &publisher);
 
-    // Serve it.
-    let port_probe = TcpListener::bind("127.0.0.1:0").unwrap();
-    let planned_port = port_probe.local_addr().unwrap().port();
-    drop(port_probe);
-    let url = format!("http://127.0.0.1:{planned_port}/sheets.tapp");
-    let entry = signed_entry(PACKAGE_ID, &url, &tapp);
-    let entries_json = signed_snapshot_json(entry, &owner);
-    // Bind the server; if the planned port was taken, fall back to whatever we get and rewrite the URL.
-    let registry = Registry::start(entries_json, tapp.clone());
-    let registry = if registry.port == planned_port {
-        registry
-    } else {
-        let url = format!("http://127.0.0.1:{}/sheets.tapp", registry.port);
+        // Serve it.
+        let port_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let planned_port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let url = format!("http://127.0.0.1:{planned_port}/sheets.tapp");
         let entry = signed_entry(PACKAGE_ID, &url, &tapp);
-        Registry::start(signed_snapshot_json(entry, &owner), tapp)
-    };
+        let entries_json = signed_snapshot_json(entry, &owner);
+        // Bind the server; if the planned port was taken, fall back to whatever we get and rewrite the URL.
+        let registry = Registry::start(entries_json, tapp.clone());
+        let registry = if registry.port == planned_port {
+            registry
+        } else {
+            let url = format!("http://127.0.0.1:{}/sheets.tapp", registry.port);
+            let entry = signed_entry(PACKAGE_ID, &url, &tapp);
+            Registry::start(signed_snapshot_json(entry, &owner), tapp)
+        };
 
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_dir.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: registry.base_url(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let installer_bin = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &installer_bin),
-    ]);
-
-    // 1. The registry's entry shows up as available.
-    let listing = app_cli::available();
-    assert!(
-        listing.unreachable.is_empty(),
-        "the local registry must be reachable: {:?}",
-        listing.unreachable
-    );
-    let app = listing
-        .apps
-        .iter()
-        .find(|a| a.package_id == PACKAGE_ID)
-        .unwrap_or_else(|| panic!("the published app must be offered: {:?}", listing.apps));
-    assert_eq!(app.display_name, "Sheets");
-    assert_eq!(app.version, "1.4.0");
-    assert_eq!(app.category.as_deref(), Some("Office"));
-    assert_eq!(
-        app.registry, "local",
-        "the row names the registry it came from"
-    );
-
-    // 2. Nothing is installed yet — this is what makes step 3 mean something.
-    assert!(
-        package_store::list_installed().unwrap().is_empty(),
-        "the scratch install root must start empty"
-    );
-
-    // 3. Install it through the installer.
-    let installed = app_cli::install::install(PACKAGE_ID)
-        .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
-    assert_eq!(installed.package_id, PACKAGE_ID);
-
-    // 4. The desktop's own reader now returns it — the compositor
-    //    enumerates installed apps through exactly this call.
-    let now_installed = package_store::list_installed().unwrap();
-    let found = now_installed
-        .iter()
-        .find(|e| e.id == PACKAGE_ID)
-        .unwrap_or_else(|| panic!("the desktop must now see it: {now_installed:?}"));
-    assert!(
-        found.manifest_path.exists(),
-        "the manifest the launcher will read was really extracted: {:?}",
-        found.manifest_path
-    );
-    assert!(
-        found.payload_root.join("bin/app").exists(),
-        "the payload was really extracted: {:?}",
-        found.payload_root
-    );
-
-    // 5. And it stops being offered as available, because it is here.
-    let after = app_cli::available();
-    assert!(
-        !after.apps.iter().any(|a| a.package_id == PACKAGE_ID),
-        "an installed app must not still be offered: {:?}",
-        after.apps
-    );
-}
-
-#[test]
-fn an_installed_app_updates_from_a_newer_signed_registry_offer() {
-    const UPDATE_ID: &str = "so.tilo.app-update-e2e";
-    let publisher = test_publisher();
-    let owner = SigningKey::from_bytes(&[12; 32]);
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &installer),
-    ]);
-
-    let publish = |version: &str, previous: Option<&SignedRegistrySnapshot>| {
-        let tapp = author_tapp_version(UPDATE_ID, version, &publisher);
-        let artifact = Registry::start(String::new(), tapp.clone());
-        let url = format!("http://127.0.0.1:{}/app.tapp", artifact.port);
-        let entry = signed_entry_version(UPDATE_ID, version, &url, &tapp);
-        let snapshot = signed_snapshot(entry, &owner, previous);
-        let registry_server = Registry::start(serde_json::to_string(&snapshot).unwrap(), tapp);
-        (artifact, registry_server, snapshot)
-    };
-    let configure = |registry: &Registry| {
+        let config_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let apps_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             config_dir.path().join("registries.toml"),
             toml::to_string_pretty(&RegistriesFile {
@@ -449,108 +352,215 @@ fn an_installed_app_updates_from_a_newer_signed_registry_offer() {
             .unwrap(),
         )
         .unwrap();
-    };
 
-    let (_v1_artifact, v1_registry, v1_snapshot) = publish("1.4.0", None);
-    configure(&v1_registry);
-    app_cli::install::install(UPDATE_ID)
-        .unwrap_or_else(|error| panic!("initial install must succeed: {}", error.user_message()));
-    assert_eq!(
-        app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
-        Some("1.4.0")
-    );
+        let installer_bin = tilo_install_bin();
+        let _env = scoped_env(&[
+            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+            ("TILO_APPS_DATA_DIR", apps_dir.path()),
+            ("TILO_INSTALL_BIN", &installer_bin),
+        ]);
 
-    let (_v2_artifact, v2_registry, _v2_snapshot) = publish("1.5.0", Some(&v1_snapshot));
-    configure(&v2_registry);
-    let listing = app_cli::all_offers();
-    assert!(
-        listing.unreachable.is_empty(),
-        "the update registry must be reachable: {:?}",
-        listing.unreachable
-    );
-    let update = listing
-        .apps
-        .iter()
-        .find(|app| app.package_id == UPDATE_ID)
-        .expect("the newer signed version must be offered");
-    assert_eq!(update.version, "1.5.0");
-    app_cli::install::update_app_reporting(update, &mut |_| {})
-        .unwrap_or_else(|error| panic!("signed update must succeed: {}", error.user_message()));
-
-    assert_eq!(
-        app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
-        Some("1.5.0"),
-        "the launcher's registry reader must observe the updated manifest"
-    );
-}
-
-/// Bytes that don't match the package they claim must not become an
-/// installed app — the case of a compromised or buggy registry
-/// handing over something other than what its signed entry described.
-#[test]
-fn a_corrupted_download_never_becomes_an_installed_app() {
-    let publisher = test_publisher();
-    let owner = SigningKey::from_bytes(&[12; 32]);
-    let good = author_tapp("so.tilo.catalogue-corrupt", &publisher);
-    // Serve a truncated archive under the same entry.
-    let corrupted = good[..good.len() / 2].to_vec();
-
-    let registry = Registry::start(String::new(), corrupted.clone());
-    let url = format!("http://127.0.0.1:{}/sheets.tapp", registry.port);
-    let entry = signed_entry("so.tilo.catalogue-corrupt", &url, &good);
-    let registry = Registry::start(signed_snapshot_json(entry, &owner), corrupted);
-
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_dir.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: registry.base_url(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &installer),
-    ]);
-
-    // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
-    let listing = app_cli::available();
-    assert!(
-        listing
+        // 1. The registry's entry shows up as available.
+        let listing = app_cli::available();
+        assert!(
+            listing.unreachable.is_empty(),
+            "the local registry must be reachable: {:?}",
+            listing.unreachable
+        );
+        let app = listing
             .apps
             .iter()
-            .any(|a| a.package_id == "so.tilo.catalogue-corrupt"),
-        "the entry must be offered before its download can be the thing \
-         that fails: {listing:?}"
-    );
+            .find(|a| a.package_id == PACKAGE_ID)
+            .unwrap_or_else(|| panic!("the published app must be offered: {:?}", listing.apps));
+        assert_eq!(app.display_name, "Sheets");
+        assert_eq!(app.version, "1.4.0");
+        assert_eq!(app.category.as_deref(), Some("Office"));
+        assert_eq!(
+            app.registry, "local",
+            "the row names the registry it came from"
+        );
 
-    let err = app_cli::install::install("so.tilo.catalogue-corrupt")
-        .expect_err("truncated bytes must not install");
-    assert!(
-        !matches!(err, app_cli::install::InstallError::NotOffered { .. }),
-        "the install must fail on the bytes, not on resolution: {err:?}"
-    );
-    assert!(
-        !err.user_message().trim().is_empty(),
-        "the refusal has to say something a person can read"
-    );
-    assert!(
-        package_store::list_installed().unwrap().is_empty(),
-        "nothing may be registered after a refused install"
-    );
+        // 2. Nothing is installed yet — this is what makes step 3 mean something.
+        assert!(
+            package_store::list_installed().unwrap().is_empty(),
+            "the scratch install root must start empty"
+        );
+
+        // 3. Install it through the installer.
+        let installed = app_cli::install::install(PACKAGE_ID)
+            .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
+        assert_eq!(installed.package_id, PACKAGE_ID);
+
+        // 4. The desktop's own reader now returns it — the compositor
+        //    enumerates installed apps through exactly this call.
+        let now_installed = package_store::list_installed().unwrap();
+        let found = now_installed
+            .iter()
+            .find(|e| e.id == PACKAGE_ID)
+            .unwrap_or_else(|| panic!("the desktop must now see it: {now_installed:?}"));
+        assert!(
+            found.manifest_path.exists(),
+            "the manifest the launcher will read was really extracted: {:?}",
+            found.manifest_path
+        );
+        assert!(
+            found.payload_root.join("bin/app").exists(),
+            "the payload was really extracted: {:?}",
+            found.payload_root
+        );
+
+        // 5. And it stops being offered as available, because it is here.
+        let after = app_cli::available();
+        assert!(
+            !after.apps.iter().any(|a| a.package_id == PACKAGE_ID),
+            "an installed app must not still be offered: {:?}",
+            after.apps
+        );
+    }
+    // Phase `an_installed_app_updates_from_a_newer_signed_registry_offer`.
+    {
+        const UPDATE_ID: &str = "so.tilo.app-update-e2e";
+        let publisher = test_publisher();
+        let owner = SigningKey::from_bytes(&[12; 32]);
+        let config_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let apps_dir = tempfile::tempdir().unwrap();
+        let installer = tilo_install_bin();
+        let _env = scoped_env(&[
+            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+            ("TILO_APPS_DATA_DIR", apps_dir.path()),
+            ("TILO_INSTALL_BIN", &installer),
+        ]);
+
+        let publish = |version: &str, previous: Option<&SignedRegistrySnapshot>| {
+            let tapp = author_tapp_version(UPDATE_ID, version, &publisher);
+            let artifact = Registry::start(String::new(), tapp.clone());
+            let url = format!("http://127.0.0.1:{}/app.tapp", artifact.port);
+            let entry = signed_entry_version(UPDATE_ID, version, &url, &tapp);
+            let snapshot = signed_snapshot(entry, &owner, previous);
+            let registry_server = Registry::start(serde_json::to_string(&snapshot).unwrap(), tapp);
+            (artifact, registry_server, snapshot)
+        };
+        let configure = |registry: &Registry| {
+            std::fs::write(
+                config_dir.path().join("registries.toml"),
+                toml::to_string_pretty(&RegistriesFile {
+                    registries: vec![RegistryConfig {
+                        name: "local".into(),
+                        base_url: registry.base_url(),
+                        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                        enabled: true,
+                        channel: tilo_app_package::version::ReleaseChannel::Stable,
+                    }],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        let (_v1_artifact, v1_registry, v1_snapshot) = publish("1.4.0", None);
+        configure(&v1_registry);
+        app_cli::install::install(UPDATE_ID).unwrap_or_else(|error| {
+            panic!("initial install must succeed: {}", error.user_message())
+        });
+        assert_eq!(
+            app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
+            Some("1.4.0")
+        );
+
+        let (_v2_artifact, v2_registry, _v2_snapshot) = publish("1.5.0", Some(&v1_snapshot));
+        configure(&v2_registry);
+        let listing = app_cli::all_offers();
+        assert!(
+            listing.unreachable.is_empty(),
+            "the update registry must be reachable: {:?}",
+            listing.unreachable
+        );
+        let update = listing
+            .apps
+            .iter()
+            .find(|app| app.package_id == UPDATE_ID)
+            .expect("the newer signed version must be offered");
+        assert_eq!(update.version, "1.5.0");
+        app_cli::install::update_app_reporting(update, &mut |_| {})
+            .unwrap_or_else(|error| panic!("signed update must succeed: {}", error.user_message()));
+
+        assert_eq!(
+            app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
+            Some("1.5.0"),
+            "the launcher's registry reader must observe the updated manifest"
+        );
+    }
+    // Phase `a_corrupted_download_never_becomes_an_installed_app`.
+    // Bytes that don't match the package they claim must not become an
+    // installed app — the case of a compromised or buggy registry
+    // handing over something other than what its signed entry described.
+    {
+        let publisher = test_publisher();
+        let owner = SigningKey::from_bytes(&[12; 32]);
+        let good = author_tapp("so.tilo.catalogue-corrupt", &publisher);
+        // Serve a truncated archive under the same entry.
+        let corrupted = good[..good.len() / 2].to_vec();
+
+        let registry = Registry::start(String::new(), corrupted.clone());
+        let url = format!("http://127.0.0.1:{}/sheets.tapp", registry.port);
+        let entry = signed_entry("so.tilo.catalogue-corrupt", &url, &good);
+        let registry = Registry::start(signed_snapshot_json(entry, &owner), corrupted);
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let apps_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_dir.path().join("registries.toml"),
+            toml::to_string_pretty(&RegistriesFile {
+                registries: vec![RegistryConfig {
+                    name: "local".into(),
+                    base_url: registry.base_url(),
+                    owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                    enabled: true,
+                    channel: tilo_app_package::version::ReleaseChannel::Stable,
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let installer = tilo_install_bin();
+        let _env = scoped_env(&[
+            ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+            ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+            ("TILO_APPS_DATA_DIR", apps_dir.path()),
+            ("TILO_INSTALL_BIN", &installer),
+        ]);
+
+        // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
+        let listing = app_cli::available();
+        assert!(
+            listing
+                .apps
+                .iter()
+                .any(|a| a.package_id == "so.tilo.catalogue-corrupt"),
+            "the entry must be offered before its download can be the thing \
+             that fails: {listing:?}"
+        );
+
+        let err = app_cli::install::install("so.tilo.catalogue-corrupt")
+            .expect_err("truncated bytes must not install");
+        assert!(
+            !matches!(err, app_cli::install::InstallError::NotOffered { .. }),
+            "the install must fail on the bytes, not on resolution: {err:?}"
+        );
+        assert!(
+            !err.user_message().trim().is_empty(),
+            "the refusal has to say something a person can read"
+        );
+        assert!(
+            package_store::list_installed().unwrap().is_empty(),
+            "nothing may be registered after a refused install"
+        );
+    }
 }
 
 // Installing an app and opening it is the ordinary path.
@@ -653,92 +663,94 @@ fn publish_and_install(
         .unwrap_or_else(|| panic!("the desktop must see {package_id} after installing it"))
 }
 
-/// Installing an app and then opening it must reach the launcher with
-/// the services its publisher declared: what a *newly installed* app
-/// gets must equal what the package declared, service for service.
 #[test]
-fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
-    const PKG: &str = "so.tilo.catalogue-collab";
-    let scratch = tempfile::tempdir().unwrap();
-    let root = packaged_payload_root(scratch.path(), PKG);
+fn installed_apps_keep_exactly_the_services_they_declared() {
+    // Phase `a_payload_with_no_manifest_is_published_as_declaring_no_services`.
+    // A payload that is not part of a package still installs (the local
+    // registry accepts --payload /bin/true), but is published as
+    // declaring no services rather than silently passing for a package.
+    {
+        let bare = tempfile::tempdir().unwrap();
+        let bin = bare.path().join("true");
+        std::fs::write(&bin, b"#!/bin/true\n").unwrap();
 
-    // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
-    let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
-        .expect("the fixture manifest parses");
-    assert!(
-        declared.sandbox.services.contains_key("collab"),
-        "the fixture has to declare collab or this test proves nothing"
-    );
+        let publisher = test_publisher();
+        let authored = authoring::author("so.tilo.bare", "Bare", &bin, None, &publisher).unwrap();
+        assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
+    }
+    // Phase `an_app_installed_from_a_registry_keeps_the_services_it_declared`.
+    // Installing an app and then opening it must reach the launcher with
+    // the services its publisher declared: what a *newly installed* app
+    // gets must equal what the package declared, service for service.
+    {
+        const PKG: &str = "so.tilo.catalogue-collab";
+        let scratch = tempfile::tempdir().unwrap();
+        let root = packaged_payload_root(scratch.path(), PKG);
 
-    let publisher = test_publisher();
-    let authored = authoring::author(
-        PKG,
-        "Word Processor",
-        &root.join("bin/word-processor"),
-        None,
-        &publisher,
-    )
-    .unwrap();
-    assert_eq!(
-        authored.source,
-        authoring::ManifestSource::Package(root.join("manifest.toml")),
-        "the payload's own manifest is what gets published"
-    );
+        // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
+        let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
+            .expect("the fixture manifest parses");
+        assert!(
+            declared.sandbox.services.contains_key("collab"),
+            "the fixture has to declare collab or this test proves nothing"
+        );
 
-    let apps_dir = tempfile::tempdir().unwrap();
-    let runtime_dir = tempfile::tempdir().unwrap();
-    let installed = publish_and_install(
-        PKG,
-        authored.tapp,
-        &authored.version,
-        apps_dir.path(),
-        runtime_dir.path(),
-    );
+        let publisher = test_publisher();
+        let authored = authoring::author(
+            PKG,
+            "Word Processor",
+            &root.join("bin/word-processor"),
+            None,
+            &publisher,
+        )
+        .unwrap();
+        assert_eq!(
+            authored.source,
+            authoring::ManifestSource::Package(root.join("manifest.toml")),
+            "the payload's own manifest is what gets published"
+        );
 
-    let reached = launcher::manifest::read_manifest(&installed.manifest_path)
-        .expect("the installed manifest parses");
-    assert_eq!(
-        reached.sandbox.services, declared.sandbox.services,
-        "an installed app must reach the launcher with the services its \
-         package declared; it arrived with {:?} instead of {:?}",
-        reached.sandbox.services, declared.sandbox.services
-    );
+        let apps_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let installed = publish_and_install(
+            PKG,
+            authored.tapp,
+            &authored.version,
+            apps_dir.path(),
+            runtime_dir.path(),
+        );
 
-    // Assert on the launcher's own resolution against a live socket, not
-    // the map — a manifest that parses but resolves to nothing is the
-    // same silent failure wearing a different hat.
-    let _env = scoped_env(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
-    let services_root =
-        launcher::services::ensure_services_root().expect("create the services dir");
-    let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))
-        .expect("bind a collab socket for the launcher to dial");
-    let binds = launcher::services::resolve_service_binds_for_launch(
-        &reached.sandbox.services,
-        false,
-        launcher::services::ServiceLaunchContext {
-            app_id: PKG,
-            workspace_id: Some("catalogue-e2e-workspace"),
-        },
-    )
-    .expect("resolution must not fail with authenticated launch context");
-    assert!(
-        binds.iter().any(|b| b.name == "collab"),
-        "the installed app must be handed a collab descriptor; \
-         the launcher resolved {:?}",
-        binds.iter().map(|b| &b.name).collect::<Vec<_>>()
-    );
-}
+        let reached = launcher::manifest::read_manifest(&installed.manifest_path)
+            .expect("the installed manifest parses");
+        assert_eq!(
+            reached.sandbox.services, declared.sandbox.services,
+            "an installed app must reach the launcher with the services its \
+             package declared; it arrived with {:?} instead of {:?}",
+            reached.sandbox.services, declared.sandbox.services
+        );
 
-/// A payload that is not part of a package still installs (the local
-/// registry accepts --payload /bin/true), but is published as
-/// declaring no services rather than silently passing for a package.
-#[test]
-fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
-    let bare = tempfile::tempdir().unwrap();
-    let bin = bare.path().join("true");
-    std::fs::write(&bin, b"#!/bin/true\n").unwrap();
-
-    let publisher = test_publisher();
-    let authored = authoring::author("so.tilo.bare", "Bare", &bin, None, &publisher).unwrap();
-    assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
+        // Assert on the launcher's own resolution against a live socket, not
+        // the map — a manifest that parses but resolves to nothing is the
+        // same silent failure wearing a different hat.
+        let _env = scoped_env(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
+        let services_root =
+            launcher::services::ensure_services_root().expect("create the services dir");
+        let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))
+            .expect("bind a collab socket for the launcher to dial");
+        let binds = launcher::services::resolve_service_binds_for_launch(
+            &reached.sandbox.services,
+            false,
+            launcher::services::ServiceLaunchContext {
+                app_id: PKG,
+                workspace_id: Some("catalogue-e2e-workspace"),
+            },
+        )
+        .expect("resolution must not fail with authenticated launch context");
+        assert!(
+            binds.iter().any(|b| b.name == "collab"),
+            "the installed app must be handed a collab descriptor; \
+             the launcher resolved {:?}",
+            binds.iter().map(|b| &b.name).collect::<Vec<_>>()
+        );
+    }
 }

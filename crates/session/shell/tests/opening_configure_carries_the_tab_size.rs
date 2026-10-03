@@ -21,7 +21,6 @@
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
@@ -250,85 +249,98 @@ fn open_a_window(h: &mut Harness) -> Configures {
 }
 
 #[test]
-fn the_first_configure_a_client_receives_carries_its_tab_size() {
-    let mut h = Harness::new();
-    let configures = open_a_window(&mut h);
+fn clients_are_configured_with_their_laid_out_tab_size_or_eventually_anyway() {
+    // Phase `the_first_configure_a_client_receives_carries_its_tab_size`.
+    {
+        let mut h = Harness::new();
+        let configures = open_a_window(&mut h);
 
-    h.lay_tabs_out(Rect::new(0.0, 0.0, 940.0, 712.0));
-    h.flush_configures();
+        h.lay_tabs_out(Rect::new(0.0, 0.0, 940.0, 712.0));
+        h.flush_configures();
 
-    let seen = configures.lock().expect("configures").clone();
-    let first = *seen.first().expect(
-        "the client was never configured at all, so it can never map a \
-         window — whatever else is true, that is worse than the defect \
-         this test guards.",
-    );
-    assert_ne!(
-        first,
-        (0, 0),
-        "the first configure carried no size. In xdg-shell that tells the \
-         client to choose its own, so it commits a full frame at a size \
-         the strip never asked for and is corrected afterwards — the \
-         two-stage open this test exists to prevent. Configures: {seen:?}",
-    );
-    assert_eq!(
-        first,
-        (940, 712),
-        "the first configure must carry the tab's laid-out size, not some \
-         other size the client then has to be moved off. Configures: \
-         {seen:?}",
-    );
-}
+        let seen = configures.lock().expect("configures").clone();
+        let first = *seen.first().expect(
+            "the client was never configured at all, so it can never map a \
+             window — whatever else is true, that is worse than the defect \
+             this test guards.",
+        );
+        assert_ne!(
+            first,
+            (0, 0),
+            "the first configure carried no size. In xdg-shell that tells the \
+             client to choose its own, so it commits a full frame at a size \
+             the strip never asked for and is corrected afterwards — the \
+             two-stage open this test exists to prevent. Configures: {seen:?}",
+        );
+        assert_eq!(
+            first,
+            (940, 712),
+            "the first configure must carry the tab's laid-out size, not some \
+             other size the client then has to be moved off. Configures: \
+             {seen:?}",
+        );
+    }
 
-/// Asserts both halves, so it can't pass by the client being
-/// disconnected or the harness failing to talk at all.
-#[test]
-fn nothing_is_configured_before_the_strip_has_laid_the_tab_out() {
-    let mut h = Harness::new();
-    let configures = open_a_window(&mut h);
+    // Phase `nothing_is_configured_before_the_strip_has_laid_the_tab_out`.
+    // Asserts both halves, so it can't pass by the client being
+    // disconnected or the harness failing to talk at all.
+    {
+        let mut h = Harness::new();
+        let configures = open_a_window(&mut h);
 
-    // No tab rect published, so the strip has not laid this window out and
-    // there is no size to send.
-    h.flush_configures();
-    let before = configures.lock().expect("configures").clone();
-    assert!(
-        before.is_empty(),
-        "the compositor configured a client whose tab it had not laid out \
-         yet, so the only size it could have sent is no size: {before:?}",
-    );
+        // No tab rect published, so the strip has not laid this window out and
+        // there is no size to send.
+        h.flush_configures();
+        let before = configures.lock().expect("configures").clone();
+        assert!(
+            before.is_empty(),
+            "the compositor configured a client whose tab it had not laid out \
+             yet, so the only size it could have sent is no size: {before:?}",
+        );
 
-    h.lay_tabs_out(Rect::new(0.0, 0.0, 800.0, 600.0));
-    h.flush_configures();
-    let after = configures.lock().expect("configures").clone();
-    assert_eq!(
-        after,
-        vec![(800, 600)],
-        "laying the tab out must produce exactly one configure, carrying \
-         that tab's size. Anything else means the silence above was the \
-         harness failing rather than the compositor waiting.",
-    );
-}
+        h.lay_tabs_out(Rect::new(0.0, 0.0, 800.0, 600.0));
+        h.flush_configures();
+        let after = configures.lock().expect("configures").clone();
+        assert_eq!(
+            after,
+            vec![(800, 600)],
+            "laying the tab out must produce exactly one configure, carrying \
+             that tab's size. Anything else means the silence above was the \
+             harness failing rather than the compositor waiting.",
+        );
+    }
 
-/// A tab that's never laid out (collapsed under a maximized sibling, or
-/// off-screen) must not leave its client unable to map forever.
-#[test]
-fn a_toplevel_whose_tab_is_never_laid_out_is_configured_anyway() {
-    let mut h = Harness::new();
-    let configures = open_a_window(&mut h);
+    // Phase `a_toplevel_whose_tab_is_never_laid_out_is_configured_anyway`.
+    // A tab that's never laid out (collapsed under a maximized sibling, or
+    // off-screen) must not leave its client unable to map forever.
+    {
+        let mut h = Harness::new();
+        let configures = open_a_window(&mut h);
 
-    // Past the grace `flush_configures` gives a tab rect to arrive in.
-    std::thread::sleep(Duration::from_millis(400));
-    h.flush_configures();
-
-    let seen = configures.lock().expect("configures").clone();
-    let first = *seen.first().expect(
-        "a toplevel the strip never laid out was never configured, so its \
-         client can never map and the window never opens at all.",
-    );
-    assert!(
-        first.0 > 0 && first.1 > 0,
-        "the backstop configure must carry a real size — sending no size \
-         would hand the client back the same choice the whole path exists \
-         to take away from it. Configures: {seen:?}",
-    );
+        // `flush_configures` only sends the backstop once
+        // `OPENING_CONFIGURE_GRACE` (250 ms) has elapsed. Poll that production
+        // path instead of sleeping past a guessed 400 ms.
+        tilo_test_env::wait_until(
+            "a never-laid-out toplevel received its backstop configure",
+            || {
+                h.flush_configures();
+                configures
+                    .lock()
+                    .expect("configures")
+                    .first()
+                    .is_some_and(|&(w, height)| w > 0 && height > 0)
+            },
+        );
+        let seen = configures.lock().expect("configures").clone();
+        let first = *seen.first().expect(
+            "a toplevel the strip never laid out was never configured, so its \
+             client can never map and the window never opens at all.",
+        );
+        assert!(
+            first.0 > 0 && first.1 > 0,
+            "the backstop configure must carry a real size — sending no size \
+             would hand the client back the same choice the whole path exists \
+             to take away from it. Configures: {seen:?}",
+        );
+    }
 }

@@ -30,22 +30,17 @@ pub fn target_dir(metadata: &Value) -> String {
         .map_or_else(|| "target".to_owned(), str::to_owned)
 }
 
-/// The cargo host builds run: `TILO_VM_CARGO` if set, else `rcargo` (a
-/// drop-in that builds remotely and hands back the outputs) when it is on
-/// PATH, else `cargo`.
+/// The cargo host builds run: `TILO_VM_CARGO` if set (any cargo drop-in,
+/// such as a wrapper that builds on another machine and hands back the
+/// outputs), else `cargo`.
 pub fn cargo_program() -> String {
-    cargo_program_from(
-        std::env::var("TILO_VM_CARGO").ok(),
-        !crate::host::which_all("rcargo").is_empty(),
-    )
+    cargo_program_from(std::env::var("TILO_VM_CARGO").ok())
 }
 
-fn cargo_program_from(explicit: Option<String>, rcargo_on_path: bool) -> String {
-    match explicit.filter(|c| !c.trim().is_empty()) {
-        Some(program) => program,
-        None if rcargo_on_path => "rcargo".into(),
-        None => "cargo".into(),
-    }
+fn cargo_program_from(explicit: Option<String>) -> String {
+    explicit
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "cargo".into())
 }
 
 pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandLine {
@@ -251,15 +246,66 @@ mod tests {
         format!("cargo {}", command.args.join(" "))
     }
 
+    /// Host builds run an explicit cargo, else cargo; builds use manifest features plus dev overrides;
+    /// the installer gets the profile dir and component; apps package with their own tools.
     #[test]
-    fn host_builds_prefer_an_explicit_cargo_then_rcargo() {
-        assert_eq!(
-            cargo_program_from(Some("my-cargo".into()), true),
-            "my-cargo"
-        );
-        assert_eq!(cargo_program_from(Some(" ".into()), true), "rcargo");
-        assert_eq!(cargo_program_from(None, true), "rcargo");
-        assert_eq!(cargo_program_from(None, false), "cargo");
+    fn builds_pick_the_right_cargo_features_and_tools() {
+        // Phase: host_builds_run_an_explicit_cargo_else_cargo.
+        {
+            assert_eq!(cargo_program_from(Some("my-cargo".into())), "my-cargo");
+            assert_eq!(cargo_program_from(Some(" ".into())), "cargo");
+            assert_eq!(cargo_program_from(None), "cargo");
+        }
+
+        // Phase: build_uses_manifest_features_plus_dev_overrides.
+        {
+            let shell = component(
+                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\n",
+            );
+            let metadata = json!({"packages": [
+                {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                {"name": "helper", "features": {}},
+            ]});
+            let extra = dev_features(&metadata, &shell.packages);
+            assert_eq!(extra, ["browser/dev-overrides"]);
+            assert_eq!(
+                as_cargo(&cargo_build(&shell, &extra)),
+                "cargo build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides"
+            );
+            let plain = component(
+                "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",
+            );
+            assert_eq!(
+                as_cargo(&cargo_build(&plain, &[])),
+                "cargo build --locked --profile thin-app -p x"
+            );
+        }
+
+        // Phase: installer_gets_the_profile_dir_and_the_component.
+        {
+            let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
+            assert_eq!(
+                install(&fs, "target", Path::new("/stage/tree")).display(),
+                "python3 os/scripts/install-components.py --quiet --from target/release --dest /stage/tree fs"
+            );
+            assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
+            assert_eq!(target_dir(&json!(null)), "target");
+        }
+
+        // Phase: apps_package_with_their_own_tools.
+        {
+            let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
+            assert_eq!(
+                as_cargo(&tools),
+                "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
+            );
+            assert_eq!(
+                package.display(),
+                "TILO_PKG=target/release/tilo-app-package target/release/tilo-app package apps/notes --output /w/notes.tapp --force"
+            );
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            assert!(apps_in(&repo).contains(&"notes".to_owned()));
+        }
     }
 
     fn component(text: &str) -> Component {
@@ -271,83 +317,38 @@ mod tests {
             .unwrap()
     }
 
+    /// Packing keeps /usr and symlinks, and sccache JSON totals parse.
     #[test]
-    fn build_uses_manifest_features_plus_dev_overrides() {
-        let shell = component(
-            "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\n",
-        );
-        let metadata = json!({"packages": [
-            {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
-            {"name": "helper", "features": {}},
-        ]});
-        let extra = dev_features(&metadata, &shell.packages);
-        assert_eq!(extra, ["browser/dev-overrides"]);
-        assert_eq!(
-            as_cargo(&cargo_build(&shell, &extra)),
-            "cargo build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides"
-        );
-        let plain =
-            component("[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n");
-        assert_eq!(
-            as_cargo(&cargo_build(&plain, &[])),
-            "cargo build --locked --profile thin-app -p x"
-        );
-    }
+    fn packing_keeps_usr_links_and_sccache_totals_parse() {
+        // Phase: pack_keeps_usr_and_symlinks.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), b"x").unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("shell", dir.path().join("usr/bin/sh-link")).unwrap();
+            let out = dir.path().join("layer.tar");
+            pack(dir.path(), &out).unwrap();
+            let mut archive = tar::Archive::new(std::fs::File::open(&out).unwrap());
+            let names: Vec<String> = archive
+                .entries()
+                .unwrap()
+                .map(|e| e.unwrap().path().unwrap().display().to_string())
+                .collect();
+            assert!(names.contains(&"usr/bin/shell".to_string()), "{names:?}");
+            #[cfg(unix)]
+            assert!(names.contains(&"usr/bin/sh-link".to_string()));
+        }
 
-    #[test]
-    fn installer_gets_the_profile_dir_and_the_component() {
-        let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
-        assert_eq!(
-            install(&fs, "target", Path::new("/stage/tree")).display(),
-            "python3 os/scripts/install-components.py --quiet --from target/release --dest /stage/tree fs"
-        );
-        assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
-        assert_eq!(target_dir(&json!(null)), "target");
-    }
-
-    #[test]
-    fn apps_package_with_their_own_tools() {
-        let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
-        assert_eq!(
-            as_cargo(&tools),
-            "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
-        );
-        assert_eq!(
-            package.display(),
-            "TILO_PKG=target/release/tilo-app-package target/release/tilo-app package apps/notes --output /w/notes.tapp --force"
-        );
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        assert!(apps_in(&repo).contains(&"notes".to_owned()));
-    }
-
-    #[test]
-    fn pack_keeps_usr_and_symlinks() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/shell"), b"x").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("shell", dir.path().join("usr/bin/sh-link")).unwrap();
-        let out = dir.path().join("layer.tar");
-        pack(dir.path(), &out).unwrap();
-        let mut archive = tar::Archive::new(std::fs::File::open(&out).unwrap());
-        let names: Vec<String> = archive
-            .entries()
-            .unwrap()
-            .map(|e| e.unwrap().path().unwrap().display().to_string())
-            .collect();
-        assert!(names.contains(&"usr/bin/shell".to_string()), "{names:?}");
-        #[cfg(unix)]
-        assert!(names.contains(&"usr/bin/sh-link".to_string()));
-    }
-
-    #[test]
-    fn sccache_json_totals() {
-        let stats = json!({"stats": {"cache_hits": {"counts": {"Rust": 40, "C/C++": 2}}, "cache_misses": {"counts": {"Rust": 3}}}});
-        assert_eq!(sccache_totals(&stats), Some((42, 3)));
-        assert_eq!(
-            cache_summary(Some((40, 1)), Some((42, 3)))["sccache_hits"],
-            2
-        );
-        assert!(sccache_totals(&json!({})).is_none());
+        // Phase: sccache_json_totals.
+        {
+            let stats = json!({"stats": {"cache_hits": {"counts": {"Rust": 40, "C/C++": 2}}, "cache_misses": {"counts": {"Rust": 3}}}});
+            assert_eq!(sccache_totals(&stats), Some((42, 3)));
+            assert_eq!(
+                cache_summary(Some((40, 1)), Some((42, 3)))["sccache_hits"],
+                2
+            );
+            assert!(sccache_totals(&json!({})).is_none());
+        }
     }
 }

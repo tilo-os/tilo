@@ -649,411 +649,407 @@ mod tests {
     // IdleConfig::from_env_values
 
     #[test]
-    fn config_defaults_blank_and_lock_after_five_minutes() {
-        let c = IdleConfig::from_env_values(None, None, None);
-        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.suspend_timeout, None);
+    fn idle_config_parses_timeouts_with_secure_defaults() {
+        // Phase `config_defaults_blank_and_lock_after_five_minutes`.
+        {
+            let c = IdleConfig::from_env_values(None, None, None);
+            assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
+            assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
+            assert_eq!(c.suspend_timeout, None);
+        }
+        // Phase `config_zero_disables`.
+        {
+            let c = IdleConfig::from_env_values(Some("0"), Some("0"), Some("0"));
+            assert_eq!(c.blank_timeout, None);
+            assert_eq!(c.lock_timeout, None);
+            assert_eq!(c.suspend_timeout, None);
+        }
+        // Phase `config_parses_positive_seconds`.
+        {
+            let c = IdleConfig::from_env_values(Some("60"), Some("120"), Some("900"));
+            assert_eq!(c.blank_timeout, Some(Duration::from_secs(60)));
+            assert_eq!(c.lock_timeout, Some(Duration::from_secs(120)));
+            assert_eq!(c.suspend_timeout, Some(Duration::from_secs(900)));
+        }
+        // Phase `config_garbage_blank_and_lock_fall_back_to_secure_defaults`.
+        {
+            let c =
+                IdleConfig::from_env_values(Some("nonsense"), Some("nonsense"), Some("nonsense"));
+            assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
+            assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
+            assert_eq!(c.suspend_timeout, None);
+        }
+        // Phase `with_suspend_overrides_the_timeout`.
+        {
+            // The Settings power policy drives suspend, overriding env.
+            let c = IdleConfig::from_env_values(Some("300"), None, None)
+                .with_suspend(Some(Duration::from_secs(1200)));
+            assert_eq!(c.suspend_timeout, Some(Duration::from_secs(1200)));
+            assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
+        }
+        // Phase `with_blank_overrides_the_environment_seed`.
+        {
+            let c = IdleConfig::from_env_values(Some("300"), None, None)
+                .with_blank(Some(Duration::from_secs(600)));
+            assert_eq!(c.blank_timeout, Some(Duration::from_secs(600)));
+        }
     }
 
     #[test]
-    fn config_zero_disables() {
-        let c = IdleConfig::from_env_values(Some("0"), Some("0"), Some("0"));
-        assert_eq!(c.blank_timeout, None);
-        assert_eq!(c.lock_timeout, None);
-        assert_eq!(c.suspend_timeout, None);
-    }
+    fn live_timeout_changes_preserve_idle_time() {
+        // Phase `live_blank_timeout_preserves_idle_time_and_never_disables_future_blanking`.
+        {
+            let t0 = Instant::now();
+            let mut session = SessionManager::new(cfg(None, None), t0);
+            assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
 
-    #[test]
-    fn config_parses_positive_seconds() {
-        let c = IdleConfig::from_env_values(Some("60"), Some("120"), Some("900"));
-        assert_eq!(c.blank_timeout, Some(Duration::from_secs(60)));
-        assert_eq!(c.lock_timeout, Some(Duration::from_secs(120)));
-        assert_eq!(c.suspend_timeout, Some(Duration::from_secs(900)));
-    }
+            // A settings reload must apply the new policy against the existing
+            // idle episode, rather than making the user wait another full period.
+            session.set_blank_timeout(Some(Duration::from_secs(600)));
+            assert_eq!(
+                session.tick(t0 + Duration::from_secs(600)),
+                vec![SessionTransition::Blanked]
+            );
 
-    #[test]
-    fn config_garbage_blank_and_lock_fall_back_to_secure_defaults() {
-        let c = IdleConfig::from_env_values(Some("nonsense"), Some("nonsense"), Some("nonsense"));
-        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.suspend_timeout, None);
-    }
+            // "Never" applies live too. Activity starts a new episode, then no
+            // amount of elapsed idle time can blank it.
+            assert_eq!(
+                session.note_activity(t0 + Duration::from_secs(601)),
+                vec![SessionTransition::Woke]
+            );
+            session.set_blank_timeout(None);
+            assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
+            assert!(!session.is_blanked());
+        }
+        // Phase `settings_policy_blank_timeout_drives_the_live_session`.
+        {
+            let policy = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
+                r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
+                None,
+            );
+            let t0 = Instant::now();
+            // Isolate the display policy: lock and suspend are independent
+            // transitions and must not make the "Never blank" assertion fail for
+            // an unrelated reason.
+            let mut session =
+                SessionManager::new(cfg(None, None).with_blank(policy.idle_blank), t0);
 
-    #[test]
-    fn with_suspend_overrides_the_timeout() {
-        // The Settings power policy drives suspend, overriding env.
-        let c = IdleConfig::from_env_values(Some("300"), None, None)
-            .with_suspend(Some(Duration::from_secs(1200)));
-        assert_eq!(c.suspend_timeout, Some(Duration::from_secs(1200)));
-        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
-    }
+            assert!(session.tick(t0 + Duration::from_secs(44)).is_empty());
+            assert_eq!(
+                session.tick(t0 + Duration::from_secs(59)),
+                vec![SessionTransition::Dimmed]
+            );
+            assert_eq!(
+                session.tick(t0 + Duration::from_secs(60)),
+                vec![SessionTransition::Blanked]
+            );
 
-    #[test]
-    fn with_blank_overrides_the_environment_seed() {
-        let c = IdleConfig::from_env_values(Some("300"), None, None)
-            .with_blank(Some(Duration::from_secs(600)));
-        assert_eq!(c.blank_timeout, Some(Duration::from_secs(600)));
-    }
+            let never = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
+                r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
+                None,
+            );
+            assert_eq!(
+                session.note_activity(t0 + Duration::from_secs(61)),
+                vec![SessionTransition::Undimmed, SessionTransition::Woke]
+            );
+            session.set_blank_timeout(never.idle_blank);
+            assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
+        }
+        // Phase `live_suspend_timeout_preserves_idle_time_and_rearms_policy`.
+        {
+            let t0 = Instant::now();
+            let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
+            assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
+            session.set_suspend_timeout(Some(Duration::from_secs(600)));
+            assert_eq!(
+                session.tick(t0 + Duration::from_secs(600)),
+                vec![SessionTransition::Suspend]
+            );
+            session.set_suspend_timeout(None);
+            assert!(session.tick(t0 + Duration::from_secs(10_000)).is_empty());
+        }
+        // Phase `live_lock_timeout_change_uses_current_idle_duration_and_never_disables_only_auto_lock`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, Some(600)), t0);
+            assert!(s.tick(t0 + Duration::from_secs(400)).is_empty());
 
-    #[test]
-    fn live_blank_timeout_preserves_idle_time_and_never_disables_future_blanking() {
-        let t0 = Instant::now();
-        let mut session = SessionManager::new(cfg(None, None), t0);
-        assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
+            s.set_lock_timeout(Some(Duration::from_secs(300)));
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(400)),
+                vec![SessionTransition::Locked],
+                "a stricter live setting applies without pretending policy change is input"
+            );
 
-        // A settings reload must apply the new policy against the existing
-        // idle episode, rather than making the user wait another full period.
-        session.set_blank_timeout(Some(Duration::from_secs(600)));
-        assert_eq!(
-            session.tick(t0 + Duration::from_secs(600)),
-            vec![SessionTransition::Blanked]
-        );
-
-        // "Never" applies live too. Activity starts a new episode, then no
-        // amount of elapsed idle time can blank it.
-        assert_eq!(
-            session.note_activity(t0 + Duration::from_secs(601)),
-            vec![SessionTransition::Woke]
-        );
-        session.set_blank_timeout(None);
-        assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
-        assert!(!session.is_blanked());
-    }
-
-    #[test]
-    fn settings_policy_blank_timeout_drives_the_live_session() {
-        let policy = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
-            r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
-            None,
-        );
-        let t0 = Instant::now();
-        // Isolate the display policy: lock and suspend are independent
-        // transitions and must not make the "Never blank" assertion fail for
-        // an unrelated reason.
-        let mut session = SessionManager::new(cfg(None, None).with_blank(policy.idle_blank), t0);
-
-        assert!(session.tick(t0 + Duration::from_secs(44)).is_empty());
-        assert_eq!(
-            session.tick(t0 + Duration::from_secs(59)),
-            vec![SessionTransition::Dimmed]
-        );
-        assert_eq!(
-            session.tick(t0 + Duration::from_secs(60)),
-            vec![SessionTransition::Blanked]
-        );
-
-        let never = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
-            r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
-            None,
-        );
-        assert_eq!(
-            session.note_activity(t0 + Duration::from_secs(61)),
-            vec![SessionTransition::Undimmed, SessionTransition::Woke]
-        );
-        session.set_blank_timeout(never.idle_blank);
-        assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
-    }
-
-    #[test]
-    fn live_suspend_timeout_preserves_idle_time_and_rearms_policy() {
-        let t0 = Instant::now();
-        let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
-        assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
-        session.set_suspend_timeout(Some(Duration::from_secs(600)));
-        assert_eq!(
-            session.tick(t0 + Duration::from_secs(600)),
-            vec![SessionTransition::Suspend]
-        );
-        session.set_suspend_timeout(None);
-        assert!(session.tick(t0 + Duration::from_secs(10_000)).is_empty());
+            let mut never = SessionManager::new(cfg(None, Some(60)), t0);
+            never.set_lock_timeout(None);
+            assert!(never.tick(t0 + Duration::from_secs(10_000)).is_empty());
+            assert_eq!(
+                never.request_lock(t0 + Duration::from_secs(10_001)),
+                vec![SessionTransition::Locked],
+                "Never disables only idle locking, not the explicit lock action"
+            );
+        }
     }
 
     // blank / wake cycle
 
     #[test]
-    fn idle_past_threshold_blanks_then_input_wakes() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        assert!(!s.is_blanked());
+    fn idle_blanking_fires_past_threshold_and_input_wakes() {
+        // Phase `idle_past_threshold_blanks_then_input_wakes`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            assert!(!s.is_blanked());
 
-        // Before the dim window: no transition.
-        assert!(s.tick(t0 + Duration::from_secs(284)).is_empty());
-        // Just under the threshold: dimmed, not blanked.
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(299)),
-            vec![SessionTransition::Dimmed]
-        );
-        assert!(!s.is_blanked());
+            // Before the dim window: no transition.
+            assert!(s.tick(t0 + Duration::from_secs(284)).is_empty());
+            // Just under the threshold: dimmed, not blanked.
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(299)),
+                vec![SessionTransition::Dimmed]
+            );
+            assert!(!s.is_blanked());
 
-        // At/after the threshold: blanks once.
-        let trans = s.tick(t0 + Duration::from_secs(300));
-        assert_eq!(trans, vec![SessionTransition::Blanked]);
-        assert!(s.is_blanked());
+            // At/after the threshold: blanks once.
+            let trans = s.tick(t0 + Duration::from_secs(300));
+            assert_eq!(trans, vec![SessionTransition::Blanked]);
+            assert!(s.is_blanked());
 
-        // Subsequent ticks while blanked emit nothing (idempotent).
-        assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
-        assert!(s.is_blanked());
+            // Subsequent ticks while blanked emit nothing (idempotent).
+            assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
+            assert!(s.is_blanked());
 
-        // Any input restores brightness, wakes the display and resets the timer.
-        let trans = s.note_activity(t0 + Duration::from_secs(601));
-        assert_eq!(
-            trans,
-            vec![SessionTransition::Undimmed, SessionTransition::Woke]
-        );
-        assert!(!s.is_dimmed());
-        assert!(!s.is_blanked());
-        assert_eq!(s.idle_for(t0 + Duration::from_secs(601)), Duration::ZERO);
-    }
-
-    #[test]
-    fn blank_disabled_never_blanks() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(None, None), t0);
-        assert!(s.tick(t0 + Duration::from_secs(100_000)).is_empty());
-        assert!(!s.is_blanked());
-    }
-
-    #[test]
-    fn note_activity_without_blank_emits_nothing() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        assert!(s.note_activity(t0 + Duration::from_secs(1)).is_empty());
-        assert!(!s.is_blanked());
+            // Any input restores brightness, wakes the display and resets the timer.
+            let trans = s.note_activity(t0 + Duration::from_secs(601));
+            assert_eq!(
+                trans,
+                vec![SessionTransition::Undimmed, SessionTransition::Woke]
+            );
+            assert!(!s.is_dimmed());
+            assert!(!s.is_blanked());
+            assert_eq!(s.idle_for(t0 + Duration::from_secs(601)), Duration::ZERO);
+        }
+        // Phase `blank_disabled_never_blanks`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert!(s.tick(t0 + Duration::from_secs(100_000)).is_empty());
+            assert!(!s.is_blanked());
+        }
+        // Phase `note_activity_without_blank_emits_nothing`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            assert!(s.note_activity(t0 + Duration::from_secs(1)).is_empty());
+            assert!(!s.is_blanked());
+        }
+        // Phase `equal_timeouts_emit_both_blank_and_lock_same_tick`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
+            let trans = s.tick(t0 + Duration::from_secs(300));
+            assert_eq!(
+                trans,
+                vec![SessionTransition::Blanked, SessionTransition::Locked]
+            );
+            assert!(s.is_blanked());
+            assert!(s.is_locked());
+        }
     }
 
     // auto-lock
 
     #[test]
-    fn idle_past_lock_threshold_locks() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), Some(600)), t0);
+    fn locking_requires_authentication_to_clear() {
+        // Phase `idle_past_lock_threshold_locks`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), Some(600)), t0);
 
-        let trans = s.tick(t0 + Duration::from_secs(300));
-        assert_eq!(trans, vec![SessionTransition::Blanked]);
-        assert!(!s.is_locked());
+            let trans = s.tick(t0 + Duration::from_secs(300));
+            assert_eq!(trans, vec![SessionTransition::Blanked]);
+            assert!(!s.is_locked());
 
-        let trans = s.tick(t0 + Duration::from_secs(600));
-        assert_eq!(trans, vec![SessionTransition::Locked]);
-        assert!(s.is_locked());
-    }
+            let trans = s.tick(t0 + Duration::from_secs(600));
+            assert_eq!(trans, vec![SessionTransition::Locked]);
+            assert!(s.is_locked());
+        }
+        // Phase `request_lock_locks_and_is_idempotent`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            let trans = s.request_lock(t0 + Duration::from_secs(5));
+            assert_eq!(trans, vec![SessionTransition::Locked]);
+            assert!(s.is_locked());
+            assert!(s.request_lock(t0 + Duration::from_secs(6)).is_empty());
+        }
+        // Phase `request_unlock_clears_lock_and_wakes_if_blanked`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
+            let _ = s.tick(t0 + Duration::from_secs(300));
+            assert!(s.is_locked() && s.is_blanked());
 
-    #[test]
-    fn live_lock_timeout_change_uses_current_idle_duration_and_never_disables_only_auto_lock() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(None, Some(600)), t0);
-        assert!(s.tick(t0 + Duration::from_secs(400)).is_empty());
+            let trans = s.request_unlock(t0 + Duration::from_secs(305));
+            // Wake comes before Unlocked so the display is on before the chrome resumes painting.
+            assert_eq!(
+                trans,
+                vec![SessionTransition::Woke, SessionTransition::Unlocked]
+            );
+            assert!(!s.is_locked());
+            assert!(!s.is_blanked());
+        }
+        // Phase `request_unlock_when_unlocked_is_noop`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            assert!(s.request_unlock(t0).is_empty());
+        }
+        // Phase `input_while_locked_wakes_but_does_not_unlock`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            let _ = s.request_lock(t0);
+            // Idle past blank while locked → still blanks.
+            let trans = s.tick(t0 + Duration::from_secs(300));
+            assert_eq!(trans, vec![SessionTransition::Blanked]);
+            assert!(s.is_locked() && s.is_blanked());
 
-        s.set_lock_timeout(Some(Duration::from_secs(300)));
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(400)),
-            vec![SessionTransition::Locked],
-            "a stricter live setting applies without pretending policy change is input"
-        );
-
-        let mut never = SessionManager::new(cfg(None, Some(60)), t0);
-        never.set_lock_timeout(None);
-        assert!(never.tick(t0 + Duration::from_secs(10_000)).is_empty());
-        assert_eq!(
-            never.request_lock(t0 + Duration::from_secs(10_001)),
-            vec![SessionTransition::Locked],
-            "Never disables only idle locking, not the explicit lock action"
-        );
-    }
-
-    #[test]
-    fn equal_timeouts_emit_both_blank_and_lock_same_tick() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
-        let trans = s.tick(t0 + Duration::from_secs(300));
-        assert_eq!(
-            trans,
-            vec![SessionTransition::Blanked, SessionTransition::Locked]
-        );
-        assert!(s.is_blanked());
-        assert!(s.is_locked());
+            // Input wakes the display (to show the lock overlay) but keeps the session locked.
+            let trans = s.note_activity(t0 + Duration::from_secs(305));
+            assert_eq!(trans, vec![SessionTransition::Woke]);
+            assert!(s.is_locked());
+            assert!(!s.is_blanked());
+        }
+        // Phase `externally_requested_sleep_locks_even_when_idle_lock_is_disabled`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert_eq!(s.prepare_for_sleep(t0), vec![SessionTransition::Locked]);
+            assert!(s.prepare_for_sleep(t0).is_empty());
+            assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+            assert!(s.is_locked());
+        }
+        // Phase `locked_session_can_still_blank_after_wake`.
+        {
+            // Lock, blank, wake, then go idle again — must re-blank.
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(Some(300), None), t0);
+            let _ = s.request_lock(t0);
+            let _ = s.tick(t0 + Duration::from_secs(300)); // blanked
+            let _ = s.note_activity(t0 + Duration::from_secs(301)); // woke, timer reset
+            // Idle 300s from the wake → blanks again.
+            let trans = s.tick(t0 + Duration::from_secs(601));
+            assert_eq!(trans, vec![SessionTransition::Blanked]);
+            assert!(s.is_blanked());
+            assert!(s.is_locked());
+        }
     }
 
     // idle-to-suspend
 
     #[test]
-    fn idle_past_suspend_threshold_emits_suspend_once() {
-        let t0 = Instant::now();
-        // Blank at 300, suspend at 900, no lock.
-        let mut s = SessionManager::new(cfg_s(Some(300), None, Some(900)), t0);
+    fn idle_suspend_fires_once_per_episode_and_resume_stays_locked() {
+        // Phase `idle_past_suspend_threshold_emits_suspend_once`.
+        {
+            let t0 = Instant::now();
+            // Blank at 300, suspend at 900, no lock.
+            let mut s = SessionManager::new(cfg_s(Some(300), None, Some(900)), t0);
 
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(300)),
-            vec![SessionTransition::Blanked]
-        );
-        assert!(!s.is_suspend_pending());
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(300)),
+                vec![SessionTransition::Blanked]
+            );
+            assert!(!s.is_suspend_pending());
 
-        // Just under the suspend threshold: nothing new.
-        assert!(s.tick(t0 + Duration::from_secs(899)).is_empty());
-        assert!(!s.is_suspend_pending());
+            // Just under the suspend threshold: nothing new.
+            assert!(s.tick(t0 + Duration::from_secs(899)).is_empty());
+            assert!(!s.is_suspend_pending());
 
-        // At the threshold: suspend once.
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(900)),
-            vec![SessionTransition::Suspend]
-        );
-        assert!(s.is_suspend_pending());
+            // At the threshold: suspend once.
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(900)),
+                vec![SessionTransition::Suspend]
+            );
+            assert!(s.is_suspend_pending());
 
-        // Latched: subsequent ticks emit nothing.
-        assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
-    }
+            // Latched: subsequent ticks emit nothing.
+            assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
+        }
+        // Phase `suspend_disabled_never_suspends`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg_s(Some(300), None, None), t0);
+            let trans = s.tick(t0 + Duration::from_secs(100_000));
+            assert_eq!(trans, vec![SessionTransition::Blanked]);
+            assert!(!s.is_suspend_pending());
+        }
+        // Phase `activity_after_suspend_rearms_for_the_next_episode`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(600)),
+                vec![SessionTransition::Suspend]
+            );
+            assert!(s.is_suspend_pending());
+            // Resume: input arrives, clears the latch and resets the timer.
+            let _ = s.note_activity(t0 + Duration::from_secs(605));
+            assert!(!s.is_suspend_pending());
+            // Idle again for the full period → suspends afresh.
+            assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(1205)),
+                vec![SessionTransition::Suspend]
+            );
+        }
+        // Phase `cancel_suspend_reemits_next_tick_without_resetting_timer`.
+        {
+            // The inhibited case: a suspend was emitted, the caller vetoed it (inhibitor held), so it
+            // un-latches and re-emits on the very next tick — the machine suspends the moment the inhibitor releases, without waiting for fresh activity.
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(600)),
+                vec![SessionTransition::Suspend]
+            );
+            s.cancel_suspend();
+            assert!(!s.is_suspend_pending());
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(601)),
+                vec![SessionTransition::Suspend]
+            );
+        }
+        // Phase `suspend_resume_wakes_but_remains_locked_until_authentication`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg_s(Some(60), None, Some(120)), t0);
+            assert_eq!(
+                s.tick(t0 + Duration::from_secs(120)),
+                vec![SessionTransition::Blanked, SessionTransition::Suspend]
+            );
+            assert_eq!(
+                s.prepare_for_sleep(t0 + Duration::from_secs(121)),
+                vec![SessionTransition::Locked]
+            );
+            assert!(s.is_locked() && s.is_blanked() && s.is_suspend_pending());
 
-    #[test]
-    fn suspend_disabled_never_suspends() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg_s(Some(300), None, None), t0);
-        let trans = s.tick(t0 + Duration::from_secs(100_000));
-        assert_eq!(trans, vec![SessionTransition::Blanked]);
-        assert!(!s.is_suspend_pending());
-    }
+            assert_eq!(
+                s.resume_from_sleep(t0 + Duration::from_secs(130)),
+                vec![SessionTransition::Woke]
+            );
+            assert!(s.is_locked());
+            assert!(!s.is_blanked());
+            assert!(!s.is_suspend_pending());
 
-    #[test]
-    fn activity_after_suspend_rearms_for_the_next_episode() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(600)),
-            vec![SessionTransition::Suspend]
-        );
-        assert!(s.is_suspend_pending());
-        // Resume: input arrives, clears the latch and resets the timer.
-        let _ = s.note_activity(t0 + Duration::from_secs(605));
-        assert!(!s.is_suspend_pending());
-        // Idle again for the full period → suspends afresh.
-        assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(1205)),
-            vec![SessionTransition::Suspend]
-        );
-    }
-
-    #[test]
-    fn cancel_suspend_reemits_next_tick_without_resetting_timer() {
-        // The inhibited case: a suspend was emitted, the caller vetoed it (inhibitor held), so it
-        // un-latches and re-emits on the very next tick — the machine suspends the moment the inhibitor releases, without waiting for fresh activity.
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(600)),
-            vec![SessionTransition::Suspend]
-        );
-        s.cancel_suspend();
-        assert!(!s.is_suspend_pending());
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(601)),
-            vec![SessionTransition::Suspend]
-        );
+            assert_eq!(
+                s.request_unlock(t0 + Duration::from_secs(131)),
+                vec![SessionTransition::Unlocked]
+            );
+            assert!(!s.is_locked());
+        }
     }
 
     // manual lock / unlock
-
-    #[test]
-    fn request_lock_locks_and_is_idempotent() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        let trans = s.request_lock(t0 + Duration::from_secs(5));
-        assert_eq!(trans, vec![SessionTransition::Locked]);
-        assert!(s.is_locked());
-        assert!(s.request_lock(t0 + Duration::from_secs(6)).is_empty());
-    }
-
-    #[test]
-    fn request_unlock_clears_lock_and_wakes_if_blanked() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
-        let _ = s.tick(t0 + Duration::from_secs(300));
-        assert!(s.is_locked() && s.is_blanked());
-
-        let trans = s.request_unlock(t0 + Duration::from_secs(305));
-        // Wake comes before Unlocked so the display is on before the chrome resumes painting.
-        assert_eq!(
-            trans,
-            vec![SessionTransition::Woke, SessionTransition::Unlocked]
-        );
-        assert!(!s.is_locked());
-        assert!(!s.is_blanked());
-    }
-
-    #[test]
-    fn request_unlock_when_unlocked_is_noop() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        assert!(s.request_unlock(t0).is_empty());
-    }
-
-    #[test]
-    fn input_while_locked_wakes_but_does_not_unlock() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        let _ = s.request_lock(t0);
-        // Idle past blank while locked → still blanks.
-        let trans = s.tick(t0 + Duration::from_secs(300));
-        assert_eq!(trans, vec![SessionTransition::Blanked]);
-        assert!(s.is_locked() && s.is_blanked());
-
-        // Input wakes the display (to show the lock overlay) but keeps the session locked.
-        let trans = s.note_activity(t0 + Duration::from_secs(305));
-        assert_eq!(trans, vec![SessionTransition::Woke]);
-        assert!(s.is_locked());
-        assert!(!s.is_blanked());
-    }
-
-    #[test]
-    fn suspend_resume_wakes_but_remains_locked_until_authentication() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg_s(Some(60), None, Some(120)), t0);
-        assert_eq!(
-            s.tick(t0 + Duration::from_secs(120)),
-            vec![SessionTransition::Blanked, SessionTransition::Suspend]
-        );
-        assert_eq!(
-            s.prepare_for_sleep(t0 + Duration::from_secs(121)),
-            vec![SessionTransition::Locked]
-        );
-        assert!(s.is_locked() && s.is_blanked() && s.is_suspend_pending());
-
-        assert_eq!(
-            s.resume_from_sleep(t0 + Duration::from_secs(130)),
-            vec![SessionTransition::Woke]
-        );
-        assert!(s.is_locked());
-        assert!(!s.is_blanked());
-        assert!(!s.is_suspend_pending());
-
-        assert_eq!(
-            s.request_unlock(t0 + Duration::from_secs(131)),
-            vec![SessionTransition::Unlocked]
-        );
-        assert!(!s.is_locked());
-    }
-
-    #[test]
-    fn externally_requested_sleep_locks_even_when_idle_lock_is_disabled() {
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(None, None), t0);
-        assert_eq!(s.prepare_for_sleep(t0), vec![SessionTransition::Locked]);
-        assert!(s.prepare_for_sleep(t0).is_empty());
-        assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
-        assert!(s.is_locked());
-    }
-
-    #[test]
-    fn locked_session_can_still_blank_after_wake() {
-        // Lock, blank, wake, then go idle again — must re-blank.
-        let t0 = Instant::now();
-        let mut s = SessionManager::new(cfg(Some(300), None), t0);
-        let _ = s.request_lock(t0);
-        let _ = s.tick(t0 + Duration::from_secs(300)); // blanked
-        let _ = s.note_activity(t0 + Duration::from_secs(301)); // woke, timer reset
-        // Idle 300s from the wake → blanks again.
-        let trans = s.tick(t0 + Duration::from_secs(601));
-        assert_eq!(trans, vec![SessionTransition::Blanked]);
-        assert!(s.is_blanked());
-        assert!(s.is_locked());
-    }
 }

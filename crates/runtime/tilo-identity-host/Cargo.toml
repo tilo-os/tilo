@@ -1,0 +1,49 @@
+[package]
+name = "tilo-identity-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The host side of the app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning."
+
+# No compositor: the desktop session and the standalone runtime both host it,
+# each supplying its workspaces and channel service through the broker's traits.
+
+[lib]
+name = "tilo_identity_host"
+path = "src/lib.rs"
+
+[features]
+# Compiles the throwaway test identity into a release build (dev images only).
+throwaway-test-identity = []
+
+[dependencies]
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
+hex.workspace = true
+libc.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+rand_core.workspace = true
+runtime-identity = { path = "../runtime-identity" }
+serde.workspace = true
+serde_json.workspace = true
+threshold-identity = { path = "../../collab/threshold-identity" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tracing.workspace = true
+# The identity record encoder shared with the interactive identity ceremony.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

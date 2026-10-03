@@ -11,11 +11,11 @@
 //! builds the feed methods report that nothing was decoded.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -2417,14 +2417,9 @@ impl FullscreenProvider for VideoPlayer {
 }
 
 impl Widget for VideoPlayer {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.pump_engine();
     }
 
@@ -2476,27 +2471,17 @@ impl Widget for VideoPlayer {
         clippy::too_many_lines,
         reason = "one widget event boundary must coordinate pointer, keyboard, transport, scrub, volume, settings, and overlay interaction without splitting event ordering"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = logical;
                 if self.scrubbing {
                     self.seek_from_cursor();
                     self.show_controls();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.rect.contains(logical) {
                     self.show_controls();
                     self.dirty = true;
@@ -2510,11 +2495,11 @@ impl Widget for VideoPlayer {
                 if !self.rect.contains(self.last_cursor) {
                     return;
                 }
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
                 // Control hit regions are ZERO while hidden, so this naturally
                 // falls through to the surface play/pause toggle.
                 if self.press_at_cursor() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 self.show_controls();
             }
@@ -2525,13 +2510,13 @@ impl Widget for VideoPlayer {
             } => {
                 if self.scrubbing {
                     self.scrubbing = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if self.handle_key_input(&key_event.logical_key, key_event.state) => {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -2660,8 +2645,8 @@ impl Widget for VideoPlayer {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         self.activate_semantic_target(target, action)
     }
@@ -3283,6 +3268,7 @@ mod tests {
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
+    use automerge::AutoCommit;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -3309,275 +3295,346 @@ mod tests {
         let node = NodeId::new(0);
         vp.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
 
     #[test]
-    fn video_player_starts_paused() {
-        let vp = VideoPlayer::new();
-        assert_eq!(vp.state(), PlaybackState::Paused);
-        assert!(!vp.is_playing());
-    }
+    fn transport_keys_and_surface_clicks_drive_the_engine() {
+        // Case `video_player_starts_paused`.
+        {
+            let vp = VideoPlayer::new();
+            assert_eq!(vp.state(), PlaybackState::Paused);
+            assert!(!vp.is_playing());
+        }
 
-    #[test]
-    fn engine_mode_sync_pulls_a_frame_and_metadata() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        vp.sync(&mut doc, &root);
-        assert!(
-            vp.latest_frame().is_some(),
-            "engine frame pulled into the surface"
-        );
-        assert!(vp.duration_ms() > 0, "duration mirrored from the engine");
-    }
+        // Case `engine_mode_sync_pulls_a_frame_and_metadata`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            vp.sync(&mut doc, &root);
+            assert!(
+                vp.latest_frame().is_some(),
+                "engine frame pulled into the surface"
+            );
+            assert!(vp.duration_ms() > 0, "duration mirrored from the engine");
+        }
 
-    #[test]
-    fn space_toggles_play_on_focused_engine_player() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.set_focus(true);
-        assert!(!vp.is_playing());
-        assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
-        assert!(vp.is_playing(), "Space started playback via the engine");
-        assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
-        assert!(!vp.is_playing(), "Space paused it again");
-    }
+        // Case `space_toggles_play_on_focused_engine_player`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.set_focus(true);
+            assert!(!vp.is_playing());
+            assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
+            assert!(vp.is_playing(), "Space started playback via the engine");
+            assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
+            assert!(!vp.is_playing(), "Space paused it again");
+        }
 
-    #[test]
-    fn arrow_keys_seek_the_engine_playhead() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.set_focus(true);
-        vp.seek_to_ms(20_000);
-        assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowRight), ElementState::Pressed));
-        assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
-        assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowLeft), ElementState::Pressed));
-        assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
-        // The seek propagated to the engine, not just the widget cache.
-        assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
-    }
+        // Case `arrow_keys_seek_the_engine_playhead`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.set_focus(true);
+            vp.seek_to_ms(20_000);
+            assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowRight), ElementState::Pressed));
+            assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
+            assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowLeft), ElementState::Pressed));
+            assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
+            // The seek propagated to the engine, not just the widget cache.
+            assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
+        }
 
-    #[test]
-    fn scrub_click_seeks_to_the_track_fraction() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        vp.duration_ms = 100_000;
-        vp.reveal_controls();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert!(vp.scrub_track_rect.width() > 0.0, "scrub track laid out");
-        let mid_x = vp.scrub_track_rect.x0 + vp.scrub_track_rect.width() * 0.5;
-        let mid_y = vp.scrub_track_rect.center().y;
-        dispatch(&mut vp, &cursor_moved(mid_x, mid_y));
-        let handled = dispatch(&mut vp, &mouse_press());
-        assert!(handled, "scrub press handled");
-        let pos = vp.position_ms();
-        assert!((45_000..=55_000).contains(&pos), "seeked to ~50%: {pos}ms");
-    }
-
-    #[test]
-    fn clicking_the_video_surface_toggles_play_pause() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        vp.reveal_controls();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert!(!vp.is_playing());
-        // Top-centre: clear of the controls bar, the scrub track, every button.
-        dispatch(&mut vp, &cursor_moved(320.0, 40.0));
-        assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
-        assert!(vp.is_playing(), "surface click started playback");
-        dispatch(&mut vp, &mouse_press());
-        assert!(!vp.is_playing(), "a second surface click paused it");
-    }
-
-    #[test]
-    fn sponsor_marks_emit_bands_on_the_single_timeline() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        vp.duration_ms = 100_000;
-        vp.reveal_controls();
-        let baseline = {
+        // Case `clicking_the_video_surface_toggles_play_pause`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+            vp.reveal_controls();
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
             vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            scene.encoding().draw_tags.len()
-        };
-        vp.set_sponsor_marks(vec![
-            (0.2, 0.3, Color::from_rgb8(0, 0xd4, 0)),
-            (0.6, 0.72, Color::from_rgb8(0, 0xff, 0xff)),
-        ]);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        assert!(
-            scene.encoding().draw_tags.len() > baseline,
-            "two sponsor bands add fills to the timeline ({} vs {baseline})",
-            scene.encoding().draw_tags.len(),
-        );
+            assert!(!vp.is_playing());
+            // Top-centre: clear of the controls bar, the scrub track, every button.
+            dispatch(&mut vp, &cursor_moved(320.0, 40.0));
+            assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
+            assert!(vp.is_playing(), "surface click started playback");
+            dispatch(&mut vp, &mouse_press());
+            assert!(!vp.is_playing(), "a second surface click paused it");
+        }
     }
 
     #[test]
-    fn dragging_the_scrub_track_seeks_continuously() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        vp.duration_ms = 100_000;
-        vp.reveal_controls();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let track = vp.scrub_track_rect;
-        assert!(track.width() > 0.0);
-        let y = track.center().y;
-        dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.1, y));
-        assert!(
-            dispatch(&mut vp, &mouse_press()),
-            "press on track begins a scrub"
-        );
-        assert!(vp.scrubbing, "press started a drag");
-        assert!(vp.wants_pointer_capture(), "a scrub owns the pointer");
-        let near = vp.position_ms();
-        dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.9, y));
-        let far = vp.position_ms();
-        assert!(
-            far > near,
-            "dragging right advanced the playhead ({near} → {far})"
-        );
-        assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
+    fn scrub_track_seeks_where_it_is_painted_and_shows_sponsor_bands() {
+        // Case `scrub_click_seeks_to_the_track_fraction`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+            vp.duration_ms = 100_000;
+            vp.reveal_controls();
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            assert!(vp.scrub_track_rect.width() > 0.0, "scrub track laid out");
+            let mid_x = vp.scrub_track_rect.x0 + vp.scrub_track_rect.width() * 0.5;
+            let mid_y = vp.scrub_track_rect.center().y;
+            dispatch(&mut vp, &cursor_moved(mid_x, mid_y));
+            let handled = dispatch(&mut vp, &mouse_press());
+            assert!(handled, "scrub press handled");
+            let pos = vp.position_ms();
+            assert!((45_000..=55_000).contains(&pos), "seeked to ~50%: {pos}ms");
+        }
+
+        // Case `dragging_the_scrub_track_seeks_continuously`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+            vp.duration_ms = 100_000;
+            vp.reveal_controls();
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let track = vp.scrub_track_rect;
+            assert!(track.width() > 0.0);
+            let y = track.center().y;
+            dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.1, y));
+            assert!(
+                dispatch(&mut vp, &mouse_press()),
+                "press on track begins a scrub"
+            );
+            assert!(vp.scrubbing, "press started a drag");
+            assert!(vp.wants_pointer_capture(), "a scrub owns the pointer");
+            let near = vp.position_ms();
+            dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.9, y));
+            let far = vp.position_ms();
+            assert!(
+                far > near,
+                "dragging right advanced the playhead ({near} → {far})"
+            );
+            assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
+        }
+
+        // Case `a_widened_scrub_target_still_seeks_where_the_track_is_painted`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.show_controls();
+            draw_once(&mut vp);
+            let bar = vp.controls_bar_rect(&Theme::dark());
+            let pad = f64::from(Theme::dark().tokens.spacing.s2);
+            let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0);
+            // The painted track begins one pad after the play glyph; the hit
+            // rect must start at the same x so a click maps to the same fraction
+            // the paint shows.
+            let painted_x0 = bar.x0 + pad + icon + pad;
+            assert!(
+                (vp.scrub_track_rect.x0 - painted_x0).abs() < 1e-6,
+                "scrub hit rect x0 {} drifted from the painted track {painted_x0}",
+                vp.scrub_track_rect.x0
+            );
+            assert!(
+                vp.scrub_track_rect.height() > SCRUB_TRACK_HEIGHT,
+                "the hit rect must be taller than the 5px track it targets"
+            );
+        }
+
+        // Case `sponsor_marks_emit_bands_on_the_single_timeline`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+            vp.duration_ms = 100_000;
+            vp.reveal_controls();
+            let baseline = {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                scene.encoding().draw_tags.len()
+            };
+            vp.set_sponsor_marks(vec![
+                (0.2, 0.3, Color::from_rgb8(0, 0xd4, 0)),
+                (0.6, 0.72, Color::from_rgb8(0, 0xff, 0xff)),
+            ]);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            assert!(
+                scene.encoding().draw_tags.len() > baseline,
+                "two sponsor bands add fills to the timeline ({} vs {baseline})",
+                scene.encoding().draw_tags.len(),
+            );
+        }
     }
 
     #[test]
-    fn f_key_toggles_fullscreen_intent() {
-        let mut vp = VideoPlayer::new();
-        vp.set_focus(true);
-        assert_eq!(
-            FullscreenProvider::fullscreen_intent(&vp),
-            None,
-            "no opinion until asked"
-        );
-        assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
-        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(true));
-        assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
-        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
+    fn fullscreen_intent_toggles_and_requests_the_largest_output() {
+        // Case `f_key_toggles_fullscreen_intent`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.set_focus(true);
+            assert_eq!(
+                FullscreenProvider::fullscreen_intent(&vp),
+                None,
+                "no opinion until asked"
+            );
+            assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
+            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(true));
+            assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
+            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
+        }
+
+        // Case `fullscreen_toggle_drives_a_largest_output_mirror_request`.
+        {
+            use crate::fullscreen::{FullscreenTarget, FullscreenView};
+            let mut vp = VideoPlayer::new();
+            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), None);
+            assert_eq!(
+                FullscreenProvider::fullscreen_params(&vp).target,
+                FullscreenTarget::Largest
+            );
+            vp.toggle_fullscreen();
+            assert_eq!(
+                FullscreenProvider::fullscreen_intent(&vp),
+                Some(true),
+                "toggle asks the App to fullscreen"
+            );
+            let params = FullscreenProvider::fullscreen_params(&vp);
+            assert_eq!(
+                params.target,
+                FullscreenTarget::Largest,
+                "immersive video targets the big screen"
+            );
+            assert_eq!(
+                params.view,
+                FullscreenView::Mirror,
+                "video mirrors the window, not a distinct view"
+            );
+            vp.set_fullscreen_target(FullscreenTarget::Primary);
+            assert_eq!(
+                FullscreenProvider::fullscreen_params(&vp).target,
+                FullscreenTarget::Primary
+            );
+        }
     }
 
     #[test]
-    fn fullscreen_toggle_drives_a_largest_output_mirror_request() {
-        use crate::fullscreen::{FullscreenTarget, FullscreenView};
-        let mut vp = VideoPlayer::new();
-        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), None);
-        assert_eq!(
-            FullscreenProvider::fullscreen_params(&vp).target,
-            FullscreenTarget::Largest
-        );
-        vp.toggle_fullscreen();
-        assert_eq!(
-            FullscreenProvider::fullscreen_intent(&vp),
-            Some(true),
-            "toggle asks the App to fullscreen"
-        );
-        let params = FullscreenProvider::fullscreen_params(&vp);
-        assert_eq!(
-            params.target,
-            FullscreenTarget::Largest,
-            "immersive video targets the big screen"
-        );
-        assert_eq!(
-            params.view,
-            FullscreenView::Mirror,
-            "video mirrors the window, not a distinct view"
-        );
-        vp.set_fullscreen_target(FullscreenTarget::Primary);
-        assert_eq!(
-            FullscreenProvider::fullscreen_params(&vp).target,
-            FullscreenTarget::Primary
-        );
-    }
+    fn media_session_and_engine_events_reach_the_right_side_once() {
+        // Case `mpris_snapshot_reflects_metadata_and_controls_on_play`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.duration_ms = 240_000;
+            vp.set_now_playing(NowPlaying {
+                track_id: "yt:abc123".into(),
+                title: "Runaway".into(),
+                artist: "Aurora".into(),
+                art_url: "https://img/a.jpg".into(),
+            });
+            vp.play();
+            let snap = vp.mpris_snapshot();
+            assert_eq!(
+                snap.status,
+                crate::mpris::PlaybackStatus::Playing,
+                "play → Playing on the bus"
+            );
+            assert_eq!(snap.title, "Runaway");
+            assert_eq!(snap.artist, "Aurora");
+            assert_eq!(snap.art_url, "https://img/a.jpg");
+            assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
+            assert!(
+                snap.can_play && snap.can_pause && snap.can_seek,
+                "transport controls advertised"
+            );
+        }
 
-    #[test]
-    fn mpris_snapshot_reflects_metadata_and_controls_on_play() {
-        let mut vp = VideoPlayer::new();
-        vp.duration_ms = 240_000;
-        vp.set_now_playing(NowPlaying {
-            track_id: "yt:abc123".into(),
-            title: "Runaway".into(),
-            artist: "Aurora".into(),
-            art_url: "https://img/a.jpg".into(),
-        });
-        vp.play();
-        let snap = vp.mpris_snapshot();
-        assert_eq!(
-            snap.status,
-            crate::mpris::PlaybackStatus::Playing,
-            "play → Playing on the bus"
-        );
-        assert_eq!(snap.title, "Runaway");
-        assert_eq!(snap.artist, "Aurora");
-        assert_eq!(snap.art_url, "https://img/a.jpg");
-        assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
-        assert!(
-            snap.can_play && snap.can_pause && snap.can_seek,
-            "transport controls advertised"
-        );
-    }
+        // Case `external_media_command_pause_reaches_the_player`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.play();
+            assert!(vp.is_playing());
+            vp.apply_media_command(crate::mpris::MprisCommand::Pause);
+            assert!(!vp.is_playing(), "external Pause paused playback");
+            vp.apply_media_command(crate::mpris::MprisCommand::PlayPause);
+            assert!(vp.is_playing(), "external PlayPause resumed it");
+        }
 
-    #[test]
-    fn external_media_command_pause_reaches_the_player() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.play();
-        assert!(vp.is_playing());
-        vp.apply_media_command(crate::mpris::MprisCommand::Pause);
-        assert!(!vp.is_playing(), "external Pause paused playback");
-        vp.apply_media_command(crate::mpris::MprisCommand::PlayPause);
-        assert!(vp.is_playing(), "external PlayPause resumed it");
+        // Case `engine_lifecycle_events_are_forwarded_once_to_the_embedding_app`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.record_terminal_media_events([
+                media::MediaEvent::Ended,
+                media::MediaEvent::Error("decoder stopped".into()),
+            ]);
+            let events = vp.take_media_events();
+            assert!(
+                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
+            );
+            assert!(
+                vp.take_media_events().is_empty(),
+                "taking events cannot replay an old terminal status"
+            );
+        }
+
+        // Case `nonterminal_engine_events_never_accumulate_for_an_unattended_embedder`.
+        {
+            let mut vp = VideoPlayer::new();
+            for position in 0..1_000 {
+                vp.record_terminal_media_events([
+                    media::MediaEvent::DurationKnown { ms: 90_000 },
+                    media::MediaEvent::Buffering { percent: 50 },
+                    media::MediaEvent::Position { ms: position },
+                ]);
+            }
+            assert!(
+                vp.media_events.is_empty(),
+                "progress is mirrored by the widget, never buffered for the app"
+            );
+        }
     }
 
     fn draw_once(vp: &mut VideoPlayer) {
@@ -3597,337 +3654,438 @@ mod tests {
     }
 
     #[test]
-    fn large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged() {
-        let mut regular = VideoPlayer::new();
-        regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        regular.reveal_controls();
-        regular.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            false,
-        ));
-        let one_x = Theme::dark();
-        draw_once_with_theme(&mut regular, &one_x);
-        assert_eq!(
-            regular.controls_bar_rect(&one_x).height(),
-            CONTROLS_BAR_HEIGHT
-        );
-        assert_eq!(
-            regular.scrub_track_rect.center().y,
-            regular.play_button_rect.center().y
-        );
-
-        let mut accessible = VideoPlayer::new();
-        accessible.rect = regular.rect;
-        accessible.reveal_controls();
-        accessible.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            false,
-        ));
-        let two_x = Theme::dark().with_text_scale(2.0);
-        draw_once_with_theme(&mut accessible, &two_x);
-        let bar = accessible.controls_bar_rect(&two_x);
-        assert_eq!(bar.height(), CONTROLS_BAR_HEIGHT * 2.0);
-        assert!(accessible.scrub_track_rect.width() > 350.0);
-        assert!(accessible.scrub_track_rect.center().y < accessible.play_button_rect.y0);
-        assert!(bar.contains(accessible.play_button_rect.center()));
-        assert!(bar.contains(accessible.fullscreen_button_rect.center()));
-        assert!(bar.contains(accessible.gear_button_rect.center()));
-        assert!(accessible.setting_icon_rects.is_empty());
-        assert!(accessible.setting_in_gear("captions"));
-    }
-
-    #[test]
-    fn mixed_priority_settings_surface_as_icons_and_under_the_gear() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.reveal_controls();
-        // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
-        vp.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            false,
-        ));
-        vp.set_setting(PlayerSetting::choice(
-            "resolution",
-            Icon::Monitor,
-            "Resolution",
-            0,
-            vec!["1080p".into(), "720p".into(), "480p".into()],
-            0,
-        ));
-        draw_once(&mut vp);
-        assert!(
-            vp.setting_icon_rect("captions").is_some(),
-            "priority-2 setting surfaces as its own bar icon"
-        );
-        assert!(
-            vp.setting_in_gear("resolution"),
-            "priority-0 setting lives under the settings gear"
-        );
-        assert!(
-            !vp.setting_in_gear("captions"),
-            "the promoted icon is not also in the gear"
-        );
-    }
-
-    #[test]
-    fn higher_priority_wins_limited_space_and_overflow_falls_into_the_gear() {
-        let mut vp = VideoPlayer::new();
-        // Narrow bar + many priority settings ⇒ only the top few fit as icons.
-        vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
-        vp.reveal_controls();
-        for p in 1..=8 {
-            vp.set_setting(PlayerSetting::button(
-                format!("act{p}"),
-                Icon::Star,
-                format!("Action {p}"),
-                p,
+    fn controls_bar_lays_out_reachable_aligned_targets_at_every_size() {
+        // Case `large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged`.
+        {
+            let mut regular = VideoPlayer::new();
+            regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+            regular.reveal_controls();
+            regular.set_setting(PlayerSetting::toggle(
+                "captions",
+                Icon::FileText,
+                "Captions",
+                2,
+                false,
             ));
+            let one_x = Theme::dark();
+            draw_once_with_theme(&mut regular, &one_x);
+            assert_eq!(
+                regular.controls_bar_rect(&one_x).height(),
+                CONTROLS_BAR_HEIGHT
+            );
+            assert_eq!(
+                regular.scrub_track_rect.center().y,
+                regular.play_button_rect.center().y
+            );
+
+            let mut accessible = VideoPlayer::new();
+            accessible.rect = regular.rect;
+            accessible.reveal_controls();
+            accessible.set_setting(PlayerSetting::toggle(
+                "captions",
+                Icon::FileText,
+                "Captions",
+                2,
+                false,
+            ));
+            let two_x = Theme::dark().with_text_scale(2.0);
+            draw_once_with_theme(&mut accessible, &two_x);
+            let bar = accessible.controls_bar_rect(&two_x);
+            assert_eq!(bar.height(), CONTROLS_BAR_HEIGHT * 2.0);
+            assert!(accessible.scrub_track_rect.width() > 350.0);
+            assert!(accessible.scrub_track_rect.center().y < accessible.play_button_rect.y0);
+            assert!(bar.contains(accessible.play_button_rect.center()));
+            assert!(bar.contains(accessible.fullscreen_button_rect.center()));
+            assert!(bar.contains(accessible.gear_button_rect.center()));
+            assert!(accessible.setting_icon_rects.is_empty());
+            assert!(accessible.setting_in_gear("captions"));
         }
-        draw_once(&mut vp);
-        let icon_prios: Vec<i32> = vp
-            .setting_icon_rects
-            .iter()
-            .map(|(i, _)| vp.settings[*i].priority)
-            .collect();
-        let overflow_prios: Vec<i32> = vp
-            .gear_entries
-            .iter()
-            .map(|&i| vp.settings[i].priority)
-            .collect();
-        assert!(!icon_prios.is_empty(), "some settings fit as icons");
-        assert!(
-            !overflow_prios.is_empty(),
-            "the rest overflow into the gear at this width"
-        );
-        let min_icon = *icon_prios.iter().min().unwrap();
-        let max_overflow = *overflow_prios.iter().max().unwrap();
-        assert!(
-            min_icon >= max_overflow,
-            "every shown icon outranks every overflowed setting ({min_icon} >= {max_overflow})"
-        );
-    }
 
-    #[test]
-    fn resolution_setting_round_trips_through_the_player() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.reveal_controls();
-        vp.set_setting(PlayerSetting::choice(
-            "resolution",
-            Icon::Monitor,
-            "Resolution",
-            2, // its own bar icon
-            vec!["1080p".into(), "720p".into(), "480p".into()],
-            0,
-        ));
-        draw_once(&mut vp);
-        let icon = vp
-            .setting_icon_rect("resolution")
-            .expect("resolution has a bar icon");
-        dispatch(&mut vp, &cursor_moved(icon.center().x, icon.center().y));
-        assert!(dispatch(&mut vp, &mouse_press()), "icon click handled");
-        assert!(
-            vp.menu_open(),
-            "clicking the resolution icon opened its option list"
-        );
-        draw_once(&mut vp);
-        let row = vp
-            .menu_hit_rects
-            .iter()
-            .find(|(h, _)| matches!(h, MenuHit::Option(_, 1)))
-            .map(|(_, r)| *r)
-            .expect("720p option row laid out");
-        dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
-        assert!(dispatch(&mut vp, &mouse_press()), "option click handled");
-        let events = vp.take_setting_events();
-        assert_eq!(
-            events,
-            vec![PlayerSettingEvent::Chose {
-                id: "resolution".into(),
-                index: 1
-            }],
-            "picking 720p emits a Chose event the host drains"
-        );
-        match &vp.setting("resolution").unwrap().control {
-            PlayerSettingControl::Choice { selected, .. } => assert_eq!(*selected, 1),
-            _ => panic!("resolution is a choice"),
+        // Case `every_bar_control_meets_the_minimum_pointer_target`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.show_controls();
+            vp.set_setting(PlayerSetting::toggle(
+                "captions",
+                Icon::FileText,
+                "Captions",
+                2,
+                false,
+            ));
+            vp.set_setting(PlayerSetting::choice(
+                "resolution",
+                Icon::Monitor,
+                "Resolution",
+                0,
+                vec!["1080p".into(), "720p".into()],
+                0,
+            ));
+            draw_once(&mut vp);
+            for (name, r) in bar_targets(&vp) {
+                assert!(
+                    r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
+                    "{name} hit rect {r:?} is under the {MIN_TARGET}px minimum target"
+                );
+            }
         }
-        assert!(!vp.menu_open(), "picking an option closes the popover");
-    }
 
-    #[test]
-    fn gear_toggle_setting_flips_and_emits() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.reveal_controls();
-        // Priority 0 ⇒ under the gear.
-        vp.set_setting(PlayerSetting::toggle(
-            "autoplay",
-            Icon::Play,
-            "Autoplay",
-            0,
-            false,
-        ));
-        draw_once(&mut vp);
-        let gear = vp.gear_button_rect;
-        assert!(gear.width() > 0.0, "gear present for the tucked setting");
-        dispatch(&mut vp, &cursor_moved(gear.center().x, gear.center().y));
-        assert!(dispatch(&mut vp, &mouse_press()), "gear click handled");
-        assert!(vp.menu_open(), "gear opened the menu");
-        draw_once(&mut vp);
-        let row = vp
-            .menu_hit_rects
-            .iter()
-            .find(|(h, _)| matches!(h, MenuHit::Setting(_)))
-            .map(|(_, r)| *r)
-            .expect("autoplay row laid out under the gear");
-        dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
-        assert!(dispatch(&mut vp, &mouse_press()), "row click handled");
-        let events = vp.take_setting_events();
-        assert_eq!(
-            events,
-            vec![PlayerSettingEvent::Toggled {
-                id: "autoplay".into(),
-                on: true
-            }],
-            "toggling the gear row flips it on and emits"
-        );
-    }
-
-    #[test]
-    fn player_embeds_flush_with_no_forced_internal_padding() {
-        let mut vp = VideoPlayer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = vp.build_layout(&mut taffy, &theme, &mut node_map);
-        let style = taffy.style(node).unwrap();
-        let default: taffy::Style = taffy::Style::default();
-        assert_eq!(
-            format!("{:?}", style.padding),
-            format!("{:?}", default.padding),
-            "no forced internal padding — embeds edge-to-edge"
-        );
-        assert_eq!(
-            format!("{:?}", style.margin),
-            format!("{:?}", default.margin),
-            "no forced margin"
-        );
-        assert_eq!(style.flex_grow, 1.0, "the player fills its slot");
-    }
-
-    #[test]
-    fn accessibility_reports_group_role_and_busy_while_playing() {
-        use crate::a11y::Role;
-        let mut vp = VideoPlayer::new();
-        let node = Widget::accessibility(&vp).expect("player is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Video player"));
-        assert!(!node.state.busy);
-        vp.play();
-        assert!(Widget::accessibility(&vp).unwrap().state.busy);
-    }
-
-    #[test]
-    fn accessibility_exposes_every_painted_transport_control_and_drives_it() {
-        use crate::a11y::{Action, Role};
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.rect = Rect::new(0.0, 0.0, 760.0, 480.0);
-        vp.reveal_controls();
-        draw_once(&mut vp);
-
-        let node = Widget::accessibility(&vp).unwrap();
-        let names: Vec<_> = node
-            .children
-            .iter()
-            .filter_map(|child| child.name.as_deref())
-            .collect();
-        assert!(names.contains(&"Play"), "{names:?}");
-        assert!(names.contains(&"Playback position"), "{names:?}");
-        assert!(names.contains(&"Mute"), "{names:?}");
-        assert!(names.contains(&"Volume"), "{names:?}");
-        assert!(names.contains(&"Enter fullscreen"), "{names:?}");
-        assert!(node.children.iter().all(|child| child.bounds.is_some()));
-        assert!(node.children.iter().any(|child| child.role == Role::Slider));
-
-        assert!(Widget::perform_semantic_action(
-            &mut vp,
-            "transport.play-pause",
-            &Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(vp.is_playing());
-        assert!(Widget::perform_semantic_action(
-            &mut vp,
-            "audio.volume",
-            &Action::SetValue("25%".into()),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!((vp.volume() - 0.25).abs() < 1e-6);
-    }
-
-    #[test]
-    fn follower_transport_is_truthfully_disabled_but_local_audio_still_works() {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.set_transport_enabled(false);
-        vp.toggle_play();
-        assert!(!vp.is_playing());
-        vp.seek_to_ms(30_000);
-        assert_eq!(vp.position_ms(), 0);
-        vp.set_volume(0.3);
-        assert!((vp.volume() - 0.3).abs() < 1e-6);
-    }
-
-    #[test]
-    fn engine_lifecycle_events_are_forwarded_once_to_the_embedding_app() {
-        let mut vp = VideoPlayer::new();
-        vp.record_terminal_media_events([
-            media::MediaEvent::Ended,
-            media::MediaEvent::Error("decoder stopped".into()),
-        ]);
-        let events = vp.take_media_events();
-        assert!(
-            matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
-        );
-        assert!(
-            vp.take_media_events().is_empty(),
-            "taking events cannot replay an old terminal status"
-        );
-    }
-
-    #[test]
-    fn nonterminal_engine_events_never_accumulate_for_an_unattended_embedder() {
-        let mut vp = VideoPlayer::new();
-        for position in 0..1_000 {
-            vp.record_terminal_media_events([
-                media::MediaEvent::DurationKnown { ms: 90_000 },
-                media::MediaEvent::Buffering { percent: 50 },
-                media::MediaEvent::Position { ms: position },
-            ]);
+        // Case `bar_controls_share_one_centre_line_and_never_overlap`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.show_controls();
+            vp.set_setting(PlayerSetting::toggle(
+                "captions",
+                Icon::FileText,
+                "Captions",
+                2,
+                false,
+            ));
+            draw_once(&mut vp);
+            let bar = vp.controls_bar_rect(&Theme::dark());
+            let mid_y = bar.center().y;
+            let targets = bar_targets(&vp);
+            for (name, r) in &targets {
+                assert!(
+                    (r.center().y - mid_y).abs() < 1e-6,
+                    "{name} centre {} is off the bar's centre line {mid_y}",
+                    r.center().y
+                );
+            }
+            for (i, (a_name, a)) in targets.iter().enumerate() {
+                for (b_name, b) in targets.iter().skip(i + 1) {
+                    let overlap = a.intersect(*b);
+                    assert!(
+                        overlap.is_zero_area(),
+                        "{a_name} {a:?} and {b_name} {b:?} claim the same pixels: {overlap:?}"
+                    );
+                }
+            }
         }
-        assert!(
-            vp.media_events.is_empty(),
-            "progress is mirrored by the widget, never buffered for the app"
-        );
+
+        // Case `time_label_yields_to_the_scrubber_rather_than_overlapping_controls`.
+        // The time label is the one thing in the bar that is not a pointer
+        // target, and it used to be the one thing allowed to overlap them: its
+        // left edge was clamped to the play button while its right end ran
+        // under the volume control. Now it yields — position only, then
+        // nothing — so at every width and text scale the scrubber keeps its
+        // floor and no control is painted over.
+        {
+            for (width, scale) in [(300.0, 1.0), (300.0, 2.0), (960.0, 2.0), (420.0, 1.0)] {
+                let mut vp = VideoPlayer::new();
+                vp.rect = Rect::new(0.0, 0.0, width, 200.0);
+                vp.show_controls();
+                vp.duration_ms = 2 * 60 * 60 * 1000;
+                vp.position_ms = 60 * 60 * 1000 + 8000;
+                draw_at_text_scale(&mut vp, scale);
+                assert!(
+                    vp.scrub_track_rect.width() >= MIN_SCRUB_WIDTH - 1e-6,
+                    "at {width}px / {scale}x the scrubber ({:?}) lost its floor",
+                    vp.scrub_track_rect
+                );
+                let label = vp.time_label_rect;
+                for (name, r) in bar_targets(&vp) {
+                    let overlap = label.intersect(r);
+                    assert!(
+                        overlap.is_zero_area(),
+                        "at {width}px / {scale}x the time label {label:?} paints over {name} {r:?}"
+                    );
+                }
+            }
+        }
+
+        // Case `a_wide_bar_paints_the_full_time_label`.
+        // The degrade is a last resort: on a bar with room the full
+        // "m:ss / m:ss" is painted, exactly as wide as it measures.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.show_controls();
+            vp.duration_ms = 120_000;
+            vp.position_ms = 8_000;
+            draw_once(&mut vp);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let full = format!(
+                "{} / {}",
+                format_ms(vp.position_ms),
+                format_ms(vp.duration_ms)
+            );
+            let (tw, _) = tr.measure(&full, theme.tokens.typography.scale.sm, None);
+            assert!(
+                (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
+                "label rect {:?} is not the measured full label ({tw})",
+                vp.time_label_rect
+            );
+            assert!(
+                (vp.time_label_rect.center().y - vp.controls_bar_rect(&Theme::dark()).center().y)
+                    .abs()
+                    < 1e-6,
+                "the label left the bar's centre line"
+            );
+        }
+
+        // Case `player_embeds_flush_with_no_forced_internal_padding`.
+        {
+            let mut vp = VideoPlayer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = vp.build_layout(&mut taffy, &theme, &mut node_map);
+            let style = taffy.style(node).unwrap();
+            let default: taffy::Style = taffy::Style::default();
+            assert_eq!(
+                format!("{:?}", style.padding),
+                format!("{:?}", default.padding),
+                "no forced internal padding — embeds edge-to-edge"
+            );
+            assert_eq!(
+                format!("{:?}", style.margin),
+                format!("{:?}", default.margin),
+                "no forced margin"
+            );
+            assert_eq!(style.flex_grow, 1.0, "the player fills its slot");
+        }
+    }
+
+    #[test]
+    fn settings_surface_by_priority_and_round_trip_through_the_gear() {
+        // Case `mixed_priority_settings_surface_as_icons_and_under_the_gear`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.reveal_controls();
+            // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
+            vp.set_setting(PlayerSetting::toggle(
+                "captions",
+                Icon::FileText,
+                "Captions",
+                2,
+                false,
+            ));
+            vp.set_setting(PlayerSetting::choice(
+                "resolution",
+                Icon::Monitor,
+                "Resolution",
+                0,
+                vec!["1080p".into(), "720p".into(), "480p".into()],
+                0,
+            ));
+            draw_once(&mut vp);
+            assert!(
+                vp.setting_icon_rect("captions").is_some(),
+                "priority-2 setting surfaces as its own bar icon"
+            );
+            assert!(
+                vp.setting_in_gear("resolution"),
+                "priority-0 setting lives under the settings gear"
+            );
+            assert!(
+                !vp.setting_in_gear("captions"),
+                "the promoted icon is not also in the gear"
+            );
+        }
+
+        // Case `higher_priority_wins_limited_space_and_overflow_falls_into_the_gear`.
+        {
+            let mut vp = VideoPlayer::new();
+            // Narrow bar + many priority settings ⇒ only the top few fit as icons.
+            vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
+            vp.reveal_controls();
+            for p in 1..=8 {
+                vp.set_setting(PlayerSetting::button(
+                    format!("act{p}"),
+                    Icon::Star,
+                    format!("Action {p}"),
+                    p,
+                ));
+            }
+            draw_once(&mut vp);
+            let icon_prios: Vec<i32> = vp
+                .setting_icon_rects
+                .iter()
+                .map(|(i, _)| vp.settings[*i].priority)
+                .collect();
+            let overflow_prios: Vec<i32> = vp
+                .gear_entries
+                .iter()
+                .map(|&i| vp.settings[i].priority)
+                .collect();
+            assert!(!icon_prios.is_empty(), "some settings fit as icons");
+            assert!(
+                !overflow_prios.is_empty(),
+                "the rest overflow into the gear at this width"
+            );
+            let min_icon = *icon_prios.iter().min().unwrap();
+            let max_overflow = *overflow_prios.iter().max().unwrap();
+            assert!(
+                min_icon >= max_overflow,
+                "every shown icon outranks every overflowed setting ({min_icon} >= {max_overflow})"
+            );
+        }
+
+        // Case `resolution_setting_round_trips_through_the_player`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.reveal_controls();
+            vp.set_setting(PlayerSetting::choice(
+                "resolution",
+                Icon::Monitor,
+                "Resolution",
+                2, // its own bar icon
+                vec!["1080p".into(), "720p".into(), "480p".into()],
+                0,
+            ));
+            draw_once(&mut vp);
+            let icon = vp
+                .setting_icon_rect("resolution")
+                .expect("resolution has a bar icon");
+            dispatch(&mut vp, &cursor_moved(icon.center().x, icon.center().y));
+            assert!(dispatch(&mut vp, &mouse_press()), "icon click handled");
+            assert!(
+                vp.menu_open(),
+                "clicking the resolution icon opened its option list"
+            );
+            draw_once(&mut vp);
+            let row = vp
+                .menu_hit_rects
+                .iter()
+                .find(|(h, _)| matches!(h, MenuHit::Option(_, 1)))
+                .map(|(_, r)| *r)
+                .expect("720p option row laid out");
+            dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
+            assert!(dispatch(&mut vp, &mouse_press()), "option click handled");
+            let events = vp.take_setting_events();
+            assert_eq!(
+                events,
+                vec![PlayerSettingEvent::Chose {
+                    id: "resolution".into(),
+                    index: 1
+                }],
+                "picking 720p emits a Chose event the host drains"
+            );
+            match &vp.setting("resolution").unwrap().control {
+                PlayerSettingControl::Choice { selected, .. } => assert_eq!(*selected, 1),
+                _ => panic!("resolution is a choice"),
+            }
+            assert!(!vp.menu_open(), "picking an option closes the popover");
+        }
+
+        // Case `gear_toggle_setting_flips_and_emits`.
+        {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.reveal_controls();
+            // Priority 0 ⇒ under the gear.
+            vp.set_setting(PlayerSetting::toggle(
+                "autoplay",
+                Icon::Play,
+                "Autoplay",
+                0,
+                false,
+            ));
+            draw_once(&mut vp);
+            let gear = vp.gear_button_rect;
+            assert!(gear.width() > 0.0, "gear present for the tucked setting");
+            dispatch(&mut vp, &cursor_moved(gear.center().x, gear.center().y));
+            assert!(dispatch(&mut vp, &mouse_press()), "gear click handled");
+            assert!(vp.menu_open(), "gear opened the menu");
+            draw_once(&mut vp);
+            let row = vp
+                .menu_hit_rects
+                .iter()
+                .find(|(h, _)| matches!(h, MenuHit::Setting(_)))
+                .map(|(_, r)| *r)
+                .expect("autoplay row laid out under the gear");
+            dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
+            assert!(dispatch(&mut vp, &mouse_press()), "row click handled");
+            let events = vp.take_setting_events();
+            assert_eq!(
+                events,
+                vec![PlayerSettingEvent::Toggled {
+                    id: "autoplay".into(),
+                    on: true
+                }],
+                "toggling the gear row flips it on and emits"
+            );
+        }
+    }
+
+    #[test]
+    fn accessibility_exposes_transport_state_and_truthful_controls() {
+        // Case `accessibility_reports_group_role_and_busy_while_playing`.
+        {
+            use crate::a11y::Role;
+            let mut vp = VideoPlayer::new();
+            let node = Widget::accessibility(&vp).expect("player is not presentational");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Video player"));
+            assert!(!node.state.busy);
+            vp.play();
+            assert!(Widget::accessibility(&vp).unwrap().state.busy);
+        }
+
+        // Case `accessibility_exposes_every_painted_transport_control_and_drives_it`.
+        {
+            use crate::a11y::{Action, Role};
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.rect = Rect::new(0.0, 0.0, 760.0, 480.0);
+            vp.reveal_controls();
+            draw_once(&mut vp);
+
+            let node = Widget::accessibility(&vp).unwrap();
+            let names: Vec<_> = node
+                .children
+                .iter()
+                .filter_map(|child| child.name.as_deref())
+                .collect();
+            assert!(names.contains(&"Play"), "{names:?}");
+            assert!(names.contains(&"Playback position"), "{names:?}");
+            assert!(names.contains(&"Mute"), "{names:?}");
+            assert!(names.contains(&"Volume"), "{names:?}");
+            assert!(names.contains(&"Enter fullscreen"), "{names:?}");
+            assert!(node.children.iter().all(|child| child.bounds.is_some()));
+            assert!(node.children.iter().any(|child| child.role == Role::Slider));
+
+            assert!(Widget::perform_semantic_action(
+                &mut vp,
+                "transport.play-pause",
+                &Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(vp.is_playing());
+            assert!(Widget::perform_semantic_action(
+                &mut vp,
+                "audio.volume",
+                &Action::SetValue("25%".into()),
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!((vp.volume() - 0.25).abs() < 1e-6);
+        }
+
+        // Case `follower_transport_is_truthfully_disabled_but_local_audio_still_works`.
+        {
+            let mut engine = media::MediaEngine::new_synthesized();
+            engine.open(media::Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let mut vp = VideoPlayer::new().with_engine(engine);
+            vp.set_transport_enabled(false);
+            vp.toggle_play();
+            assert!(!vp.is_playing());
+            vp.seek_to_ms(30_000);
+            assert_eq!(vp.position_ms(), 0);
+            vp.set_volume(0.3);
+            assert!((vp.volume() - 0.3).abs() < 1e-6);
+        }
     }
 
     /// Push mode through a real encoder and decoder. Needs the `realtime`
@@ -3955,61 +4113,64 @@ mod tests {
     }
 
     #[test]
-    fn push_mode_ignores_empty_units() {
-        let mut vp = VideoPlayer::new();
-        assert!(!vp.feed_frame(&[]));
-        assert!(vp.latest_frame().is_none());
-    }
+    fn surface_paints_pushed_frames_or_a_placeholder() {
+        // Case `push_mode_ignores_empty_units`.
+        {
+            let mut vp = VideoPlayer::new();
+            assert!(!vp.feed_frame(&[]));
+            assert!(vp.latest_frame().is_none());
+        }
 
-    #[test]
-    fn empty_surface_paints_a_placeholder_and_no_image() {
-        use vello_encoding::DrawTag;
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 320.0, 240.0);
-        assert!(vp.latest_frame().is_none());
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let image_count = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::IMAGE)
-            .count();
-        assert_eq!(
-            image_count, 0,
-            "no frame → no image draw in the empty state"
-        );
-        // The letterbox fill + the ring + the play triangle are all painted.
-        assert!(
-            scene.encoding().draw_tags.len() >= 2,
-            "empty state still paints a visible placeholder"
-        );
-    }
+        // Case `empty_surface_paints_a_placeholder_and_no_image`.
+        {
+            use vello_encoding::DrawTag;
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 320.0, 240.0);
+            assert!(vp.latest_frame().is_none());
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let image_count = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::IMAGE)
+                .count();
+            assert_eq!(
+                image_count, 0,
+                "no frame → no image draw in the empty state"
+            );
+            // The letterbox fill + the ring + the play triangle are all painted.
+            assert!(
+                scene.encoding().draw_tags.len() >= 2,
+                "empty state still paints a visible placeholder"
+            );
+        }
 
-    #[test]
-    fn paint_with_image_uses_image_draw_command() {
-        use vello_encoding::DrawTag;
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 64.0, 48.0);
-        vp.latest_frame = Some(rgba_image(16, 16, Arc::new(vec![255u8; 4 * 16 * 16])));
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let image_count = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::IMAGE)
-            .count();
-        assert!(
-            image_count >= 1,
-            "expected an IMAGE draw, got {image_count}"
-        );
+        // Case `paint_with_image_uses_image_draw_command`.
+        {
+            use vello_encoding::DrawTag;
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 64.0, 48.0);
+            vp.latest_frame = Some(rgba_image(16, 16, Arc::new(vec![255u8; 4 * 16 * 16])));
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let image_count = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::IMAGE)
+                .count();
+            assert!(
+                image_count >= 1,
+                "expected an IMAGE draw, got {image_count}"
+            );
+        }
     }
 
     /// Every pointer target the bar exposes, named, in one place.
@@ -4030,69 +4191,6 @@ mod tests {
         out
     }
 
-    #[test]
-    fn every_bar_control_meets_the_minimum_pointer_target() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
-        vp.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            false,
-        ));
-        vp.set_setting(PlayerSetting::choice(
-            "resolution",
-            Icon::Monitor,
-            "Resolution",
-            0,
-            vec!["1080p".into(), "720p".into()],
-            0,
-        ));
-        draw_once(&mut vp);
-        for (name, r) in bar_targets(&vp) {
-            assert!(
-                r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
-                "{name} hit rect {r:?} is under the {MIN_TARGET}px minimum target"
-            );
-        }
-    }
-
-    #[test]
-    fn bar_controls_share_one_centre_line_and_never_overlap() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
-        vp.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            false,
-        ));
-        draw_once(&mut vp);
-        let bar = vp.controls_bar_rect(&Theme::dark());
-        let mid_y = bar.center().y;
-        let targets = bar_targets(&vp);
-        for (name, r) in &targets {
-            assert!(
-                (r.center().y - mid_y).abs() < 1e-6,
-                "{name} centre {} is off the bar's centre line {mid_y}",
-                r.center().y
-            );
-        }
-        for (i, (a_name, a)) in targets.iter().enumerate() {
-            for (b_name, b) in targets.iter().skip(i + 1) {
-                let overlap = a.intersect(*b);
-                assert!(
-                    overlap.is_zero_area(),
-                    "{a_name} {a:?} and {b_name} {b:?} claim the same pixels: {overlap:?}"
-                );
-            }
-        }
-    }
-
     /// Paint once with the renderer at `scale` (the a11y text-scale
     /// convention the `Host` palette source uses), so the label is measured
     /// and drawn larger than the theme's type size says.
@@ -4105,134 +4203,144 @@ mod tests {
         vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    /// The time label is the one thing in the bar that is not a pointer
-    /// target, and it used to be the one thing allowed to overlap them: its
-    /// left edge was clamped to the play button while its right end ran
-    /// under the volume control. Now it yields — position only, then
-    /// nothing — so at every width and text scale the scrubber keeps its
-    /// floor and no control is painted over.
     #[test]
-    fn time_label_yields_to_the_scrubber_rather_than_overlapping_controls() {
-        for (width, scale) in [(300.0, 1.0), (300.0, 2.0), (960.0, 2.0), (420.0, 1.0)] {
+    fn controls_ink_and_edges_read_on_both_presets() {
+        // Case `controls_ink_reads_over_the_scrim_in_the_light_theme`.
+        {
+            use crate::offscreen::OffscreenRenderer;
+            let theme = Theme::light();
             let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, width, 200.0);
+            let (w, h) = (320.0, 120.0);
+            vp.rect = Rect::new(0.0, 0.0, w, h);
             vp.show_controls();
-            vp.duration_ms = 2 * 60 * 60 * 1000;
-            vp.position_ms = 60 * 60 * 1000 + 8000;
-            draw_at_text_scale(&mut vp, scale);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a 320x120 test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "pixel coordinates inside a 320x120 surface"
+            )]
+            let sample = |p: Point| {
+                let idx = ((p.y as usize) * (w as usize) + p.x as usize) * 4;
+                Color::from_rgb8(rgba[idx], rgba[idx + 1], rgba[idx + 2])
+            };
+            // Inside the paused play triangle: for a glyph box of side `s` the
+            // triangle spans x ∈ [cx − 0.5s·½ … cx + 0.7s·½]; (cx − 4, cy) is
+            // well inside it at the 30px glyph.
+            let c = vp.play_button_rect.center();
+            let glyph = sample(Point::new(c.x - 4.0, c.y));
+            // A bare patch of the painted scrim: just right of the play target,
+            // above the scrub track, inside the bar.
+            let bar = vp.controls_bar_rect(&Theme::dark());
+            let scrim = sample(Point::new(vp.play_button_rect.x1 + 2.0, bar.y0 + 3.0));
+            let ratio = crate::a11y::contrast_ratio(glyph, scrim);
             assert!(
-                vp.scrub_track_rect.width() >= MIN_SCRUB_WIDTH - 1e-6,
-                "at {width}px / {scale}x the scrubber ({:?}) lost its floor",
-                vp.scrub_track_rect
+                ratio >= 4.5,
+                "play glyph contrast {ratio:.2}:1 against the painted scrim on the light theme \
+             (WCAG AA is 4.5:1): near-black text_primary on the dark scrim; ink must be \
+             chosen against the scrim"
             );
-            let label = vp.time_label_rect;
-            for (name, r) in bar_targets(&vp) {
-                let overlap = label.intersect(r);
+        }
+
+        // Case `ux1x_controls_bar_and_menu_edges_register_on_both_presets`.
+        // The controls bar's top hairline, its unfilled track and the open
+        // settings menu keep a **visible derived edge** at 1× on both presets
+        // (HIG §9.5). Before, all three wore `border_standard` — one fixed
+        // colour per theme, measured against neither theme's scrim, three
+        // shades from the dark raised menu — and the light theme's track was
+        // `text_dim` (near-black) on a near-black scrim.
+        //
+        // Writes `$UX1X_F4_OUT/<theme>/video_player.png` plus the harness
+        // inspection when that variable is set; asserts regardless.
+        {
+            use crate::offscreen::OffscreenRenderer;
+            const EDGE_MIN: f64 = 0.008;
+            let (w, h) = (640.0, 360.0);
+            // Evidence first, for both presets, so a failing assertion on one
+            // preset still leaves the other's PNG and inspection on disk.
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                if let Some(png) = ux1x_out(&theme, "video_player.png") {
+                    let harness = crate::headless::FrameHarness::new_with_theme(
+                        crate::State::new(),
+                        Box::new(ux1x_fixture()),
+                        (640, 360),
+                        theme.clone(),
+                    );
+                    harness.render_window_png(&png);
+                    if let Ok(json) = harness.inspection_json() {
+                        std::fs::write(png.with_extension("inspection.json"), json)
+                            .expect("write inspection");
+                    }
+                }
+            }
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                let mut vp = ux1x_fixture();
+                vp.rect = Rect::new(0.0, 0.0, w, h);
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a 640x360 test surface"
+                )]
+                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a 640x360 test surface"
+                )]
+                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+                // Bar: the top hairline against the scrim two rows under it.
+                let bar = vp.controls_bar_rect(&theme);
+                let hairline = lum(bar.x0 + 2.0, bar.y0);
+                let scrim = lum(bar.x0 + 2.0, bar.y0 + 3.0);
                 assert!(
-                    overlap.is_zero_area(),
-                    "at {width}px / {scale}x the time label {label:?} paints over {name} {r:?}"
+                    (hairline - scrim).abs() >= EDGE_MIN,
+                    "{}: bar hairline {hairline:.4} vs scrim {scrim:.4} did not register",
+                    theme.name
+                );
+
+                // Track: the unfilled end (past the 40 % buffered range) against
+                // the bare scrim beside it.
+                let hit = vp.scrub_track_rect;
+                let track = lum(hit.x1 - 3.0, hit.center().y);
+                let beside = lum(hit.x1 - 3.0, hit.center().y - 7.0);
+                assert!(
+                    (track - beside).abs() >= EDGE_MIN,
+                    "{}: unfilled track {track:.4} vs scrim {beside:.4} did not register",
+                    theme.name
+                );
+
+                // Menu: the panel edge (the row hit rects sit 3 px inside the
+                // panel) against the panel ground just inside it.
+                let first_row = vp
+                    .menu_hit_rects
+                    .first()
+                    .map(|(_, rect)| *rect)
+                    .expect("the open menu painted rows");
+                let panel_x0 = first_row.x0 - 3.0;
+                let edge = lum(panel_x0, first_row.center().y);
+                let ground = lum(panel_x0 + 2.0, first_row.center().y);
+                assert!(
+                    (edge - ground).abs() >= EDGE_MIN,
+                    "{}: menu edge {edge:.4} vs panel {ground:.4} did not register",
+                    theme.name
                 );
             }
         }
-    }
-
-    /// The degrade is a last resort: on a bar with room the full
-    /// "m:ss / m:ss" is painted, exactly as wide as it measures.
-    #[test]
-    fn a_wide_bar_paints_the_full_time_label() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
-        vp.duration_ms = 120_000;
-        vp.position_ms = 8_000;
-        draw_once(&mut vp);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let full = format!(
-            "{} / {}",
-            format_ms(vp.position_ms),
-            format_ms(vp.duration_ms)
-        );
-        let (tw, _) = tr.measure(&full, theme.tokens.typography.scale.sm, None);
-        assert!(
-            (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
-            "label rect {:?} is not the measured full label ({tw})",
-            vp.time_label_rect
-        );
-        assert!(
-            (vp.time_label_rect.center().y - vp.controls_bar_rect(&Theme::dark()).center().y).abs()
-                < 1e-6,
-            "the label left the bar's centre line"
-        );
-    }
-
-    #[test]
-    fn a_widened_scrub_target_still_seeks_where_the_track_is_painted() {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
-        draw_once(&mut vp);
-        let bar = vp.controls_bar_rect(&Theme::dark());
-        let pad = f64::from(Theme::dark().tokens.spacing.s2);
-        let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0);
-        // The painted track begins one pad after the play glyph; the hit
-        // rect must start at the same x so a click maps to the same fraction
-        // the paint shows.
-        let painted_x0 = bar.x0 + pad + icon + pad;
-        assert!(
-            (vp.scrub_track_rect.x0 - painted_x0).abs() < 1e-6,
-            "scrub hit rect x0 {} drifted from the painted track {painted_x0}",
-            vp.scrub_track_rect.x0
-        );
-        assert!(
-            vp.scrub_track_rect.height() > SCRUB_TRACK_HEIGHT,
-            "the hit rect must be taller than the 5px track it targets"
-        );
-    }
-
-    #[test]
-    fn controls_ink_reads_over_the_scrim_in_the_light_theme() {
-        use crate::offscreen::OffscreenRenderer;
-        let theme = Theme::light();
-        let mut vp = VideoPlayer::new();
-        let (w, h) = (320.0, 120.0);
-        vp.rect = Rect::new(0.0, 0.0, w, h);
-        vp.show_controls();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a 320x120 test surface"
-        )]
-        let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "pixel coordinates inside a 320x120 surface"
-        )]
-        let sample = |p: Point| {
-            let idx = ((p.y as usize) * (w as usize) + p.x as usize) * 4;
-            Color::from_rgb8(rgba[idx], rgba[idx + 1], rgba[idx + 2])
-        };
-        // Inside the paused play triangle: for a glyph box of side `s` the
-        // triangle spans x ∈ [cx − 0.5s·½ … cx + 0.7s·½]; (cx − 4, cy) is
-        // well inside it at the 30px glyph.
-        let c = vp.play_button_rect.center();
-        let glyph = sample(Point::new(c.x - 4.0, c.y));
-        // A bare patch of the painted scrim: just right of the play target,
-        // above the scrub track, inside the bar.
-        let bar = vp.controls_bar_rect(&Theme::dark());
-        let scrim = sample(Point::new(vp.play_button_rect.x1 + 2.0, bar.y0 + 3.0));
-        let ratio = crate::a11y::contrast_ratio(glyph, scrim);
-        assert!(
-            ratio >= 4.5,
-            "play glyph contrast {ratio:.2}:1 against the painted scrim on the light theme \
-             (WCAG AA is 4.5:1): near-black text_primary on the dark scrim; ink must be \
-             chosen against the scrim"
-        );
     }
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
@@ -4283,97 +4391,5 @@ mod tests {
         vp.show_controls();
         vp.open_settings_menu(Some("speed"));
         vp
-    }
-
-    /// The controls bar's top hairline, its unfilled track and the open
-    /// settings menu keep a **visible derived edge** at 1× on both presets
-    /// (HIG §9.5). Before, all three wore `border_standard` — one fixed
-    /// colour per theme, measured against neither theme's scrim, three
-    /// shades from the dark raised menu — and the light theme's track was
-    /// `text_dim` (near-black) on a near-black scrim.
-    ///
-    /// Writes `$UX1X_F4_OUT/<theme>/video_player.png` plus the harness
-    /// inspection when that variable is set; asserts regardless.
-    #[test]
-    fn ux1x_controls_bar_and_menu_edges_register_on_both_presets() {
-        use crate::offscreen::OffscreenRenderer;
-        const EDGE_MIN: f64 = 0.008;
-        let (w, h) = (640.0, 360.0);
-        // Evidence first, for both presets, so a failing assertion on one
-        // preset still leaves the other's PNG and inspection on disk.
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            if let Some(png) = ux1x_out(&theme, "video_player.png") {
-                let harness = crate::headless::FrameHarness::new_with_theme(
-                    crate::State::new(),
-                    Box::new(ux1x_fixture()),
-                    (640, 360),
-                    theme.clone(),
-                );
-                harness.render_window_png(&png);
-                if let Ok(json) = harness.inspection_json() {
-                    std::fs::write(png.with_extension("inspection.json"), json)
-                        .expect("write inspection");
-                }
-            }
-        }
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            let mut vp = ux1x_fixture();
-            vp.rect = Rect::new(0.0, 0.0, w, h);
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a 640x360 test surface"
-            )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a 640x360 test surface"
-            )]
-            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
-
-            // Bar: the top hairline against the scrim two rows under it.
-            let bar = vp.controls_bar_rect(&theme);
-            let hairline = lum(bar.x0 + 2.0, bar.y0);
-            let scrim = lum(bar.x0 + 2.0, bar.y0 + 3.0);
-            assert!(
-                (hairline - scrim).abs() >= EDGE_MIN,
-                "{}: bar hairline {hairline:.4} vs scrim {scrim:.4} did not register",
-                theme.name
-            );
-
-            // Track: the unfilled end (past the 40 % buffered range) against
-            // the bare scrim beside it.
-            let hit = vp.scrub_track_rect;
-            let track = lum(hit.x1 - 3.0, hit.center().y);
-            let beside = lum(hit.x1 - 3.0, hit.center().y - 7.0);
-            assert!(
-                (track - beside).abs() >= EDGE_MIN,
-                "{}: unfilled track {track:.4} vs scrim {beside:.4} did not register",
-                theme.name
-            );
-
-            // Menu: the panel edge (the row hit rects sit 3 px inside the
-            // panel) against the panel ground just inside it.
-            let first_row = vp
-                .menu_hit_rects
-                .first()
-                .map(|(_, rect)| *rect)
-                .expect("the open menu painted rows");
-            let panel_x0 = first_row.x0 - 3.0;
-            let edge = lum(panel_x0, first_row.center().y);
-            let ground = lum(panel_x0 + 2.0, first_row.center().y);
-            assert!(
-                (edge - ground).abs() >= EDGE_MIN,
-                "{}: menu edge {edge:.4} vs panel {ground:.4} did not register",
-                theme.name
-            );
-        }
     }
 }

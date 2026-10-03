@@ -686,7 +686,8 @@ mod tests {
     }
 
     #[test]
-    fn cursor_moves_clamp_to_bounds() {
+    fn cursor_movement_clamps_and_selection_is_inclusive() {
+        // Cursor moves clamp to bounds.
         let mut m = model();
         m.move_left(false);
         assert_eq!(m.cursor(), 0);
@@ -694,29 +695,23 @@ mod tests {
         assert_eq!(m.cursor(), 63);
         m.move_right(false);
         assert_eq!(m.cursor(), 63);
-    }
 
-    #[test]
-    fn vertical_movement_uses_row_width() {
+        // Vertical movement uses the row width.
         let mut m = model();
         m.set_bytes_per_row(16);
         m.move_down(false);
         assert_eq!(m.cursor(), 16);
         m.move_up(false);
         assert_eq!(m.cursor(), 0);
-    }
 
-    #[test]
-    fn selection_is_inclusive_and_normalised() {
+        // Selection is inclusive and normalised.
         let mut m = model();
         m.move_to(10, false);
         m.move_to(5, true);
         assert_eq!(m.selection(), Some((5, 10)));
         assert_eq!(m.selection_len(), 6);
-    }
 
-    #[test]
-    fn select_all_spans_buffer() {
+        // Select-all spans the buffer.
         let mut m = model();
         m.select_all();
         assert_eq!(m.selection(), Some((0, 63)));
@@ -724,7 +719,8 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_hex_two_nibbles_sets_byte_and_advances() {
+    fn byte_edits_overwrite_insert_delete_and_track_dirty_and_history() {
+        // Overwriting with two hex nibbles sets the byte and advances.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         // Type "ff" over the first byte.
         assert!(m.input_hex_digit(0xF));
@@ -733,42 +729,34 @@ mod tests {
         assert_eq!(m.bytes()[0], 0xFF);
         assert_eq!(m.cursor(), 1); // advanced after completing the byte
         assert!(m.is_dirty(0));
-    }
 
-    #[test]
-    fn local_history_uses_inverse_edits_not_a_buffer_snapshot() {
-        let mut model = HexModel::new(vec![0x10, 0x20]);
-        assert!(model.set_byte(1, 0xAB));
-        let history = model.take_local_history();
+        // Local history uses inverse edits, not a buffer snapshot.
+        let mut history_model = HexModel::new(vec![0x10, 0x20]);
+        assert!(history_model.set_byte(1, 0xAB));
+        let history = history_model.take_local_history();
         assert_eq!(history.len(), 1);
-        assert_eq!(model.bytes(), &[0x10, 0xAB]);
-        model.apply_local_edit(&history[0].undo);
-        assert_eq!(model.bytes(), &[0x10, 0x20]);
-        model.apply_local_edit(&history[0].redo);
-        assert_eq!(model.bytes(), &[0x10, 0xAB]);
-    }
+        assert_eq!(history_model.bytes(), &[0x10, 0xAB]);
+        history_model.apply_local_edit(&history[0].undo);
+        assert_eq!(history_model.bytes(), &[0x10, 0x20]);
+        history_model.apply_local_edit(&history[0].redo);
+        assert_eq!(history_model.bytes(), &[0x10, 0xAB]);
 
-    #[test]
-    fn insert_mode_hex_grows_buffer() {
+        // Insert-mode hex grows the buffer.
         let mut m = HexModel::new(vec![0xAA]);
         m.toggle_mode(); // -> Insert
         m.move_to(0, false);
         m.input_hex_digit(0x1);
         m.input_hex_digit(0x2);
         assert_eq!(m.bytes(), &[0x12, 0xAA]);
-    }
 
-    #[test]
-    fn ascii_input_overwrites() {
+        // ASCII input overwrites.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         m.set_column(Column::Ascii);
         assert!(m.input_ascii_char('A'));
         assert_eq!(m.bytes()[0], b'A');
         assert_eq!(m.cursor(), 1);
-    }
 
-    #[test]
-    fn delete_selection_removes_range() {
+        // Deleting a selection removes the range.
         let mut m = model();
         m.move_to(2, false);
         m.move_to(5, true);
@@ -776,10 +764,8 @@ mod tests {
         assert_eq!(m.len(), 60);
         // The byte originally at offset 6 is now at offset 2.
         assert_eq!(m.bytes()[2], 6);
-    }
 
-    #[test]
-    fn insert_shifts_dirty_markers() {
+        // Insert shifts dirty markers.
         let mut m = HexModel::new(vec![0x10, 0x20, 0x30]);
         m.set_byte(2, 0x31); // dirty at 2
         assert!(m.is_dirty(2));
@@ -790,17 +776,16 @@ mod tests {
     }
 
     #[test]
-    fn scroll_into_view_scrolls_minimum() {
+    fn viewport_scrolls_minimally_and_cycles_row_width() {
+        // scroll_into_view scrolls the minimum.
         let mut m = HexModel::new((0u8..=255).collect());
         m.set_bytes_per_row(16); // 16 rows total
         m.scroll_into_view(10, 4);
         assert_eq!(m.top_row(), 7); // 10 + 1 - 4
         m.scroll_into_view(2, 4);
         assert_eq!(m.top_row(), 2);
-    }
 
-    #[test]
-    fn cycle_bytes_per_row_flips_16_8() {
+        // Cycling bytes-per-row flips 16 <-> 8.
         let mut m = model();
         assert_eq!(m.bytes_per_row(), 16);
         m.cycle_bytes_per_row();

@@ -184,7 +184,7 @@ pub fn load_registries() -> RegistriesFile {
         if refresh_official_pin(&mut parsed)
             && let Ok(updated) = toml::to_string_pretty(&parsed)
         {
-            let _ = atomic_file::write(&path, updated.as_bytes());
+            let _ = tilo_files::native::atomic::write(&path, updated.as_bytes());
         }
         return parsed;
     }
@@ -224,7 +224,7 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
     let text = toml::to_string_pretty(registries)?;
-    atomic_file::write_creating_parent(&path, text.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
     Ok(())
 }
 
@@ -314,26 +314,62 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn a_release_build_reads_the_images_official_owner_key() {
-        use crate::dev_env::{OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, dev_override_from};
-        let gated = dev_override_from(
-            false,
-            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-            Some("/tmp/attacker-owner.pub".into()),
-        );
-        assert_eq!(
-            official_owner_key_path_from(gated),
-            PathBuf::from(OFFICIAL_OWNER_KEY_PATH)
-        );
-        let honoured = dev_override_from(
-            true,
-            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-            Some("/dev/owner.pub".into()),
-        );
-        assert_eq!(
-            official_owner_key_path_from(honoured),
-            PathBuf::from("/dev/owner.pub")
-        );
+    fn the_official_registry_key_and_pin_follow_the_build_and_exact_match() {
+        // Phase `a_release_build_reads_the_images_official_owner_key`.
+        {
+            use crate::dev_env::{OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, dev_override_from};
+            let gated = dev_override_from(
+                false,
+                OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+                Some("/tmp/attacker-owner.pub".into()),
+            );
+            assert_eq!(
+                official_owner_key_path_from(gated),
+                PathBuf::from(OFFICIAL_OWNER_KEY_PATH)
+            );
+            let honoured = dev_override_from(
+                true,
+                OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+                Some("/dev/owner.pub".into()),
+            );
+            assert_eq!(
+                official_owner_key_path_from(honoured),
+                PathBuf::from("/dev/owner.pub")
+            );
+        }
+        // Phase `only_exact_official_registry_receives_the_os_pin`.
+        {
+            let td = TempDir::new().unwrap();
+            let _guard = scoped_dir(&td);
+            let mut registries = RegistriesFile {
+                registries: vec![
+                    RegistryConfig {
+                        name: "Tilo main".into(),
+                        base_url: DEFAULT_REGISTRY_BASE_URL.into(),
+                        owner_pubkey_hex: placeholder_owner_pubkey(),
+                        enabled: true,
+                        channel: tilo_app_package::version::ReleaseChannel::Stable,
+                    },
+                    RegistryConfig {
+                        name: "custom".into(),
+                        base_url: "https://registry.example".into(),
+                        owner_pubkey_hex: placeholder_owner_pubkey(),
+                        enabled: true,
+                        channel: tilo_app_package::version::ReleaseChannel::Stable,
+                    },
+                ],
+            };
+            assert!(refresh_official_pin(&mut registries));
+            assert_eq!(
+                registries.registries[0].owner_pubkey_hex,
+                official_owner_pubkey().unwrap()
+            );
+            assert_eq!(registries.registries[0].base_url, DEFAULT_REGISTRY_BASE_URL);
+            assert_eq!(
+                registries.registries[1].owner_pubkey_hex,
+                placeholder_owner_pubkey()
+            );
+        }
     }
 
     /// Points the store config directory and the official owner key at `td`
@@ -352,171 +388,138 @@ mod tests {
     }
 
     #[test]
-    fn seed_written_when_missing() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let regs = load_registries();
-        assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "Tilo main");
-        assert_ne!(
-            regs.registries[0].owner_pubkey_hex,
-            placeholder_owner_pubkey()
-        );
-        assert!(td.path().join("registries.toml").exists());
+    fn registry_config_is_seeded_once_and_hand_edits_round_trip() {
+        // Phase `seed_written_when_missing`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "Tilo main");
+            assert_ne!(
+                regs.registries[0].owner_pubkey_hex,
+                placeholder_owner_pubkey()
+            );
+            assert!(td.path().join("registries.toml").exists());
+        }
+        // Phase `hand_edited_registries_roundtrip`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let text = r#"
+    [[registry]]
+    name = "my mirror"
+    base_url = "https://mirror.example.com"
+    owner_pubkey_hex = "ab"
+    enabled = false
+    "#;
+            std::fs::write(td.path().join("registries.toml"), text).unwrap();
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "my mirror");
+            assert!(!regs.registries[0].enabled);
+            assert_eq!(
+                regs.enabled().count(),
+                0,
+                "a disabled registry is not consulted"
+            );
+        }
+        // Phase `no_seed_read_never_writes_a_file`.
+        // The compositor's read must not materialise a config file — a
+        // background timer that writes `~/.config` is a side effect the
+        // user never asked for.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let regs = load_registries_no_seed();
+            assert!(
+                regs.registries.is_empty(),
+                "nothing configured means nothing available"
+            );
+            assert!(
+                !td.path().join("registries.toml").exists(),
+                "the no-seed read must leave the config dir untouched"
+            );
+        }
+        // Phase `no_seed_read_still_reads_an_existing_file`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            std::fs::write(
+                td.path().join("registries.toml"),
+                "[[registry]]\nname = \"local\"\nbase_url = \"http://127.0.0.1:9\"\n",
+            )
+            .unwrap();
+            let regs = load_registries_no_seed();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "local");
+            assert!(regs.registries[0].enabled, "enabled defaults to true");
+        }
     }
 
     #[test]
-    fn hand_edited_registries_roundtrip() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let text = r#"
-[[registry]]
-name = "my mirror"
-base_url = "https://mirror.example.com"
-owner_pubkey_hex = "ab"
-enabled = false
-"#;
-        std::fs::write(td.path().join("registries.toml"), text).unwrap();
-        let regs = load_registries();
-        assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "my mirror");
-        assert!(!regs.registries[0].enabled);
-        assert_eq!(
-            regs.enabled().count(),
-            0,
-            "a disabled registry is not consulted"
-        );
-    }
-
-    /// The compositor's read must not materialise a config file — a
-    /// background timer that writes `~/.config` is a side effect the
-    /// user never asked for.
-    #[test]
-    fn no_seed_read_never_writes_a_file() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let regs = load_registries_no_seed();
-        assert!(
-            regs.registries.is_empty(),
-            "nothing configured means nothing available"
-        );
-        assert!(
-            !td.path().join("registries.toml").exists(),
-            "the no-seed read must leave the config dir untouched"
-        );
-    }
-
-    #[test]
-    fn no_seed_read_still_reads_an_existing_file() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        std::fs::write(
-            td.path().join("registries.toml"),
-            "[[registry]]\nname = \"local\"\nbase_url = \"http://127.0.0.1:9\"\n",
-        )
-        .unwrap();
-        let regs = load_registries_no_seed();
-        assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "local");
-        assert!(regs.registries[0].enabled, "enabled defaults to true");
-    }
-
-    #[test]
-    fn registry_mutations_validate_and_roundtrip() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let mut regs = RegistriesFile::default();
-        add_registry(&mut regs, "team", "https://apps.tilo.so/", &"ab".repeat(32)).unwrap();
-        assert_eq!(regs.registries[0].base_url, "https://apps.tilo.so");
-        set_registry_enabled(&mut regs, "team", false).unwrap();
-        save_registries(&regs).unwrap();
-        assert_eq!(load_registries(), regs);
-        remove_registry(&mut regs, "team").unwrap();
-        assert!(regs.registries.is_empty());
-    }
-
-    #[test]
-    fn registry_mutations_reject_ambiguous_input() {
-        let mut regs = RegistriesFile::default();
-        assert!(matches!(
-            add_registry(&mut regs, "", "https://example.test", ""),
-            Err(ConfigError::EmptyName)
-        ));
-        assert!(matches!(
-            add_registry(&mut regs, "x", "file:///tmp/apps", ""),
-            Err(ConfigError::InvalidUrl)
-        ));
-        assert!(matches!(
-            add_registry(&mut regs, "x", "https://example.test", "bad"),
-            Err(ConfigError::InvalidOwnerKey)
-        ));
-        assert!(matches!(
-            add_registry(&mut regs, "x", "https://example.test", ""),
-            Err(ConfigError::InvalidOwnerKey)
-        ));
-        assert!(matches!(
-            add_registry(&mut regs, "x", "http://example.test", &"ab".repeat(32)),
-            Err(ConfigError::InvalidUrl)
-        ));
-        assert!(matches!(
-            add_registry(
-                &mut regs,
-                "x",
-                "https://user:secret@example.test",
-                &"ab".repeat(32)
-            ),
-            Err(ConfigError::InvalidUrl)
-        ));
-    }
-
-    #[test]
-    fn omitted_channel_stays_stable_and_development_requires_opt_in() {
-        let old = "name = 'test'\nbase_url = 'https://example.invalid'\nenabled = true\n";
-        let stable: RegistryConfig = toml::from_str(old).unwrap();
-        assert_eq!(
-            stable.channel,
-            tilo_app_package::version::ReleaseChannel::Stable
-        );
-        let dev: RegistryConfig =
-            toml::from_str(&format!("{old}channel = 'development'\n")).unwrap();
-        assert_eq!(
-            dev.channel,
-            tilo_app_package::version::ReleaseChannel::Development
-        );
-        assert!(toml::from_str::<RegistryConfig>(&format!("{old}channel = 'typo'\n")).is_err());
-    }
-
-    #[test]
-    fn only_exact_official_registry_receives_the_os_pin() {
-        let td = TempDir::new().unwrap();
-        let _guard = scoped_dir(&td);
-        let mut registries = RegistriesFile {
-            registries: vec![
-                RegistryConfig {
-                    name: "Tilo main".into(),
-                    base_url: DEFAULT_REGISTRY_BASE_URL.into(),
-                    owner_pubkey_hex: placeholder_owner_pubkey(),
-                    enabled: true,
-                    channel: tilo_app_package::version::ReleaseChannel::Stable,
-                },
-                RegistryConfig {
-                    name: "custom".into(),
-                    base_url: "https://registry.example".into(),
-                    owner_pubkey_hex: placeholder_owner_pubkey(),
-                    enabled: true,
-                    channel: tilo_app_package::version::ReleaseChannel::Stable,
-                },
-            ],
-        };
-        assert!(refresh_official_pin(&mut registries));
-        assert_eq!(
-            registries.registries[0].owner_pubkey_hex,
-            official_owner_pubkey().unwrap()
-        );
-        assert_eq!(registries.registries[0].base_url, DEFAULT_REGISTRY_BASE_URL);
-        assert_eq!(
-            registries.registries[1].owner_pubkey_hex,
-            placeholder_owner_pubkey()
-        );
+    fn registry_mutations_validate_and_channels_default_to_stable() {
+        // Phase `registry_mutations_validate_and_roundtrip`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let mut regs = RegistriesFile::default();
+            add_registry(&mut regs, "team", "https://apps.tilo.so/", &"ab".repeat(32)).unwrap();
+            assert_eq!(regs.registries[0].base_url, "https://apps.tilo.so");
+            set_registry_enabled(&mut regs, "team", false).unwrap();
+            save_registries(&regs).unwrap();
+            assert_eq!(load_registries(), regs);
+            remove_registry(&mut regs, "team").unwrap();
+            assert!(regs.registries.is_empty());
+        }
+        // Phase `registry_mutations_reject_ambiguous_input`.
+        {
+            let mut regs = RegistriesFile::default();
+            assert!(matches!(
+                add_registry(&mut regs, "", "https://example.test", ""),
+                Err(ConfigError::EmptyName)
+            ));
+            assert!(matches!(
+                add_registry(&mut regs, "x", "file:///tmp/apps", ""),
+                Err(ConfigError::InvalidUrl)
+            ));
+            assert!(matches!(
+                add_registry(&mut regs, "x", "https://example.test", "bad"),
+                Err(ConfigError::InvalidOwnerKey)
+            ));
+            assert!(matches!(
+                add_registry(&mut regs, "x", "https://example.test", ""),
+                Err(ConfigError::InvalidOwnerKey)
+            ));
+            assert!(matches!(
+                add_registry(&mut regs, "x", "http://example.test", &"ab".repeat(32)),
+                Err(ConfigError::InvalidUrl)
+            ));
+            assert!(matches!(
+                add_registry(
+                    &mut regs,
+                    "x",
+                    "https://user:secret@example.test",
+                    &"ab".repeat(32)
+                ),
+                Err(ConfigError::InvalidUrl)
+            ));
+        }
+        // Phase `omitted_channel_stays_stable_and_development_requires_opt_in`.
+        {
+            let old = "name = 'test'\nbase_url = 'https://example.invalid'\nenabled = true\n";
+            let stable: RegistryConfig = toml::from_str(old).unwrap();
+            assert_eq!(
+                stable.channel,
+                tilo_app_package::version::ReleaseChannel::Stable
+            );
+            let dev: RegistryConfig =
+                toml::from_str(&format!("{old}channel = 'development'\n")).unwrap();
+            assert_eq!(
+                dev.channel,
+                tilo_app_package::version::ReleaseChannel::Development
+            );
+            assert!(toml::from_str::<RegistryConfig>(&format!("{old}channel = 'typo'\n")).is_err());
+        }
     }
 }

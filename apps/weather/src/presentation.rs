@@ -9,30 +9,40 @@ use crate::{
     units::Units,
     wxcode::Sky,
 };
-use ui::{TextRenderer, Theme, text_render::TextWeight};
+use ui::{TextRenderer, Theme, paint::PaintCtx, text_render::TextWeight};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect, RoundedRect, Stroke},
+    kurbo::{Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
+
+/// One saved-place row: the place and its latest snapshot (none before the
+/// first fetch), the units its temperature reads in, and its state.
+pub(crate) struct SavedPlaceFace<'a> {
+    pub(crate) chip: Rect,
+    pub(crate) loc: &'a SavedLocation,
+    pub(crate) snapshot: Option<&'a WeatherSnapshot>,
+    pub(crate) units: Units,
+    pub(crate) selected: bool,
+    pub(crate) hovered: bool,
+    pub(crate) accent: Color,
+}
+
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "preserve the established live row painter as one shared presentation seam"
 )]
-pub(crate) fn draw_saved_place(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    chip: Rect,
-    loc: &SavedLocation,
-    snapshot: Option<&WeatherSnapshot>,
-    units: Units,
-    selected: bool,
-    hovered: bool,
-    accent: Color,
-) {
+pub(crate) fn draw_saved_place(ctx: &mut PaintCtx<'_>, face: &SavedPlaceFace<'_>) {
+    let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let SavedPlaceFace {
+        chip,
+        loc,
+        snapshot,
+        units,
+        selected,
+        hovered,
+        accent,
+    } = *face;
     let c = &theme.tokens.colors;
     let radius = f64::from(theme.tokens.radii.md);
     let bg = if selected {
@@ -141,10 +151,6 @@ pub(crate) fn draw_saved_place(
     );
 }
 /// The place identity used by both the live detail header and frozen detail.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "place identity painting combines scene resources and theme with saved-location text, origin and available width"
-)]
 pub(crate) fn draw_identity(
     scene: &mut Scene,
     tr: &mut TextRenderer,

@@ -33,8 +33,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourcePresentation, ResourceProvider, RetryPolicy,
-    RiskLevel,
+    PermissionRequirement, Resource, ResourcePresentation, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -377,29 +376,18 @@ fn account_label(a: &Account) -> String {
     }
 }
 
-/// Build the resource tree the Authenticator currently has open: the vault and,
-/// nested under it, one resource per account — every document-mutating
-/// operation exported as an action. Read straight from the document so the tree
-/// is a level-triggered value, recomputed each frame.
-/// Build only the vault root for the initial palette snapshot.
-pub fn provide_contextual_resources(_accounts: &[Account]) -> Vec<Resource> {
-    let mut root = Resource::new("totp.vault", "totp.vault", "Accounts");
-
-    // Adding a secret opens the local, protected form. A setup URI is never
-    // accepted as a generic resource/action argument because resource payloads
-    // are inspectable and durable; the form stores the secret directly in the
-    // encrypted local vault and dispatches only its metadata action afterward.
-    root = root.with_action(
-        account_operation(
-            "add-account",
-            "Add account",
-            OperationKind::View,
-            &TotpOperation::OpenAddAccount,
-        )
-        .with_contract(ActionContract::view()),
-    );
-
-    vec![root]
+/// Adding a secret opens the local, protected form. A setup URI is never
+/// accepted as a generic resource/action argument because resource payloads
+/// are inspectable and durable; the form stores the secret directly in the
+/// encrypted local vault and dispatches only its metadata action afterward.
+pub(crate) fn add_account_view() -> ActionSpec {
+    account_operation(
+        "add-account",
+        "Add account",
+        OperationKind::View,
+        &TotpOperation::OpenAddAccount,
+    )
+    .with_contract(ActionContract::view())
 }
 
 /// Materialise one account after search names its stable resource id.
@@ -576,36 +564,70 @@ pub fn provide_account_resource(
     child
 }
 
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let accounts = AuthDoc::list_accounts(doc);
-    let mut root = provide_contextual_resources(&accounts)
-        .pop()
-        .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
-    let account_count = accounts.len();
-    for (index, acc) in accounts.iter().enumerate() {
-        root = root.with_child(provide_account_resource(acc, index, account_count, false));
+/// Write this device's secret availability onto a published account. The
+/// account row itself stays the one [`tilo_resource::publish`] built.
+pub(crate) fn overlay_local_secret(account: &mut Resource, ready: bool) {
+    if let Some(presentation) = account.presentation.as_mut() {
+        presentation.detail = Some(
+            if ready {
+                "Codes available on this device"
+            } else {
+                "Local setup required to generate codes"
+            }
+            .into(),
+        );
+        presentation.badge = Some(if ready { "Ready" } else { "Set up" }.into());
     }
-
-    vec![root]
+    if let Some(copy) = account
+        .actions
+        .iter_mut()
+        .find(|action| action.id == "copy-code")
+    {
+        copy.contract.availability = if ready {
+            Availability::Available
+        } else {
+            Availability::Unavailable {
+                code: "local_secret_required".into(),
+                reason: "Set up this account on this device before copying a code".into(),
+            }
+        };
+    }
+    if ready {
+        account
+            .actions
+            .retain(|action| action.id.as_str() != "set-up-local");
+    }
 }
 
-impl ResourceProvider for crate::app::AuthenticatorApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let accounts = AuthDoc::list_accounts(doc);
-        let mut root = provide_contextual_resources(&accounts)
-            .pop()
-            .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
-        let count = accounts.len();
-        for (index, account) in accounts.iter().enumerate() {
-            let has_local_secret = self.has_local_secret(account.id);
-            root = root.with_child(provide_account_resource(
-                account,
-                index,
-                count,
-                has_local_secret,
-            ));
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let accounts = AuthDoc::list_accounts(doc);
+    vec![ui::tilo_resource::publish::<crate::resource::Totp>(
+        "totp.vault",
+        "Accounts",
+        &accounts,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::AuthenticatorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut roots = provide_resources(doc);
+        let Some(root) = roots.first_mut() else {
+            return roots;
+        };
+        for child in &mut root.children {
+            if child.kind != "totp.account" {
+                continue;
+            }
+            let Some(raw) = child.id.as_str().strip_prefix("totp.account:") else {
+                continue;
+            };
+            let Ok(id) = raw.parse() else {
+                continue;
+            };
+            overlay_local_secret(child, self.has_local_secret(id));
         }
-        vec![root]
+        roots
     }
 }
 
@@ -658,163 +680,246 @@ mod tests {
         doc
     }
 
+    /// Vault resources keep navigation, effects, secrets and deletion distinct and never carry an account secret.
     #[test]
-    fn resource_contracts_keep_navigation_effects_secrets_and_deletion_distinct() {
-        let doc = seeded_doc();
-        let resources = provide_resources(&doc);
-        let vault = &resources[0];
-        let account = &vault.children[0];
-
-        let open = account
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .unwrap();
-        assert_eq!(open.kind, OperationKind::View);
-        assert_eq!(open.contract, ActionContract::view());
-
-        let copy = account
-            .actions
-            .iter()
-            .find(|action| action.id == "copy-code")
-            .unwrap();
-        assert_eq!(copy.kind, OperationKind::Effect);
-        assert_eq!(copy.contract.permission, PermissionRequirement::Read);
-        assert_eq!(copy.contract.risk, RiskLevel::Privileged);
-        assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(copy.contract.retry, RetryPolicy::AtMostOnce);
-        let encoded_copy = spec_encoding(copy, None);
-        let operation: TotpOperation = serde_json::from_slice(&encoded_copy.payload).unwrap();
-        assert!(matches!(operation, TotpOperation::CopyCode { .. }));
-        for secret in seed_accounts()
-            .iter()
-            .map(|account| account.secret.as_str())
+    fn vault_resources_keep_secrets_out_and_export_distinct_contracts() {
+        // Case `resource_contracts_keep_navigation_effects_secrets_and_deletion_distinct`.
         {
+            let doc = seeded_doc();
+            let resources = provide_resources(&doc);
+            let vault = &resources[0];
+            let account = &vault.children[0];
+
+            let open = account
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .unwrap();
+            assert_eq!(open.kind, OperationKind::View);
+            assert_eq!(open.contract, ActionContract::view());
+
+            let copy = account
+                .actions
+                .iter()
+                .find(|action| action.id == "copy-code")
+                .unwrap();
+            assert_eq!(copy.kind, OperationKind::Effect);
+            assert_eq!(copy.contract.permission, PermissionRequirement::Read);
+            assert_eq!(copy.contract.risk, RiskLevel::Privileged);
+            assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(copy.contract.retry, RetryPolicy::AtMostOnce);
+            let encoded_copy = spec_encoding(copy, None);
+            let operation: TotpOperation = serde_json::from_slice(&encoded_copy.payload).unwrap();
+            assert!(matches!(operation, TotpOperation::CopyCode { .. }));
+            for secret in seed_accounts()
+                .iter()
+                .map(|account| account.secret.as_str())
+            {
+                assert!(
+                    !encoded_copy
+                        .payload
+                        .windows(secret.len())
+                        .any(|bytes| bytes == secret.as_bytes()),
+                    "copy authority carries an id, never secret material"
+                );
+            }
+
+            let add = vault
+                .actions
+                .iter()
+                .find(|action| action.id == "add-account")
+                .unwrap();
+            assert_eq!(add.kind, OperationKind::View);
+            assert_eq!(add.contract, ActionContract::view());
+            let encoded_add = spec_encoding(add, None);
+            assert!(matches!(
+                serde_json::from_slice::<TotpOperation>(&encoded_add.payload).unwrap(),
+                TotpOperation::OpenAddAccount
+            ));
+
+            let delete = account
+                .actions
+                .iter()
+                .find(|action| action.id == "delete")
+                .unwrap();
+            assert_eq!(delete.kind, OperationKind::Document);
+            assert_eq!(delete.contract.permission, PermissionRequirement::Write);
+            assert_eq!(delete.contract.risk, RiskLevel::Destructive);
+            assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert!(delete.contract.reversible);
+        }
+
+        // Case `shared_resource_tree_never_contains_account_secrets`.
+        {
+            let account = seed_accounts().remove(0);
+            let secret = account.secret.clone();
+            let mut doc = AutoCommit::new();
+            AuthDoc::sync_vault(&mut doc, &[account]);
+            let bytes = doc.save();
             assert!(
-                !encoded_copy
-                    .payload
+                !bytes
                     .windows(secret.len())
-                    .any(|bytes| bytes == secret.as_bytes()),
-                "copy authority carries an id, never secret material"
+                    .any(|window| window == secret.as_bytes()),
+                "the CRDT never retains base32 key material"
+            );
+            let resource = &provide_resources(&doc)[0].children[0];
+            assert!(!resource.label.contains(&secret));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .all(|action| !action.label.contains(&secret))
             );
         }
 
-        let add = vault
-            .actions
-            .iter()
-            .find(|action| action.id == "add-account")
-            .unwrap();
-        assert_eq!(add.kind, OperationKind::View);
-        assert_eq!(add.contract, ActionContract::view());
-        let encoded_add = spec_encoding(add, None);
-        assert!(matches!(
-            serde_json::from_slice::<TotpOperation>(&encoded_add.payload).unwrap(),
-            TotpOperation::OpenAddAccount
-        ));
-
-        let delete = account
-            .actions
-            .iter()
-            .find(|action| action.id == "delete")
-            .unwrap();
-        assert_eq!(delete.kind, OperationKind::Document);
-        assert_eq!(delete.contract.permission, PermissionRequirement::Write);
-        assert_eq!(delete.contract.risk, RiskLevel::Destructive);
-        assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert!(delete.contract.reversible);
+        // Case `add_metadata_action_redacts_the_source_secret`.
+        // A metadata action contains no secret even when its source account does.
+        {
+            let account = seed_accounts().remove(0);
+            let secret = account.secret.clone();
+            let encoded = encode(&add_account_action(&account, account.order));
+            assert!(
+                !encoded
+                    .payload
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "the action contains only replicated metadata"
+            );
+        }
     }
 
+    /// Ctrl+K publishes the vault/account actions, add opens the local protected form, and `MoveDown` reorders the document.
     #[test]
-    fn shared_resource_tree_never_contains_account_secrets() {
-        let account = seed_accounts().remove(0);
-        let secret = account.secret.clone();
-        let mut doc = AutoCommit::new();
-        AuthDoc::sync_vault(&mut doc, &[account]);
-        let bytes = doc.save();
-        assert!(
-            !bytes
-                .windows(secret.len())
-                .any(|window| window == secret.as_bytes()),
-            "the CRDT never retains base32 key material"
-        );
-        let resource = &provide_resources(&doc)[0].children[0];
-        assert!(!resource.label.contains(&secret));
-        assert!(
-            resource
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn vault_actions_publish_local_forms_and_reorder_the_doc() {
+        // Case `ctrl_k_publishes_the_vault_and_account_actions`.
+        // Ctrl+K on the Authenticator yields the vault resource with one child per
+        // account, each exporting the full account action set. Drives the real
+        // `Widget::resources` hook through the demo app's live document.
+        {
+            let mut app = AuthenticatorApp::demo();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root); // seeds the demo vault into the doc
+
+            let resources = ui::resources::resources(&app, &state.doc);
+            assert_eq!(resources.len(), 1, "one open vault");
+            let vault = &resources[0];
+            assert_eq!(vault.kind, "totp.vault");
+            assert!(
+                vault.actions.iter().any(|a| a.id == "add-account"),
+                "the vault exports add-account"
+            );
+            let add = vault
                 .actions
                 .iter()
-                .all(|action| !action.label.contains(&secret))
-        );
-    }
-
-    /// Ctrl+K on the Authenticator yields the vault resource with one child per
-    /// account, each exporting the full account action set. Drives the real
-    /// `Widget::resources` hook through the demo app's live document.
-    #[test]
-    fn ctrl_k_publishes_the_vault_and_account_actions() {
-        let mut app = AuthenticatorApp::demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root); // seeds the demo vault into the doc
-
-        let resources = Widget::resources(&app, &state.doc);
-        assert_eq!(resources.len(), 1, "one open vault");
-        let vault = &resources[0];
-        assert_eq!(vault.kind, "totp.vault");
-        assert!(
-            vault.actions.iter().any(|a| a.id == "add-account"),
-            "the vault exports add-account"
-        );
-        let add = vault
-            .actions
-            .iter()
-            .find(|action| action.id == "add-account")
-            .unwrap();
-        assert_eq!(add.kind, OperationKind::View);
-        assert!(add.params().is_empty());
-        assert!(
-            vault.children.is_empty(),
-            "the contextual root stays bounded"
-        );
-        let account = AuthDoc::list_accounts(&state.doc)
-            .into_iter()
-            .next()
-            .expect("demo account");
-        let acct = Widget::resource(&app, &state.doc, &account_resource_id(account.id))
-            .expect("account lazily resolves");
-        assert_eq!(acct.kind, "totp.account");
-        assert_eq!(
-            acct.presentation
-                .as_ref()
-                .and_then(|value| value.badge.as_deref()),
-            Some("Ready")
-        );
-        let presentation = serde_json::to_string(&acct.presentation).expect("presentation encodes");
-        assert!(
-            !contains_secret_shaped_text(&presentation),
-            "resource presentation must never expose authenticator secrets"
-        );
-        let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in [
-            "open",
-            "copy-code",
-            "rename",
-            "relabel",
-            "set-color",
-            "move-up",
-            "move-down",
-            "delete",
-        ] {
-            assert!(ids.contains(&want), "account exports {want}: {ids:?}");
+                .find(|action| action.id == "add-account")
+                .unwrap();
+            assert_eq!(add.kind, OperationKind::View);
+            assert!(add.params().is_empty());
+            assert!(
+                vault
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "totp.account"),
+                "accounts ride the vault door"
+            );
+            let account = AuthDoc::list_accounts(&state.doc)
+                .into_iter()
+                .next()
+                .expect("demo account");
+            let acct = ui::resources::resource(&app, &state.doc, &account_resource_id(account.id))
+                .expect("account lazily resolves");
+            assert_eq!(acct.kind, "totp.account");
+            assert_eq!(
+                acct.presentation
+                    .as_ref()
+                    .and_then(|value| value.badge.as_deref()),
+                Some("Ready")
+            );
+            let presentation =
+                serde_json::to_string(&acct.presentation).expect("presentation encodes");
+            assert!(
+                !contains_secret_shaped_text(&presentation),
+                "resource presentation must never expose authenticator secrets"
+            );
+            let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
+            for want in [
+                "open",
+                "copy-code",
+                "rename",
+                "relabel",
+                "set-color",
+                "move-up",
+                "move-down",
+                "delete",
+            ] {
+                assert!(ids.contains(&want), "account exports {want}: {ids:?}");
+            }
+            assert!(matches!(
+                acct.actions
+                    .iter()
+                    .find(|action| action.id == "move-up")
+                    .expect("move-up")
+                    .contract
+                    .availability,
+                Availability::Unavailable { .. }
+            ));
         }
-        assert!(matches!(
-            acct.actions
+
+        // Case `add_account_opens_local_protected_form_without_secret_payload`.
+        // The vault's add entry is a local View route: secret-bearing setup links
+        // are handled only by the encrypted local form, never a serialised action.
+        {
+            let doc = AutoCommit::new();
+            let resources = provide_resources(&doc);
+            let add = resources[0]
+                .actions
                 .iter()
-                .find(|action| action.id == "move-up")
-                .expect("move-up")
-                .contract
-                .availability,
-            Availability::Unavailable { .. }
-        ));
+                .find(|a| a.id == "add-account")
+                .unwrap();
+            let encoded = spec_encoding(add, None);
+            assert!(matches!(
+                serde_json::from_slice::<TotpOperation>(&encoded.payload).unwrap(),
+                TotpOperation::OpenAddAccount
+            ));
+            assert!(
+                !encoded
+                    .payload
+                    .windows(16)
+                    .any(|window| window == b"JBSWY3DPEHPK3PXP"),
+                "an add route contains no credential"
+            );
+        }
+
+        // Case `move_down_action_swaps_order_in_the_doc`.
+        // Reorder is deterministic against the document: `MoveDown` swaps the first
+        // two accounts' order values, applied straight to the doc.
+        {
+            let mut doc = seeded_doc();
+            let accts = seed_accounts();
+            let (first, second) = (accts[0].id, accts[1].id);
+            assert_eq!(
+                AuthDoc::list_accounts(&doc)[0].id,
+                first,
+                "first starts on top"
+            );
+
+            let action = move_down_action(first);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let ordered = AuthDoc::list_accounts(&doc);
+            assert_eq!(ordered[0].id, second, "the second account moved to the top");
+            assert_eq!(
+                ordered[1].id, first,
+                "the first account moved down one slot"
+            );
+        }
     }
 
     fn first_account() -> AccountId {
@@ -863,72 +968,5 @@ mod tests {
                 encode(&set_label_action(first_account(), "ada@corp.example"))
             }),
         ],
-    }
-
-    /// The vault's add entry is a local View route: secret-bearing setup links
-    /// are handled only by the encrypted local form, never a serialised action.
-    #[test]
-    fn add_account_opens_local_protected_form_without_secret_payload() {
-        let doc = AutoCommit::new();
-        let resources = provide_resources(&doc);
-        let add = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "add-account")
-            .unwrap();
-        let encoded = spec_encoding(add, None);
-        assert!(matches!(
-            serde_json::from_slice::<TotpOperation>(&encoded.payload).unwrap(),
-            TotpOperation::OpenAddAccount
-        ));
-        assert!(
-            !encoded
-                .payload
-                .windows(16)
-                .any(|window| window == b"JBSWY3DPEHPK3PXP"),
-            "an add route contains no credential"
-        );
-    }
-
-    /// Reorder is deterministic against the document: `MoveDown` swaps the first
-    /// two accounts' order values, applied straight to the doc.
-    #[test]
-    fn move_down_action_swaps_order_in_the_doc() {
-        let mut doc = seeded_doc();
-        let accts = seed_accounts();
-        let (first, second) = (accts[0].id, accts[1].id);
-        assert_eq!(
-            AuthDoc::list_accounts(&doc)[0].id,
-            first,
-            "first starts on top"
-        );
-
-        let action = move_down_action(first);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let ordered = AuthDoc::list_accounts(&doc);
-        assert_eq!(ordered[0].id, second, "the second account moved to the top");
-        assert_eq!(
-            ordered[1].id, first,
-            "the first account moved down one slot"
-        );
-    }
-
-    /// A metadata action contains no secret even when its source account does.
-    #[test]
-    fn add_metadata_action_redacts_the_source_secret() {
-        let account = seed_accounts().remove(0);
-        let secret = account.secret.clone();
-        let encoded = encode(&add_account_action(&account, account.order));
-        assert!(
-            !encoded
-                .payload
-                .windows(secret.len())
-                .any(|window| window == secret.as_bytes()),
-            "the action contains only replicated metadata"
-        );
     }
 }

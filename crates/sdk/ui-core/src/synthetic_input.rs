@@ -78,57 +78,61 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     #[test]
-    fn character_text_is_emitted_only_on_press() {
-        let key = Key::Character("é".into());
-        for (state, expected_text) in [
-            (ElementState::Pressed, Some("é")),
-            (ElementState::Released, None),
-        ] {
-            let WindowEvent::KeyboardInput {
-                event,
-                is_synthetic,
-                ..
-            } = key_event(&key, state)
-            else {
-                panic!("expected keyboard input");
-            };
-            assert_eq!(event.text.as_deref(), expected_text);
-            assert_eq!(event.logical_key, key);
-            assert_eq!(event.state, state);
-            assert!(!event.repeat);
-            assert!(!is_synthetic);
+    fn synthetic_keys_decode_strictly_and_emit_text_only_on_press() {
+        // Case `character_text_is_emitted_only_on_press`.
+        {
+            let key = Key::Character("é".into());
+            for (state, expected_text) in [
+                (ElementState::Pressed, Some("é")),
+                (ElementState::Released, None),
+            ] {
+                let WindowEvent::KeyboardInput {
+                    event,
+                    is_synthetic,
+                    ..
+                } = key_event(&key, state)
+                else {
+                    panic!("expected keyboard input");
+                };
+                assert_eq!(event.text.as_deref(), expected_text);
+                assert_eq!(event.logical_key, key);
+                assert_eq!(event.state, state);
+                assert!(!event.repeat);
+                assert!(!is_synthetic);
+            }
         }
-    }
 
-    #[test]
-    fn named_keys_decode_strictly_and_map_to_keyboard_events() {
-        for (name, named) in [
-            ("enter", NamedKey::Enter),
-            ("tab", NamedKey::Tab),
-            ("escape", NamedKey::Escape),
-            ("space", NamedKey::Space),
-            ("backspace", NamedKey::Backspace),
-            ("delete", NamedKey::Delete),
-            ("arrow_up", NamedKey::ArrowUp),
-            ("arrow_down", NamedKey::ArrowDown),
-            ("arrow_left", NamedKey::ArrowLeft),
-            ("arrow_right", NamedKey::ArrowRight),
-            ("home", NamedKey::Home),
-            ("end", NamedKey::End),
-        ] {
-            let decoded: NativeKey = serde_json::from_value(serde_json::json!(name)).unwrap();
-            assert_eq!(serde_json::to_value(decoded).unwrap(), name);
-            let key: Key = decoded.into();
-            assert_eq!(key, Key::Named(named));
-            let WindowEvent::KeyboardInput { event, .. } = key_event(&key, ElementState::Pressed)
-            else {
-                panic!("expected keyboard input");
-            };
-            assert_eq!(event.logical_key, key);
-            assert_eq!(event.text, None);
-        }
-        for rejected in ["Enter", "return", "ArrowUp", "up", "a", "", "f1"] {
-            assert!(serde_json::from_value::<NativeKey>(serde_json::json!(rejected)).is_err());
+        // Case `named_keys_decode_strictly_and_map_to_keyboard_events`.
+        {
+            for (name, named) in [
+                ("enter", NamedKey::Enter),
+                ("tab", NamedKey::Tab),
+                ("escape", NamedKey::Escape),
+                ("space", NamedKey::Space),
+                ("backspace", NamedKey::Backspace),
+                ("delete", NamedKey::Delete),
+                ("arrow_up", NamedKey::ArrowUp),
+                ("arrow_down", NamedKey::ArrowDown),
+                ("arrow_left", NamedKey::ArrowLeft),
+                ("arrow_right", NamedKey::ArrowRight),
+                ("home", NamedKey::Home),
+                ("end", NamedKey::End),
+            ] {
+                let decoded: NativeKey = serde_json::from_value(serde_json::json!(name)).unwrap();
+                assert_eq!(serde_json::to_value(decoded).unwrap(), name);
+                let key: Key = decoded.into();
+                assert_eq!(key, Key::Named(named));
+                let WindowEvent::KeyboardInput { event, .. } =
+                    key_event(&key, ElementState::Pressed)
+                else {
+                    panic!("expected keyboard input");
+                };
+                assert_eq!(event.logical_key, key);
+                assert_eq!(event.text, None);
+            }
+            for rejected in ["Enter", "return", "ArrowUp", "up", "a", "", "f1"] {
+                assert!(serde_json::from_value::<NativeKey>(serde_json::json!(rejected)).is_err());
+            }
         }
     }
 }

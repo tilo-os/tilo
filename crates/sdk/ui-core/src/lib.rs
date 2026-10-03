@@ -37,7 +37,6 @@
     clippy::significant_drop_tightening,
     clippy::similar_names,
     clippy::struct_excessive_bools,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unchecked_time_subtraction,
@@ -50,6 +49,13 @@
     clippy::used_underscore_binding,
     clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
+)]
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+    )
 )]
 #![cfg_attr(
     test,
@@ -101,6 +107,8 @@
 
 pub mod a11y;
 pub mod a11y_tree;
+#[cfg(all(feature = "native", target_os = "android"))]
+mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;
@@ -115,16 +123,20 @@ extern crate self as tilo_ui;
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod auth_backdrop;
 pub mod caps_lock;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
+pub mod clock;
 pub mod collaboration;
+pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub mod color;
 pub mod color_compat;
+pub mod component_lifecycle;
 pub mod content_layout;
 mod damage;
 pub mod date;
@@ -136,7 +148,8 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
-#[cfg(any(windows, test))]
+pub mod doc_binding;
+#[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod floating_surface;
 pub mod font_catalog;
@@ -145,22 +158,34 @@ pub mod fullscreen;
 pub mod gesture;
 pub mod gpu;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar
-/// output and converting YUV to RGB in a shader.
-#[cfg(feature = "gpu-video")]
+/// output and converting YUV to RGB in a shader. Plain wgpu, so every target
+/// (WebGPU included) has it; `gpu-video` adds the zero-copy dmabuf import,
+/// which `media::availability(Feature::ZeroCopyVideo)` reports.
 pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
-#[cfg(all(windows, feature = "notifications"))]
+#[cfg(feature = "native")]
+mod host_appearance;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_chrome;
+pub mod host_data;
+#[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
+#[cfg(not(all(windows, feature = "native")))]
+#[path = "host_notifications_unsupported.rs"]
+pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod ime;
 pub mod input;
 pub mod interaction;
+pub mod keycaps;
 pub mod launch;
 pub mod live_collaboration;
+pub mod local_identity;
 pub mod local_state;
 pub mod math;
 #[cfg(feature = "native")]
@@ -174,21 +199,27 @@ pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod portable_storage;
 pub mod presence;
+pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
+pub mod storage;
 pub mod ux_bench;
-pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
+pub mod remote_actions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
+pub mod resources;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
@@ -207,6 +238,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+mod theme_layers;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;
@@ -225,8 +257,13 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, host, location, mpris, png, portal, time, wake,
+    background, capture, clipboard, env, host, location, mpris, notify, png, portal, secrets, time,
+    wake,
 };
+
+/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
+#[cfg(test)]
+pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
@@ -243,6 +280,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use app::{ActionUiRoute, App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
@@ -261,6 +299,7 @@ pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
     KeyboardFamily, PointerPrecision,
 };
+pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
 };
@@ -272,13 +311,18 @@ pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
     StatSummary, run_scenario, run_scenario_on,
 };
-pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
+pub use reader_hud::{
+    HudAction, HudControls, HudPlacement, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud,
+};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use remote_actions::{
+    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+};
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
 pub use search::{
-    FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult, fuzzy_score,
+    FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{
@@ -286,11 +330,14 @@ pub use state::{
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
-pub use theme::{AppearanceIntent, Theme};
+pub use theme::{
+    AppearanceIntent, BrandAccentRejection, ContentSurface, Theme, resolve_theme_layers,
+};
 pub use ui_graph::{
-    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiComponentRequest, UiDocument,
-    UiDocumentExt, UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole,
-    UiTextSource,
+    LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
+    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{
@@ -388,10 +435,10 @@ pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlig
 pub use status_bubble::StatusBubble;
 pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
-    FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
-    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout, TextFlowRegion,
-    TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextStyle,
-    TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
+    FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
+    NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
+    TextFlowRegion, TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer,
+    TextStyle, TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
     configured_font_system,
 };
 pub use text_selection::{
@@ -419,12 +466,26 @@ pub use permissions::{
     Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
     Scope as CapScope, Subject, UserId, Verb,
 };
+pub use widget::ParticipantPresence;
 
 pub mod application;
 pub mod application_view;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host_worker;
+pub mod invocation_scope;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
+pub mod semantic_document_read;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod presentation_feedback;
+
+/// Emission-time local control custody.
+pub mod control_custody;
+pub use control_custody::{
+    ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
+};
+mod focus_navigation;

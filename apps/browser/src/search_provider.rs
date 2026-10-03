@@ -290,98 +290,106 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
+    /// Cursor paging, stale addresses, identity and downloads.
     #[test]
-    fn full_corpus_is_cursor_paged_and_canonical() {
-        let mut history = crate::history::History::new();
-        for index in 0..6_000 {
-            history.record_at(
-                &format!("https://{index}.example.test"),
-                &format!("Page {index}"),
-                index,
-            );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_provider_pages_the_library_corpus_canonically() {
+        // Phase `full_corpus_is_cursor_paged_and_canonical`.
+        {
+            let mut history = crate::history::History::new();
+            for index in 0..6_000 {
+                history.record_at(
+                    &format!("https://{index}.example.test"),
+                    &format!("Page {index}"),
+                    index,
+                );
+            }
+            let index = BrowserSearchIndex::default();
+            index.sync(&history, &crate::library::Bookmarks::default());
+            let provider = index.provider();
+            let hits = provider.search_limited("Page", 12);
+            assert_eq!(hits.len(), 12);
+            let address = hits[0].action_address().unwrap();
+            assert!(provider.resolve_action_resource(&address).is_some());
+
+            let first = provider.search_page("Page", None, 7, 3);
+            assert!(first.inspected <= 7);
+            assert!(first.results.len() <= 3);
+            assert!(first.next.is_some());
+            let second = provider.search_page("Page", first.next.as_ref(), 7, 3);
+            assert!(second.inspected <= 7);
+            assert!(second.results.len() <= 3);
         }
-        let index = BrowserSearchIndex::default();
-        index.sync(&history, &crate::library::Bookmarks::default());
-        let provider = index.provider();
-        let hits = provider.search_limited("Page", 12);
-        assert_eq!(hits.len(), 12);
-        let address = hits[0].action_address().unwrap();
-        assert!(provider.resolve_action_resource(&address).is_some());
 
-        let first = provider.search_page("Page", None, 7, 3);
-        assert!(first.inspected <= 7);
-        assert!(first.results.len() <= 3);
-        assert!(first.next.is_some());
-        let second = provider.search_page("Page", first.next.as_ref(), 7, 3);
-        assert!(second.inspected <= 7);
-        assert!(second.results.len() <= 3);
-    }
+        // Phase `stale_search_addresses_are_refused_after_a_corpus_change`.
+        {
+            let mut bookmarks = crate::library::Bookmarks::default();
+            assert!(bookmarks.add("https://stale.example.test", "Stale"));
+            let index = BrowserSearchIndex::default();
+            index.sync(&crate::history::History::new(), &bookmarks);
+            let provider = index.provider();
+            let hit = provider.search_limited("stale", 1).pop().unwrap();
+            let address = hit.action_address().unwrap();
+            assert!(bookmarks.remove("https://stale.example.test"));
+            index.sync(&crate::history::History::new(), &bookmarks);
+            assert!(provider.resolve_action_resource(&address).is_none());
+        }
 
-    #[test]
-    fn stale_search_addresses_are_refused_after_a_corpus_change() {
-        let mut bookmarks = crate::library::Bookmarks::default();
-        assert!(bookmarks.add("https://stale.example.test", "Stale"));
-        let index = BrowserSearchIndex::default();
-        index.sync(&crate::history::History::new(), &bookmarks);
-        let provider = index.provider();
-        let hit = provider.search_limited("stale", 1).pop().unwrap();
-        let address = hit.action_address().unwrap();
-        assert!(bookmarks.remove("https://stale.example.test"));
-        index.sync(&crate::history::History::new(), &bookmarks);
-        assert!(provider.resolve_action_resource(&address).is_none());
-    }
+        // Phase `search_uses_the_library_resource_identity_and_contract`.
+        {
+            let mut bookmarks = crate::library::Bookmarks::default();
+            // Legacy profile rows may omit the trailing slash.  The library uses
+            // a normalized resource id, and search must resolve that exact same
+            // object rather than a second raw-URL identity.
+            assert!(bookmarks.add("https://canonical.example.test", "Canonical"));
+            let index = BrowserSearchIndex::default();
+            index.sync(&crate::history::History::new(), &bookmarks);
+            let provider = index.provider();
+            let hit = provider.search_limited("canonical", 1).pop().unwrap();
+            let address = hit.action_address().unwrap();
+            assert_eq!(
+                address.resource,
+                crate::actions::bookmark_resource_id("https://canonical.example.test")
+            );
+            let resource = provider.resolve_action_resource(&address).unwrap();
+            assert_eq!(resource.kind, "browser.bookmark");
+            assert!(matches!(
+                resource.actions[0].contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            ));
+        }
 
-    #[test]
-    fn search_uses_the_library_resource_identity_and_contract() {
-        let mut bookmarks = crate::library::Bookmarks::default();
-        // Legacy profile rows may omit the trailing slash.  The library uses
-        // a normalized resource id, and search must resolve that exact same
-        // object rather than a second raw-URL identity.
-        assert!(bookmarks.add("https://canonical.example.test", "Canonical"));
-        let index = BrowserSearchIndex::default();
-        index.sync(&crate::history::History::new(), &bookmarks);
-        let provider = index.provider();
-        let hit = provider.search_limited("canonical", 1).pop().unwrap();
-        let address = hit.action_address().unwrap();
-        assert_eq!(
-            address.resource,
-            crate::actions::bookmark_resource_id("https://canonical.example.test")
-        );
-        let resource = provider.resolve_action_resource(&address).unwrap();
-        assert_eq!(resource.kind, "browser.bookmark");
-        assert!(matches!(
-            resource.actions[0].contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        ));
-    }
-
-    #[test]
-    fn completed_downloads_are_searchable_by_name_source_and_destination() {
-        let mut downloads = crate::downloads::Downloads::default();
-        assert!(downloads.requested(
-            "stable-download".into(),
-            "https://example.test/sdk".into(),
-            "Tilo-SDK.tar.zst",
-        ));
-        downloads.finished(
-            "stable-download",
-            "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
-        );
-        let index = BrowserSearchIndex::default();
-        index.sync_all(
-            &crate::history::History::new(),
-            &crate::library::Bookmarks::default(),
-            &downloads,
-        );
-        let provider = index.provider();
-        let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
-        let address = hit.action_address().unwrap();
-        assert_eq!(address.resource, "browser.download.stable-download");
-        assert_eq!(address.action, "show");
-        let resource = provider.resolve_action_resource(&address).unwrap();
-        assert_eq!(resource.kind, "browser.download");
-        assert_eq!(resource.actions[0].id, "show");
-        assert!(!provider.search_limited("example.test/sdk", 1).is_empty());
-        assert!(!provider.search_limited("home/alex/Downloads", 1).is_empty());
+        // Phase `completed_downloads_are_searchable_by_name_source_and_destination`.
+        {
+            let mut downloads = crate::downloads::Downloads::default();
+            assert!(downloads.requested(
+                "stable-download".into(),
+                "https://example.test/sdk".into(),
+                "Tilo-SDK.tar.zst",
+            ));
+            downloads.finished(
+                "stable-download",
+                "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
+            );
+            let index = BrowserSearchIndex::default();
+            index.sync_all(
+                &crate::history::History::new(),
+                &crate::library::Bookmarks::default(),
+                &downloads,
+            );
+            let provider = index.provider();
+            let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
+            let address = hit.action_address().unwrap();
+            assert_eq!(address.resource, "browser.download.stable-download");
+            assert_eq!(address.action, "show");
+            let resource = provider.resolve_action_resource(&address).unwrap();
+            assert_eq!(resource.kind, "browser.download");
+            assert_eq!(resource.actions[0].id, "show");
+            assert!(!provider.search_limited("example.test/sdk", 1).is_empty());
+            assert!(!provider.search_limited("home/alex/Downloads", 1).is_empty());
+        }
     }
 }

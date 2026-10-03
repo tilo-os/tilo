@@ -1,0 +1,6 @@
+[
+  {"perform": {"target": "domain-input", "action": "set_value", "value": "example.com"}},
+  {"perform": {"target": "forge-input", "action": "set_value", "value": "codeberg:ada"}},
+  {"expect": {"target": "domain-input", "role": "text_input", "value": "example.com"}},
+  {"expect": {"target": "forge-input", "role": "text_input", "value": "codeberg:ada"}}
+]

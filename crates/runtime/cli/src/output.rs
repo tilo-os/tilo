@@ -130,16 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn osc8_wraps_label_and_url() {
-        let s = osc8("notes.md", "file:///tmp/notes.md");
-        assert!(s.contains("file:///tmp/notes.md"));
-        assert!(s.contains("notes.md"));
-        assert!(s.starts_with("\x1b]8;;"));
-        assert!(s.ends_with("\x1b]8;;\x1b\\"));
-    }
-
-    #[test]
-    fn output_builder_defaults() {
+    fn output_defaults_to_stdout_with_osc8_hyperlinks() {
         let b = output();
         assert!(b.hyperlinks);
         // Stream default is stdout.
@@ -147,5 +138,11 @@ mod tests {
             Stream::Stdout => {}
             Stream::Stderr => panic!("expected stdout default"),
         }
+
+        let s = osc8("notes.md", "file:///tmp/notes.md");
+        assert!(s.contains("file:///tmp/notes.md"));
+        assert!(s.contains("notes.md"));
+        assert!(s.starts_with("\x1b]8;;"));
+        assert!(s.ends_with("\x1b]8;;\x1b\\"));
     }
 }

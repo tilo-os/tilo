@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction};
+use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
 use crate::apply::{Apply, SessionProcess};
 use crate::boot::Boot;
@@ -21,6 +21,10 @@ const SYSEXT_DIR: &str = "/var/lib/extensions";
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/bin/tilo-control";
+/// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity`
+/// reads the machine's device key, which provisioning an identity needs, and
+/// `video` opens `/dev/dri`.
+const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
@@ -68,6 +72,45 @@ fn systemctl(verb: &str, unit: &str) -> Result<(), DaemonError> {
     .map(drop)
 }
 
+/// How long the compositor may take to paint and encode a snapshot after
+/// acknowledging it: the reply comes before the frame that writes the file.
+const SNAPSHOT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The PNG at `path`, once it is there in full.
+fn await_png(path: &Path, timeout: std::time::Duration) -> Result<Vec<u8>, DaemonError> {
+    let started = std::time::Instant::now();
+    loop {
+        match fs::read(path) {
+            Ok(bytes) if png_complete(&bytes) => return Ok(bytes),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DaemonError::io("read snapshot")(error)),
+        }
+        if started.elapsed() >= timeout {
+            return Err(DaemonError::Apply {
+                step: "read snapshot".into(),
+                detail: format!(
+                    "the compositor acknowledged the snapshot but wrote no complete PNG to {} \
+                     within {}s; its journal says why",
+                    path.display(),
+                    timeout.as_secs()
+                ),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Whether `bytes` is a whole PNG: the signature, and the `IEND` chunk last.
+fn png_complete(bytes: &[u8]) -> bool {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const IEND: &[u8] = b"\0\0\0\0IEND\xae\x42\x60\x82";
+    bytes.starts_with(SIGNATURE)
+        && bytes
+            .get(SIGNATURE.len()..)
+            .is_some_and(|rest| rest.ends_with(IEND))
+}
+
 fn uid_of(user: &str) -> Option<u32> {
     let output = Command::new("getent")
         .args(["passwd", user])
@@ -97,6 +140,10 @@ impl Apply for SystemdApply {
 
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         if let Some(uid) = uid_of(user) {
+            run(
+                "usermod",
+                Command::new("usermod").args(["--append", "--groups", SLOT_USER_GROUPS, user]),
+            )?;
             return Ok(uid);
         }
         // A regular (non-system) user, like the production login it stands in for.
@@ -107,6 +154,8 @@ impl Apply for SystemdApply {
                 "--user-group",
                 "--comment",
                 "Tilo dev slot",
+                "--groups",
+                SLOT_USER_GROUPS,
                 user,
             ]),
         )?;
@@ -231,7 +280,7 @@ impl Apply for SystemdApply {
         .map(drop)
     }
 
-    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError> {
+    fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
         // The configfs device, the logind seat and the uinput `phys` tag share
         // one name; the shipped 72-vkms-seat.rules maps the card to the seat.
         let seat = format!("seat-{slot}");
@@ -241,7 +290,8 @@ impl Apply for SystemdApply {
                 "modprobe vkms",
                 Command::new("modprobe").args(["vkms", "create_default_dev=0"]),
             )?;
-            vkms_create(&device).map_err(DaemonError::io(format!("create vkms device {seat}")))?;
+            vkms_create(&device, connectors)
+                .map_err(DaemonError::io(format!("create vkms device {seat}")))?;
             run("udevadm settle", Command::new("udevadm").arg("settle"))?;
         }
         if vkms_card(&seat).is_none() {
@@ -251,6 +301,55 @@ impl Apply for SystemdApply {
             });
         }
         Ok(seat)
+    }
+
+    fn apply_display(
+        &mut self,
+        _slot: &str,
+        user: &str,
+        outputs: &[OutputSpec],
+    ) -> Result<String, DaemonError> {
+        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "tilo-vmd display-apply".into(),
+            detail: format!("no user {user}"),
+        })?;
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
+        // The session's own environment: the settings file under HOME, the
+        // compositor's display-state.json under XDG_RUNTIME_DIR.
+        run(
+            "tilo-vmd display-apply",
+            Command::new("runuser")
+                .args(["-u", user, "--", "env"])
+                .arg(format!("HOME={home}"))
+                .arg(format!("USER={user}"))
+                .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
+                .arg(exe)
+                .arg("display-apply")
+                .arg("--outputs")
+                .arg(tilo_vm_protocol::display::format_outputs(outputs)),
+        )
+        .map(|out| out.trim().to_owned())
+    }
+
+    fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError> {
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        let tilo = Path::new(&home).join(".config/tilo");
+        for name in DESKTOP_STATE {
+            let path = tilo.join(name);
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match removed {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(DaemonError::io(format!("remove {}", path.display()))(error));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn release_seat(&mut self, _slot: &str, seat: &str) -> Result<(), DaemonError> {
@@ -352,6 +451,17 @@ impl Apply for SystemdApply {
             .filter(|p| *p > 0)
     }
 
+    fn session_environment(&mut self, slot: &str) -> Vec<(String, String)> {
+        self.session_pid(slot)
+            .and_then(|pid| fs::read(format!("/proc/{pid}/environ")).ok())
+            .map(|environ| {
+                let mut env = crate::exec::session_env(&environ);
+                crate::exec::add_published_wayland_display(&mut env);
+                env
+            })
+            .unwrap_or_default()
+    }
+
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
         let main = self.session_pid(slot)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
@@ -412,7 +522,7 @@ impl Apply for SystemdApply {
                 detail: result.stderr,
             });
         }
-        let bytes = fs::read(&path).map_err(DaemonError::io("read snapshot"));
+        let bytes = await_png(&path, SNAPSHOT_WRITE_TIMEOUT);
         let _ = fs::remove_file(&path);
         bytes
     }
@@ -421,15 +531,16 @@ impl Apply for SystemdApply {
         &mut self,
         slot: &str,
         seat: &str,
+        geometry: Option<input::Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
         let socket = input::socket_path(slot);
         let reply = match input::send(&socket, actions) {
-            Ok(reply) if reply.seat == seat => reply,
+            Ok(reply) if reply.seat == seat && reply.geometry == geometry => reply,
             // Not running yet, or its devices belong to the seat the slot had
             // before a seat0 claim or release: (re)create them.
             _ => {
-                start_input_server(slot, seat, &socket)?;
+                start_input_server(slot, seat, geometry, &socket)?;
                 input::send(&socket, actions).map_err(|e| DaemonError::Apply {
                     step: format!("send input to {}", input::unit_name(slot)),
                     detail: e.to_string(),
@@ -486,22 +597,34 @@ impl Apply for SystemdApply {
 
 /// Start `tilo-vmd input-serve` for `slot` as a transient unit and wait
 /// until its socket answers and udev has handed the devices to the seat.
-fn start_input_server(slot: &str, seat: &str, socket: &Path) -> Result<(), DaemonError> {
+fn start_input_server(
+    slot: &str,
+    seat: &str,
+    geometry: Option<input::Geometry>,
+    socket: &Path,
+) -> Result<(), DaemonError> {
     let unit = input::unit_name(slot);
     let _ = Command::new("systemctl").args(["stop", &unit]).output();
     let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
-    run(
-        &format!("systemd-run --unit {unit}"),
-        Command::new("systemd-run")
-            .arg(format!("--unit={unit}"))
-            .args(["--collect", "--quiet"])
-            .arg(format!(
-                "--description=tilo-vm input devices for slot {slot}"
-            ))
-            .arg(exe)
-            .args(["input-serve", "--seat", seat, "--socket"])
-            .arg(socket),
-    )?;
+    let mut command = Command::new("systemd-run");
+    command
+        .arg(format!("--unit={unit}"))
+        .args(["--collect", "--quiet"])
+        .arg(format!(
+            "--description=tilo-vm input devices for slot {slot}"
+        ))
+        .arg(exe)
+        .args(["input-serve", "--seat", seat, "--socket"])
+        .arg(socket);
+    if let Some(input::Geometry {
+        desktop: (width, height),
+        touch: (touch_width, touch_height),
+    }) = geometry
+    {
+        command.arg(format!("--extent={width}x{height}"));
+        command.arg(format!("--touch-extent={touch_width}x{touch_height}"));
+    }
+    run(&format!("systemd-run --unit {unit}"), &mut command)?;
     for _ in 0..100 {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             // New input devices reach the compositor via udev and libinput.
@@ -519,6 +642,15 @@ fn start_input_server(slot: &str, seat: &str, socket: &Path) -> Result<(), Daemo
         ),
     })
 }
+
+/// The desktop layout under `~/.config/tilo`: the tree, its document and
+/// the document's meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 4] = [
+    "state.json",
+    "state.automerge",
+    "state.automerge.meta",
+    "state.json.invocations",
+];
 
 fn home_of(user: &str) -> Option<String> {
     let output = Command::new("getent")
@@ -570,36 +702,31 @@ fn proc_field(pid: u32, field: &str) -> Option<String> {
         .map(|v| v.trim().to_owned())
 }
 
-/// Connectors per card. Fixed at creation: vkms refuses topology changes
-/// while a device is enabled, so hotplug means toggling a connector's
-/// `status` between connected (1) and disconnected (2).
-const VKMS_CONNECTORS: u32 = 1;
-
-/// One primary plane, CRTC and encoder, and [`VKMS_CONNECTORS`] connectors;
-/// spare connectors start disconnected. Link targets must be absolute.
-fn vkms_create(device: &Path) -> std::io::Result<()> {
-    for dir in ["", "planes/p0", "crtcs/c0", "encoders/e0"] {
-        fs::create_dir(device.join(dir))?;
-    }
-    fs::write(device.join("planes/p0/type"), "1")?;
-    symlink(
-        &device.join("crtcs/c0"),
-        &device.join("planes/p0/possible_crtcs/c0"),
-    )?;
-    symlink(
-        &device.join("crtcs/c0"),
-        &device.join("encoders/e0/possible_crtcs/c0"),
-    )?;
-    for index in 0..VKMS_CONNECTORS {
-        let connector = device.join(format!("connectors/n{index}"));
-        fs::create_dir(&connector)?;
-        symlink(
-            &device.join("encoders/e0"),
-            &connector.join("possible_encoders/e0"),
-        )?;
-        if index > 0 {
-            fs::write(connector.join("status"), "2")?;
+/// One independent output per connector: each gets its own primary plane,
+/// CRTC and encoder, so every output can run its own mode. The topology is
+/// fixed at creation: vkms refuses changes while a device is enabled, so
+/// hotplug means toggling a connector's `status` between connected (1) and
+/// disconnected (2). vkms names the connectors `Virtual-1`, `Virtual-2`, ...
+/// in this order. Link targets must be absolute.
+fn vkms_create(device: &Path, connectors: u32) -> std::io::Result<()> {
+    fs::create_dir(device)?;
+    for index in 0..connectors.max(1) {
+        let (plane, crtc, encoder, connector) = (
+            device.join(format!("planes/p{index}")),
+            device.join(format!("crtcs/c{index}")),
+            device.join(format!("encoders/e{index}")),
+            device.join(format!("connectors/n{index}")),
+        );
+        for dir in [&plane, &crtc, &encoder, &connector] {
+            fs::create_dir(dir)?;
         }
+        fs::write(plane.join("type"), "1")?;
+        symlink(&crtc, &plane.join(format!("possible_crtcs/c{index}")))?;
+        symlink(&crtc, &encoder.join(format!("possible_crtcs/c{index}")))?;
+        symlink(
+            &encoder,
+            &connector.join(format!("possible_encoders/e{index}")),
+        )?;
     }
     fs::write(device.join("enabled"), "1")
 }
@@ -637,4 +764,46 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
                 .and_then(|n| n.strip_prefix("card"))
                 .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_is_read_once_the_compositor_has_written_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(b"\0\0\0\x0dIHDR-and-pixels");
+        png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
+        // Phase `only_a_whole_png_counts`.
+        {
+            assert!(png_complete(&png));
+            assert!(!png_complete(&png[..png.len() - 1]));
+            assert!(!png_complete(&png[..20]));
+            assert!(!png_complete(b""));
+        }
+        // Phase `the_read_waits_for_the_frame_that_writes_the_file`.
+        {
+            let writer = {
+                let (path, png) = (path.clone(), png.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    fs::write(&path, &png[..20]).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    fs::write(&path, &png).unwrap();
+                })
+            };
+            let read = await_png(&path, std::time::Duration::from_secs(10)).unwrap();
+            writer.join().unwrap();
+            assert_eq!(read, png);
+        }
+        // Phase `a_snapshot_that_never_lands_is_an_error_not_a_hang`.
+        {
+            fs::write(&path, &png[..20]).unwrap();
+            let error = await_png(&path, std::time::Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("no complete PNG"), "{error}");
+        }
+    }
 }

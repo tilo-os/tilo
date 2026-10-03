@@ -79,6 +79,10 @@ pub enum TransferCharacteristics {
     /// sRGB piecewise-linear (matches sRGB spec, subtly different from
     /// BT.709). CICP 13.
     Srgb,
+    /// Linear light, extended range: `1.0` is SDR reference white and
+    /// values above it are HDR highlights (scRGB with BT.709 primaries).
+    /// CICP 8.
+    Linear,
     /// Unspecified. CICP 2.
     Unspecified,
 }
@@ -88,6 +92,7 @@ impl TransferCharacteristics {
         match self {
             TransferCharacteristics::Bt709 => 1,
             TransferCharacteristics::Unspecified => 2,
+            TransferCharacteristics::Linear => 8,
             TransferCharacteristics::Srgb => 13,
             TransferCharacteristics::SmpteSt2084 => 16,
             TransferCharacteristics::AribStdB67 => 18,
@@ -205,7 +210,15 @@ impl Default for Colorimetry {
 mod tests {
     use super::*;
 
+    /// CICP code points match H.273, HDR is detected, and colorimetry serialises kebab-case.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn colorimetry_maps_to_h273_detects_hdr_and_serialises_kebab_case() {
+        cicp_matches_h273();
+        hdr_detection();
+        colorimetry_serialises_kebab_case();
+    }
+
     fn cicp_matches_h273() {
         // Table 2 spot checks.
         assert_eq!(ColorPrimaries::Bt709.cicp(), 1);
@@ -215,14 +228,12 @@ mod tests {
         assert_eq!(MatrixCoefficients::Bt2020NonConstant.cicp(), 9);
     }
 
-    #[test]
     fn hdr_detection() {
         assert!(!Colorimetry::sdr_bt709().is_hdr());
         assert!(Colorimetry::hdr10().is_hdr());
         assert!(Colorimetry::hdr_hlg().is_hdr());
     }
 
-    #[test]
     fn colorimetry_serialises_kebab_case() {
         let s = serde_json::to_string(&Colorimetry::hdr10()).unwrap();
         assert!(s.contains("bt2020"), "got {s}");

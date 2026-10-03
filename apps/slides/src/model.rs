@@ -18,6 +18,8 @@
 
 use ui::ColorCompat;
 use ui::paint::with_alpha;
+use ui::widget::BlockContent;
+use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -129,7 +131,7 @@ impl TextAlign {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Element {
     pub id: Id,
     pub kind: ElementKind,
@@ -137,9 +139,13 @@ pub struct Element {
     pub y: f64,
     pub w: f64,
     pub h: f64,
-    /// Text body (text elements). May contain `\n` for explicit line
-    /// breaks; each line is aligned independently.
+    /// The text as plain text, a line per paragraph: what search, the
+    /// outline, speaker tools and export read.
     pub text: String,
+    /// The text as written: paragraphs with their marks (bold, italic,
+    /// links). Empty for an element built from plain `text` alone (a
+    /// template, an import), which [`Self::rich_blocks`] derives.
+    pub blocks: Vec<BlockContent>,
     /// Source path of an image element's picture on disk. Empty for every
     /// non-image element. Only the path travels in the CRDT; the decoded
     /// pixels are a per-peer runtime cache keyed by this path.
@@ -161,36 +167,51 @@ pub struct Element {
 
 impl Element {
     pub fn text(text: &str, x: f64, y: f64, w: f64, h: f64, font_size: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Text,
-            x,
-            y,
-            w,
-            h,
-            text: text.to_string(),
-            src: String::new(),
-            fill: "text".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 0.0,
-            z: 0,
-        }
+        let mut element = Element::of_kind(new_id(), ElementKind::Text, x, y, w, h);
+        element.text = text.to_string();
+        element.font_size = font_size;
+        element
     }
 
     pub fn shape(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        Element::shape_with_id(new_id(), kind, x, y, w, h)
+    }
+
+    /// An image element backed by the picture at `src` (a filesystem path).
+    /// The pixels are decoded lazily off the UI thread and cached by path.
+    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::of_kind(new_id(), ElementKind::Image, x, y, w, h);
+        element.src = src.to_string();
+        element
+    }
+
+    /// A new element of `kind` with that kind's default style and the given
+    /// id: what [`Self::text`], [`Self::image`] and the shapes start from.
+    /// Taking the id rather than minting one lets an action create an
+    /// element whose id comes from its deterministic context.
+    pub fn of_kind(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::shape_with_id(id, kind, x, y, w, h);
+        match kind {
+            ElementKind::Text => element.fill = "text".into(),
+            ElementKind::Image => {
+                element.fill = "surface".into();
+                element.radius = 12.0;
+            }
+            ElementKind::Rect | ElementKind::Ellipse | ElementKind::Line => {}
+        }
+        element
+    }
+
+    fn shape_with_id(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
         Element {
-            id: new_id(),
+            id,
             kind,
             x,
             y,
             w,
             h,
             text: String::new(),
+            blocks: Vec::new(),
             src: String::new(),
             fill: if kind == ElementKind::Line {
                 "none".into()
@@ -212,28 +233,27 @@ impl Element {
         }
     }
 
-    /// An image element backed by the picture at `src` (a filesystem path).
-    /// The pixels are decoded lazily off the UI thread and cached by path.
-    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Image,
-            x,
-            y,
-            w,
-            h,
-            text: String::new(),
-            src: src.to_string(),
-            fill: "surface".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size: 32.0,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 12.0,
-            z: 0,
+    /// The text as written: its blocks, or for an element built from plain
+    /// text, a paragraph per line carrying the element's bold and italic
+    /// over all of it.
+    pub fn rich_blocks(&self) -> Vec<BlockContent> {
+        if !self.blocks.is_empty() {
+            return self.blocks.clone();
         }
+        paragraphs_of(&self.text, self.bold, self.italic)
+    }
+
+    /// Replace the text with `blocks`, keeping the plain text in step. The
+    /// blocks' document ids are dropped: the model shows words, and the
+    /// document names its own paragraphs.
+    pub fn set_blocks(&mut self, mut blocks: Vec<BlockContent>) {
+        for block in &mut blocks {
+            block.id.clear();
+        }
+        self.text = plain_text_of(&blocks);
+        self.bold = !blocks.is_empty() && covered_by(&blocks, &Mark::Bold);
+        self.italic = !blocks.is_empty() && covered_by(&blocks, &Mark::Italic);
+        self.blocks = blocks;
     }
 
     #[must_use]
@@ -246,6 +266,139 @@ impl Element {
     pub fn center_x(mut self) -> Element {
         self.align = TextAlign::Center;
         self
+    }
+}
+
+/// Plain text as paragraphs, a paragraph per line, with `bold` and `italic`
+/// over every one: the first-format text box as written.
+pub fn paragraphs_of(text: &str, bold: bool, italic: bool) -> Vec<BlockContent> {
+    text.split('\n')
+        .map(|line| {
+            let mut block = BlockContent::paragraph("", line);
+            if !line.is_empty() {
+                for (on, mark) in [(bold, Mark::Bold), (italic, Mark::Italic)] {
+                    if on {
+                        block.marks.push(MarkSpan::new(0..line.len(), mark));
+                    }
+                }
+            }
+            block
+        })
+        .collect()
+}
+
+/// A paragraph's text as runs of one weight and slant: `(text, bold,
+/// italic)`, in order, the way presentation formats store text.
+pub fn runs_of(block: &BlockContent) -> Vec<(&str, bool, bool)> {
+    let styled = |mark: &Mark, at: usize| {
+        block
+            .marks
+            .iter()
+            .any(|span| &span.mark == mark && span.range.start <= at && at < span.range.end)
+    };
+    let mut cuts: Vec<usize> = vec![0, block.text.len()];
+    for span in &block.marks {
+        if matches!(span.mark, Mark::Bold | Mark::Italic) {
+            cuts.push(span.range.start.min(block.text.len()));
+            cuts.push(span.range.end.min(block.text.len()));
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .filter_map(|pair| {
+            let [start, end] = pair else { return None };
+            let text = block.text.get(*start..*end)?;
+            (!text.is_empty()).then(|| {
+                (
+                    text,
+                    styled(&Mark::Bold, *start),
+                    styled(&Mark::Italic, *start),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Append a run of `text` to `block`, bold and italic as given.
+pub fn push_run(block: &mut BlockContent, text: &str, bold: bool, italic: bool) {
+    let start = block.text.len();
+    block.text.push_str(text);
+    let end = block.text.len();
+    if start == end {
+        return;
+    }
+    for (on, mark) in [(bold, Mark::Bold), (italic, Mark::Italic)] {
+        if !on {
+            continue;
+        }
+        // A run continuing the one before extends its mark.
+        match block
+            .marks
+            .iter_mut()
+            .find(|span| span.mark == mark && span.range.end == start)
+        {
+            Some(span) => span.range.end = end,
+            None => block.marks.push(MarkSpan::new(start..end, mark)),
+        }
+    }
+}
+
+/// The plain text of `blocks`, a line per paragraph.
+pub fn plain_text_of(blocks: &[BlockContent]) -> String {
+    blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `mark` covers every character of `blocks`.
+pub fn covered_by(blocks: &[BlockContent], mark: &Mark) -> bool {
+    blocks.iter().all(|block| {
+        let mut covered = 0;
+        let mut spans: Vec<_> = block
+            .marks
+            .iter()
+            .filter(|span| &span.mark == mark)
+            .map(|span| span.range.clone())
+            .collect();
+        spans.sort_by_key(|range| range.start);
+        for range in spans {
+            if range.start > covered {
+                return false;
+            }
+            covered = covered.max(range.end);
+        }
+        covered >= block.text.len()
+    })
+}
+
+/// Two elements are equal when they show the same thing: the same words
+/// with the same marks, however those were written down (as blocks, or as
+/// plain text with the box's bold and italic).
+impl PartialEq for Element {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.kind == other.kind
+            && self.x == other.x
+            && self.y == other.y
+            && self.w == other.w
+            && self.h == other.h
+            && self.text == other.text
+            && self.src == other.src
+            && self.fill == other.fill
+            && self.stroke == other.stroke
+            && self.stroke_width == other.stroke_width
+            && self.font_size == other.font_size
+            && self.align == other.align
+            && self.radius == other.radius
+            && self.z == other.z
+            && if self.blocks.is_empty() && other.blocks.is_empty() {
+                self.bold == other.bold && self.italic == other.italic
+            } else {
+                self.rich_blocks() == other.rich_blocks()
+            }
     }
 }
 
@@ -487,6 +640,9 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
+    /// The `text` and `text-dim` inks for each slide background, in
+    /// [`Background::ALL`] order. See [`Palette::on`].
+    inks: [(Color, Color); 3],
 }
 
 impl Palette {
@@ -500,24 +656,67 @@ impl Palette {
             PaletteKind::Rose => c.semantic.danger,
             PaletteKind::Sky => c.semantic.info,
         };
-        Palette {
+        let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
             accent_deep: mix(accent, c.surfaces.base, 0.62),
             surface: c.surfaces.raised,
             surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
-            // A "Deep" slide is an authored dark treatment whose ink is fixed
-            // white (`on_bg`), so it must stay dark in every OS theme — a
-            // theme-tracking neutral flips near-white in the light palette and
-            // washes the white text out. A fixed deep tone keeps it dramatic.
+            // A "Deep" slide is an authored dark treatment in every OS theme
+            // — a theme-tracking neutral flips near-white in the light
+            // palette. A fixed deep tone keeps it dramatic; its text inks
+            // are chosen against it below.
             deep: Color::from_rgb8(15, 23, 42),
             text: c.text_primary,
             text_dim: c.text_dim,
-            on_accent: Color::WHITE,
+            // White on the accent where it reads, else the legible ink.
+            on_accent: c.readable_on(accent, Color::WHITE),
             success: c.semantic.success,
             warning: c.semantic.warning,
             danger: c.semantic.danger,
             info: c.semantic.info,
+            inks: [(c.text_primary, c.text_dim); 3],
+        };
+        // The theme's text colours are chosen for the theme's own surfaces;
+        // a slide background can be the opposite (the fixed deep tone under
+        // the light theme's near-black text measured 1.05:1). Resolve the
+        // `text` and `text-dim` roles per background instead: the theme's
+        // ink wherever it clears WCAG AA on that background, otherwise the
+        // legible ink for it, and a dim ink that is a softened version of
+        // whichever text ink won — still clearing AA.
+        palette.inks = Background::ALL.map(|background| {
+            let ground = palette.slide_bg(background);
+            let text = c.readable_on(ground, c.text_primary);
+            let preferred_dim = if text == c.text_primary {
+                c.text_dim
+            } else {
+                mix(text, ground, 0.3)
+            };
+            (text, c.readable_on(ground, preferred_dim))
+        });
+        palette
+    }
+
+    /// This palette as it resolves on a slide with background `bg`: the
+    /// `text` and `text-dim` roles become the inks that contrast with that
+    /// background, so text styled with a theme text role stays legible when
+    /// its slide switches to the accent or deep treatment, in either OS
+    /// theme. Every other role is unchanged.
+    #[must_use]
+    pub fn on(&self, bg: Background) -> Palette {
+        let index = Background::ALL
+            .iter()
+            .position(|candidate| *candidate == bg)
+            .unwrap_or(0);
+        let (text, text_dim) = self
+            .inks
+            .get(index)
+            .copied()
+            .unwrap_or((self.text, self.text_dim));
+        Palette {
+            text,
+            text_dim,
+            ..*self
         }
     }
 
@@ -568,13 +767,10 @@ impl Palette {
         }
     }
 
-    /// Default body / heading text colour for a slide background — white
-    /// reads on accent & deep; the theme text colour on surface.
+    /// Default body / heading text colour for a slide background: the ink
+    /// the `text` role resolves to on it (see [`Palette::on`]).
     pub fn on_bg(&self, bg: Background) -> Color {
-        match bg {
-            Background::Surface => self.text,
-            Background::Accent | Background::Deep => Color::WHITE,
-        }
+        self.on(bg).text
     }
 }
 
@@ -914,45 +1110,127 @@ fn seed_slide_closing() -> Slide {
 mod tests {
     use super::*;
 
+    /// Seed deck, z increments, kind/align round-trips and palette role fallback.
     #[test]
-    fn seed_deck_has_designed_slides() {
-        let d = seed_deck();
-        assert_eq!(d.slides.len(), 5);
-        // Every slide has at least one element.
-        for s in &d.slides {
-            assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
+    fn deck_model_seeds_orders_and_round_trips_kinds() {
+        // Case `seed_deck_has_designed_slides`.
+        {
+            let d = seed_deck();
+            assert_eq!(d.slides.len(), 5);
+            // Every slide has at least one element.
+            for s in &d.slides {
+                assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
+            }
+        }
+
+        // Case `add_element_increments_z`.
+        {
+            let mut s = Slide::new(Layout::Blank);
+            let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+            let b = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+            assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
+        }
+
+        // Case `kind_and_align_round_trip`.
+        {
+            for k in [
+                ElementKind::Text,
+                ElementKind::Rect,
+                ElementKind::Ellipse,
+                ElementKind::Line,
+                ElementKind::Image,
+            ] {
+                assert_eq!(ElementKind::from_str(k.as_str()), k);
+            }
+            for a in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+                assert_eq!(TextAlign::from_str(a.as_str()), a);
+            }
+        }
+
+        // Case `palette_resolves_none_role`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let p = Palette::resolve(PaletteKind::Indigo, &theme);
+            assert!(p.resolve_role("none").is_none());
+            assert!(p.resolve_role("accent").is_some());
         }
     }
 
+    /// Every text element a template or a layout's starting content creates
+    /// stays legible on every slide background, under every accent palette,
+    /// in the light and the dark OS theme: WCAG AA, 4.5:1 for body text and
+    /// 3:1 for large titles — measured on the colour the renderer draws.
     #[test]
-    fn add_element_increments_z() {
-        let mut s = Slide::new(Layout::Blank);
-        let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
-        let b = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
-        assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
-    }
+    fn template_text_contrasts_with_every_background_in_both_themes() {
+        let mut templates: Vec<(String, Element)> = Vec::new();
+        for (name, deck) in [("starter deck", starter_deck())] {
+            for slide in deck.slides {
+                for element in slide.elements {
+                    templates.push((format!("{name}: {:?}", element.text), element));
+                }
+            }
+        }
+        for element in crate::actions::new_slide_template().elements {
+            templates.push((format!("new slide: {:?}", element.text), element));
+        }
+        templates.push((
+            "inserted text box".into(),
+            crate::actions::inserted_element_template(ElementKind::Text),
+        ));
+        let texts: Vec<&(String, Element)> = templates
+            .iter()
+            .filter(|(_, element)| element.kind == ElementKind::Text)
+            .collect();
+        assert!(
+            texts.len() >= 5,
+            "the templates carry their text: {texts:?}"
+        );
 
-    #[test]
-    fn kind_and_align_round_trip() {
-        for k in [
-            ElementKind::Text,
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
+        let mut failures = Vec::new();
+        for (theme_name, theme) in [
+            ("light", ui::theme::Theme::light()),
+            ("dark", ui::theme::Theme::dark()),
         ] {
-            assert_eq!(ElementKind::from_str(k.as_str()), k);
+            for kind in PaletteKind::ALL {
+                let palette = Palette::resolve(kind, &theme);
+                for background in Background::ALL {
+                    let on = palette.on(background);
+                    let ground = on.slide_bg(background);
+                    for (name, element) in &texts {
+                        // As `render::draw_text_element` resolves it.
+                        let ink = on.resolve_role(&element.fill).unwrap_or(on.text);
+                        let ratio = ui::color::contrast_ratio(ink, ground);
+                        let title = element.bold && element.font_size >= 24.0;
+                        let minimum = if title { 3.0 } else { 4.5 };
+                        if ratio < minimum {
+                            failures.push(format!(
+                                "{name} on {} ({}, {theme_name}): {ratio:.2}:1 < {minimum}:1",
+                                background.as_str(),
+                                kind.as_str(),
+                            ));
+                        }
+                    }
+                }
+            }
         }
-        for a in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
-            assert_eq!(TextAlign::from_str(a.as_str()), a);
-        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The case that was reported: text in the theme's text role on a slide
+    /// switched to the deep background, in the light theme.
     #[test]
-    fn palette_resolves_none_role() {
-        let theme = ui::theme::Theme::dark();
-        let p = Palette::resolve(PaletteKind::Indigo, &theme);
-        assert!(p.resolve_role("none").is_none());
-        assert!(p.resolve_role("accent").is_some());
+    fn theme_text_on_a_deep_slide_is_light_in_the_light_theme() {
+        let palette = Palette::resolve(PaletteKind::Indigo, &ui::theme::Theme::light());
+        let deep = palette.slide_bg(Background::Deep);
+        assert!(ui::color::contrast_ratio(palette.text, deep) < 1.5);
+        let on = palette.on(Background::Deep);
+        for role in ["text", "text-dim"] {
+            let ink = on.resolve_role(role).unwrap();
+            assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
+        }
+        // The surface keeps the theme's own text colours.
+        let surface = palette.on(Background::Surface);
+        assert_eq!(surface.text, palette.text);
+        assert_eq!(surface.text_dim, palette.text_dim);
     }
 }

@@ -243,6 +243,7 @@ refuses it again at run time.
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
 | Shortcut pipelines (check + run) | `crates/collab/automation` |
+| Keyboard shortcuts (`keyboard-shortcuts`: list, rebind, reset) | `crates/session/shell/src/shell/keyboard_shortcuts.rs`, catalogue in `crates/system/settings-store/src/keyboard_shortcuts.rs` |
 | AI transforms | `apps/agent/src/transform.rs` |
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |

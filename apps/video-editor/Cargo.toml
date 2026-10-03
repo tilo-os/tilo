@@ -16,11 +16,12 @@ path = "src/main.rs"
 # Media import uses the shared host file chooser (`ui::portal`) in every build;
 # it is independent of the GStreamer decode/export features.
 [dependencies]
-xdg-paths = { path = "../../crates/system/xdg-paths" }
-# `gpu-video` brings in the planar upload + YUV shader the compositor
-# paints hardware-decoded frames with. Without it every decoded frame
-# would have to be converted to RGBA on the CPU first.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal", "gpu-video"] }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+fnv.workspace = true
+# `ui` brings the host file chooser and the planar upload + YUV shader the
+# compositor paints hardware-decoded frames with (`ui::gpu_video`).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -39,18 +40,26 @@ taffy.workspace = true
 # `gst` feature so the default fleet build (and `--shots`) compiles without
 # the gstreamer-1.0 dev headers present. ffmpeg is intentionally not a dep.
 gstreamer = { workspace = true, optional = true }
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
+tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
+
+# The page build has no GStreamer: the editor runs with representative
+# preview frames there (the preview's blocking frame-exact seeks need an
+# asynchronous path before the page's media elements can serve them).
+[package.metadata.tilo]
+web-features = []
 
 [features]
 # Shared-runtime build, as the rest of the fleet has adopted: links the
@@ -62,10 +71,14 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
+decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
 gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

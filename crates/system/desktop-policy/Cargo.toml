@@ -2,21 +2,24 @@
 name = "desktop-policy"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Canonical desktop policy shared by the Tilo launcher, Settings and workspace chrome."
 
 [features]
 # Reading and writing personal defaults on the host filesystem, and the
 # storage scanner. Without it the crate is the pure policy vocabulary and
 # resolver, which the desktop model embeds.
 default = ["host-storage"]
-host-storage = ["dep:atomic-file", "dep:package-store", "dep:xdg-paths"]
+host-storage = ["dep:tilo-files", "dep:package-store", "dep:tilo-xdg-paths"]
 
 [dependencies]
-xdg-paths = { path = "../xdg-paths", optional = true }
+tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
 # Which packages are installed and where their trees are.
-package-store = { path = "../../packaging/package-store", optional = true }
-atomic-file = { path = "../atomic-file", optional = true }
+package-store = { version = "0.1.0", path = "../../packaging/package-store", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

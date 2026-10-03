@@ -175,140 +175,162 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn kernel_applies_available_scoped_game_hints() {
-        std::thread::spawn(|| {
-            let applied = apply_game_uclamp();
-            let uclamp_error = (applied != 0).then(std::io::Error::last_os_error);
-            assert_eq!(apply_game_timer_slack(), 0);
-            if applied == 0 {
-                let mut scheduler = game_sched_attr();
-                // SAFETY: scheduler points to a live sched_attr-sized writable
-                // object; pid/flags zero request the calling thread.
-                let result = unsafe {
-                    libc::syscall(
-                        libc::SYS_sched_getattr,
-                        0,
-                        &raw mut scheduler,
-                        std::mem::size_of::<SchedAttr>(),
-                        0,
-                    )
-                };
-                assert_eq!(result, 0);
-                assert_eq!(scheduler.util_min, GAME_UTIL_MIN);
-            } else {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn kernel_applies_scoped_game_hints_through_exec() {
+        // Phase `game_hints_survive_exec_into_the_final_process`.
+        fn game_hints_survive_exec_into_the_final_process() {
+            if std::env::var_os(EXEC_PROBE_ENV).is_some() {
+                // This is the post-exec probe. It deliberately reads kernel state
+                // rather than trusting values handed to it by the parent.
+                // SAFETY: PR_GET_TIMERSLACK has no pointer arguments.
+                let timer_slack = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
                 assert_eq!(
-                    uclamp_error.and_then(|error| error.raw_os_error()),
-                    Some(libc::EOPNOTSUPP),
-                    "uclamp may be absent, but permission/ABI errors are regressions"
+                    i64::from(timer_slack),
+                    i64::try_from(GAME_TIMER_SLACK_NS).unwrap()
                 );
+
+                // SAFETY: ioprio_get consumes scalar arguments only.
+                let io_priority =
+                    unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+                if std::env::var_os("TILO_GAME_HINT_EXPECT_IOPRIO").is_some() {
+                    assert_eq!(io_priority, libc::c_long::from(game_ioprio()));
+                }
+                if std::env::var_os("TILO_GAME_HINT_EXPECT_UCLAMP").is_some() {
+                    assert_eq!(current_uclamp_min(), Some(GAME_UTIL_MIN));
+                }
+                return;
             }
-            // SAFETY: PR_GET_TIMERSLACK takes no pointer arguments and returns
-            // the current calling thread's value directly.
-            let actual = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
-            assert_eq!(actual, 1_000);
-            let io_applied = apply_game_io_priority();
-            let io_error = (io_applied != 0).then(std::io::Error::last_os_error);
-            if io_applied == 0 {
-                // SAFETY: ioprio_get consumes scalar arguments and returns the
-                // packed class/priority for the current process.
-                let actual = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
-                assert_eq!(actual, libc::c_long::from(game_ioprio()));
-            } else {
-                assert!(matches!(
-                    io_error.and_then(|error| error.raw_os_error()),
-                    Some(libc::ENOSYS | libc::EOPNOTSUPP)
-                ));
-            }
-        })
-        .join()
-        .expect("game-hint test thread");
-    }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn public_hint_path_applies_timer_slack_or_reports_a_real_error() {
-        std::thread::spawn(|| {
-            apply_game_performance_hints().expect("Tilo game scheduling profile");
-            // SAFETY: PR_GET_TIMERSLACK returns the calling thread's scalar
-            // value and consumes no pointer arguments.
-            let actual = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
-            assert_eq!(actual, 1_000);
-        })
-        .join()
-        .expect("game profile test thread");
-    }
+            std::thread::spawn(|| {
+                let uclamp_applied = apply_game_uclamp() == 0;
+                assert_eq!(apply_game_timer_slack(), 0);
+                let ioprio_applied = apply_game_io_priority() == 0;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn game_uclamp_preserves_existing_nice_value() {
-        std::thread::spawn(|| {
-            // SAFETY: setpriority consumes scalar arguments. A positive nice
-            // value is always an unprivileged, thread-local de-prioritization
-            // on Linux and keeps this mutation inside the test thread.
-            assert_eq!(unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 7) }, 0);
-            let before = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
-            assert_eq!(before, 7);
-
-            let applied = apply_game_uclamp();
-            if applied == 0 {
-                let after = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
-                assert_eq!(after, before);
-            } else {
-                assert_eq!(
-                    std::io::Error::last_os_error().raw_os_error(),
-                    Some(libc::EOPNOTSUPP)
+                let executable = std::env::current_exe().expect("current test executable");
+                let mut child = std::process::Command::new(executable);
+                child
+                    .arg("--exact")
+                    .arg("performance::tests::kernel_applies_scoped_game_hints_through_exec")
+                    .arg("--nocapture")
+                    .env(EXEC_PROBE_ENV, "1");
+                if uclamp_applied {
+                    child.env("TILO_GAME_HINT_EXPECT_UCLAMP", "1");
+                }
+                if ioprio_applied {
+                    child.env("TILO_GAME_HINT_EXPECT_IOPRIO", "1");
+                }
+                let output = child.output().expect("execute game-hint probe");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success(),
+                    "{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
                 );
-            }
-        })
-        .join()
-        .expect("nice-preservation test thread");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn game_hints_survive_exec_into_the_final_process() {
+                // libtest exits 0 when `--exact` selects nothing; require the probe ran.
+                assert!(
+                    stdout.contains("test result: ok. 1 passed"),
+                    "the post-exec probe ran no test: {stdout}"
+                );
+            })
+            .join()
+            .expect("game exec-inheritance test thread");
+        }
+        // Child role: the post-exec probe re-enters this test and must read the
+        // inherited kernel state before any other phase runs.
         if std::env::var_os(EXEC_PROBE_ENV).is_some() {
-            // This is the post-exec probe. It deliberately reads kernel state
-            // rather than trusting values handed to it by the parent.
-            // SAFETY: PR_GET_TIMERSLACK has no pointer arguments.
-            let timer_slack = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
-            assert_eq!(
-                i64::from(timer_slack),
-                i64::try_from(GAME_TIMER_SLACK_NS).unwrap()
-            );
-
-            // SAFETY: ioprio_get consumes scalar arguments only.
-            let io_priority = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
-            if std::env::var_os("TILO_GAME_HINT_EXPECT_IOPRIO").is_some() {
-                assert_eq!(io_priority, libc::c_long::from(game_ioprio()));
-            }
-            if std::env::var_os("TILO_GAME_HINT_EXPECT_UCLAMP").is_some() {
-                assert_eq!(current_uclamp_min(), Some(GAME_UTIL_MIN));
-            }
+            game_hints_survive_exec_into_the_final_process();
             return;
         }
+        // Phase `kernel_applies_available_scoped_game_hints`.
+        {
+            std::thread::spawn(|| {
+                let applied = apply_game_uclamp();
+                let uclamp_error = (applied != 0).then(std::io::Error::last_os_error);
+                assert_eq!(apply_game_timer_slack(), 0);
+                if applied == 0 {
+                    let mut scheduler = game_sched_attr();
+                    // SAFETY: scheduler points to a live sched_attr-sized writable
+                    // object; pid/flags zero request the calling thread.
+                    let result = unsafe {
+                        libc::syscall(
+                            libc::SYS_sched_getattr,
+                            0,
+                            &raw mut scheduler,
+                            std::mem::size_of::<SchedAttr>(),
+                            0,
+                        )
+                    };
+                    assert_eq!(result, 0);
+                    assert_eq!(scheduler.util_min, GAME_UTIL_MIN);
+                } else {
+                    assert_eq!(
+                        uclamp_error.and_then(|error| error.raw_os_error()),
+                        Some(libc::EOPNOTSUPP),
+                        "uclamp may be absent, but permission/ABI errors are regressions"
+                    );
+                }
+                // SAFETY: PR_GET_TIMERSLACK takes no pointer arguments and returns
+                // the current calling thread's value directly.
+                let actual = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
+                assert_eq!(actual, 1_000);
+                let io_applied = apply_game_io_priority();
+                let io_error = (io_applied != 0).then(std::io::Error::last_os_error);
+                if io_applied == 0 {
+                    // SAFETY: ioprio_get consumes scalar arguments and returns the
+                    // packed class/priority for the current process.
+                    let actual =
+                        unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+                    assert_eq!(actual, libc::c_long::from(game_ioprio()));
+                } else {
+                    assert!(matches!(
+                        io_error.and_then(|error| error.raw_os_error()),
+                        Some(libc::ENOSYS | libc::EOPNOTSUPP)
+                    ));
+                }
+            })
+            .join()
+            .expect("game-hint test thread");
+        }
+        // Phase `public_hint_path_applies_timer_slack_or_reports_a_real_error`.
+        {
+            std::thread::spawn(|| {
+                apply_game_performance_hints().expect("Tilo game scheduling profile");
+                // SAFETY: PR_GET_TIMERSLACK returns the calling thread's scalar
+                // value and consumes no pointer arguments.
+                let actual = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
+                assert_eq!(actual, 1_000);
+            })
+            .join()
+            .expect("game profile test thread");
+        }
+        // Phase `game_uclamp_preserves_existing_nice_value`.
+        {
+            std::thread::spawn(|| {
+                // SAFETY: setpriority consumes scalar arguments. A positive nice
+                // value is always an unprivileged, thread-local de-prioritization
+                // on Linux and keeps this mutation inside the test thread.
+                assert_eq!(unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 7) }, 0);
+                let before = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+                assert_eq!(before, 7);
 
-        std::thread::spawn(|| {
-            let uclamp_applied = apply_game_uclamp() == 0;
-            assert_eq!(apply_game_timer_slack(), 0);
-            let ioprio_applied = apply_game_io_priority() == 0;
-
-            let executable = std::env::current_exe().expect("current test executable");
-            let mut child = std::process::Command::new(executable);
-            child
-                .arg("--exact")
-                .arg("performance::tests::game_hints_survive_exec_into_the_final_process")
-                .arg("--nocapture")
-                .env(EXEC_PROBE_ENV, "1");
-            if uclamp_applied {
-                child.env("TILO_GAME_HINT_EXPECT_UCLAMP", "1");
-            }
-            if ioprio_applied {
-                child.env("TILO_GAME_HINT_EXPECT_IOPRIO", "1");
-            }
-            assert!(child.status().expect("execute game-hint probe").success());
-        })
-        .join()
-        .expect("game exec-inheritance test thread");
+                let applied = apply_game_uclamp();
+                if applied == 0 {
+                    let after = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+                    assert_eq!(after, before);
+                } else {
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::EOPNOTSUPP)
+                    );
+                }
+            })
+            .join()
+            .expect("nice-preservation test thread");
+        }
+        // Phase `game_hints_survive_exec_into_the_final_process` (defined above).
+        game_hints_survive_exec_into_the_final_process();
     }
 }

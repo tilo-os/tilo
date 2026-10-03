@@ -1,9 +1,9 @@
-emoji.txt and en.txt are derived from Unicode data files:
+emoji.txt and the <locale>.txt name files are derived from Unicode data files:
 
   - Unicode Emoji 16.0, emoji-test.txt
     https://www.unicode.org/Public/emoji/16.0/emoji-test.txt
-  - Unicode CLDR 46, common/annotations/en.xml and
-    common/annotationsDerived/en.xml
+  - Unicode CLDR 46, common/annotations/<locale>.xml,
+    common/annotationsDerived/<locale>.xml and common/main/<locale>.xml
     https://github.com/unicode-org/cldr/tree/release-46/common
 
 They are distributed under the Unicode License v3, reproduced below.

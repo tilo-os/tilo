@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 accounts = { path = "../../crates/system/accounts" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 zeroize.workspace = true
 automerge.workspace = true
 taffy.workspace = true
@@ -28,10 +28,14 @@ winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -7,7 +7,12 @@
 //! Account inventory in Tilo is presented in one place: this app's External
 //! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
 //! and Nextcloud can be added, edited, tested, reauthenticated, and removed
-//! there. Provider-specific OAuth authorization remains in its owning app.
+//! there. Google Drive, `OneDrive` and Dropbox sign in through the browser
+//! (`OAuth`), Nextcloud through its Login Flow v2, and `iCloud` Drive with an
+//! Apple ID and verification code; `account_custody` keeps those grants and
+//! hands the storage daemon only short-lived credentials. Mail's Gmail and
+//! Outlook sign-in runs in Mail, through the same client registrations and
+//! the same custody.
 //!
 //! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
@@ -22,16 +27,8 @@
 //! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
 //! unchanged while the on-disk store is the shared one. Consequently the
 //! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
-//! view-models** populated from the shared store — the legacy
-//! `MailStore::path` / `MailStore::save` remain only as legacy-format helpers;
-//! every account kind now writes the canonical store.
-//!
-//! # Legacy migration
-//!
-//! Older installs kept `WebDAV` and Nextcloud metadata in per-app JSON files.
-//! [`AccountDirectory::load`] imports those records into the canonical store
-//! once (upsert by stable id), leaving the old files untouched as a rollback
-//! aid. New writes only target the canonical store.
+//! view-models** populated from the shared store; every account kind writes
+//! the canonical store.
 //!
 //! # Credentials are never serialised
 //!
@@ -77,6 +74,16 @@ impl AccountRoot {
         Self {
             explicit: Some(config_root.into()),
         }
+    }
+
+    /// The explicit config root, `None` for the live root.
+    pub fn explicit(&self) -> Option<&std::path::Path> {
+        self.explicit.as_deref()
+    }
+
+    /// Credential custody for cloud accounts over the same stores.
+    pub fn custodian(&self) -> account_custody::Custodian {
+        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     /// The config root, `None` when the live root has no usable home.
@@ -142,14 +149,6 @@ impl AccountRoot {
         }
     }
 
-    /// A legacy per-app store file (`files/accounts.json`, …).
-    fn legacy_path(&self, relative: &str) -> Option<PathBuf> {
-        match &self.explicit {
-            Some(root) => Some(root.join(relative)),
-            None => settings_store::config_path(std::path::Path::new(relative)),
-        }
-    }
-
     fn mutation_journal_path(&self) -> Result<PathBuf, String> {
         Ok(accounts::accounts_dir_in(&self.require()?).join("mutation-journal.json"))
     }
@@ -175,8 +174,12 @@ impl AccountRoot {
         };
         let bytes = serde_json::to_vec(&journal)
             .map_err(|error| format!("could not serialize account transaction: {error}"))?;
-        atomic_file::write_creating_parent_with_mode(&self.mutation_journal_path()?, &bytes, 0o600)
-            .map_err(|error| format!("could not persist account transaction intent: {error}"))
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &self.mutation_journal_path()?,
+            &bytes,
+            0o600,
+        )
+        .map_err(|error| format!("could not persist account transaction intent: {error}"))
     }
 
     /// # Errors
@@ -228,8 +231,12 @@ impl AccountRoot {
         let vault_path = accounts::vault_dir_in(&self.require()?).join("vault.enc");
         match journal.vault_ciphertext {
             Some(ciphertext) => {
-                atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
-                    .map_err(|error| format!("could not recover credential vault: {error}"))?;
+                tilo_files::native::atomic::write_creating_parent_with_mode(
+                    &vault_path,
+                    &ciphertext,
+                    0o600,
+                )
+                .map_err(|error| format!("could not recover credential vault: {error}"))?;
             }
             None => match std::fs::remove_file(&vault_path) {
                 Ok(()) => {}
@@ -252,7 +259,7 @@ impl AccountRoot {
 }
 
 // ---------------------------------------------------------------------------
-// Mail store — byte-compatible with Mail's `~/.config/tilo/mail/accounts.json`.
+// Mail view-model.
 // ---------------------------------------------------------------------------
 
 /// IMAP receive + SMTP send settings. Field-for-field the shape Mail's
@@ -363,8 +370,7 @@ impl MailAccount {
     }
 }
 
-/// The mail account list — Mail's `AccountStore` shape, persisted at
-/// `MailStore::PATH`.
+/// The mail account list — Mail's `AccountStore` shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
@@ -373,41 +379,12 @@ pub struct MailStore {
 }
 
 impl MailStore {
-    /// The path Mail reads and Settings writes, relative to the config
-    /// root: `<config>/tilo/mail/accounts.json`.
-    pub const REL_PATH: &'static str = "mail/accounts.json";
-
-    pub fn path() -> Option<PathBuf> {
-        settings_store::config_path(std::path::Path::new("mail/accounts.json"))
-    }
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (`no config
-    /// dir`), or if creating the parent directory or writing the JSON file
-    /// fails (permissions, missing/read-only filesystem, etc).
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 
     pub fn remove(&mut self, id: &str) -> bool {
@@ -418,7 +395,7 @@ impl MailStore {
 }
 
 // ---------------------------------------------------------------------------
-// DAV store — CalDAV (calendar) and WebDAV (files), parallel files.
+// DAV store — CalDAV (calendar) and WebDAV (files).
 // ---------------------------------------------------------------------------
 
 /// A `CalDAV` / `WebDAV` account. Both speak HTTP(S) to a base URL with a
@@ -456,10 +433,8 @@ impl DavAccount {
     }
 }
 
-/// A DAV account list. The *same* struct backs both the calendar store
-/// (`<config>/tilo/calendar/accounts.json`, consumed by Calendar) and the
-/// files store (`<config>/tilo/files/accounts.json`, consumed by the file
-/// apps) — they differ only by path.
+/// A DAV account list. The *same* struct backs both the calendar and the
+/// files view of the canonical store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DavStore {
     #[serde(default = "default_version")]
@@ -468,45 +443,12 @@ pub struct DavStore {
 }
 
 impl DavStore {
-    /// The `CalDAV` (calendar) store path.
-    pub fn calendar_path() -> Option<PathBuf> {
-        settings_store::config_path(std::path::Path::new("calendar/accounts.json"))
-    }
-
-    /// The `WebDAV` (files) store path.
-    pub fn files_path() -> Option<PathBuf> {
-        AccountRoot::live().legacy_path(Self::FILES_REL_PATH)
-    }
-
-    /// The `WebDAV` store path relative to the config root.
-    pub const FILES_REL_PATH: &'static str = "files/accounts.json";
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load_from(path: Option<PathBuf>) -> Self {
-        path.and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if `path` is `None` (`no config dir`), or if creating
-    /// the parent directory or writing the JSON file fails (permissions,
-    /// missing/read-only filesystem, etc).
-    pub fn save_to(&self, path: Option<PathBuf>) -> std::io::Result<PathBuf> {
-        let path = path.ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 }
 
@@ -563,8 +505,7 @@ impl NextcloudAccount {
     }
 }
 
-/// The Nextcloud account list, persisted at
-/// `<config>/tilo/nextcloud/accounts.json`.
+/// The Nextcloud account list.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextcloudStore {
     #[serde(default = "default_version")]
@@ -573,43 +514,12 @@ pub struct NextcloudStore {
 }
 
 impl NextcloudStore {
-    pub fn path() -> Option<PathBuf> {
-        AccountRoot::live().legacy_path(Self::REL_PATH)
-    }
-
-    /// The legacy Nextcloud store path relative to the config root.
-    pub const REL_PATH: &'static str = "nextcloud/accounts.json";
-
-    fn load_from(path: Option<PathBuf>) -> Self {
-        path.and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load() -> Self {
-        Self::load_from(Self::path())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (`no config
-    /// dir`), or if creating the parent directory or writing the JSON file
-    /// fails (permissions, missing/read-only filesystem, etc).
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 }
 
@@ -624,24 +534,48 @@ pub enum AccountKind {
     CalDav,
     WebDav,
     Nextcloud,
+    GoogleDrive,
+    OneDrive,
+    Dropbox,
+    ICloudDrive,
 }
 
 impl AccountKind {
+    /// Every kind, in panel order.
+    pub const ALL: [Self; 8] = [
+        Self::Mail,
+        Self::CalDav,
+        Self::WebDav,
+        Self::Nextcloud,
+        Self::GoogleDrive,
+        Self::OneDrive,
+        Self::Dropbox,
+        Self::ICloudDrive,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             AccountKind::Mail => "Email",
             AccountKind::CalDav => "Calendar (CalDAV)",
             AccountKind::WebDav => "Files (WebDAV)",
             AccountKind::Nextcloud => "Nextcloud",
+            AccountKind::GoogleDrive => "Google Drive",
+            AccountKind::OneDrive => "OneDrive",
+            AccountKind::Dropbox => "Dropbox",
+            AccountKind::ICloudDrive => "iCloud Drive",
         }
     }
 
     pub fn glyph(self) -> &'static str {
         match self {
-            AccountKind::Mail => "\u{f01ee}",      // md-email
-            AccountKind::CalDav => "\u{f00ed}",    // md-calendar
-            AccountKind::WebDav => "\u{f0256}",    // md-folder_outline
-            AccountKind::Nextcloud => "\u{f015f}", // md-cloud
+            AccountKind::Mail => "\u{f01ee}",   // md-email
+            AccountKind::CalDav => "\u{f00ed}", // md-calendar
+            AccountKind::WebDav => "\u{f0256}", // md-folder_outline
+            AccountKind::Nextcloud
+            | AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
         }
     }
 
@@ -651,7 +585,56 @@ impl AccountKind {
             AccountKind::CalDav => "caldav",
             AccountKind::WebDav => "webdav",
             AccountKind::Nextcloud => "nextcloud",
+            AccountKind::GoogleDrive => "google-drive",
+            AccountKind::OneDrive => "onedrive",
+            AccountKind::Dropbox => "dropbox",
+            AccountKind::ICloudDrive => "icloud-drive",
         }
+    }
+
+    /// The canonical store's type id for accounts of this kind.
+    pub fn type_id(self) -> &'static str {
+        match self {
+            AccountKind::Mail => MAIL_TYPE,
+            AccountKind::CalDav => CALDAV_TYPE,
+            AccountKind::WebDav => WEBDAV_TYPE,
+            AccountKind::Nextcloud => NEXTCLOUD_TYPE,
+            AccountKind::GoogleDrive => account_custody::providers::GOOGLE_DRIVE_TYPE,
+            AccountKind::OneDrive => account_custody::providers::ONEDRIVE_TYPE,
+            AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
+            AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.slug() == slug)
+    }
+
+    pub fn from_type_id(type_id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
+    }
+
+    /// The `OAuth` provider behind a cloud storage kind.
+    pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
+        account_custody::OAuthCloud::from_type_id(self.type_id())
+    }
+
+    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: accounts held
+    /// entirely by credential custody, listed from the canonical store.
+    pub fn is_cloud_storage(self) -> bool {
+        self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
+    }
+
+    /// Whether accounts of this kind are connected through a sign-in flow
+    /// (browser or Apple ID) rather than a typed password.
+    pub fn signs_in(self) -> bool {
+        self.is_cloud_storage() || self == AccountKind::Nextcloud
+    }
+
+    /// Whether the provider is reached through an undocumented API and is
+    /// supported on a best-effort basis.
+    pub fn best_effort(self) -> bool {
+        self == AccountKind::ICloudDrive
     }
 }
 
@@ -676,13 +659,15 @@ pub struct AccountDirectory {
     pub calendar: DavStore,
     pub files: DavStore,
     pub nextcloud: NextcloudStore,
+    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive accounts,
+    /// straight from the canonical store.
+    pub cloud: Vec<accounts::Account>,
 }
 
 impl AccountDirectory {
     /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. Legacy `WebDAV`
-    /// and Nextcloud JSON is imported idempotently before projecting the view.
+    /// Calendar read, so the shapes can no longer drift apart.
     pub fn load() -> Self {
         Self::load_in(&AccountRoot::live())
     }
@@ -690,45 +675,21 @@ impl AccountDirectory {
     /// [`Self::load`] from the stores under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
-        let mut shared = root.store();
-        if let Some(config_root) = root.path() {
-            let marker = accounts::accounts_dir_in(&config_root).join("legacy-settings-import-v1");
-            if !marker.exists() {
-                let changed = import_legacy_accounts(
-                    &mut shared,
-                    &DavStore::load_from(root.legacy_path(DavStore::FILES_REL_PATH)),
-                    &NextcloudStore::load_from(root.legacy_path(NextcloudStore::REL_PATH)),
-                );
-                let persisted = if changed {
-                    match root.save_store(&shared) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            tracing::warn!(target: "tilo::settings", %error, "could not persist imported legacy accounts");
-                            false
-                        }
-                    }
-                } else {
-                    true
-                };
-                let mark_imported = || -> std::io::Result<()> {
-                    if let Some(parent) = marker.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    atomic_file::write(&marker, b"imported\n")
-                };
-                if persisted && let Err(error) = mark_imported() {
-                    // Without a durable marker the import safely repeats as
-                    // upserts. Reporting this matters because a subsequently
-                    // removed legacy account could otherwise reappear.
-                    tracing::warn!(target: "tilo::settings", %error, "could not mark legacy account import complete");
-                }
-            }
-        }
+        let shared = root.store();
         Self {
             mail: mail_store_from_shared(&shared),
             calendar: caldav_store_from_shared(&shared),
             files: webdav_store_from_shared(&shared),
             nextcloud: nextcloud_store_from_shared(&shared),
+            cloud: shared
+                .all()
+                .iter()
+                .filter(|account| {
+                    AccountKind::from_type_id(account.type_id.as_str())
+                        .is_some_and(AccountKind::is_cloud_storage)
+                })
+                .cloned()
+                .collect(),
         }
     }
 
@@ -739,6 +700,7 @@ impl AccountDirectory {
             && self.calendar.accounts.is_empty()
             && self.files.accounts.is_empty()
             && self.nextcloud.accounts.is_empty()
+            && self.cloud.is_empty()
     }
 
     /// The uniform views for one kind, in store order.
@@ -763,6 +725,15 @@ impl AccountDirectory {
             AccountKind::CalDav => self.calendar.accounts.iter().map(dav_view_caldav).collect(),
             AccountKind::WebDav => self.files.accounts.iter().map(dav_view_webdav).collect(),
             AccountKind::Nextcloud => self.nextcloud.accounts.iter().map(nextcloud_view).collect(),
+            AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => self
+                .cloud
+                .iter()
+                .filter(|account| account.type_id.as_str() == kind.type_id())
+                .map(|account| cloud_view(kind, account))
+                .collect(),
         }
     }
 }
@@ -807,6 +778,33 @@ fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
         summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
         enabled: a.enabled,
         tint: a.tint,
+    }
+}
+
+fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
+    let identity = account
+        .config
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+        .filter(|identity| !identity.is_empty());
+    let summary = match (identity, kind.oauth_cloud()) {
+        (Some(identity), _) => format!("{} · {identity}", kind.label()),
+        (None, Some(cloud)) => {
+            format!("{} · signed in with {}", kind.label(), cloud.sign_in_with())
+        }
+        (None, None) => format!("{} · Apple ID", kind.label()),
+    };
+    AccountView {
+        id: account.id.to_string(),
+        kind,
+        label: if account.display_name.is_empty() {
+            kind.label().to_string()
+        } else {
+            account.display_name.clone()
+        },
+        summary,
+        enabled: account.enabled,
+        tint: account.tint,
     }
 }
 
@@ -940,40 +938,6 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
     }
 }
 
-/// Import old per-app account metadata without duplicating records. Credentials
-/// were `serde(skip)` in those formats, so this operation cannot move or expose
-/// a password; existing vault entries remain keyed by the same stable ids.
-pub fn import_legacy_accounts(
-    shared: &mut accounts::AccountStore,
-    webdav: &DavStore,
-    nextcloud: &NextcloudStore,
-) -> bool {
-    let before = shared.len();
-    for legacy in &webdav.accounts {
-        let id = accounts::AccountId::from(legacy.id.clone());
-        if shared.get(&id).is_none() {
-            let mut stored = accounts::Account::new(id, WEBDAV_TYPE);
-            stored.display_name.clone_from(&legacy.label);
-            stored.enabled = legacy.enabled;
-            stored.tint = legacy.tint;
-            stored.set_config(legacy);
-            shared.upsert(stored);
-        }
-    }
-    for legacy in &nextcloud.accounts {
-        let id = accounts::AccountId::from(legacy.id.clone());
-        if shared.get(&id).is_none() {
-            let mut stored = accounts::Account::new(id, NEXTCLOUD_TYPE);
-            stored.display_name.clone_from(&legacy.label);
-            stored.enabled = legacy.enabled;
-            stored.tint = legacy.tint;
-            stored.set_config(legacy);
-            shared.upsert(stored);
-        }
-    }
-    shared.len() != before
-}
-
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Shared by every account store and the region store so they all resolve
 /// the same directory — and, through [`settings_store`], the same directory
@@ -1038,6 +1002,7 @@ pub fn sample_directory() -> AccountDirectory {
             version: 1,
             accounts: vec![cloud],
         },
+        cloud: Vec::new(),
     }
 }
 
@@ -1045,8 +1010,10 @@ pub fn sample_directory() -> AccountDirectory {
 mod tests {
     use super::*;
 
+    /// Every account store round-trips through JSON at its contract path, and
+    /// no store ever writes a password.
     #[test]
-    fn mail_store_round_trips_and_drops_password() {
+    fn account_stores_round_trip_without_passwords() {
         let mut acct = MailAccount::new(AccountConfig {
             email: "a@x.example".into(),
             password: "hunter2".into(),
@@ -1058,166 +1025,89 @@ mod tests {
             active: 0,
         };
         let json = store.to_json();
-        // The password must never reach the JSON.
-        assert!(!json.contains("hunter2"));
+        assert!(
+            !json.contains("hunter2"),
+            "mail password must never reach the JSON"
+        );
         let back = MailStore::from_json(&json).expect("parse");
         // Everything except the (skipped) password round-trips.
         assert_eq!(back.accounts[0].config.email, "a@x.example");
         assert_eq!(back.accounts[0].tint, 4);
         assert_eq!(back.accounts[0].config.password, "");
-    }
 
-    #[test]
-    fn mail_store_path_is_the_mail_contract_path() {
-        // The relative path Mail reads.
-        assert_eq!(MailStore::REL_PATH, "mail/accounts.json");
-    }
-
-    #[test]
-    fn dav_and_nextcloud_round_trip() {
         let dav = DavStore {
             version: 1,
             accounts: vec![DavAccount::new("Cal", "https://d.example/c/", "ada")],
         };
-        let back = DavStore::from_json(&dav.to_json()).unwrap();
-        assert_eq!(dav, back);
-
+        assert_eq!(DavStore::from_json(&dav.to_json()).unwrap(), dav);
         let nc = NextcloudStore {
             version: 1,
             accounts: vec![NextcloudAccount::new("NC", "https://cloud.example", "ada")],
         };
-        let back = NextcloudStore::from_json(&nc.to_json()).unwrap();
-        assert_eq!(nc, back);
-    }
+        assert_eq!(NextcloudStore::from_json(&nc.to_json()).unwrap(), nc);
 
-    #[test]
-    fn dav_and_nextcloud_drop_passwords() {
         let mut a = DavAccount::new("Cal", "https://d/", "u");
         a.password = "secret".into();
         let store = DavStore {
             version: 1,
             accounts: vec![a],
         };
-        assert!(!store.to_json().contains("secret"));
-
+        assert!(!store.to_json().contains("secret"), "dav password leaked");
         let mut n = NextcloudAccount::new("NC", "https://c", "u");
         n.password = "nextsecret".into();
         let store = NextcloudStore {
             version: 1,
             accounts: vec![n],
         };
-        assert!(!store.to_json().contains("nextsecret"));
-    }
-
-    #[test]
-    fn directory_views_partition_by_kind() {
-        let dir = sample_directory();
-        assert_eq!(dir.views_of(AccountKind::Mail).len(), 2);
-        assert_eq!(dir.views_of(AccountKind::CalDav).len(), 1);
-        assert_eq!(dir.views_of(AccountKind::WebDav).len(), 0);
-        assert_eq!(dir.views_of(AccountKind::Nextcloud).len(), 1);
-    }
-
-    #[test]
-    fn mail_view_summary_includes_host() {
-        let dir = sample_directory();
-        let v = &dir.views_of(AccountKind::Mail)[0];
-        assert!(v.summary.contains("imap.fastmail.com"));
-    }
-
-    #[test]
-    fn nextcloud_view_lists_enabled_services() {
-        let dir = sample_directory();
-        let v = &dir.views_of(AccountKind::Nextcloud)[0];
-        // mail disabled in the sample.
-        assert!(v.summary.contains("Calendar"));
-        assert!(v.summary.contains("Files"));
-        assert!(!v.summary.contains("Mail"));
-    }
-
-    #[test]
-    fn autofill_recognises_gmail_and_falls_back() {
-        let mut c = AccountConfig {
-            email: "x@gmail.com".into(),
-            ..Default::default()
-        };
-        assert!(c.autofill_from_email());
-        assert_eq!(c.imap_host, "imap.gmail.com");
-
-        let mut c2 = AccountConfig {
-            email: "x@acme.test".into(),
-            ..Default::default()
-        };
-        assert!(!c2.autofill_from_email());
-        assert_eq!(c2.imap_host, "imap.acme.test");
-    }
-
-    #[test]
-    fn short_url_strips_scheme_and_trailing_slash() {
-        assert_eq!(short_url("https://cloud.example.com/"), "cloud.example.com");
-        assert_eq!(
-            short_url("http://dav.example.com/calendars/ada/"),
-            "dav.example.com/calendars/ada"
-        );
-    }
-
-    #[test]
-    fn empty_directory_is_detected() {
-        assert!(AccountDirectory::default().is_empty());
-        assert!(!sample_directory().is_empty());
-    }
-
-    #[test]
-    fn legacy_webdav_and_nextcloud_import_is_idempotent_and_secret_free() {
-        let mut web = DavAccount::new("Files", "https://dav.example/files", "ada");
-        web.password = "must-not-migrate".into();
-        let mut cloud = NextcloudAccount::new("Cloud", "https://cloud.example", "ada");
-        cloud.password = "also-must-not-migrate".into();
-        let files = DavStore {
-            version: 1,
-            accounts: vec![web.clone()],
-        };
-        let clouds = NextcloudStore {
-            version: 1,
-            accounts: vec![cloud.clone()],
-        };
-        let mut shared = accounts::AccountStore::new();
-
-        assert!(import_legacy_accounts(&mut shared, &files, &clouds));
-        assert!(!import_legacy_accounts(&mut shared, &files, &clouds));
-        assert_eq!(shared.len(), 2);
-        let json = serde_json::to_string(&shared).expect("canonical store serializes");
-        assert!(!json.contains("must-not-migrate"));
-        assert!(!json.contains("also-must-not-migrate"));
-        assert_eq!(webdav_store_from_shared(&shared).accounts[0].id, web.id);
-        assert_eq!(
-            nextcloud_store_from_shared(&shared).accounts[0].id,
-            cloud.id
-        );
-    }
-
-    #[test]
-    fn completed_legacy_import_does_not_resurrect_a_removed_account() {
-        let dir = tempfile::tempdir().expect("scratch config root");
-        let root = AccountRoot::at(dir.path().join("tilo"));
-        let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
-        DavStore {
-            version: 1,
-            accounts: vec![legacy.clone()],
-        }
-        .save_to(root.legacy_path(DavStore::FILES_REL_PATH))
-        .expect("seed legacy store");
-
-        assert_eq!(AccountDirectory::load_in(&root).files.accounts.len(), 1);
-        let id = accounts::AccountId::from(legacy.id);
-        let mut canonical = root.store();
-        assert!(canonical.remove(&id));
-        root.save_store(&canonical).expect("persist removal");
-
         assert!(
-            AccountDirectory::load_in(&root).files.accounts.is_empty(),
-            "the durable one-time marker prevents legacy metadata from resurrecting a removal"
+            !store.to_json().contains("nextsecret"),
+            "nextcloud password leaked"
         );
+    }
+
+    #[test]
+    fn account_directory_views_summarise_and_autofill() {
+        let dir = sample_directory();
+        assert!(!dir.is_empty());
+        assert!(AccountDirectory::default().is_empty());
+        for (kind, want) in [
+            (AccountKind::Mail, 2),
+            (AccountKind::CalDav, 1),
+            (AccountKind::WebDav, 0),
+            (AccountKind::Nextcloud, 1),
+        ] {
+            assert_eq!(dir.views_of(kind).len(), want, "{kind:?} views");
+        }
+        let mail = &dir.views_of(AccountKind::Mail)[0];
+        assert!(mail.summary.contains("imap.fastmail.com"));
+        let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
+        // mail disabled in the sample.
+        assert!(cloud.summary.contains("Calendar"));
+        assert!(cloud.summary.contains("Files"));
+        assert!(!cloud.summary.contains("Mail"));
+
+        // (email, recognised provider, resulting IMAP host)
+        for (email, known, host) in [
+            ("x@gmail.com", true, "imap.gmail.com"),
+            ("x@acme.test", false, "imap.acme.test"),
+        ] {
+            let mut c = AccountConfig {
+                email: email.into(),
+                ..Default::default()
+            };
+            assert_eq!(c.autofill_from_email(), known, "{email}");
+            assert_eq!(c.imap_host, host, "{email}");
+        }
+
+        for (url, short) in [
+            ("https://cloud.example.com/", "cloud.example.com"),
+            (
+                "http://dav.example.com/calendars/ada/",
+                "dav.example.com/calendars/ada",
+            ),
+        ] {
+            assert_eq!(short_url(url), short, "{url}");
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
+use tilo_desktop::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -185,100 +185,128 @@ fn render_disc_at(
 }
 
 #[test]
-fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
-    let mut renderer = require_capability!(
-        Gpu,
-        try_new_renderer(CANVAS_W, CANVAS_H),
-        "no wgpu adapter available for offscreen render"
-    );
-    let mut tr = TextRenderer::new();
-    let (scene, _disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
+fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
+    // Phase `sidebar_wheel_disc_renders_a_spoke_per_workspace`.
+    {
+        let mut renderer = require_capability!(
+            Gpu,
+            try_new_renderer(CANVAS_W, CANVAS_H),
+            "no wgpu adapter available for offscreen render"
+        );
+        let mut tr = TextRenderer::new();
+        let (scene, _disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
 
-    let path = screenshots_dir().join("wheel-disc-01-baseline.png");
-    let bg = Color::from_rgb8(0x02, 0x06, 0x14);
-    renderer.render_png(&scene, bg, &path);
-    assert!(path.exists(), "snapshot PNG should be written to {path:?}");
+        let path = screenshots_dir().join("wheel-disc-01-baseline.png");
+        let bg = Color::from_rgb8(0x02, 0x06, 0x14);
+        renderer.render_png(&scene, bg, &path);
+        assert!(path.exists(), "snapshot PNG should be written to {path:?}");
 
-    // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
-    // convention.
-    if path.exists() {
-        SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+        // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
+        // convention.
+        if path.exists() {
+            SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+        }
     }
-}
 
-/// Summoning lifts the disc onto the strip under the pointer — usually
-/// over a bright app — so the band must be a real surface there, or
-/// near-white labels land on a near-white document. It must also END: a
-/// wheel blacking out the screen would pass "is it a surface" too. The
-/// body is solid to the centre, so the "still a slice" probe sits off the
-/// left edge; sample points come from the band the widget actually paints
-/// so tuning its depth moves the probes with it.
-#[test]
-fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
-    let mut renderer = require_capability!(
-        Gpu,
-        try_new_renderer(CANVAS_W, CANVAS_H),
-        "no wgpu adapter available for offscreen render"
-    );
-    let mut tr = TextRenderer::new();
-    let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
-    let rgba = renderer.render(&scene, Color::WHITE);
+    // Phase `the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends`.
+    // Summoning lifts the disc onto the strip under the pointer — usually
+    // over a bright app — so the band must be a real surface there, or
+    // near-white labels land on a near-white document. It must also END: a
+    // wheel blacking out the screen would pass "is it a surface" too. The
+    // body is solid to the centre, so the "still a slice" probe sits off the
+    // left edge; sample points come from the band the widget actually paints
+    // so tuning its depth moves the probes with it.
+    {
+        let mut renderer = require_capability!(
+            Gpu,
+            try_new_renderer(CANVAS_W, CANVAS_H),
+            "no wgpu adapter available for offscreen render"
+        );
+        let mut tr = TextRenderer::new();
+        let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
+        let rgba = renderer.render(&scene, Color::WHITE);
 
-    let path = screenshots_dir().join("wheel-disc-02-over-light.png");
-    renderer.render_png(&scene, Color::WHITE, &path);
+        let path = screenshots_dir().join("wheel-disc-02-over-light.png");
+        renderer.render_png(&scene, Color::WHITE, &path);
 
-    let luma = |x: u32, y: u32| {
-        let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-        luma_u32(r, g, b)
-    };
+        let luma = |x: u32, y: u32| {
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
+            luma_u32(r, g, b)
+        };
 
-    let (r_in, r_out) = disc.label_band_radii();
-    let c = disc.disc_centre();
-    let footprint = disc.get_rect();
-    // The band's vertical middle, where it is at full alpha and widest.
-    let row_y = px(c.y);
-    let on_band = px(c.x + f64::midpoint(r_in, r_out)).min(CANVAS_W - 1);
-    // Well inside the inner radius, where a hollow body would show through.
-    let inside_arc = px(c.x + r_in - 24.0).min(CANVAS_W - 1);
-    assert!(
-        f64::from(inside_arc) > footprint.x0 + 2.0,
-        "probe at x={inside_arc} is outside the disc's own footprint {footprint:?} \
-         — it would be testing open wallpaper"
-    );
+        let (r_in, r_out) = disc.label_band_radii();
+        let c = disc.disc_centre();
+        let footprint = disc.get_rect();
+        // The band's vertical middle, where it is at full alpha and widest.
+        let row_y = px(c.y);
+        let on_band = px(c.x + f64::midpoint(r_in, r_out)).min(CANVAS_W - 1);
+        // Well inside the inner radius, where a hollow body would show through.
+        let inside_arc = px(c.x + r_in - 24.0).min(CANVAS_W - 1);
+        assert!(
+            f64::from(inside_arc) > footprint.x0 + 2.0,
+            "probe at x={inside_arc} is outside the disc's own footprint {footprint:?} \
+             — it would be testing open wallpaper"
+        );
 
-    let band = luma(on_band, row_y);
-    assert!(
-        band < 110,
-        "the band let the bright app through (luma {band}/255 at ({on_band},{row_y})) \
-         — the labels painted on it have nothing to read against; see {path:?}"
-    );
+        let band = luma(on_band, row_y);
+        assert!(
+            band < 110,
+            "the band let the bright app through (luma {band}/255 at ({on_band},{row_y})) \
+             — the labels painted on it have nothing to read against; see {path:?}"
+        );
 
-    // The body reaches the centre, so this point is surface too, and as opaque.
-    let inner = luma(inside_arc, row_y);
-    assert!(
-        inner < 110,
-        "the disc is hollow again — the bright app shows through at luma {inner}/255 \
-         at ({inside_arc},{row_y}), inside the footprint. The body is meant to be a \
-         solid segment, filled to the centre; see {path:?}"
-    );
+        // The body reaches the centre, so this point is surface too, and as opaque.
+        let inner = luma(inside_arc, row_y);
+        assert!(
+            inner < 110,
+            "the disc is hollow again — the bright app shows through at luma {inner}/255 \
+             at ({inside_arc},{row_y}), inside the footprint. The body is meant to be a \
+             solid segment, filled to the centre; see {path:?}"
+        );
 
-    // ...and it still ends. Mounted flush left as in the sidebar column, so
-    // past the rim — clear of its outward shadow — the app must be plainly
-    // visible.
-    let outside = px(c.x + r_out + RIM_SHADOW_CLEARANCE).min(CANVAS_W - 1);
-    assert!(
-        f64::from(outside) > footprint.x1 - 1.0 || f64::from(outside) > c.x + r_out,
-        "probe at x={outside} is not past the rim at {:.0}",
-        c.x + r_out
-    );
-    let beyond = luma(outside, row_y);
-    assert!(
-        beyond > 170,
-        "the disc blacked out the app past its own rim (luma {beyond}/255 at \
-         ({outside},{row_y})) — it is meant to be a slice, not a panel; see {path:?}"
-    );
+        // ...and it still ends. Mounted flush left as in the sidebar column, so
+        // past the rim — clear of its outward shadow — the app must be plainly
+        // visible. Labels hang past the rim on their own plates, so the probe
+        // takes the first row below the centre that none of the disc's
+        // published targets covers.
+        let outside = px(c.x + r_out + RIM_SHADOW_CLEARANCE).min(CANVAS_W - 1);
+        assert!(
+            f64::from(outside) > footprint.x1 - 1.0 || f64::from(outside) > c.x + r_out,
+            "probe at x={outside} is not past the rim at {:.0}",
+            c.x + r_out
+        );
+        let targets: Vec<_> = disc
+            .accessibility()
+            .map(|node| node.children)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|node| node.bounds)
+            .collect();
+        assert!(
+            !targets.is_empty(),
+            "the disc published no targets, so the probe row would be a guess"
+        );
+        let clear_y = (row_y..CANVAS_H)
+            .find(|&y| {
+                let y = f64::from(y);
+                targets
+                    .iter()
+                    .all(|b| y < b.y0 - LABEL_PLATE_CLEARANCE || y > b.y1 + LABEL_PLATE_CLEARANCE)
+            })
+            .expect("a row past the rim that no label covers");
+        let beyond = luma(outside, clear_y);
+        assert!(
+            beyond > 170,
+            "the disc blacked out the app past its own rim (luma {beyond}/255 at \
+             ({outside},{clear_y})) — it is meant to be a slice, not a panel; see {path:?}"
+        );
+    }
 }
 
 /// Pixels past the rim at which the app must be fully visible again,
 /// clear of the rim's outward shadow.
 const RIM_SHADOW_CLEARANCE: f64 = 36.0;
+
+/// Rows above and below a label's target the probe keeps clear of, for the
+/// plate's anti-aliased edge.
+const LABEL_PLATE_CLEARANCE: f64 = 4.0;

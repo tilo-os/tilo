@@ -17,17 +17,17 @@
               test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
-use tilo_actions::{Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 use uuid::Uuid;
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "so.tilo.word-processor";
@@ -61,10 +61,10 @@ fn nothing_granted(name: &str) -> ui::permissions::PermissionContext {
 fn seed_document_with_image(instruction: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -79,9 +79,9 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
@@ -103,12 +103,12 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
 }
 
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
-    photos::actions::PhotosResources.resources(doc)
+    photos::actions::PhotosResources.publish_resources(doc)
 }
 
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
 /// agent under `cfg` against that peer — driving `poll` on every incremental
-/// change until it says the run is over or `within` runs out.
+/// change until it says the run is over or the hang bound runs out.
 ///
 /// Returns the peer's final replica and whether the agent reports having
 /// acted.
@@ -121,19 +121,16 @@ fn run(
     cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
-    within: Duration,
-) -> (AutoCommit, bool, Option<String>) {
+) -> (
+    AutoCommit,
+    bool,
+    Option<String>,
+    Option<tilo_actions::ActionContext>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, agent_actions);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();
     let content = ContentStore::memory();
@@ -144,6 +141,7 @@ fn run(
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("ada".into()),
         },
     )
@@ -155,13 +153,11 @@ fn run(
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
         let _ = ready_tx.send(());
-        let until = Instant::now()
-            .checked_add(within)
-            .expect("test duration does not overflow Instant");
-        s.run_until(until).expect("agent session")
+        s.run_until(tilo_test_env::hang_deadline())
+            .expect("agent session")
     });
     ready_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
     typed_peer::publish_actions(
@@ -172,12 +168,11 @@ fn run(
     send(&mut peer, &CollabRequest::document_snapshot(replica.save())).unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now()
-        .checked_add(within)
-        .expect("test duration does not overflow Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     let mut invocation_actor = None;
-    while Instant::now() < deadline && !done {
+    let mut invocation_context = None;
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
             continue;
         };
@@ -197,6 +192,7 @@ fn run(
                 action,
                 argument,
                 actor,
+                context,
                 ..
             } => {
                 let resources = word_processor_resources(&replica, &content);
@@ -205,14 +201,17 @@ fn run(
                     &mut replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(&mut peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
                 invocation_actor = Some(actor);
+                invocation_context = context.map(|context| *context);
                 done = poll(&replica);
             }
             event @ CollabEvent::Document { .. } => {
@@ -228,29 +227,292 @@ fn run(
         }
     }
     let acted = agent.join().unwrap();
-    (replica, acted, invocation_actor)
+    (replica, acted, invocation_actor, invocation_context)
 }
 
-/// A discovered destructive operation remains fail-closed when the planner
-/// supplies no explicit confirmation metadata. The whole sequence is refused
-/// before its harmless title step runs, so confirmation cannot be bypassed by
-/// surrounding a destructive operation with ordinary edits.
+/// Each case takes `TEST_LOCK` and runs against its own fresh broker and replica.
 #[test]
-fn a_discovered_destructive_operation_requires_explicit_confirmation() {
-    let _serial = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let replica = seed_document_with_image(
-        "Scribe: delete the image, then give this a title, then delete the image again",
-    );
-    let (mut replica, acted, invocation_actor) = run(
-        &[("so.tilo.word-processor", "delete")],
-        |sock, room| Config {
+#[allow(
+    clippy::too_many_lines,
+    reason = "each case keeps its own broker scenario and original assertions"
+)]
+fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
+    // Case `a_discovered_destructive_operation_requires_explicit_confirmation`.
+    // A discovered destructive operation remains fail-closed when the planner
+    // supplies no explicit confirmation metadata. The whole sequence is refused
+    // before its harmless title step runs, so confirmation cannot be bypassed by
+    // surrounding a destructive operation with ordinary edits.
+    {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replica = seed_document_with_image(
+            "Scribe: delete the image, then give this a title, then delete the image again",
+        );
+        let (mut replica, acted, invocation_actor, _) = run(
+            &[("so.tilo.word-processor", "delete")],
+            |sock, room| Config {
+                endpoint: Some(sock),
+                endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+                app_id: APP.into(),
+                cluster: room,
+                record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
+                name: "Scribe".into(),
+                pace: Duration::from_millis(10),
+                once: true,
+                model: false,
+                model_timeout: Duration::from_secs(1),
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                directory: None,
+                permissions: granted("Scribe", "word-processor"),
+                content: ContentStore::memory(),
+            },
+            replica,
+            |doc| {
+                blocks(doc)
+                    .iter()
+                    .any(|block| block.text.starts_with("Scribe: I can't"))
+            },
+        );
+        let shown: Vec<(String, String)> = blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect();
+        assert!(acted, "the agent reports having acted");
+        assert!(
+            invocation_actor.is_none(),
+            "an unconfirmed destructive operation must not reach the app broker"
+        );
+
+        let b = blocks(&replica);
+        assert!(
+            b.iter()
+                .any(|x| x.kind == "paragraph" && x.text == "Launch plan"),
+            "the harmless title step must not partially run: {shown:?}"
+        );
+        assert!(
+            b.iter().any(|x| x.kind == "image"),
+            "the image must remain without explicit confirmation: {shown:?}"
+        );
+        let reply = b
+            .iter()
+            .find(|x| x.text.starts_with("Scribe: I can't"))
+            .unwrap_or_else(|| panic!("no refusal was written: {shown:?}"));
+        assert!(reply.text.contains("confirm: true"), "{}", reply.text);
+        assert!(!reply.text.contains('#'), "{}", reply.text);
+
+        // The refusal itself is still an attributed agent-authored document edit.
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
+        let seed = hex::encode("ada");
+        let actors: std::collections::HashSet<String> =
+            tilo_resource::history::versions(&mut replica)
+                .into_iter()
+                .map(|v| v.actor)
+                .filter(|a| *a != genesis && *a != seed)
+                .collect();
+        assert_eq!(
+            actors,
+            std::collections::HashSet::from([hex::encode("Scribe")]),
+            "the refusal's change must carry the agent's own actor"
+        );
+    }
+
+    // Case `without_the_capability_a_discovered_operation_is_never_performed`.
+    // A denied operation is *absent* from what the agent discovers, not merely
+    // refused — so an instruction naming it is answered exactly as one naming
+    // nothing at all would be, and never leaks an address into the document.
+    {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replica = seed_document_with_image("Scribe: delete the image");
+        let (replica, acted, invocation_actor, _) = run(
+            &[],
+            |sock, room| Config {
+                endpoint: Some(sock),
+                endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+                app_id: APP.into(),
+                cluster: room,
+                record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
+                name: "Scribe".into(),
+                pace: Duration::from_millis(10),
+                once: true,
+                model: false,
+                model_timeout: Duration::from_secs(1),
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                directory: None,
+                permissions: nothing_granted("Scribe"),
+                content: ContentStore::memory(),
+            },
+            replica,
+            |doc| {
+                blocks(doc)
+                    .iter()
+                    .any(|x| x.text.starts_with("Scribe: I can't"))
+            },
+        );
+        assert!(acted, "the agent reports having acted");
+        assert!(
+            invocation_actor.is_none(),
+            "a denied operation reached the application host"
+        );
+
+        let b = blocks(&replica);
+        let shown: Vec<(String, String)> =
+            b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
+        assert!(
+            b.iter().any(|x| x.kind == "image"),
+            "without the capability the image must not be deleted: {shown:?}"
+        );
+        let reply = b
+            .iter()
+            .find(|x| x.text.starts_with("Scribe:"))
+            .unwrap_or_else(|| panic!("no reply was written at all: {shown:?}"));
+        assert!(
+            !reply.text.contains('#'),
+            "a refusal must never carry an address a person cannot act on: {:?}",
+            reply.text
+        );
+    }
+}
+
+/// Each case takes `TEST_LOCK` and runs against its own fresh broker and replicas.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each case keeps its own broker scenario and original assertions"
+)]
+fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next_app() {
+    // Case `a_discovered_operation_is_performed_once_under_the_agents_own_actor`.
+    // **The core claim of discovery.** An operation nowhere written down in
+    // the agent — Word Processor's own "insert table" — is found, performed,
+    // and attributed to the agent's own actor, exactly as a catalogue action
+    // is.
+    //
+    // It also proves the re-entrancy guard: the instruction names the same
+    // operation twice, but one repeated clause still resolves to one operation.
+    {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
+        let (mut replica, acted, invocation_actor, invocation_context) = run(
+            &[("so.tilo.word-processor", "insert-table")],
+            |sock, room| Config {
+                endpoint: Some(sock),
+                endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+                app_id: APP.into(),
+                cluster: room,
+                record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
+                name: "Scribe".into(),
+                pace: Duration::from_millis(10),
+                once: true,
+                model: false,
+                model_timeout: Duration::from_secs(1),
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                directory: None,
+                permissions: granted("Scribe", "word-processor"),
+                content: ContentStore::memory(),
+            },
+            replica,
+            |doc| {
+                let b = blocks(doc);
+                let title_done = b.iter().any(|x| x.text == "Launch plan");
+                let one_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
+                let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
+                title_done && one_table && answered
+            },
+        );
+        let shown: Vec<(String, String)> = blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect();
+        assert!(acted, "the agent reports having acted");
+
+        let b = blocks(&replica);
+        assert!(b.iter().any(|x| x.text == "Launch plan"), "{shown:?}");
+        assert_eq!(
+            b.iter().filter(|x| x.kind == "cell").count(),
+            4,
+            "the repeated request must insert exactly one 2x2 table: {shown:?}"
+        );
+        assert!(
+            !b.iter().any(|x| x.text.starts_with("Scribe:")),
+            "the instruction was left holding a refusal instead of being answered: {shown:?}"
+        );
+
+        // The app-hosted action is attributed to the authenticated broker actor;
+        // the agent's local acknowledgement edit may retain its display actor.
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
+        let seed = hex::encode("ada");
+        let actors: std::collections::HashSet<String> =
+            tilo_resource::history::versions(&mut replica)
+                .into_iter()
+                .map(|v| v.actor)
+                .filter(|a| *a != genesis && *a != seed)
+                .collect();
+        let invocation_actor = invocation_actor.expect("the app received a broker invocation");
+        assert!(
+            actors.contains(&hex::encode(&invocation_actor)),
+            "the discovered operation must carry the broker-authenticated agent actor \
+             {invocation_actor}: {actors:?}"
+        );
+
+        // The brokered invocation carries the run it belongs to, so the app
+        // records the operation within the agent's intent group.
+        let group = invocation_context
+            .and_then(|context| context.group)
+            .expect("the brokered invocation carries the agent run's context");
+        assert_eq!(group.kind, "agent-run");
+        assert!(group.id.starts_with("agent-run:"), "{}", group.id);
+        let recorded = tilo_resource::history::versions(&mut replica)
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter_map(|context| context.group)
+            .any(|recorded| recorded.id == group.id);
+        assert!(
+            recorded,
+            "the operation's change is recorded within the agent run's group"
+        );
+    }
+
+    // Case `one_action_result_is_carried_into_the_next_app_without_model_authored_content`.
+    {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("collab.sock");
+        let _broker = typed_peer::spawn(&sock);
+        tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
+        let room = typed_peer::room();
+
+        // The word processor: the page the agent was invited to, carrying the
+        // instruction.
+        let (wp_peer, wp_replica) = connect_word_processor(&sock, room);
+
+        // The photo editor: a second application's document, in the same room,
+        // that the agent was never told about.
+        // One content store stands in for the room's: the photo editor's export
+        // lands in it and the word processor places what it finds there.
+        let content = ContentStore::memory();
+        let photo_socket = sock.clone();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let permissions = word_processor_and_photos_permissions();
+        let cfg = Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -259,134 +521,82 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
             directory: None,
-            permissions: granted("Scribe", "word-processor"),
-            content: ContentStore::memory(),
-        },
-        replica,
-        |doc| {
-            blocks(doc)
-                .iter()
-                .any(|block| block.text.starts_with("Scribe: I can't"))
-        },
-        Duration::from_secs(15),
-    );
-    let shown: Vec<(String, String)> = blocks(&replica)
-        .iter()
-        .map(|b| (b.kind.clone(), b.text.clone()))
-        .collect();
-    assert!(acted, "the agent reports having acted");
-    assert!(
-        invocation_actor.is_none(),
-        "an unconfirmed destructive operation must not reach the app broker"
-    );
+            permissions,
+            content: content.clone(),
+        };
+        let (agent_ready_tx, agent_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let agent = std::thread::spawn(move || {
+            let mut s = Session::connect(cfg).expect("agent connects");
+            let _ = agent_ready_tx.send(());
+            s.run_until(tilo_test_env::hang_deadline())
+                .expect("agent session")
+        });
+        agent_ready_rx
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("agent never established its cluster subscription");
+        std::thread::sleep(Duration::from_millis(250));
 
-    let b = blocks(&replica);
-    assert!(
-        b.iter()
-            .any(|x| x.kind == "paragraph" && x.text == "Launch plan"),
-        "the harmless title step must not partially run: {shown:?}"
-    );
-    assert!(
-        b.iter().any(|x| x.kind == "image"),
-        "the image must remain without explicit confirmation: {shown:?}"
-    );
-    let reply = b
-        .iter()
-        .find(|x| x.text.starts_with("Scribe: I can't"))
-        .unwrap_or_else(|| panic!("no refusal was written: {shown:?}"));
-    assert!(reply.text.contains("confirm: true"), "{}", reply.text);
-    assert!(!reply.text.contains('#'), "{}", reply.text);
+        // Nothing here yet waits for a late-arriving application — that is
+        // `late_app_reaches_a_waiter.rs`'s concern, not this commit's — so the
+        // photo editor's document has to be *fully held* before the instruction
+        // naming its operation is even readable, or this races: whichever
+        // peer's reply the agent happens to read first decides what `offers`
+        // holds when it acts, once, on this single non-sequence instruction.
+        // The harness seeds the photo peer first and only then signals the word
+        // processor to answer, which is what pins the order rather than hoping
+        // for it.
+        let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let photo_content = content.clone();
+        let photo_thread = std::thread::spawn(move || {
+            // The typed collaboration manager is local to its owning thread.
+            let (photo_peer, photo_replica) =
+                connect_photo_editor(&photo_socket, room, &photo_content);
+            drive_photo_peer(photo_peer, photo_replica, &photo_content, &photo_ready_tx)
+        });
 
-    // The refusal itself is still an attributed agent-authored document edit.
-    let genesis = qdoc::model::schema_genesis_actor_hex();
-    let seed = hex::encode("ada");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
-        .into_iter()
-        .map(|v| v.actor_hex)
-        .filter(|a| *a != genesis && *a != seed)
-        .collect();
-    assert_eq!(
-        actors,
-        std::collections::HashSet::from([hex::encode("Scribe")]),
-        "the refusal's change must carry the agent's own actor"
-    );
-}
+        let (wp_replica, done) =
+            drive_word_processor_peer(wp_peer, wp_replica, &content, &photo_ready_rx);
 
-/// **The core claim of discovery.** An operation nowhere written down in
-/// the agent — Word Processor's own "insert table" — is found, performed,
-/// and attributed to the agent's own actor, exactly as a catalogue action
-/// is.
-///
-/// It also proves the re-entrancy guard: the instruction names the same
-/// operation twice, but one repeated clause still resolves to one operation.
-#[test]
-fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
-    let _serial = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
-    let (mut replica, acted, invocation_actor) = run(
-        &[("so.tilo.word-processor", "insert-table")],
-        |sock, room| Config {
-            endpoint: Some(sock),
-            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-            app_id: APP.into(),
-            cluster: room,
-            record: Some(RECORD.into()),
-            name: "Scribe".into(),
-            pace: Duration::from_millis(10),
-            once: true,
-            model: false,
-            model_timeout: Duration::from_secs(1),
-            await_document: Duration::ZERO,
-            settle: Duration::ZERO,
-            directory: None,
-            permissions: granted("Scribe", "word-processor"),
-            content: ContentStore::memory(),
-        },
-        replica,
-        |doc| {
-            let b = blocks(doc);
-            let title_done = b.iter().any(|x| x.text == "Launch plan");
-            let one_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
-            let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
-            title_done && one_table && answered
-        },
-        Duration::from_secs(15),
-    );
-    let shown: Vec<(String, String)> = blocks(&replica)
-        .iter()
-        .map(|b| (b.kind.clone(), b.text.clone()))
-        .collect();
-    assert!(acted, "the agent reports having acted");
-
-    let b = blocks(&replica);
-    assert!(b.iter().any(|x| x.text == "Launch plan"), "{shown:?}");
-    assert_eq!(
-        b.iter().filter(|x| x.kind == "cell").count(),
-        4,
-        "the repeated request must insert exactly one 2x2 table: {shown:?}"
-    );
-    assert!(
-        !b.iter().any(|x| x.text.starts_with("Scribe:")),
-        "the instruction was left holding a refusal instead of being answered: {shown:?}"
-    );
-
-    // The app-hosted action is attributed to the authenticated broker actor;
-    // the agent's local acknowledgement edit may retain its display actor.
-    let genesis = qdoc::model::schema_genesis_actor_hex();
-    let seed = hex::encode("ada");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
-        .into_iter()
-        .map(|v| v.actor_hex)
-        .filter(|a| *a != genesis && *a != seed)
-        .collect();
-    let invocation_actor = invocation_actor.expect("the app received a broker invocation");
-    assert!(
-        actors.contains(&hex::encode(&invocation_actor)),
-        "the discovered operation must carry the broker-authenticated agent actor \
-         {invocation_actor}: {actors:?}"
-    );
+        let acted = agent.join().unwrap();
+        let photo_replica = photo_thread
+            .join()
+            .expect("the photo peer's thread must not panic");
+        let shown = blocks(&wp_replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>();
+        assert!(
+            acted,
+            "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
+            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
+        );
+        assert!(done, "the consuming action never landed; blocks: {shown:?}");
+        assert_eq!(
+            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
+            1,
+            "the discovered operation never reached the second application's document"
+        );
+        let images = blocks(&wp_replica)
+            .into_iter()
+            .filter(|block| block.kind == "image")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            images.len(),
+            2,
+            "the photo action completed, but its product was not carried into the word processor"
+        );
+        let placed = images
+            .iter()
+            .find_map(|block| match block.attrs.get("blob") {
+                Some(tilo_doc::AttrVal::Str(hash)) => Some(hash),
+                _ => None,
+            })
+            .expect("the carried image has a content hash");
+        assert!(
+            content.has(placed),
+            "the plan inserted an invented or unavailable content hash"
+        );
+    }
 }
 
 /// **Holding a second application's document.** The room carries a
@@ -406,6 +616,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
+            record_kind: None,
             handle: Some("ada".into()),
         },
     )
@@ -431,6 +642,7 @@ fn connect_photo_editor(
             app_id: "so.tilo.photos".into(),
             cluster_id: room,
             record: None,
+            record_kind: None,
             handle: Some("photos".into()),
         },
     )
@@ -487,7 +699,7 @@ fn drive_photo_peer(
     photo_ready_tx: &std::sync::mpsc::SyncSender<()>,
 ) -> AutoCommit {
     photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     typed_peer::publish_actions(
         &mut photo_peer,
         "so.tilo.photos",
@@ -500,7 +712,7 @@ fn drive_photo_peer(
     .unwrap();
     let _ = photo_ready_tx.send(());
     let mut exported = false;
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         let Some(event) = recv(&mut photo_peer) else {
             continue;
         };
@@ -518,6 +730,7 @@ fn drive_photo_peer(
                 action,
                 argument,
                 actor,
+                context,
                 ..
             } => {
                 let resources = photos_resources(&photo_replica);
@@ -533,7 +746,8 @@ fn drive_photo_peer(
                         })
                         .and_then(|spec| match &spec.input {
                             tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            tilo_actions::ActionInput::Prompted { .. } => None,
+                            tilo_actions::ActionInput::Prompted { .. }
+                            | tilo_actions::ActionInput::Deferred { .. } => None,
                         })
                         .expect("the published export has one immediate operation payload");
                     let result =
@@ -575,11 +789,13 @@ fn drive_photo_peer(
                         &mut photo_replica,
                         &resources,
                         photos::actions::register,
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
+                        typed_peer::DocumentInvocation {
+                            id,
+                            address: ActionAddress::new(resource, action),
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            context: context.as_deref(),
+                        },
                     )
                 };
                 send(
@@ -614,10 +830,10 @@ fn drive_word_processor_peer(
     photo_ready_rx: &std::sync::mpsc::Receiver<()>,
 ) -> (AutoCommit, bool) {
     wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     photo_ready_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the photo peer never published its initial state");
     // `send` queues the photo snapshot asynchronously. Let the broker deliver
     // it before revealing the instruction and its consuming action.
@@ -632,7 +848,7 @@ fn drive_word_processor_peer(
         &CollabRequest::document_snapshot(wp_replica.save()),
     )
     .unwrap();
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
@@ -660,6 +876,7 @@ fn drive_word_processor_peer(
                 action,
                 argument,
                 actor,
+                context,
                 ..
             } => {
                 let resources = word_processor_resources(&wp_replica, content);
@@ -668,11 +885,13 @@ fn drive_word_processor_peer(
                     &mut wp_replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(
                     &mut wp_peer,
@@ -689,182 +908,4 @@ fn drive_word_processor_peer(
         }
     }
     (wp_replica, done)
-}
-
-#[test]
-fn one_action_result_is_carried_into_the_next_app_without_model_authored_content() {
-    let _serial = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let room = typed_peer::room();
-
-    // The word processor: the page the agent was invited to, carrying the
-    // instruction.
-    let (wp_peer, wp_replica) = connect_word_processor(&sock, room);
-
-    // The photo editor: a second application's document, in the same room,
-    // that the agent was never told about.
-    // One content store stands in for the room's: the photo editor's export
-    // lands in it and the word processor places what it finds there.
-    let content = ContentStore::memory();
-    let (photo_peer, photo_replica) = connect_photo_editor(&sock, room, &content);
-    std::thread::sleep(Duration::from_millis(100));
-
-    let permissions = word_processor_and_photos_permissions();
-    let cfg = Config {
-        endpoint: Some(sock),
-        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions,
-        content: content.clone(),
-    };
-    let (agent_ready_tx, agent_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        let _ = agent_ready_tx.send(());
-        s.run_until(Instant::now() + Duration::from_secs(15))
-            .expect("agent session")
-    });
-    agent_ready_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("agent never established its cluster subscription");
-    std::thread::sleep(Duration::from_millis(250));
-
-    // Nothing here yet waits for a late-arriving application — that is
-    // `late_app_reaches_a_waiter.rs`'s concern, not this commit's — so the
-    // photo editor's document has to be *fully held* before the instruction
-    // naming its operation is even readable, or this races: whichever
-    // peer's reply the agent happens to read first decides what `offers`
-    // holds when it acts, once, on this single non-sequence instruction.
-    // The harness seeds the photo peer first and only then signals the word
-    // processor to answer, which is what pins the order rather than hoping
-    // for it.
-    let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let photo_content = content.clone();
-    let photo_thread = std::thread::spawn(move || {
-        drive_photo_peer(photo_peer, photo_replica, &photo_content, &photo_ready_tx)
-    });
-
-    let (wp_replica, done) =
-        drive_word_processor_peer(wp_peer, wp_replica, &content, &photo_ready_rx);
-
-    let acted = agent.join().unwrap();
-    let photo_replica = photo_thread
-        .join()
-        .expect("the photo peer's thread must not panic");
-    let shown = blocks(&wp_replica)
-        .iter()
-        .map(|b| (b.kind.clone(), b.text.clone()))
-        .collect::<Vec<_>>();
-    assert!(
-        acted,
-        "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
-        photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
-    );
-    assert!(done, "the consuming action never landed; blocks: {shown:?}");
-    assert_eq!(
-        photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
-        1,
-        "the discovered operation never reached the second application's document"
-    );
-    let images = blocks(&wp_replica)
-        .into_iter()
-        .filter(|block| block.kind == "image")
-        .collect::<Vec<_>>();
-    assert_eq!(
-        images.len(),
-        2,
-        "the photo action completed, but its product was not carried into the word processor"
-    );
-    let placed = images
-        .iter()
-        .find_map(|block| match block.attrs.get("blob") {
-            Some(qdoc::AttrVal::Str(hash)) => Some(hash),
-            _ => None,
-        })
-        .expect("the carried image has a content hash");
-    assert!(
-        content.has(placed),
-        "the plan inserted an invented or unavailable content hash"
-    );
-}
-
-/// A denied operation is *absent* from what the agent discovers, not merely
-/// refused — so an instruction naming it is answered exactly as one naming
-/// nothing at all would be, and never leaks an address into the document.
-#[test]
-fn without_the_capability_a_discovered_operation_is_never_performed() {
-    let _serial = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let replica = seed_document_with_image("Scribe: delete the image");
-    let (replica, acted, invocation_actor) = run(
-        &[],
-        |sock, room| Config {
-            endpoint: Some(sock),
-            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-            app_id: APP.into(),
-            cluster: room,
-            record: Some(RECORD.into()),
-            name: "Scribe".into(),
-            pace: Duration::from_millis(10),
-            once: true,
-            model: false,
-            model_timeout: Duration::from_secs(1),
-            await_document: Duration::ZERO,
-            settle: Duration::ZERO,
-            directory: None,
-            permissions: nothing_granted("Scribe"),
-            content: ContentStore::memory(),
-        },
-        replica,
-        |doc| {
-            blocks(doc)
-                .iter()
-                .any(|x| x.text.starts_with("Scribe: I can't"))
-        },
-        Duration::from_secs(15),
-    );
-    assert!(acted, "the agent reports having acted");
-    assert!(
-        invocation_actor.is_none(),
-        "a denied operation reached the application host"
-    );
-
-    let b = blocks(&replica);
-    let shown: Vec<(String, String)> = b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
-    assert!(
-        b.iter().any(|x| x.kind == "image"),
-        "without the capability the image must not be deleted: {shown:?}"
-    );
-    let reply = b
-        .iter()
-        .find(|x| x.text.starts_with("Scribe:"))
-        .unwrap_or_else(|| panic!("no reply was written at all: {shown:?}"));
-    assert!(
-        !reply.text.contains('#'),
-        "a refusal must never carry an address a person cannot act on: {:?}",
-        reply.text
-    );
 }

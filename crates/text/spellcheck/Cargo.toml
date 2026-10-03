@@ -1,17 +1,27 @@
 [package]
-name = "spellcheck"
+name = "tilo-spellcheck"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Self-contained English spelling engine for Tilo: tokenize, check, and suggest corrections"
+repository.workspace = true
+homepage.workspace = true
 
 # No external dependencies: tokenization, dictionary loading, and suggestions
 # are implemented in-crate.
+[lib]
+name = "spellcheck"
+path = "src/lib.rs"
+
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 
 [dev-dependencies]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

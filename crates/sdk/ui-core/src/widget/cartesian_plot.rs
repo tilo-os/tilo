@@ -11,10 +11,10 @@
 )]
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -1725,10 +1725,6 @@ impl CartesianPlot {
         .filter(|point| plot.contains(*point))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "axis paint needs the shared scene, text, theme and two resolved domains"
-    )]
     fn draw_axes(
         &self,
         scene: &mut Scene,
@@ -2920,7 +2916,6 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3024,22 +3019,11 @@ impl Widget for CartesianPlot {
         self.draw_tooltip(scene, transform, tr, theme);
         self.draw_annotation_tooltip(scene, transform, tr, theme);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             if self.handle_touch_action(action) {
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             return;
         }
@@ -3049,15 +3033,16 @@ impl Widget for CartesianPlot {
             } else {
                 self.move_keyboard_inspection(action);
             }
-            *handled = true;
-            *focus_target = Some(node_id);
+            *ctx.handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.update_pointer(point) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => {
@@ -3073,8 +3058,8 @@ impl Widget for CartesianPlot {
             WindowEvent::MouseWheel { delta, .. }
                 if self.style.zoom != CartesianZoom::Disabled
                     && (!self.style.gestures.zoom_modifier_required
-                        || modifiers.state().control_key()
-                        || modifiers.state().super_key()) =>
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()) =>
             {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
@@ -3082,8 +3067,8 @@ impl Widget for CartesianPlot {
                 };
                 if self.plot_rect().contains(self.pointer) && amount != 0.0 {
                     self.zoom_at_pointer(amount);
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::PinchGesture { delta, .. }
@@ -3093,37 +3078,37 @@ impl Widget for CartesianPlot {
                 // A positive delta means magnification. Pinch is already an
                 // unambiguous zoom gesture, so it never requires a modifier.
                 self.zoom_at_pointer(*delta);
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             WindowEvent::PanGesture { delta, .. }
                 if self.style.pan != CartesianPan::Disabled
                     && self.plot_rect().contains(self.pointer)
                     && (!self.style.gestures.pan_modifier_required
-                        || modifiers.state().alt_key()) =>
+                        || ctx.modifiers.state().alt_key()) =>
             {
                 if self.pan_view_pixels(f64::from(delta.x), f64::from(delta.y), self.plot_rect()) {
                     self.hovered = None;
                     self.hovered_annotation = None;
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.begin_pointer_gesture(*modifiers) => {
-                *handled = true;
-                *focus_target = Some(node_id);
+            } if self.begin_pointer_gesture(*ctx.modifiers) => {
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } if self.finish_pointer_gesture() => {
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -3214,8 +3199,8 @@ impl Widget for CartesianPlot {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -3275,602 +3260,631 @@ mod tests {
     use super::*;
 
     #[test]
-    fn constant_domains_are_expanded() {
-        let domain = Domain::normalized(5.0, 5.0);
-        assert!(domain.max > domain.min);
-        assert_eq!(domain.min.midpoint(domain.max), 5.0);
+    fn auto_domains_and_ticks_expand_preserve_and_thin() {
+        fn constant_domains_are_expanded() {
+            let domain = Domain::normalized(5.0, 5.0);
+            assert!(domain.max > domain.min);
+            assert_eq!(domain.min.midpoint(domain.max), 5.0);
+        }
+
+        fn default_style_auto_ranges_both_axes() {
+            let style = CartesianStyle::default();
+            assert_eq!(style.x_axis.range, AxisRange::Auto);
+            assert_eq!(style.y_axis.range, AxisRange::Auto);
+        }
+
+        fn explicit_ticks_are_preserved() {
+            let axis = PlotAxis::default()
+                .with_ticks([AxisTick::new(0.0, "Start"), AxisTick::new(1.0, "End")]);
+            assert_eq!(
+                CartesianPlot::ticks(&axis, Domain::normalized(0.0, 1.0), 320.0),
+                axis.ticks
+            );
+        }
+
+        fn narrow_axes_reduce_tick_density_but_keep_endpoints() {
+            let axis = PlotAxis::default().with_ticks(
+                (0..10).map(|value| AxisTick::new(f64::from(value), value.to_string())),
+            );
+            let ticks = CartesianPlot::ticks(&axis, Domain::normalized(0.0, 9.0), 150.0);
+            assert_eq!(ticks.len(), 2);
+            assert_eq!(ticks.first().map(|tick| tick.label.as_str()), Some("0"));
+            assert_eq!(ticks.last().map(|tick| tick.label.as_str()), Some("9"));
+        }
+
+        fn domain_cache_is_invalidated_by_data_and_visibility_changes() {
+            let near = PlotSeries::new(
+                "near",
+                "Near",
+                Color::WHITE,
+                vec![PlotDatum::new("a", 1.0, 1.0)],
+            );
+            let far = PlotSeries::new(
+                "far",
+                "Far",
+                Color::WHITE,
+                vec![PlotDatum::new("b", 1_000.0, 1_000.0)],
+            );
+            let mut plot = CartesianPlot::new(vec![near.clone(), far]);
+            let initial = plot.base_domain(&plot.style.x_axis, true);
+            let cached = plot.base_domain(&plot.style.x_axis, true);
+            assert_eq!(initial, cached);
+            assert!(plot.set_series_visible("far", false));
+            let hidden = plot.base_domain(&plot.style.x_axis, true);
+            assert!(hidden.max < 10.0);
+            plot.set_series_immediate(vec![
+                near,
+                PlotSeries::new(
+                    "new",
+                    "New",
+                    Color::WHITE,
+                    vec![PlotDatum::new("c", 50.0, 50.0)],
+                ),
+            ]);
+            let replaced = plot.base_domain(&plot.style.x_axis, true);
+            assert!(replaced.max > 50.0);
+        }
+
+        fn series_visibility_is_observable_and_changes_auto_domain() {
+            let color = Color::from_rgb8(0, 0, 0);
+            let mut plot = CartesianPlot::new(vec![
+                PlotSeries::new("near", "Near", color, vec![PlotDatum::new("a", 0.0, 1.0)]),
+                PlotSeries::new("far", "Far", color, vec![PlotDatum::new("b", 100.0, 100.0)]),
+            ]);
+            let before = plot.base_domain(&PlotAxis::default(), true);
+            assert!(plot.set_series_visible("far", false));
+            let after = plot.base_domain(&PlotAxis::default(), true);
+            assert!(after.max < before.max);
+            assert_eq!(plot.take_visibility_changed(), Some(("far".into(), false)));
+            assert!(!plot.is_series_visible("far"));
+        }
+
+        constant_domains_are_expanded();
+        default_style_auto_ranges_both_axes();
+        explicit_ticks_are_preserved();
+        narrow_axes_reduce_tick_density_but_keep_endpoints();
+        domain_cache_is_invalidated_by_data_and_visibility_changes();
+        series_visibility_is_observable_and_changes_auto_domain();
     }
 
     #[test]
-    fn default_style_auto_ranges_both_axes() {
-        let style = CartesianStyle::default();
-        assert_eq!(style.x_axis.range, AxisRange::Auto);
-        assert_eq!(style.y_axis.range, AxisRange::Auto);
+    fn axis_titles_formats_and_tooltips_fit_the_chart() {
+        fn axis_titles_fit_responsive_space_with_unicode_safe_ellipsis() {
+            assert_eq!(
+                CartesianPlot::fitted_axis_title("Latency", 200.0),
+                "Latency"
+            );
+            assert_eq!(
+                CartesianPlot::fitted_axis_title("Requests / second", 42.0),
+                "Reque…"
+            );
+            assert_eq!(CartesianPlot::fitted_axis_title("Διακύμανση", 28.0), "Δια…");
+        }
+
+        fn built_in_axis_formats_cover_units() {
+            assert_eq!(
+                format_axis_value(0.425, AxisLabelFormat::Percent(1)),
+                "42.5%"
+            );
+            assert_eq!(
+                format_axis_value(2048.0, AxisLabelFormat::Bytes(1)),
+                "2.0 KiB"
+            );
+            assert_eq!(format_axis_value(1500.0, AxisLabelFormat::Compact), "1.5K");
+            assert_eq!(
+                format_axis_value(0.0125, AxisLabelFormat::Duration(1)),
+                "12.5 ms"
+            );
+            assert_eq!(
+                format_axis_value(
+                    -12.5,
+                    AxisLabelFormat::Currency {
+                        symbol: '$',
+                        places: 2
+                    }
+                ),
+                "-$12.50"
+            );
+            assert_eq!(
+                format_axis_value(12_500.0, AxisLabelFormat::Scientific(2)),
+                "1.25e4"
+            );
+        }
+
+        fn compact_number_format_uses_suffixes() {
+            assert_eq!(format_compact(1_500_000.0), "1.5M");
+        }
+
+        fn tooltip_placement_flips_and_clamps_to_chart_bounds() {
+            let bounds = Rect::new(0.0, 0.0, 300.0, 200.0);
+            let rect =
+                CartesianPlot::tooltip_rect(Point::new(290.0, 190.0), (120.0, 60.0), bounds, 16.0);
+            assert_eq!(rect, Rect::new(154.0, 114.0, 274.0, 174.0));
+            let oversized =
+                CartesianPlot::tooltip_rect(Point::new(10.0, 10.0), (300.0, 200.0), bounds, 16.0);
+            assert_eq!(oversized, bounds);
+        }
+
+        axis_titles_fit_responsive_space_with_unicode_safe_ellipsis();
+        built_in_axis_formats_cover_units();
+        compact_number_format_uses_suffixes();
+        tooltip_placement_flips_and_clamps_to_chart_bounds();
     }
 
     #[test]
-    fn explicit_ticks_are_preserved() {
-        let axis = PlotAxis::default()
-            .with_ticks([AxisTick::new(0.0, "Start"), AxisTick::new(1.0, "End")]);
-        assert_eq!(
-            CartesianPlot::ticks(&axis, Domain::normalized(0.0, 1.0), 320.0),
-            axis.ticks
-        );
-    }
+    fn viewport_navigation_zooms_pans_and_survives_invalid_input() {
+        fn cursor_anchored_zoom_keeps_anchor_stable() {
+            let base = Domain::normalized(0.0, 100.0);
+            let zoomed = CartesianPlot::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
+            assert_eq!(zoomed.min, 12.5);
+            assert_eq!(zoomed.max, 62.5);
+            assert_eq!((25.0 - zoomed.min) / (zoomed.max - zoomed.min), 0.25);
+        }
 
-    #[test]
-    fn narrow_axes_reduce_tick_density_but_keep_endpoints() {
-        let axis = PlotAxis::default()
-            .with_ticks((0..10).map(|value| AxisTick::new(f64::from(value), value.to_string())));
-        let ticks = CartesianPlot::ticks(&axis, Domain::normalized(0.0, 9.0), 150.0);
-        assert_eq!(ticks.len(), 2);
-        assert_eq!(ticks.first().map(|tick| tick.label.as_str()), Some("0"));
-        assert_eq!(ticks.last().map(|tick| tick.label.as_str()), Some("9"));
-    }
-
-    #[test]
-    fn axis_titles_fit_responsive_space_with_unicode_safe_ellipsis() {
-        assert_eq!(
-            CartesianPlot::fitted_axis_title("Latency", 200.0),
-            "Latency"
-        );
-        assert_eq!(
-            CartesianPlot::fitted_axis_title("Requests / second", 42.0),
-            "Reque…"
-        );
-        assert_eq!(CartesianPlot::fitted_axis_title("Διακύμανση", 28.0), "Δια…");
-    }
-
-    #[test]
-    fn built_in_axis_formats_cover_units() {
-        assert_eq!(
-            format_axis_value(0.425, AxisLabelFormat::Percent(1)),
-            "42.5%"
-        );
-        assert_eq!(
-            format_axis_value(2048.0, AxisLabelFormat::Bytes(1)),
-            "2.0 KiB"
-        );
-        assert_eq!(format_axis_value(1500.0, AxisLabelFormat::Compact), "1.5K");
-        assert_eq!(
-            format_axis_value(0.0125, AxisLabelFormat::Duration(1)),
-            "12.5 ms"
-        );
-        assert_eq!(
-            format_axis_value(
-                -12.5,
-                AxisLabelFormat::Currency {
-                    symbol: '$',
-                    places: 2
-                }
-            ),
-            "-$12.50"
-        );
-        assert_eq!(
-            format_axis_value(12_500.0, AxisLabelFormat::Scientific(2)),
-            "1.25e4"
-        );
-    }
-
-    #[test]
-    fn tooltip_placement_flips_and_clamps_to_chart_bounds() {
-        let bounds = Rect::new(0.0, 0.0, 300.0, 200.0);
-        let rect =
-            CartesianPlot::tooltip_rect(Point::new(290.0, 190.0), (120.0, 60.0), bounds, 16.0);
-        assert_eq!(rect, Rect::new(154.0, 114.0, 274.0, 174.0));
-        let oversized =
-            CartesianPlot::tooltip_rect(Point::new(10.0, 10.0), (300.0, 200.0), bounds, 16.0);
-        assert_eq!(oversized, bounds);
-    }
-
-    #[test]
-    fn cursor_anchored_zoom_keeps_anchor_stable() {
-        let base = Domain::normalized(0.0, 100.0);
-        let zoomed = CartesianPlot::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
-        assert_eq!(zoomed.min, 12.5);
-        assert_eq!(zoomed.max, 62.5);
-        assert_eq!((25.0 - zoomed.min) / (zoomed.max - zoomed.min), 0.25);
-    }
-
-    #[test]
-    fn logarithmic_projection_and_unprojection_round_trip() {
-        let domain = Domain {
-            min: 1.0,
-            max: 1000.0,
-        };
-        let projected = CartesianPlot::project(10.0, domain, AxisScale::Log10, 0.0, 300.0)
-            .expect("positive log value");
-        assert!((projected - 100.0).abs() < 1e-9);
-        let value = CartesianPlot::unproject(projected, domain, AxisScale::Log10, 0.0, 300.0);
-        assert!((value - 10.0).abs() < 1e-9);
-        assert!(CartesianPlot::project(0.0, domain, AxisScale::Log10, 0.0, 300.0).is_none());
-    }
-
-    #[test]
-    fn logarithmic_ticks_prefer_decades_and_respect_density() {
-        let axis = PlotAxis::default().logarithmic().with_tick_density(4, 60.0);
-        let ticks = CartesianPlot::ticks(
-            &axis,
-            Domain {
-                min: 1.0,
-                max: 1000.0,
-            },
-            320.0,
-        );
-        assert_eq!(
-            ticks.iter().map(|tick| tick.value).collect::<Vec<_>>(),
-            vec![1.0, 10.0, 100.0, 1000.0]
-        );
-    }
-
-    #[test]
-    fn logarithmic_zoom_and_brush_stay_in_data_coordinates() {
-        let base = Domain {
-            min: 1.0,
-            max: 1000.0,
-        };
-        let zoomed = CartesianPlot::zoom_domain(base, base, 10.0, 0.5, 0.01, AxisScale::Log10);
-        assert!((zoomed.min.log10() - 0.5).abs() < 1e-9);
-        assert!((zoomed.max.log10() - 2.0).abs() < 1e-9);
-        let selection = CartesianPlot::brush_selection_from_rect(
-            Rect::new(100.0, 0.0, 200.0, 100.0),
-            Rect::new(0.0, 0.0, 300.0, 100.0),
-            base,
-            Domain::normalized(0.0, 1.0),
-            AxisScale::Log10,
-            AxisScale::Linear,
-            CartesianBrush::X,
-        )
-        .unwrap();
-        assert_eq!(
-            selection.x,
-            AxisRange::Fixed {
-                min: 10.0,
-                max: 100.0
-            }
-        );
-    }
-
-    #[test]
-    fn logarithmic_viewports_reject_non_positive_ranges() {
-        let mut plot = CartesianPlot::new(Vec::new());
-        plot.style.x_axis = PlotAxis::default().logarithmic();
-        assert!(!plot.set_viewport(
-            Some(AxisRange::Fixed {
-                min: 0.0,
-                max: 10.0
-            }),
-            None,
-        ));
-        assert!(plot.set_viewport(
-            Some(AxisRange::Fixed {
-                min: 1.0,
-                max: 10.0
-            }),
-            None,
-        ));
-    }
-
-    #[test]
-    fn viewport_can_be_restored_panned_and_reset() {
-        let color = Color::from_rgb8(0, 0, 0);
-        let mut plot = CartesianPlot::new(vec![PlotSeries::new(
-            "series",
-            "Series",
-            color,
-            vec![
-                PlotDatum::new("a", 0.0, 0.0),
-                PlotDatum::new("b", 100.0, 50.0),
-            ],
-        )]);
-        assert!(plot.set_viewport(
-            Some(AxisRange::Fixed {
-                min: 10.0,
-                max: 30.0
-            }),
-            Some(AxisRange::Fixed {
-                min: 5.0,
-                max: 15.0
-            }),
-        ));
-        assert!(plot.pan_view_fraction(0.5, -0.5));
-        assert_eq!(
-            plot.viewport(),
-            (
+        fn viewport_can_be_restored_panned_and_reset() {
+            let color = Color::from_rgb8(0, 0, 0);
+            let mut plot = CartesianPlot::new(vec![PlotSeries::new(
+                "series",
+                "Series",
+                color,
+                vec![
+                    PlotDatum::new("a", 0.0, 0.0),
+                    PlotDatum::new("b", 100.0, 50.0),
+                ],
+            )]);
+            assert!(plot.set_viewport(
                 Some(AxisRange::Fixed {
-                    min: 20.0,
-                    max: 40.0
-                }),
-                Some(AxisRange::Fixed {
-                    min: 0.0,
-                    max: 10.0
-                })
-            )
-        );
-        plot.reset_view();
-        assert_eq!(plot.viewport(), (None, None));
-    }
-
-    #[test]
-    fn pixel_pan_is_scale_aware_and_x_only_preserves_y() {
-        let mut plot = CartesianPlot::new(Vec::new());
-        plot.style.pan = CartesianPan::X;
-        assert!(plot.set_viewport(
-            Some(AxisRange::Fixed {
-                min: 0.0,
-                max: 100.0
-            }),
-            Some(AxisRange::Fixed {
-                min: 5.0,
-                max: 15.0
-            }),
-        ));
-        assert!(plot.pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0)));
-        assert_eq!(
-            plot.viewport(),
-            (
-                Some(AxisRange::Fixed {
-                    min: -25.0,
-                    max: 75.0
+                    min: 10.0,
+                    max: 30.0
                 }),
                 Some(AxisRange::Fixed {
                     min: 5.0,
                     max: 15.0
-                })
-            )
-        );
+                }),
+            ));
+            assert!(plot.pan_view_fraction(0.5, -0.5));
+            assert_eq!(
+                plot.viewport(),
+                (
+                    Some(AxisRange::Fixed {
+                        min: 20.0,
+                        max: 40.0
+                    }),
+                    Some(AxisRange::Fixed {
+                        min: 0.0,
+                        max: 10.0
+                    })
+                )
+            );
+            plot.reset_view();
+            assert_eq!(plot.viewport(), (None, None));
+        }
 
-        plot.style.x_axis = PlotAxis::default().logarithmic();
-        assert!(plot.set_viewport(
-            Some(AxisRange::Fixed {
+        fn pixel_pan_is_scale_aware_and_x_only_preserves_y() {
+            let mut plot = CartesianPlot::new(Vec::new());
+            plot.style.pan = CartesianPan::X;
+            assert!(plot.set_viewport(
+                Some(AxisRange::Fixed {
+                    min: 0.0,
+                    max: 100.0
+                }),
+                Some(AxisRange::Fixed {
+                    min: 5.0,
+                    max: 15.0
+                }),
+            ));
+            assert!(plot.pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0)));
+            assert_eq!(
+                plot.viewport(),
+                (
+                    Some(AxisRange::Fixed {
+                        min: -25.0,
+                        max: 75.0
+                    }),
+                    Some(AxisRange::Fixed {
+                        min: 5.0,
+                        max: 15.0
+                    })
+                )
+            );
+
+            plot.style.x_axis = PlotAxis::default().logarithmic();
+            assert!(plot.set_viewport(
+                Some(AxisRange::Fixed {
+                    min: 1.0,
+                    max: 1000.0
+                }),
+                None
+            ));
+            assert!(plot.pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0)));
+            let Some(AxisRange::Fixed { min, max }) = plot.viewport().0 else {
+                panic!()
+            };
+            assert!((min - 0.1).abs() < 1e-9);
+            assert!((max - 100.0).abs() < 1e-9);
+        }
+
+        fn pixel_pan_rejects_invalid_geometry_and_captures_active_drags() {
+            let mut plot = CartesianPlot::new(Vec::new());
+            plot.style.pan = CartesianPan::XY;
+            assert!(!plot.pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0)));
+            assert!(!plot.pan_view_pixels(1.0, 0.0, Rect::ZERO));
+            assert!(!plot.wants_pointer_capture());
+            plot.pan_last = Some(Point::ZERO);
+            assert!(plot.wants_pointer_capture());
+        }
+
+        fn invalid_viewports_do_not_destroy_current_navigation() {
+            let mut plot = CartesianPlot::new(Vec::new());
+            assert!(plot.set_viewport(Some(AxisRange::Fixed { min: 1.0, max: 2.0 }), None,));
+            assert!(!plot.set_viewport(Some(AxisRange::Fixed { min: 2.0, max: 1.0 }), None,));
+            assert_eq!(
+                plot.viewport(),
+                (Some(AxisRange::Fixed { min: 1.0, max: 2.0 }), None)
+            );
+        }
+
+        cursor_anchored_zoom_keeps_anchor_stable();
+        viewport_can_be_restored_panned_and_reset();
+        pixel_pan_is_scale_aware_and_x_only_preserves_y();
+        pixel_pan_rejects_invalid_geometry_and_captures_active_drags();
+        invalid_viewports_do_not_destroy_current_navigation();
+    }
+
+    #[test]
+    fn logarithmic_axes_project_tick_zoom_and_reject_non_positive() {
+        fn logarithmic_projection_and_unprojection_round_trip() {
+            let domain = Domain {
                 min: 1.0,
-                max: 1000.0
-            }),
-            None
-        ));
-        assert!(plot.pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0)));
-        let Some(AxisRange::Fixed { min, max }) = plot.viewport().0 else {
-            panic!()
-        };
-        assert!((min - 0.1).abs() < 1e-9);
-        assert!((max - 100.0).abs() < 1e-9);
+                max: 1000.0,
+            };
+            let projected = CartesianPlot::project(10.0, domain, AxisScale::Log10, 0.0, 300.0)
+                .expect("positive log value");
+            assert!((projected - 100.0).abs() < 1e-9);
+            let value = CartesianPlot::unproject(projected, domain, AxisScale::Log10, 0.0, 300.0);
+            assert!((value - 10.0).abs() < 1e-9);
+            assert!(CartesianPlot::project(0.0, domain, AxisScale::Log10, 0.0, 300.0).is_none());
+        }
+
+        fn logarithmic_ticks_prefer_decades_and_respect_density() {
+            let axis = PlotAxis::default().logarithmic().with_tick_density(4, 60.0);
+            let ticks = CartesianPlot::ticks(
+                &axis,
+                Domain {
+                    min: 1.0,
+                    max: 1000.0,
+                },
+                320.0,
+            );
+            assert_eq!(
+                ticks.iter().map(|tick| tick.value).collect::<Vec<_>>(),
+                vec![1.0, 10.0, 100.0, 1000.0]
+            );
+        }
+
+        fn logarithmic_zoom_and_brush_stay_in_data_coordinates() {
+            let base = Domain {
+                min: 1.0,
+                max: 1000.0,
+            };
+            let zoomed = CartesianPlot::zoom_domain(base, base, 10.0, 0.5, 0.01, AxisScale::Log10);
+            assert!((zoomed.min.log10() - 0.5).abs() < 1e-9);
+            assert!((zoomed.max.log10() - 2.0).abs() < 1e-9);
+            let selection = CartesianPlot::brush_selection_from_rect(
+                Rect::new(100.0, 0.0, 200.0, 100.0),
+                Rect::new(0.0, 0.0, 300.0, 100.0),
+                base,
+                Domain::normalized(0.0, 1.0),
+                AxisScale::Log10,
+                AxisScale::Linear,
+                CartesianBrush::X,
+            )
+            .unwrap();
+            assert_eq!(
+                selection.x,
+                AxisRange::Fixed {
+                    min: 10.0,
+                    max: 100.0
+                }
+            );
+        }
+
+        fn logarithmic_viewports_reject_non_positive_ranges() {
+            let mut plot = CartesianPlot::new(Vec::new());
+            plot.style.x_axis = PlotAxis::default().logarithmic();
+            assert!(!plot.set_viewport(
+                Some(AxisRange::Fixed {
+                    min: 0.0,
+                    max: 10.0
+                }),
+                None,
+            ));
+            assert!(plot.set_viewport(
+                Some(AxisRange::Fixed {
+                    min: 1.0,
+                    max: 10.0
+                }),
+                None,
+            ));
+        }
+
+        logarithmic_projection_and_unprojection_round_trip();
+        logarithmic_ticks_prefer_decades_and_respect_density();
+        logarithmic_zoom_and_brush_stay_in_data_coordinates();
+        logarithmic_viewports_reject_non_positive_ranges();
     }
 
     #[test]
-    fn pixel_pan_rejects_invalid_geometry_and_captures_active_drags() {
-        let mut plot = CartesianPlot::new(Vec::new());
-        plot.style.pan = CartesianPan::XY;
-        assert!(!plot.pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0)));
-        assert!(!plot.pan_view_pixels(1.0, 0.0, Rect::ZERO));
-        assert!(!plot.wants_pointer_capture());
-        plot.pan_last = Some(Point::ZERO);
-        assert!(plot.wants_pointer_capture());
-    }
+    fn series_builders_sampling_and_gaps_preserve_data() {
+        fn annotations_have_concise_builders_and_remain_mutable() {
+            let color = Color::from_rgb8(1, 2, 3);
+            let mut plot = CartesianPlot::new(Vec::new()).with_annotations([
+                CartesianAnnotation::y_line("limit", 10.0, color)
+                    .labelled("Limit")
+                    .stroke_width(2.0)
+                    .solid(),
+                CartesianAnnotation::x_band("window", 2.0, 4.0, color).fill_alpha(42),
+            ]);
+            assert_eq!(plot.annotations().len(), 2);
+            assert_eq!(plot.annotations()[0].id, "limit");
+            assert!(!plot.annotations()[0].dashed);
+            assert_eq!(plot.annotations()[1].fill_alpha, 42);
+            plot.annotations_mut().clear();
+            assert!(plot.annotations().is_empty());
+        }
 
-    #[test]
-    fn invalid_viewports_do_not_destroy_current_navigation() {
-        let mut plot = CartesianPlot::new(Vec::new());
-        assert!(plot.set_viewport(Some(AxisRange::Fixed { min: 1.0, max: 2.0 }), None,));
-        assert!(!plot.set_viewport(Some(AxisRange::Fixed { min: 2.0, max: 1.0 }), None,));
-        assert_eq!(
-            plot.viewport(),
-            (Some(AxisRange::Fixed { min: 1.0, max: 2.0 }), None)
-        );
-    }
+        fn series_visual_builders_sanitize_and_preserve_art_direction() {
+            let series = PlotSeries::new("s", "Series", Color::WHITE, Vec::new())
+                .kind(SeriesKind::SmoothArea)
+                .dashed([8.0, -2.0, f64::NAN, 3.0])
+                .fill_alpha(90)
+                .marker_shape(MarkerShape::Diamond)
+                .bar_radius(-4.0);
+            assert_eq!(series.line_dash, vec![8.0, 3.0]);
+            assert_eq!(series.fill_alpha, 90);
+            assert_eq!(series.marker_shape, MarkerShape::Diamond);
+            assert_eq!(series.bar_radius, 0.0);
+        }
 
-    #[test]
-    fn annotations_have_concise_builders_and_remain_mutable() {
-        let color = Color::from_rgb8(1, 2, 3);
-        let mut plot = CartesianPlot::new(Vec::new()).with_annotations([
-            CartesianAnnotation::y_line("limit", 10.0, color)
-                .labelled("Limit")
-                .stroke_width(2.0)
-                .solid(),
-            CartesianAnnotation::x_band("window", 2.0, 4.0, color).fill_alpha(42),
-        ]);
-        assert_eq!(plot.annotations().len(), 2);
-        assert_eq!(plot.annotations()[0].id, "limit");
-        assert!(!plot.annotations()[0].dashed);
-        assert_eq!(plot.annotations()[1].fill_alpha, 42);
-        plot.annotations_mut().clear();
-        assert!(plot.annotations().is_empty());
-    }
+        fn adaptive_sampling_preserves_extrema_and_respects_pixel_budget() {
+            let mut data = (0..10_000)
+                .map(|index| PlotDatum::new(index.to_string(), f64::from(index), 0.0))
+                .collect::<Vec<_>>();
+            data[1_337].y = 900.0;
+            data[7_331].y = -700.0;
+            let line = PlotSeries::new("dense", "Dense", Color::WHITE, data);
+            let plot = CartesianPlot::new(vec![line.clone()]);
+            let sampled = plot.render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
+            assert!(sampled.len() <= 202, "{} sampled points", sampled.len());
+            assert_eq!(sampled.first(), Some(&0));
+            assert_eq!(sampled.last(), Some(&9_999));
+            assert!(sampled.contains(&1_337));
+            assert!(sampled.contains(&7_331));
+            assert!(sampled.windows(2).all(|pair| pair[0] < pair[1]));
 
-    #[test]
-    fn series_visual_builders_sanitize_and_preserve_art_direction() {
-        let series = PlotSeries::new("s", "Series", Color::WHITE, Vec::new())
-            .kind(SeriesKind::SmoothArea)
-            .dashed([8.0, -2.0, f64::NAN, 3.0])
-            .fill_alpha(90)
-            .marker_shape(MarkerShape::Diamond)
-            .bar_radius(-4.0);
-        assert_eq!(series.line_dash, vec![8.0, 3.0]);
-        assert_eq!(series.fill_alpha, 90);
-        assert_eq!(series.marker_shape, MarkerShape::Diamond);
-        assert_eq!(series.bar_radius, 0.0);
-    }
+            let scatter = line.kind(SeriesKind::Scatter);
+            assert_eq!(
+                plot.render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
+                    .len(),
+                10_000
+            );
+        }
 
-    #[test]
-    fn adaptive_sampling_preserves_extrema_and_respects_pixel_budget() {
-        let mut data = (0..10_000)
-            .map(|index| PlotDatum::new(index.to_string(), f64::from(index), 0.0))
-            .collect::<Vec<_>>();
-        data[1_337].y = 900.0;
-        data[7_331].y = -700.0;
-        let line = PlotSeries::new("dense", "Dense", Color::WHITE, data);
-        let plot = CartesianPlot::new(vec![line.clone()]);
-        let sampled = plot.render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
-        assert!(sampled.len() <= 202, "{} sampled points", sampled.len());
-        assert_eq!(sampled.first(), Some(&0));
-        assert_eq!(sampled.last(), Some(&9_999));
-        assert!(sampled.contains(&1_337));
-        assert!(sampled.contains(&7_331));
-        assert!(sampled.windows(2).all(|pair| pair[0] < pair[1]));
+        fn sampling_configuration_is_sanitized_and_can_be_disabled() {
+            let style = CartesianStyle::default().with_adaptive_sampling(false, f64::NAN);
+            assert!(!style.rendering.adaptive_sampling);
+            assert_eq!(style.rendering.max_points_per_pixel, 2.0);
+            let style = style.with_adaptive_sampling(true, 100.0);
+            assert_eq!(style.rendering.max_points_per_pixel, 16.0);
+        }
 
-        let scatter = line.kind(SeriesKind::Scatter);
-        assert_eq!(
-            plot.render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
-                .len(),
-            10_000
-        );
-    }
+        fn missing_samples_break_paths_unless_connection_is_requested() {
+            let a = Point::new(0.0, 0.0);
+            let b = Point::new(1.0, 1.0);
+            let c = Point::new(2.0, 2.0);
+            let broken = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], false);
+            assert_eq!(broken, vec![vec![a, b], vec![c]]);
+            let connected = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], true);
+            assert_eq!(connected, vec![vec![a, b, c]]);
 
-    #[test]
-    fn sampling_configuration_is_sanitized_and_can_be_disabled() {
-        let style = CartesianStyle::default().with_adaptive_sampling(false, f64::NAN);
-        assert!(!style.rendering.adaptive_sampling);
-        assert_eq!(style.rendering.max_points_per_pixel, 2.0);
-        let style = style.with_adaptive_sampling(true, 100.0);
-        assert_eq!(style.rendering.max_points_per_pixel, 16.0);
-    }
-
-    #[test]
-    fn missing_samples_break_paths_unless_connection_is_requested() {
-        let a = Point::new(0.0, 0.0);
-        let b = Point::new(1.0, 1.0);
-        let c = Point::new(2.0, 2.0);
-        let broken = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], false);
-        assert_eq!(broken, vec![vec![a, b], vec![c]]);
-        let connected = CartesianPlot::point_segments([Some(a), Some(b), None, Some(c)], true);
-        assert_eq!(connected, vec![vec![a, b, c]]);
-
-        let series = PlotSeries::new(
-            "gapped",
-            "Gapped",
-            Color::WHITE,
-            (0..1_000)
-                .map(|index| {
-                    if index == 501 {
-                        PlotDatum::missing("gap", f64::from(index))
-                    } else {
-                        PlotDatum::new(index.to_string(), f64::from(index), f64::from(index))
-                    }
-                })
-                .collect(),
-        );
-        let plot = CartesianPlot::new(vec![series.clone()]);
-        assert!(
-            plot.render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
-                .contains(&501)
-        );
-    }
-
-    #[test]
-    fn sorted_series_hover_uses_a_small_exact_x_window() {
-        let series = PlotSeries::new(
-            "sorted",
-            "Sorted",
-            Color::WHITE,
-            (0..10_000)
-                .map(|index| PlotDatum::new(index.to_string(), f64::from(index), 1.0))
-                .collect(),
-        )
-        .sorted_by_x();
-        let mut plot = CartesianPlot::new(vec![series.clone()]);
-        plot.pointer = Point::new(500.0, 50.0);
-        plot.style.hit_radius = 10.0;
-        let range = plot.hover_range(
-            &series,
-            Rect::new(0.0, 0.0, 1_000.0, 100.0),
-            Domain::normalized(0.0, 10_000.0),
-        );
-        assert!(range.contains(&5_000));
-        assert!(range.len() < 250, "{} candidates", range.len());
-    }
-
-    #[test]
-    fn domain_cache_is_invalidated_by_data_and_visibility_changes() {
-        let near = PlotSeries::new(
-            "near",
-            "Near",
-            Color::WHITE,
-            vec![PlotDatum::new("a", 1.0, 1.0)],
-        );
-        let far = PlotSeries::new(
-            "far",
-            "Far",
-            Color::WHITE,
-            vec![PlotDatum::new("b", 1_000.0, 1_000.0)],
-        );
-        let mut plot = CartesianPlot::new(vec![near.clone(), far]);
-        let initial = plot.base_domain(&plot.style.x_axis, true);
-        let cached = plot.base_domain(&plot.style.x_axis, true);
-        assert_eq!(initial, cached);
-        assert!(plot.set_series_visible("far", false));
-        let hidden = plot.base_domain(&plot.style.x_axis, true);
-        assert!(hidden.max < 10.0);
-        plot.set_series_immediate(vec![
-            near,
-            PlotSeries::new(
-                "new",
-                "New",
+            let series = PlotSeries::new(
+                "gapped",
+                "Gapped",
                 Color::WHITE,
-                vec![PlotDatum::new("c", 50.0, 50.0)],
-            ),
-        ]);
-        let replaced = plot.base_domain(&plot.style.x_axis, true);
-        assert!(replaced.max > 50.0);
+                (0..1_000)
+                    .map(|index| {
+                        if index == 501 {
+                            PlotDatum::missing("gap", f64::from(index))
+                        } else {
+                            PlotDatum::new(index.to_string(), f64::from(index), f64::from(index))
+                        }
+                    })
+                    .collect(),
+            );
+            let plot = CartesianPlot::new(vec![series.clone()]);
+            assert!(
+                plot.render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
+                    .contains(&501)
+            );
+        }
+
+        annotations_have_concise_builders_and_remain_mutable();
+        series_visual_builders_sanitize_and_preserve_art_direction();
+        adaptive_sampling_preserves_extrema_and_respects_pixel_budget();
+        sampling_configuration_is_sanitized_and_can_be_disabled();
+        missing_samples_break_paths_unless_connection_is_requested();
     }
 
     #[test]
-    fn annotations_are_hit_testable_and_programmatically_inspectable() {
-        let color = Color::WHITE;
-        let mut plot = CartesianPlot::new(Vec::new()).with_annotations([
-            CartesianAnnotation::x_line("marker", 5.0, color).with_detail("Release"),
-            CartesianAnnotation::x_band("window", 7.0, 9.0, color),
-            CartesianAnnotation::y_line("decoration", 2.0, color).interactive(false),
-        ]);
-        plot.style.x_axis = PlotAxis::default().fixed(0.0, 10.0);
-        plot.style.y_axis = PlotAxis::default().fixed(0.0, 10.0);
-        let area = Rect::new(0.0, 0.0, 100.0, 100.0);
-        let domain = Domain::normalized(0.0, 10.0);
-        assert_eq!(
-            plot.annotation_at(Point::new(50.0, 40.0), area, domain, domain),
-            Some(0)
-        );
-        assert_eq!(
-            plot.annotation_at(Point::new(80.0, 40.0), area, domain, domain),
-            Some(1)
-        );
-        assert!(plot.inspect_annotation("marker"));
-        assert!(!plot.inspect_annotation("decoration"));
-        assert!(!plot.inspect_annotation("missing"));
+    fn hover_annotations_and_live_updates_are_exact_and_stable() {
+        fn sorted_series_hover_uses_a_small_exact_x_window() {
+            let series = PlotSeries::new(
+                "sorted",
+                "Sorted",
+                Color::WHITE,
+                (0..10_000)
+                    .map(|index| PlotDatum::new(index.to_string(), f64::from(index), 1.0))
+                    .collect(),
+            )
+            .sorted_by_x();
+            let mut plot = CartesianPlot::new(vec![series.clone()]);
+            plot.pointer = Point::new(500.0, 50.0);
+            plot.style.hit_radius = 10.0;
+            let range = plot.hover_range(
+                &series,
+                Rect::new(0.0, 0.0, 1_000.0, 100.0),
+                Domain::normalized(0.0, 10_000.0),
+            );
+            assert!(range.contains(&5_000));
+            assert!(range.len() < 250, "{} candidates", range.len());
+        }
+
+        fn annotations_are_hit_testable_and_programmatically_inspectable() {
+            let color = Color::WHITE;
+            let mut plot = CartesianPlot::new(Vec::new()).with_annotations([
+                CartesianAnnotation::x_line("marker", 5.0, color).with_detail("Release"),
+                CartesianAnnotation::x_band("window", 7.0, 9.0, color),
+                CartesianAnnotation::y_line("decoration", 2.0, color).interactive(false),
+            ]);
+            plot.style.x_axis = PlotAxis::default().fixed(0.0, 10.0);
+            plot.style.y_axis = PlotAxis::default().fixed(0.0, 10.0);
+            let area = Rect::new(0.0, 0.0, 100.0, 100.0);
+            let domain = Domain::normalized(0.0, 10.0);
+            assert_eq!(
+                plot.annotation_at(Point::new(50.0, 40.0), area, domain, domain),
+                Some(0)
+            );
+            assert_eq!(
+                plot.annotation_at(Point::new(80.0, 40.0), area, domain, domain),
+                Some(1)
+            );
+            assert!(plot.inspect_annotation("marker"));
+            assert!(!plot.inspect_annotation("decoration"));
+            assert!(!plot.inspect_annotation("missing"));
+        }
+
+        fn stable_ids_interpolate_live_updates_and_reduced_motion_snaps() {
+            let color = Color::from_rgb8(1, 2, 3);
+            let old = PlotSeries::new(
+                "series",
+                "Series",
+                color,
+                vec![PlotDatum::new("point", 0.0, 10.0)],
+            );
+            let mut plot = CartesianPlot::new(vec![old]);
+            plot.style.animation.duration = Duration::from_millis(200);
+            plot.set_series(vec![PlotSeries::new(
+                "series",
+                "Series",
+                color,
+                vec![PlotDatum::new("point", 100.0, 30.0)],
+            )]);
+            let midpoint = crate::time::now();
+            plot.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
+            let (x, y) = plot.animated_xy(0, 0, midpoint).unwrap();
+            assert!(x > 50.0 && x < 100.0, "ease-out midpoint: {x}");
+            assert!(y > 20.0 && y < 30.0, "ease-out midpoint: {y}");
+            assert!(plot.needs_animation_frame());
+            plot.reduce_motion = true;
+            assert_eq!(plot.animated_xy(0, 0, midpoint), Some((100.0, 30.0)));
+            assert!(!plot.needs_animation_frame());
+        }
+
+        fn identical_series_updates_are_noops_and_immediate_updates_snap() {
+            let series = vec![PlotSeries::new(
+                "series",
+                "Series",
+                Color::WHITE,
+                vec![PlotDatum::new("point", 1.0, 2.0)],
+            )];
+            let mut plot = CartesianPlot::new(series.clone());
+            let started = plot.transition_started;
+            plot.set_series(series);
+            assert_eq!(plot.transition_started, started);
+            assert!(!plot.is_animating());
+            plot.set_series_immediate(vec![PlotSeries::new(
+                "series",
+                "Series",
+                Color::WHITE,
+                vec![PlotDatum::new("point", 3.0, 4.0)],
+            )]);
+            assert!(!plot.is_animating());
+            assert_eq!(plot.series[0].data[0].x, 3.0);
+        }
+
+        sorted_series_hover_uses_a_small_exact_x_window();
+        annotations_are_hit_testable_and_programmatically_inspectable();
+        stable_ids_interpolate_live_updates_and_reduced_motion_snaps();
+        identical_series_updates_are_noops_and_immediate_updates_snap();
     }
 
     #[test]
-    fn stable_ids_interpolate_live_updates_and_reduced_motion_snaps() {
-        let color = Color::from_rgb8(1, 2, 3);
-        let old = PlotSeries::new(
-            "series",
-            "Series",
-            color,
-            vec![PlotDatum::new("point", 0.0, 10.0)],
-        );
-        let mut plot = CartesianPlot::new(vec![old]);
-        plot.style.animation.duration = Duration::from_millis(200);
-        plot.set_series(vec![PlotSeries::new(
-            "series",
-            "Series",
-            color,
-            vec![PlotDatum::new("point", 100.0, 30.0)],
-        )]);
-        let midpoint = crate::time::now();
-        plot.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
-        let (x, y) = plot.animated_xy(0, 0, midpoint).unwrap();
-        assert!(x > 50.0 && x < 100.0, "ease-out midpoint: {x}");
-        assert!(y > 20.0 && y < 30.0, "ease-out midpoint: {y}");
-        assert!(plot.needs_animation_frame());
-        plot.reduce_motion = true;
-        assert_eq!(plot.animated_xy(0, 0, midpoint), Some((100.0, 30.0)));
-        assert!(!plot.needs_animation_frame());
-    }
-
-    #[test]
-    fn identical_series_updates_are_noops_and_immediate_updates_snap() {
-        let series = vec![PlotSeries::new(
-            "series",
-            "Series",
-            Color::WHITE,
-            vec![PlotDatum::new("point", 1.0, 2.0)],
-        )];
-        let mut plot = CartesianPlot::new(series.clone());
-        let started = plot.transition_started;
-        plot.set_series(series);
-        assert_eq!(plot.transition_started, started);
-        assert!(!plot.is_animating());
-        plot.set_series_immediate(vec![PlotSeries::new(
-            "series",
-            "Series",
-            Color::WHITE,
-            vec![PlotDatum::new("point", 3.0, 4.0)],
-        )]);
-        assert!(!plot.is_animating());
-        assert_eq!(plot.series[0].data[0].x, 3.0);
-    }
-
-    #[test]
-    fn brush_converts_pixels_to_x_domain() {
-        let selection = CartesianPlot::brush_selection_from_rect(
-            Rect::new(60.0, 20.0, 160.0, 120.0),
-            Rect::new(10.0, 20.0, 210.0, 120.0),
-            Domain::normalized(0.0, 100.0),
-            Domain::normalized(-10.0, 10.0),
-            AxisScale::Linear,
-            AxisScale::Linear,
-            CartesianBrush::X,
-        )
-        .unwrap();
-        assert_eq!(
-            selection.x,
-            AxisRange::Fixed {
-                min: 25.0,
-                max: 75.0
-            }
-        );
-        assert_eq!(selection.y, None);
-    }
-
-    #[test]
-    fn xy_brush_converts_inverted_y_domain() {
-        let selection = CartesianPlot::brush_selection_from_rect(
-            Rect::new(50.0, 25.0, 150.0, 75.0),
-            Rect::new(0.0, 0.0, 200.0, 100.0),
-            Domain::normalized(0.0, 20.0),
-            Domain::normalized(0.0, 100.0),
-            AxisScale::Linear,
-            AxisScale::Linear,
-            CartesianBrush::XY,
-        )
-        .unwrap();
-        assert_eq!(
-            selection.x,
-            AxisRange::Fixed {
-                min: 5.0,
-                max: 15.0
-            }
-        );
-        assert_eq!(
-            selection.y,
-            Some(AxisRange::Fixed {
-                min: 25.0,
-                max: 75.0
-            })
-        );
-    }
-
-    #[test]
-    fn tiny_brushes_are_ignored() {
-        assert!(
-            CartesianPlot::brush_selection_from_rect(
-                Rect::new(0.0, 0.0, 3.0, 100.0),
-                Rect::new(0.0, 0.0, 100.0, 100.0),
-                Domain::normalized(0.0, 1.0),
-                Domain::normalized(0.0, 1.0),
+    fn brushes_convert_pixels_to_domains_and_ignore_tiny_drags() {
+        fn brush_converts_pixels_to_x_domain() {
+            let selection = CartesianPlot::brush_selection_from_rect(
+                Rect::new(60.0, 20.0, 160.0, 120.0),
+                Rect::new(10.0, 20.0, 210.0, 120.0),
+                Domain::normalized(0.0, 100.0),
+                Domain::normalized(-10.0, 10.0),
                 AxisScale::Linear,
                 AxisScale::Linear,
                 CartesianBrush::X,
             )
-            .is_none()
-        );
-    }
+            .unwrap();
+            assert_eq!(
+                selection.x,
+                AxisRange::Fixed {
+                    min: 25.0,
+                    max: 75.0
+                }
+            );
+            assert_eq!(selection.y, None);
+        }
 
-    #[test]
-    fn series_visibility_is_observable_and_changes_auto_domain() {
-        let color = Color::from_rgb8(0, 0, 0);
-        let mut plot = CartesianPlot::new(vec![
-            PlotSeries::new("near", "Near", color, vec![PlotDatum::new("a", 0.0, 1.0)]),
-            PlotSeries::new("far", "Far", color, vec![PlotDatum::new("b", 100.0, 100.0)]),
-        ]);
-        let before = plot.base_domain(&PlotAxis::default(), true);
-        assert!(plot.set_series_visible("far", false));
-        let after = plot.base_domain(&PlotAxis::default(), true);
-        assert!(after.max < before.max);
-        assert_eq!(plot.take_visibility_changed(), Some(("far".into(), false)));
-        assert!(!plot.is_series_visible("far"));
-    }
+        fn xy_brush_converts_inverted_y_domain() {
+            let selection = CartesianPlot::brush_selection_from_rect(
+                Rect::new(50.0, 25.0, 150.0, 75.0),
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                Domain::normalized(0.0, 20.0),
+                Domain::normalized(0.0, 100.0),
+                AxisScale::Linear,
+                AxisScale::Linear,
+                CartesianBrush::XY,
+            )
+            .unwrap();
+            assert_eq!(
+                selection.x,
+                AxisRange::Fixed {
+                    min: 5.0,
+                    max: 15.0
+                }
+            );
+            assert_eq!(
+                selection.y,
+                Some(AxisRange::Fixed {
+                    min: 25.0,
+                    max: 75.0
+                })
+            );
+        }
 
-    #[test]
-    fn compact_number_format_uses_suffixes() {
-        assert_eq!(format_compact(1_500_000.0), "1.5M");
+        fn tiny_brushes_are_ignored() {
+            assert!(
+                CartesianPlot::brush_selection_from_rect(
+                    Rect::new(0.0, 0.0, 3.0, 100.0),
+                    Rect::new(0.0, 0.0, 100.0, 100.0),
+                    Domain::normalized(0.0, 1.0),
+                    Domain::normalized(0.0, 1.0),
+                    AxisScale::Linear,
+                    AxisScale::Linear,
+                    CartesianBrush::X,
+                )
+                .is_none()
+            );
+        }
+
+        brush_converts_pixels_to_x_domain();
+        xy_brush_converts_inverted_y_domain();
+        tiny_brushes_are_ignored();
     }
 }

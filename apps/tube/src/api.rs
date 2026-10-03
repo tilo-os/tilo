@@ -1,9 +1,11 @@
 //! Live data sources: Invidious (search + metadata), `SponsorBlock`
 //! (segments) and `DeArrow` (de-clickbait titles/thumbnails).
 //!
-//! Everything here runs on a background [`Worker`] thread driven by a
-//! blocking `reqwest` client — the `--shots` path never spawns it, so the
-//! screenshot is populated purely from `sample.rs`. The app spawns the
+//! The backends (rustypipe, yt-dlp) run on a background [`Worker`] thread;
+//! the plain HTTP sources (`SponsorBlock`, `DeArrow`, dislikes) are async
+//! `tilo_net` requests the worker hands to the app runtime. The `--shots` path
+//! never spawns the worker, so the screenshot is populated purely from
+//! `sample.rs`. The app spawns the
 //! worker lazily on the first real interaction and folds results in
 //! through `crate::app::TubeApp::pump`.
 //!
@@ -132,20 +134,30 @@ pub enum Update {
     Note(String),
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "only a static user-agent + timeout are set (no proxy/TLS config that could \
-              fail to parse), so build() cannot return Err here; both call sites are a \
-              detached thread body and a #[test] fn, neither of which can propagate a Result"
-)]
-fn client() -> reqwest::blocking::Client {
-    tilo_net::http::blocking_client()
+/// The shared client for the plain HTTP sources; `None` only if the TLS
+/// stack cannot start, which leaves those enrichments off.
+fn client() -> Option<tilo_net::Client> {
+    tilo_net::Client::builder()
         .user_agent("tube/0.1 (+tilo)")
         .timeout(Duration::from_secs(8))
+        // In a page, sites without CORS headers are read through the host's
+        // fetch proxy; the desktop never uses it.
+        .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
         .build()
-        // Only a static user-agent + timeout are set (no proxy/TLS config that
-        // could fail to parse), so `build()` cannot return `Err` here.
-        .expect("reqwest client builder cannot fail with these fixed options")
+        .ok()
+}
+
+/// GET `endpoint?query` as JSON; `None` for a 404.
+async fn get_json(
+    client: &tilo_net::Client,
+    endpoint: &str,
+    query: &[(&str, &str)],
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let resp = client.get(endpoint).query(query).send().await?;
+    if resp.status() == tilo_net::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(resp.error_for_status()?.json().await?))
 }
 
 /// Fetch `SponsorBlock` segments for a video via the direct
@@ -156,28 +168,24 @@ fn client() -> reqwest::blocking::Client {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response body isn't valid JSON.
-pub fn fetch_sponsor(
-    client: &reqwest::blocking::Client,
+pub async fn fetch_sponsor(
+    client: &tilo_net::Client,
     video_id: &str,
 ) -> anyhow::Result<Vec<Segment>> {
-    fetch_sponsor_at(client, SPONSOR_ENDPOINT, video_id)
+    fetch_sponsor_at(client, SPONSOR_ENDPOINT, video_id).await
 }
 
-fn fetch_sponsor_at(
-    client: &reqwest::blocking::Client,
+async fn fetch_sponsor_at(
+    client: &tilo_net::Client,
     endpoint: &str,
     video_id: &str,
 ) -> anyhow::Result<Vec<Segment>> {
     let cats = category_json();
-    let resp = client
-        .get(endpoint)
-        .query(&[("videoID", video_id), ("categories", cats.as_str())])
-        .send()?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(Vec::new());
-    }
-    let val: serde_json::Value = resp.error_for_status()?.json()?;
-    Ok(parse_skip_segments(&val))
+    let query = [("videoID", video_id), ("categories", cats.as_str())];
+    Ok(get_json(client, endpoint, &query)
+        .await?
+        .map(|val| parse_skip_segments(&val))
+        .unwrap_or_default())
 }
 
 /// Parse a `SponsorBlock` `/api/skipSegments?videoID=<id>` response (a flat JSON
@@ -231,24 +239,21 @@ fn category_json() -> String {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response body isn't valid JSON.
-pub fn fetch_dearrow(
-    client: &reqwest::blocking::Client,
+pub async fn fetch_dearrow(
+    client: &tilo_net::Client,
     video_id: &str,
 ) -> anyhow::Result<(Option<String>, Option<String>)> {
-    fetch_dearrow_at(client, DEARROW_ENDPOINT, video_id)
+    fetch_dearrow_at(client, DEARROW_ENDPOINT, video_id).await
 }
 
-fn fetch_dearrow_at(
-    client: &reqwest::blocking::Client,
+async fn fetch_dearrow_at(
+    client: &tilo_net::Client,
     endpoint: &str,
     video_id: &str,
 ) -> anyhow::Result<(Option<String>, Option<String>)> {
-    let resp: serde_json::Value = client
-        .get(endpoint)
-        .query(&[("videoID", video_id)])
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let resp = get_json(client, endpoint, &[("videoID", video_id)])
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
     Ok(parse_dearrow(&resp, video_id))
 }
 
@@ -320,21 +325,18 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
 ///
 /// Returns `Err` if the request fails, the response isn't valid JSON, or it
 /// carries no dislike count.
-pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
-    fetch_dislikes_at(client, DISLIKE_ENDPOINT, video_id)
+pub async fn fetch_dislikes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<u64> {
+    fetch_dislikes_at(client, DISLIKE_ENDPOINT, video_id).await
 }
 
-fn fetch_dislikes_at(
-    client: &reqwest::blocking::Client,
+async fn fetch_dislikes_at(
+    client: &tilo_net::Client,
     endpoint: &str,
     video_id: &str,
 ) -> anyhow::Result<u64> {
-    let resp: serde_json::Value = client
-        .get(endpoint)
-        .query(&[("videoId", video_id)])
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let resp = get_json(client, endpoint, &[("videoId", video_id)])
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
     parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
@@ -350,106 +352,149 @@ pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
 /// # Errors
 ///
 /// Returns `Err` if the request fails or the response body isn't valid JSON.
-pub fn search(
-    client: &reqwest::blocking::Client,
+pub async fn search(
+    client: &tilo_net::Client,
     instance: &str,
     query: &str,
 ) -> anyhow::Result<Vec<Video>> {
     let url = format!("{}/api/v1/search", instance.trim_end_matches('/'));
-    let resp: serde_json::Value = client
-        .get(&url)
-        .query(&[("q", query), ("type", "video")])
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let resp = get_json(client, &url, &[("q", query), ("type", "video")])
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
 
-    let mut out = Vec::new();
-    if let Some(arr) = resp.as_array() {
-        for item in arr.iter().take(40) {
-            if item.get("type").and_then(|t| t.as_str()) != Some("video") {
-                continue;
-            }
-            let id = item
-                .get("videoId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if id.is_empty() {
-                continue;
-            }
-            let title = item
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Untitled");
-            let author = item
-                .get("author")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown");
-            let author_id = item
-                .get("authorId")
-                .and_then(|v| v.as_str())
-                .unwrap_or(author);
-            let views = item
-                .get("viewCount")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let duration = item
-                .get("lengthSeconds")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0) as u32;
-            let published = item
-                .get("publishedText")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            out.push(Video {
-                id: id.to_string(),
-                title: title.to_string(),
-                dearrow_title: None,
-                channel_id: author_id.to_string(),
-                channel_name: author.to_string(),
-                channel_seed: author_id.to_string(),
-                channel_avatar_url: item
-                    .get("authorThumbnails")
-                    .and_then(|t| t.as_array())
-                    .and_then(|a| a.last())
-                    .and_then(|t| t.get("url"))
-                    .and_then(|u| u.as_str())
-                    .map(std::string::ToString::to_string)
-                    .unwrap_or_default(),
-                views,
-                published,
-                duration,
-                description: item
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                likes: 0,
-                seed: id.to_string(),
-                thumbnail_url: item
-                    .get("videoThumbnails")
-                    .and_then(|t| t.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|t| t.get("url"))
-                    .and_then(|u| u.as_str())
-                    .map(std::string::ToString::to_string)
-                    .unwrap_or_default(),
-                category: "Search".to_string(),
-                dearrow_thumb: false,
-                sponsor: vec![],
-                comments: vec![],
-                live: item
-                    .get("liveNow")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-            });
-        }
-    }
-    Ok(out)
+    Ok(resp
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .take(40)
+                .filter_map(|item| video_from_item(item, "Search"))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
-/// The background worker: owns the blocking HTTP client and turns
-/// [`Request`]s into [`Update`]s.
+/// One Invidious list item (a search hit, a trending or recommended video,
+/// a channel upload) as a [`Video`]; `None` for other kinds and id-less rows.
+fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
+    if item
+        .get("type")
+        .and_then(|t| t.as_str())
+        .is_some_and(|kind| kind != "video")
+    {
+        return None;
+    }
+    let id = item
+        .get("videoId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if id.is_empty() {
+        return None;
+    }
+    let title = item
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Untitled");
+    let author = item
+        .get("author")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    let author_id = item
+        .get("authorId")
+        .and_then(|v| v.as_str())
+        .unwrap_or(author);
+    let views = item
+        .get("viewCount")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let duration = item
+        .get("lengthSeconds")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let published = item
+        .get("publishedText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(Video {
+        id: id.to_string(),
+        title: title.to_string(),
+        dearrow_title: None,
+        channel_id: author_id.to_string(),
+        channel_name: author.to_string(),
+        channel_seed: author_id.to_string(),
+        channel_avatar_url: item
+            .get("authorThumbnails")
+            .and_then(|t| t.as_array())
+            .and_then(|a| a.last())
+            .and_then(|t| t.get("url"))
+            .and_then(|u| u.as_str())
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default(),
+        views,
+        published,
+        duration,
+        description: item
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        likes: 0,
+        seed: id.to_string(),
+        thumbnail_url: item
+            .get("videoThumbnails")
+            .and_then(|t| t.as_array())
+            .and_then(|a| a.first())
+            .and_then(|t| t.get("url"))
+            .and_then(|u| u.as_str())
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default(),
+        category: category.to_string(),
+        dearrow_thumb: false,
+        sponsor: vec![],
+        comments: vec![],
+        live: item
+            .get("liveNow")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// Fetch one video's `SponsorBlock` segments, `DeArrow` branding and dislike
+/// count, posting each as it arrives.
+async fn branding(client: tilo_net::Client, id: String, up_tx: SyncSender<Update>) {
+    match fetch_sponsor(&client, &id).await {
+        Ok(segs) => {
+            let _ = up_tx.send(Update::Sponsor(id.clone(), segs));
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("SponsorBlock: {e}")));
+        }
+    }
+    match fetch_dearrow(&client, &id).await {
+        Ok((title, thumbnail_url)) => {
+            let _ = up_tx.send(Update::DeArrow {
+                video: id.clone(),
+                title,
+                thumbnail_url,
+            });
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
+        }
+    }
+    match fetch_dislikes(&client, &id).await {
+        Ok(count) => {
+            let _ = up_tx.send(Update::Dislikes { video: id, count });
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
+        }
+    }
+}
+
+/// The background worker: drives the video backends and turns [`Request`]s
+/// into [`Update`]s.
 pub struct Worker {
     tx: SyncSender<Request>,
     rx: Receiver<Update>,
@@ -465,305 +510,285 @@ impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (up_tx, up_rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        // Without threads (a browser page) the extractors cannot run; the
+        // public Invidious API answers instead, as tasks on the app runtime.
+        if matches!(
+            ui::rt::availability(ui::rt::Feature::Threads),
+            ui::rt::Availability::Unsupported(_)
+        ) {
+            if let Ok(runtime) = ui::rt::try_app() {
+                drop(runtime.spawn(task_worker(req_rx, up_tx)));
+            }
+            return Self {
+                tx: req_tx,
+                rx: up_rx,
+            };
+        }
         // If the OS can't give us a thread (resource exhaustion), degrade to a
         // worker that never produces updates rather than crashing the app:
         // `request` sends go unread and `poll` stays empty, same as "no live
         // data yet".
-        if let Err(e) = std::thread::Builder::new()
-            .name("tube-fetch".into())
-            .spawn(move || {
-                let client = client();
-                // The offline backend supplies hermetic test/demo data only; the
-                // live app never falls back to it, so a failed network request
-                // cannot present fabricated videos as current content. The live
-                // rustypipe backend is present only under `--features live` *and*
-                // if it constructed. SponsorBlock /
-                // DeArrow keep their own direct `sponsor.ajay.app` path (they are
-                // orthogonal to the InnerTube source).
-                let offline = crate::backend::default_backend();
-                let live = try_live_backend(&up_tx);
-                // One lazily-constructed rustypipe backend serves everything the
-                // primary (yt-dlp) source can't: top comments, the creator avatars
-                // + playlists + creator rows that enrich a search (yt-dlp list
-                // items carry none of these), avatar-bearing popular feed videos,
-                // and playlist pages. Constructed on first need so a session that
-                // never searches/opens a video pays nothing. Outer `Option` =
-                // "attempted yet?"; `#[cfg(live)]` only — the offline build has no
-                // rustypipe and simply skips every enrichment below.
-                #[cfg(feature = "live")]
-                let mut rp: Option<Option<crate::backend::live::RustyPipeBackend>> = None;
-                // Announce the starting posture honestly: even with a live
-                // backend constructed we don't claim "live" until a real fetch
-                // returns, because construction doesn't touch the network.
-                let _ = up_tx.send(Update::Status {
-                    live: false,
-                    label: if live.is_some() {
-                        "connecting…".into()
-                    } else {
-                        "offline".into()
-                    },
-                });
-                while let Ok(req) = req_rx.recv() {
-                    match req {
-                        Request::Branding(id) => {
-                            match fetch_sponsor(&client, &id) {
-                                Ok(segs) => {
-                                    let _ = up_tx.send(Update::Sponsor(id.clone(), segs));
-                                }
-                                Err(e) => {
-                                    let _ = up_tx.send(Update::Note(format!("SponsorBlock: {e}")));
-                                }
-                            }
-                            match fetch_dearrow(&client, &id) {
-                                Ok((title, thumbnail_url)) => {
-                                    let _ = up_tx.send(Update::DeArrow {
-                                        video: id.clone(),
-                                        title,
-                                        thumbnail_url,
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
-                                }
-                            }
-                            match fetch_dislikes(&client, &id) {
-                                Ok(count) => {
-                                    let _ = up_tx.send(Update::Dislikes { video: id, count });
-                                }
-                                Err(e) => {
-                                    let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
-                                }
-                            }
+        if let Err(e) = ui::rt::spawn_thread("tube-fetch", move || {
+            let client = client();
+            // The offline backend supplies hermetic test/demo data only; the
+            // live app never falls back to it, so a failed network request
+            // cannot present fabricated videos as current content. The live
+            // rustypipe backend is present only under `--features live` *and*
+            // if it constructed. SponsorBlock /
+            // DeArrow keep their own direct `sponsor.ajay.app` path (they are
+            // orthogonal to the InnerTube source).
+            let offline = crate::backend::default_backend();
+            let live = try_live_backend(&up_tx);
+            // One lazily-constructed rustypipe backend serves everything the
+            // primary (yt-dlp) source can't: top comments, the creator avatars
+            // + playlists + creator rows that enrich a search (yt-dlp list
+            // items carry none of these), avatar-bearing popular feed videos,
+            // and playlist pages. Constructed on first need so a session that
+            // never searches/opens a video pays nothing. Outer `Option` =
+            // "attempted yet?"; `#[cfg(live)]` only — the offline build has no
+            // rustypipe and simply skips every enrichment below.
+            #[cfg(feature = "live")]
+            let mut rp: Option<Option<crate::backend::live::RustyPipeBackend>> = None;
+            // Announce the starting posture honestly: even with a live
+            // backend constructed we don't claim "live" until a real fetch
+            // returns, because construction doesn't touch the network.
+            let _ = up_tx.send(Update::Status {
+                live: false,
+                label: if live.is_some() {
+                    "connecting…".into()
+                } else {
+                    "offline".into()
+                },
+            });
+            while let Ok(req) = req_rx.recv() {
+                match req {
+                    Request::Branding(id) => {
+                        if let (Some(client), Ok(runtime)) = (&client, ui::rt::try_app()) {
+                            drop(runtime.spawn(branding(client.clone(), id, up_tx.clone())));
                         }
-                        Request::Search { query } => {
-                            // Live only — NEVER fall back to the bundled sample:
-                            // presenting fabricated videos as real search results
-                            // is exactly what the "no fake content" rule forbids.
-                            // Always emit a (possibly empty) result so the UI can
-                            // drop its loading skeleton and show either real hits
-                            // or an honest "no results".
-                            #[allow(
-                                unused_mut,
-                                reason = "live-only enrichment mutates this result list"
-                            )]
-                            let mut videos = match fetch(
-                                live.as_deref(),
-                                offline.as_ref(),
-                                Query::Search(query.clone()),
-                                false,
-                                &up_tx,
-                            ) {
-                                Some((BackendResult::Videos(vs), used_live)) => {
-                                    send_status(&up_tx, used_live);
-                                    vs
-                                }
-                                _ => Vec::new(),
-                            };
-                            #[allow(
-                                unused_mut,
-                                reason = "live-only enrichment fills these result lists"
-                            )]
-                            let mut playlists: Vec<Playlist> = Vec::new();
-                            #[allow(
-                                unused_mut,
-                                reason = "live-only enrichment fills these result lists"
-                            )]
-                            let mut channels: Vec<Channel> = Vec::new();
-                            // Enrich with rustypipe: real creator avatars for the
-                            // yt-dlp videos (which have none), plus the playlists
-                            // and creator rows for the same query — all from one
-                            // real InnerTube search call.
-                            #[cfg(feature = "live")]
-                            {
-                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
-                                if let Some(b) = rp_ref.as_ref() {
-                                    match b.search_items(&query) {
-                                        Ok(items) => {
-                                            enrich_video_avatars(&mut videos, &items);
-                                            // If the primary returned nothing, fall
-                                            // back to rustypipe's own videos (already
-                                            // avatar-bearing) rather than an empty page.
-                                            if videos.is_empty() {
-                                                videos = items.videos;
-                                            }
-                                            playlists = items.playlists;
-                                            channels = items.channels;
-                                        }
-                                        Err(e) => {
-                                            let _ = up_tx
-                                                .send(Update::Note(format!("search enrich: {e}")));
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = up_tx.send(Update::SearchResults {
-                                query,
-                                videos,
-                                playlists,
-                                channels,
-                            });
-                        }
-                        Request::Feed => {
-                            // Live only: a missing/failed backend marks the source
-                            // offline and leaves the intentionally empty catalogue
-                            // in its explicit offline state.
-                            //
-                            // First choice is YouTube's dedicated trending browse.
-                            // That endpoint (`FEtrending`) has been retired and now
-                            // answers HTTP 400 "Request contains an invalid
-                            // argument."; there is no no-login browse that returns a
-                            // general trending feed. When it fails we compose a
-                            // "popular right now" feed from view-count-sorted,
-                            // last-week search across broad topics — YouTube data,
-                            // never the offline sample.
-                            // Prefer rustypipe for the composed popular feed: its
-                            // items carry creator avatars inline, so Home cards show
-                            // real creator photos without a per-channel fetch.
-                            #[cfg(feature = "live")]
-                            let enrich_ref: Option<&dyn YtBackend> = {
-                                let r = rp.get_or_insert_with(|| try_enricher(&up_tx));
-                                r.as_ref().map(|b| b as &dyn YtBackend)
-                            };
-                            #[cfg(not(feature = "live"))]
-                            let enrich_ref: Option<&dyn YtBackend> = None;
-                            match feed_trending(
-                                live.as_deref(),
-                                enrich_ref,
-                                offline.as_ref(),
-                                &up_tx,
-                            ) {
-                                Some((vs, label)) if !vs.is_empty() => {
-                                    let _ = up_tx.send(Update::Feed(vs));
-                                    let _ = up_tx.send(Update::Status { live: true, label });
-                                }
-                                _ => send_status(&up_tx, false),
-                            }
-                        }
-                        Request::PlaylistPage(id) => {
-                            // yt-dlp resolves playlists reliably; the rustypipe
-                            // enricher is a fallback. Live-only — the offline build
-                            // has no playlist data.
-                            #[allow(
-                                unused_mut,
-                                reason = "the live-only enricher is a playlist fallback"
-                            )]
-                            let mut resolved = live.as_ref().and_then(|b| b.playlist(&id).ok());
-                            #[cfg(feature = "live")]
-                            if resolved.is_none() {
-                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
-                                if let Some(b) = rp_ref.as_ref() {
-                                    resolved = b.playlist_page(&id).ok();
-                                }
-                            }
-                            match resolved {
-                                Some((pl, vids)) => {
-                                    let _ = up_tx.send(Update::PlaylistPage {
-                                        playlist: Box::new(pl),
-                                        videos: vids,
-                                    });
-                                }
-                                None => {
-                                    let _ = up_tx
-                                        .send(Update::Note(format!("playlist {id}: unavailable")));
-                                }
-                            }
-                        }
-                        Request::VideoMeta(id) => {
-                            // Real "up next" comes off the detail response; fetch
-                            // it alongside the metadata (live only — the sample
-                            // already carries full detail for its own ids).
-                            let related = match fetch(
-                                live.as_deref(),
-                                offline.as_ref(),
-                                Query::Related(id.clone()),
-                                false,
-                                &up_tx,
-                            ) {
-                                Some((BackendResult::Videos(r), _)) => r,
-                                _ => Vec::new(),
-                            };
-                            if let Some((BackendResult::Video(v), used_live)) = fetch(
-                                live.as_deref(),
-                                offline.as_ref(),
-                                Query::Video(id.clone()),
-                                false,
-                                &up_tx,
-                            ) {
+                    }
+                    Request::Search { query } => {
+                        // Live only — NEVER fall back to the bundled sample:
+                        // presenting fabricated videos as real search results
+                        // is exactly what the "no fake content" rule forbids.
+                        // Always emit a (possibly empty) result so the UI can
+                        // drop its loading skeleton and show either real hits
+                        // or an honest "no results".
+                        #[allow(
+                            unused_mut,
+                            reason = "live-only enrichment mutates this result list"
+                        )]
+                        let mut videos = match fetch(
+                            live.as_deref(),
+                            offline.as_ref(),
+                            Query::Search(query.clone()),
+                            false,
+                            &up_tx,
+                        ) {
+                            Some((BackendResult::Videos(vs), used_live)) => {
                                 send_status(&up_tx, used_live);
-                                let _ = up_tx.send(Update::VideoMeta { video: v, related });
+                                vs
                             }
-                            // Real top comments — always via rustypipe, regardless of
-                            // which backend answered the metadata above.
-                            #[cfg(feature = "live")]
-                            {
-                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
-                                if let Some(b) = rp_ref.as_ref() {
-                                    match b.comments(&id) {
-                                        Ok(cs) if !cs.is_empty() => {
-                                            let _ = up_tx.send(Update::Comments {
-                                                video: id.clone(),
-                                                comments: cs,
-                                            });
+                            _ => Vec::new(),
+                        };
+                        #[allow(
+                            unused_mut,
+                            reason = "live-only enrichment fills these result lists"
+                        )]
+                        let mut playlists: Vec<Playlist> = Vec::new();
+                        #[allow(
+                            unused_mut,
+                            reason = "live-only enrichment fills these result lists"
+                        )]
+                        let mut channels: Vec<Channel> = Vec::new();
+                        // Enrich with rustypipe: real creator avatars for the
+                        // yt-dlp videos (which have none), plus the playlists
+                        // and creator rows for the same query — all from one
+                        // real InnerTube search call.
+                        #[cfg(feature = "live")]
+                        {
+                            let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                            if let Some(b) = rp_ref.as_ref() {
+                                match b.search_items(&query) {
+                                    Ok(items) => {
+                                        enrich_video_avatars(&mut videos, &items);
+                                        // If the primary returned nothing, fall
+                                        // back to rustypipe's own videos (already
+                                        // avatar-bearing) rather than an empty page.
+                                        if videos.is_empty() {
+                                            videos = items.videos;
                                         }
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            let _ =
-                                                up_tx.send(Update::Note(format!("comments: {e}")));
-                                        }
+                                        playlists = items.playlists;
+                                        channels = items.channels;
+                                    }
+                                    Err(e) => {
+                                        let _ =
+                                            up_tx.send(Update::Note(format!("search enrich: {e}")));
                                     }
                                 }
                             }
                         }
-                        Request::Channel(id) => {
-                            if let Some((BackendResult::Channel { channel, uploads }, used_live)) =
-                                fetch(
-                                    live.as_deref(),
-                                    offline.as_ref(),
-                                    Query::Channel(id),
-                                    false,
-                                    &up_tx,
-                                )
-                            {
-                                send_status(&up_tx, used_live);
-                                let _ = up_tx.send(Update::ChannelPage { channel, uploads });
+                        let _ = up_tx.send(Update::SearchResults {
+                            query,
+                            videos,
+                            playlists,
+                            channels,
+                        });
+                    }
+                    Request::Feed => {
+                        // Live only: a missing/failed backend marks the source
+                        // offline and leaves the intentionally empty catalogue
+                        // in its explicit offline state.
+                        //
+                        // First choice is YouTube's dedicated trending browse.
+                        // That endpoint (`FEtrending`) has been retired and now
+                        // answers HTTP 400 "Request contains an invalid
+                        // argument."; there is no no-login browse that returns a
+                        // general trending feed. When it fails we compose a
+                        // "popular right now" feed from view-count-sorted,
+                        // last-week search across broad topics — YouTube data,
+                        // never the offline sample.
+                        // Prefer rustypipe for the composed popular feed: its
+                        // items carry creator avatars inline, so Home cards show
+                        // real creator photos without a per-channel fetch.
+                        #[cfg(feature = "live")]
+                        let enrich_ref: Option<&dyn YtBackend> = {
+                            let r = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                            r.as_ref().map(|b| b as &dyn YtBackend)
+                        };
+                        #[cfg(not(feature = "live"))]
+                        let enrich_ref: Option<&dyn YtBackend> = None;
+                        match feed_trending(live.as_deref(), enrich_ref, offline.as_ref(), &up_tx) {
+                            Some((vs, label)) if !vs.is_empty() => {
+                                let _ = up_tx.send(Update::Feed(vs));
+                                let _ = up_tx.send(Update::Status { live: true, label });
+                            }
+                            _ => send_status(&up_tx, false),
+                        }
+                    }
+                    Request::PlaylistPage(id) => {
+                        // yt-dlp resolves playlists reliably; the rustypipe
+                        // enricher is a fallback. Live-only — the offline build
+                        // has no playlist data.
+                        #[allow(
+                            unused_mut,
+                            reason = "the live-only enricher is a playlist fallback"
+                        )]
+                        let mut resolved = live.as_ref().and_then(|b| b.playlist(&id).ok());
+                        #[cfg(feature = "live")]
+                        if resolved.is_none() {
+                            let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                            if let Some(b) = rp_ref.as_ref() {
+                                resolved = b.playlist_page(&id).ok();
                             }
                         }
-                        Request::PlayVideo(id) => {
-                            // Resolve a real, fully-rangeable stream URL for the
-                            // watch page's media engine. Proxy-first (Invidious
-                            // `local=true`, which serves whole-file byte ranges),
-                            // falling back to the live backend's direct URL.
-                            match resolve_stream_url(live.as_deref(), &id) {
-                                Some((url, has_audio, quality)) => {
-                                    let _ = up_tx.send(Update::Note(format!(
-                                        "stream: {quality} {} [{}]",
-                                        if has_audio {
-                                            "video+audio"
-                                        } else {
-                                            "video only"
-                                        },
-                                        short_host(&url)
-                                    )));
-                                    let _ = up_tx.send(Update::StreamResolved {
-                                        video: id,
-                                        url,
-                                        has_audio,
-                                        quality,
-                                    });
-                                }
-                                None => {
-                                    let _ = up_tx.send(Update::Note(
-                                        "could not resolve a playable stream (no Invidious \
-                                         instance served bytes, and no direct URL was available)"
-                                            .into(),
-                                    ));
+                        match resolved {
+                            Some((pl, vids)) => {
+                                let _ = up_tx.send(Update::PlaylistPage {
+                                    playlist: Box::new(pl),
+                                    videos: vids,
+                                });
+                            }
+                            None => {
+                                let _ =
+                                    up_tx.send(Update::Note(format!("playlist {id}: unavailable")));
+                            }
+                        }
+                    }
+                    Request::VideoMeta(id) => {
+                        // Real "up next" comes off the detail response; fetch
+                        // it alongside the metadata (live only — the sample
+                        // already carries full detail for its own ids).
+                        let related = match fetch(
+                            live.as_deref(),
+                            offline.as_ref(),
+                            Query::Related(id.clone()),
+                            false,
+                            &up_tx,
+                        ) {
+                            Some((BackendResult::Videos(r), _)) => r,
+                            _ => Vec::new(),
+                        };
+                        if let Some((BackendResult::Video(v), used_live)) = fetch(
+                            live.as_deref(),
+                            offline.as_ref(),
+                            Query::Video(id.clone()),
+                            false,
+                            &up_tx,
+                        ) {
+                            send_status(&up_tx, used_live);
+                            let _ = up_tx.send(Update::VideoMeta { video: v, related });
+                        }
+                        // Real top comments — always via rustypipe, regardless of
+                        // which backend answered the metadata above.
+                        #[cfg(feature = "live")]
+                        {
+                            let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                            if let Some(b) = rp_ref.as_ref() {
+                                match b.comments(&id) {
+                                    Ok(cs) if !cs.is_empty() => {
+                                        let _ = up_tx.send(Update::Comments {
+                                            video: id.clone(),
+                                            comments: cs,
+                                        });
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                    }
                                 }
                             }
                         }
                     }
+                    Request::Channel(id) => {
+                        if let Some((BackendResult::Channel { channel, uploads }, used_live)) =
+                            fetch(
+                                live.as_deref(),
+                                offline.as_ref(),
+                                Query::Channel(id),
+                                false,
+                                &up_tx,
+                            )
+                        {
+                            send_status(&up_tx, used_live);
+                            let _ = up_tx.send(Update::ChannelPage { channel, uploads });
+                        }
+                    }
+                    Request::PlayVideo(id) => {
+                        // Resolve a real, fully-rangeable stream URL for the
+                        // watch page's media engine. Proxy-first (Invidious
+                        // `local=true`, which serves whole-file byte ranges),
+                        // falling back to the live backend's direct URL.
+                        match resolve_stream_url(live.as_deref(), &id) {
+                            Some((url, has_audio, quality)) => {
+                                let _ = up_tx.send(Update::Note(format!(
+                                    "stream: {quality} {} [{}]",
+                                    if has_audio {
+                                        "video+audio"
+                                    } else {
+                                        "video only"
+                                    },
+                                    short_host(&url)
+                                )));
+                                let _ = up_tx.send(Update::StreamResolved {
+                                    video: id,
+                                    url,
+                                    has_audio,
+                                    quality,
+                                });
+                            }
+                            None => {
+                                let _ = up_tx.send(Update::Note(
+                                    "could not resolve a playable stream (no Invidious \
+                                         instance served bytes, and no direct URL was available)"
+                                        .into(),
+                                ));
+                            }
+                        }
+                    }
                 }
-            })
-        {
+            }
+        }) {
             tracing::error!("failed to spawn the tube-fetch worker thread: {e}");
         }
         Self {
@@ -820,7 +845,10 @@ fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String,
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
     // yt-dlp is unavailable.
-    if let Some(r) = crate::backend::proxy::resolve_rangeable(id) {
+    let proxied = ui::rt::block_on(crate::backend::proxy::resolve_rangeable(id))
+        .ok()
+        .flatten();
+    if let Some(r) = proxied {
         return Some((r.url, r.has_audio, r.quality));
     }
     None
@@ -1029,6 +1057,206 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
 }
 
 /// Broadcast which data source just answered so the UI pill reflects reality.
+/// The worker where there are no threads: every request answered from the
+/// public Invidious API through `tilo_net` (the host's fetch proxy where a
+/// site refuses cross-origin reads). Updates are offered, never waited on:
+/// the page has one thread and the UI drains them.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per Request variant, as in the threaded worker's loop"
+)]
+async fn task_worker(requests: Receiver<Request>, updates: SyncSender<Update>) {
+    let post = |update: Update| {
+        let _ = updates.try_send(update);
+    };
+    let Some(client) = client() else {
+        post(Update::Status {
+            live: false,
+            label: "offline — no network client".into(),
+        });
+        return;
+    };
+    post(Update::Status {
+        live: false,
+        label: "connecting…".into(),
+    });
+    loop {
+        let request = match requests.try_recv() {
+            Ok(request) => request,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ui::rt::sleep(Duration::from_millis(40)).await;
+                continue;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+        };
+        match request {
+            Request::Branding(id) => branding(client.clone(), id, updates.clone()).await,
+            Request::Search { query } => {
+                let found = invidious_videos(
+                    &client,
+                    "/api/v1/search",
+                    &[("q", query.as_str()), ("type", "video")],
+                    "Search",
+                )
+                .await;
+                post(invidious_status(found.is_ok()));
+                post(Update::SearchResults {
+                    query,
+                    videos: found.unwrap_or_default(),
+                    playlists: Vec::new(),
+                    channels: Vec::new(),
+                });
+            }
+            Request::Feed => {
+                match invidious_videos(&client, "/api/v1/trending", &[], "Trending").await {
+                    Ok(videos) if !videos.is_empty() => {
+                        post(Update::Feed(videos));
+                        post(invidious_status(true));
+                    }
+                    _ => post(invidious_status(false)),
+                }
+            }
+            Request::VideoMeta(id) => {
+                let path = format!("/api/v1/videos/{id}");
+                if let Ok(detail) = invidious_json(&client, &path, &[]).await
+                    && let Some(video) = video_from_item(&detail, "Video")
+                {
+                    let related = detail
+                        .get("recommendedVideos")
+                        .and_then(|items| items.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| video_from_item(item, "Related"))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    post(Update::VideoMeta {
+                        video: Box::new(video),
+                        related,
+                    });
+                }
+            }
+            Request::Channel(id) => {
+                let path = format!("/api/v1/channels/{id}");
+                if let Ok(page) = invidious_json(&client, &path, &[]).await {
+                    let text = |key: &str| {
+                        page.get(key)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let image = |key: &str| {
+                        page.get(key)
+                            .and_then(|v| v.as_array())
+                            .and_then(|images| images.last())
+                            .and_then(|image| image.get("url"))
+                            .and_then(|url| url.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let channel = Channel {
+                        id: id.clone(),
+                        name: text("author"),
+                        handle: String::new(),
+                        subscribers: page
+                            .get("subCount")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                        verified: page
+                            .get("authorVerified")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        description: text("description"),
+                        seed: id.clone(),
+                        avatar_url: image("authorThumbnails"),
+                        banner_url: image("authorBanners"),
+                    };
+                    let uploads = page
+                        .get("latestVideos")
+                        .and_then(|items| items.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| video_from_item(item, "Uploads"))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    post(Update::ChannelPage {
+                        channel: Box::new(channel),
+                        uploads,
+                    });
+                }
+            }
+            Request::PlaylistPage(id) => {
+                post(Update::Note(format!("playlist {id}: unavailable here")));
+            }
+            Request::PlayVideo(id) => match crate::backend::proxy::resolve_rangeable(&id).await {
+                Some(resolved) => post(Update::StreamResolved {
+                    video: id,
+                    url: resolved.url,
+                    has_audio: resolved.has_audio,
+                    quality: resolved.quality,
+                }),
+                None => post(Update::Note(
+                    "could not resolve a playable stream (no Invidious instance served bytes)"
+                        .into(),
+                )),
+            },
+        }
+    }
+}
+
+fn invidious_status(live: bool) -> Update {
+    Update::Status {
+        live,
+        label: if live {
+            "live (Invidious)".into()
+        } else {
+            "offline — no Invidious instance answered".into()
+        },
+    }
+}
+
+/// `path` (with `query`) as JSON from the first public Invidious instance
+/// that answers it.
+async fn invidious_json(
+    client: &tilo_net::Client,
+    path: &str,
+    query: &[(&str, &str)],
+) -> anyhow::Result<serde_json::Value> {
+    let mut last = anyhow::anyhow!("no Invidious instance answered");
+    for instance in crate::backend::proxy::instances() {
+        let url = format!("{}{path}", instance.trim_end_matches('/'));
+        match get_json(client, &url, query).await {
+            Ok(Some(value)) if value.get("error").is_none() => return Ok(value),
+            Ok(_) => last = anyhow::anyhow!("{instance} has no answer for {path}"),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
+/// A list of videos (search hits, trending) from the Invidious API.
+async fn invidious_videos(
+    client: &tilo_net::Client,
+    path: &str,
+    query: &[(&str, &str)],
+    category: &str,
+) -> anyhow::Result<Vec<Video>> {
+    let value = invidious_json(client, path, query).await?;
+    Ok(value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .take(60)
+                .filter_map(|item| video_from_item(item, category))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 fn send_status(up_tx: &SyncSender<Update>, live: bool) {
     let label = if live {
         "live (rustypipe)"
@@ -1046,6 +1274,12 @@ mod tests {
     use super::*;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
+
+    fn block<T>(future: impl std::future::Future<Output = T>) -> T {
+        ui::rt::app()
+            .block_on(future)
+            .expect("the app runtime runs")
+    }
 
     fn serve_http(
         responses: Vec<(&'static str, u16, &'static str)>,
@@ -1091,94 +1325,110 @@ mod tests {
     }
 
     #[test]
-    fn category_json_lists_all() {
-        let j = category_json();
-        assert!(j.contains("sponsor"));
-        assert!(j.contains("music_offtopic"));
+    fn sponsorblock_categories_and_segments_parse() {
+        // Case `category_json_lists_all`.
+        {
+            let j = category_json();
+            assert!(j.contains("sponsor"));
+            assert!(j.contains("music_offtopic"));
+        }
+        // Case `parse_skip_segments_maps_and_sorts`.
+        {
+            // The shape the direct `?videoID=` endpoint returns: a flat array of
+            // segment objects. Unknown categories are dropped; the rest come back
+            // sorted by start time.
+            let resp = serde_json::json!([
+                {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
+                {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
+                {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
+                {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
+            ]);
+            let segs = parse_skip_segments(&resp);
+            assert_eq!(segs.len(), 3, "unknown category dropped");
+            assert_eq!(segs[0].category, Category::Intro);
+            assert_eq!(segs[1].category, Category::Sponsor);
+            assert!((segs[1].start - 30.5).abs() < 1e-9);
+            assert_eq!(segs[2].category, Category::Outro);
+            assert_eq!(segs[1].votes, 10);
+        }
+        // Case `parse_skip_segments_empty_on_non_array`.
+        {
+            assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
+        }
     }
 
     #[test]
-    fn parse_skip_segments_maps_and_sorts() {
-        // The shape the direct `?videoID=` endpoint returns: a flat array of
-        // segment objects. Unknown categories are dropped; the rest come back
-        // sorted by start time.
-        let resp = serde_json::json!([
-            {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
-            {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
-            {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
-            {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
-        ]);
-        let segs = parse_skip_segments(&resp);
-        assert_eq!(segs.len(), 3, "unknown category dropped");
-        assert_eq!(segs[0].category, Category::Intro);
-        assert_eq!(segs[1].category, Category::Sponsor);
-        assert!((segs[1].start - 30.5).abs() < 1e-9);
-        assert_eq!(segs[2].category, Category::Outro);
-        assert_eq!(segs[1].votes, 10);
-    }
-
-    #[test]
-    fn parse_skip_segments_empty_on_non_array() {
-        assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
-    }
-
-    #[test]
-    fn saturated_worker_queue_returns_the_unqueued_request() {
-        let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
-        let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
-        let worker = Worker { tx, rx };
-        assert!(worker.request(Request::Feed).is_ok());
-        let error = worker
-            .request(Request::Search {
-                query: "latest intent".into(),
-            })
-            .expect_err("saturation must be observable to the app");
-        let rejected = match error {
-            std::sync::mpsc::TrySendError::Full(request)
-            | std::sync::mpsc::TrySendError::Disconnected(request) => request,
-        };
-        assert!(matches!(
-            rejected,
-            Request::Search { query } if query == "latest intent"
-        ));
-    }
-
-    #[test]
-    fn branding_clients_send_expected_queries_and_parse_http_responses() {
-        let (base, server) = serve_http(vec![
-            (
-                "/api/skipSegments?videoID=fixture&categories=",
-                200,
-                r#"[{"category":"outro","segment":[9.0,10.0],"votes":2},{"category":"sponsor","segment":[1.0,3.0],"votes":7}]"#,
-            ),
-            (
-                "/api/branding?videoID=fixture",
-                200,
-                r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
-            ),
-            ("/votes?videoId=fixture", 200, r#"{"dislikes":42}"#),
-            ("/api/skipSegments?videoID=none&categories=", 404, ""),
-        ]);
-        let c = client();
-        let segments = fetch_sponsor_at(&c, &format!("{base}/api/skipSegments"), "fixture")
+    fn api_workers_queue_and_query_branding_endpoints() {
+        // Case `saturated_worker_queue_returns_the_unqueued_request`.
+        {
+            let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
+            let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
+            let worker = Worker { tx, rx };
+            assert!(worker.request(Request::Feed).is_ok());
+            let error = worker
+                .request(Request::Search {
+                    query: "latest intent".into(),
+                })
+                .expect_err("saturation must be observable to the app");
+            let rejected = match error {
+                std::sync::mpsc::TrySendError::Full(request)
+                | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+            };
+            assert!(matches!(
+                rejected,
+                Request::Search { query } if query == "latest intent"
+            ));
+        }
+        // Case `branding_clients_send_expected_queries_and_parse_http_responses`.
+        {
+            let (base, server) = serve_http(vec![
+                (
+                    "/api/skipSegments?videoID=fixture&categories=",
+                    200,
+                    r#"[{"category":"outro","segment":[9.0,10.0],"votes":2},{"category":"sponsor","segment":[1.0,3.0],"votes":7}]"#,
+                ),
+                (
+                    "/api/branding?videoID=fixture",
+                    200,
+                    r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
+                ),
+                ("/votes?videoId=fixture", 200, r#"{"dislikes":42}"#),
+                ("/api/skipSegments?videoID=none&categories=", 404, ""),
+            ]);
+            let c = client().expect("an HTTP client");
+            let segments = block(fetch_sponsor_at(
+                &c,
+                &format!("{base}/api/skipSegments"),
+                "fixture",
+            ))
             .expect("SponsorBlock response");
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].category, Category::Sponsor);
-        assert_eq!(segments[0].votes, 7);
+            assert_eq!(segments.len(), 2);
+            assert_eq!(segments[0].category, Category::Sponsor);
+            assert_eq!(segments[0].votes, 7);
 
-        let (title, thumbnail) = fetch_dearrow_at(&c, &format!("{base}/api/branding"), "fixture")
+            let (title, thumbnail) = block(fetch_dearrow_at(
+                &c,
+                &format!("{base}/api/branding"),
+                "fixture",
+            ))
             .expect("DeArrow response");
-        assert_eq!(title.as_deref(), Some("Accurate title"));
-        assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
-        assert_eq!(
-            fetch_dislikes_at(&c, &format!("{base}/votes"), "fixture").expect("dislike response"),
-            42
-        );
-        assert!(
-            fetch_sponsor_at(&c, &format!("{base}/api/skipSegments"), "none")
+            assert_eq!(title.as_deref(), Some("Accurate title"));
+            assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
+            assert_eq!(
+                block(fetch_dislikes_at(&c, &format!("{base}/votes"), "fixture"))
+                    .expect("dislike response"),
+                42
+            );
+            assert!(
+                block(fetch_sponsor_at(
+                    &c,
+                    &format!("{base}/api/skipSegments"),
+                    "none"
+                ))
                 .expect("404 means no segments")
                 .is_empty()
-        );
-        server.join().expect("HTTP fixture completed");
+            );
+            server.join().expect("HTTP fixture completed");
+        }
     }
 }

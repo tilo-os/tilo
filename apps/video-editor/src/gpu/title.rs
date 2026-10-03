@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
@@ -180,16 +180,16 @@ impl TitleRaster {
                 TextAlign::Center => (f64::from(width) - f64::from(w)) * 0.5,
                 TextAlign::Right => f64::from(width) * 0.92 - f64::from(w),
             };
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 line.as_str(),
-                size,
                 color,
                 Affine::translate((x, y)),
                 None,
-                weight,
-                text.italic,
-                &family,
+                &TextStyle::new(size)
+                    .with_weight(weight)
+                    .with_italic(text.italic)
+                    .with_family(family.clone()),
             );
             y += leading;
         }
@@ -212,10 +212,6 @@ impl TitleRaster {
 /// Measured through the same `measure_font` the drawing uses, so the wrap and
 /// the paint cannot disagree about what fits. Called only when a title's
 /// raster is rebuilt, never per frame.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the line and the full font description `measure_font` takes, plus both widths"
-)]
 fn wrap_to(
     tr: &mut ui::text_render::TextRenderer,
     line: &str,
@@ -292,194 +288,195 @@ fn wrap_to(
 mod tests {
     use super::*;
 
-    /// The alpha convention the compositor's shader depends on.
-    ///
-    /// Its layer pass multiplies coverage by the texel's alpha and blends
-    /// the texel's *colour* over what is beneath. That is only correct for
-    /// **straight** alpha; premultiplied bytes would darken every
-    /// antialiased glyph edge toward black a second time. This pins the
-    /// convention rather than assuming it — the assumption was wrong the
-    /// first time it was made here.
     #[test]
-    fn the_renderer_hands_back_straight_alpha() {
-        let Ok(mut r) = ui::offscreen::OffscreenRenderer::try_new(8, 8) else {
-            panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
-        };
-        let mut scene = Scene::new();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::new([1.0, 1.0, 1.0, 0.5]),
-            None,
-            &Rect::new(0.0, 0.0, 8.0, 8.0),
-        );
-        let rgba = r.render_rgba(&scene);
-        let (rr, a) = (rgba[0], rgba[3]);
-        assert!((i32::from(a) - 128).abs() <= 2, "half alpha, got {a}");
-        assert_eq!(
-            rr, 255,
-            "straight alpha: a half-transparent white keeps its full colour",
-        );
-    }
-
-    /// A single word wider than the title-safe box is left whole.
-    ///
-    /// Wrapping was added so a long title stops running off the frame, but it
-    /// took the safe box as a hard bound, so one big word got chopped
-    /// mid-letter — "HELLO" at 55% of frame height came out "HELL" / "O".
-    /// Safe-area is a placement margin, not a limit: a word that merely runs
-    /// into the margin should use the margin. Only a word too wide for the
-    /// picture itself is broken.
-    #[test]
-    fn one_big_word_uses_the_safe_margin_rather_than_being_chopped() {
-        let mut tr = ui::text_render::TextRenderer::new();
-        let family = ui::text_render::FontChoice::default();
-        let weight = ui::text_render::TextWeight::Bold;
-        // 1280x720 at size 0.55 — the export fixture's title, which measures
-        // wider than 0.84 of the frame but narrower than the frame.
-        let size = 0.55 * 720.0;
-        let safe = 1280.0 * 0.84;
-        let frame = 1280.0;
-        let w = f64::from(
-            tr.measure_font("HELLO", size, None, weight, false, &family)
-                .0,
-        );
-        assert!(
-            w > safe && w < frame,
-            "this test is only meaningful for a word between the safe box and \
+    fn title_rasters_straight_alpha_glyphs_within_the_safe_margin() {
+        // Case `the_renderer_hands_back_straight_alpha`:
+        // The alpha convention the compositor's shader depends on.
+        //
+        // Its layer pass multiplies coverage by the texel's alpha and blends
+        // the texel's *colour* over what is beneath. That is only correct for
+        // **straight** alpha; premultiplied bytes would darken every
+        // antialiased glyph edge toward black a second time. This pins the
+        // convention rather than assuming it — the assumption was wrong the
+        // first time it was made here.
+        {
+            let Ok(mut r) = ui::offscreen::OffscreenRenderer::try_new(8, 8) else {
+                panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
+            };
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::new([1.0, 1.0, 1.0, 0.5]),
+                None,
+                &Rect::new(0.0, 0.0, 8.0, 8.0),
+            );
+            let rgba = r.render_rgba(&scene);
+            let (rr, a) = (rgba[0], rgba[3]);
+            assert!((i32::from(a) - 128).abs() <= 2, "half alpha, got {a}");
+            assert_eq!(
+                rr, 255,
+                "straight alpha: a half-transparent white keeps its full colour",
+            );
+        }
+        // Case `one_big_word_uses_the_safe_margin_rather_than_being_chopped`:
+        // A single word wider than the title-safe box is left whole.
+        //
+        // Wrapping was added so a long title stops running off the frame, but it
+        // took the safe box as a hard bound, so one big word got chopped
+        // mid-letter — "HELLO" at 55% of frame height came out "HELL" / "O".
+        // Safe-area is a placement margin, not a limit: a word that merely runs
+        // into the margin should use the margin. Only a word too wide for the
+        // picture itself is broken.
+        {
+            let mut tr = ui::text_render::TextRenderer::new();
+            let family = ui::text_render::FontChoice::default();
+            let weight = ui::text_render::TextWeight::Bold;
+            // 1280x720 at size 0.55 — the export fixture's title, which measures
+            // wider than 0.84 of the frame but narrower than the frame.
+            let size = 0.55 * 720.0;
+            let safe = 1280.0 * 0.84;
+            let frame = 1280.0;
+            let w = f64::from(
+                tr.measure_font("HELLO", size, None, weight, false, &family)
+                    .0,
+            );
+            assert!(
+                w > safe && w < frame,
+                "this test is only meaningful for a word between the safe box and \
              the frame; measured {w:.0} against safe {safe:.0}, frame {frame:.0}",
-        );
+            );
 
-        let lines = wrap_to(&mut tr, "HELLO", size, weight, false, &family, safe, frame);
-        assert_eq!(
-            lines,
-            vec!["HELLO".to_string()],
-            "a word that fits the picture stays one word",
-        );
+            let lines = wrap_to(&mut tr, "HELLO", size, weight, false, &family, safe, frame);
+            assert_eq!(
+                lines,
+                vec!["HELLO".to_string()],
+                "a word that fits the picture stays one word",
+            );
 
-        // ...and a word that genuinely cannot fit the picture still breaks,
-        // rather than running off both edges.
-        let huge = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let broken = wrap_to(&mut tr, huge, size, weight, false, &family, safe, frame);
-        assert!(
-            broken.len() > 1,
-            "a word too wide for the frame is still broken up: {broken:?}",
-        );
-    }
-
-    #[test]
-    fn a_title_rasters_visible_glyphs_on_a_transparent_field() {
-        let mut raster = TitleRaster::new();
-        let text = TextSource {
-            content: "HELLO".into(),
-            size: 0.4,
-            ..TextSource::default()
-        };
-        let Some(rgba) = raster.raster(&text, 128, 64) else {
-            panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
-        };
-        assert_eq!(rgba.len(), 128 * 64 * 4);
-        let opaque = rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
-        let clear = rgba.chunks_exact(4).filter(|p| p[3] == 0).count();
-        assert!(opaque > 100, "the glyphs cover real pixels, got {opaque}");
-        assert!(
-            clear > 1000,
-            "and most of the field stays transparent, got {clear}"
-        );
-        // White text: every solid texel is bright.
-        let dark = rgba
-            .chunks_exact(4)
-            .filter(|p| p[3] > 200 && p[0] < 180)
-            .count();
-        assert_eq!(dark, 0, "white glyphs raster white, not grey");
-    }
-
-    #[test]
-    fn an_empty_title_rasters_nothing_rather_than_a_block() {
-        let mut raster = TitleRaster::new();
-        let text = TextSource::new("");
-        let Some(rgba) = raster.raster(&text, 32, 32) else {
-            panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
-        };
-        assert!(
-            rgba.chunks_exact(4).all(|p| p[3] == 0),
-            "a title with no text draws nothing at all",
-        );
-    }
-
-    #[test]
-    fn alignment_moves_the_glyphs_across_the_frame() {
-        let mut raster = TitleRaster::new();
-        let centre_of_mass = |rgba: &[u8], w: u32| {
-            let (mut sum, mut n) = (0f64, 0f64);
-            for (i, p) in rgba.chunks_exact(4).enumerate() {
-                if p[3] > 128 {
-                    sum += f64::from(i as u32 % w);
-                    n += 1.0;
-                }
-            }
-            if n == 0.0 { f64::NAN } else { sum / n }
-        };
-        let mut at = |align| {
-            let t = TextSource {
-                content: "AB".into(),
-                size: 0.3,
-                align,
+            // ...and a word that genuinely cannot fit the picture still breaks,
+            // rather than running off both edges.
+            let huge = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let broken = wrap_to(&mut tr, huge, size, weight, false, &family, safe, frame);
+            assert!(
+                broken.len() > 1,
+                "a word too wide for the frame is still broken up: {broken:?}",
+            );
+        }
+        // Case `a_title_rasters_visible_glyphs_on_a_transparent_field`.
+        {
+            let mut raster = TitleRaster::new();
+            let text = TextSource {
+                content: "HELLO".into(),
+                size: 0.4,
                 ..TextSource::default()
             };
-            let rgba = raster.raster(&t, 160, 48).expect("needs a wgpu adapter");
-            centre_of_mass(&rgba, 160)
-        };
-        let left = at(TextAlign::Left);
-        let centre = at(TextAlign::Center);
-        let right = at(TextAlign::Right);
-        assert!(
-            left < centre,
-            "left-aligned sits left of centred: {left} vs {centre}"
-        );
-        assert!(
-            centre < right,
-            "and centred left of right-aligned: {centre} vs {right}"
-        );
+            let Some(rgba) = raster.raster(&text, 128, 64) else {
+                panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
+            };
+            assert_eq!(rgba.len(), 128 * 64 * 4);
+            let opaque = rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
+            let clear = rgba.chunks_exact(4).filter(|p| p[3] == 0).count();
+            assert!(opaque > 100, "the glyphs cover real pixels, got {opaque}");
+            assert!(
+                clear > 1000,
+                "and most of the field stays transparent, got {clear}"
+            );
+            // White text: every solid texel is bright.
+            let dark = rgba
+                .chunks_exact(4)
+                .filter(|p| p[3] > 200 && p[0] < 180)
+                .count();
+            assert_eq!(dark, 0, "white glyphs raster white, not grey");
+        }
+        // Case `an_empty_title_rasters_nothing_rather_than_a_block`.
+        {
+            let mut raster = TitleRaster::new();
+            let text = TextSource::new("");
+            let Some(rgba) = raster.raster(&text, 32, 32) else {
+                panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
+            };
+            assert!(
+                rgba.chunks_exact(4).all(|p| p[3] == 0),
+                "a title with no text draws nothing at all",
+            );
+        }
     }
 
     #[test]
-    fn the_backdrop_fills_the_field_behind_the_text() {
-        let mut raster = TitleRaster::new();
-        let t = TextSource {
-            content: "x".into(),
-            backdrop: 0.8,
-            ..TextSource::default()
-        };
-        let rgba = raster.raster(&t, 32, 32).expect("needs a wgpu adapter");
-        // A corner is well away from any glyph, so it is plate or nothing.
-        let corner = &rgba[0..4];
-        assert!(
-            corner[3] > 150,
-            "the plate covers the whole field, corner alpha was {}",
-            corner[3],
-        );
-    }
-
-    #[test]
-    fn rasters_are_cached_per_style_and_size() {
-        let mut raster = TitleRaster::new();
-        let a = TextSource::new("same");
-        assert!(raster.raster(&a, 64, 32).is_some());
-        assert_eq!(raster.cache.len(), 1);
-        assert!(raster.raster(&a, 64, 32).is_some());
-        assert_eq!(raster.cache.len(), 1, "an identical request is a cache hit");
-        let b = TextSource {
-            content: "different".into(),
-            ..a.clone()
-        };
-        assert!(raster.raster(&b, 64, 32).is_some());
-        assert_eq!(raster.cache.len(), 2, "changed text rasters again");
-        assert!(raster.raster(&a, 96, 32).is_some());
-        assert_eq!(
-            raster.cache.len(),
-            1,
-            "a new frame size rebuilds the renderer"
-        );
+    fn title_alignment_backdrop_and_cache_follow_the_style() {
+        // Case `alignment_moves_the_glyphs_across_the_frame`.
+        {
+            let mut raster = TitleRaster::new();
+            let centre_of_mass = |rgba: &[u8], w: u32| {
+                let (mut sum, mut n) = (0f64, 0f64);
+                for (i, p) in rgba.chunks_exact(4).enumerate() {
+                    if p[3] > 128 {
+                        sum += f64::from(i as u32 % w);
+                        n += 1.0;
+                    }
+                }
+                if n == 0.0 { f64::NAN } else { sum / n }
+            };
+            let mut at = |align| {
+                let t = TextSource {
+                    content: "AB".into(),
+                    size: 0.3,
+                    align,
+                    ..TextSource::default()
+                };
+                let rgba = raster.raster(&t, 160, 48).expect("needs a wgpu adapter");
+                centre_of_mass(&rgba, 160)
+            };
+            let left = at(TextAlign::Left);
+            let centre = at(TextAlign::Center);
+            let right = at(TextAlign::Right);
+            assert!(
+                left < centre,
+                "left-aligned sits left of centred: {left} vs {centre}"
+            );
+            assert!(
+                centre < right,
+                "and centred left of right-aligned: {centre} vs {right}"
+            );
+        }
+        // Case `the_backdrop_fills_the_field_behind_the_text`.
+        {
+            let mut raster = TitleRaster::new();
+            let t = TextSource {
+                content: "x".into(),
+                backdrop: 0.8,
+                ..TextSource::default()
+            };
+            let rgba = raster.raster(&t, 32, 32).expect("needs a wgpu adapter");
+            // A corner is well away from any glyph, so it is plate or nothing.
+            let corner = &rgba[0..4];
+            assert!(
+                corner[3] > 150,
+                "the plate covers the whole field, corner alpha was {}",
+                corner[3],
+            );
+        }
+        // Case `rasters_are_cached_per_style_and_size`.
+        {
+            let mut raster = TitleRaster::new();
+            let a = TextSource::new("same");
+            assert!(raster.raster(&a, 64, 32).is_some());
+            assert_eq!(raster.cache.len(), 1);
+            assert!(raster.raster(&a, 64, 32).is_some());
+            assert_eq!(raster.cache.len(), 1, "an identical request is a cache hit");
+            let b = TextSource {
+                content: "different".into(),
+                ..a.clone()
+            };
+            assert!(raster.raster(&b, 64, 32).is_some());
+            assert_eq!(raster.cache.len(), 2, "changed text rasters again");
+            assert!(raster.raster(&a, 96, 32).is_some());
+            assert_eq!(
+                raster.cache.len(),
+                1,
+                "a new frame size rebuilds the renderer"
+            );
+        }
     }
 }

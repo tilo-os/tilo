@@ -1,0 +1,35 @@
+# joycond's evdev rules, scoped to Joy-Cons only.
+# Adapted from udev/72-joycond.rules of joycond
+# (https://github.com/DanielOgorchock/joycond, GPL-3.0-only).
+#
+# joycond drives exactly the devices tagged "joycond" here. It grabs each raw
+# Joy-Con half, keeps its node root-only, and hands it back either folded into
+# one "Nintendo Switch Combined Joy-Cons" uinput device (both halves) or
+# released on its own (one half held sideways). Halves in the charging grip
+# enumerate under the grip's product id (200e).
+#
+# The Pro Controller (2009) and the SNES/N64 controllers (2017/2019) are not
+# tagged: the kernel hid-nintendo driver presents them directly and Steam keeps
+# its hidraw access. Upstream's 89-joycond.rules, which revokes that hidraw
+# access for the Pro Controller, is deliberately not installed.
+#
+# Ordered after 70-uaccess.rules and before 73-seat-late.rules, so dropping
+# the uaccess tag keeps the session's ACL off the raw halves. The first
+# tagged half starts joycond.service, which also picks up halves that were
+# already present; nothing starts it at boot.
+
+ACTION!="add", GOTO="joycond_end"
+SUBSYSTEM!="input", GOTO="joycond_end"
+KERNEL!="event*", GOTO="joycond_end"
+
+# Motion sensors stay readable by the session for gyro aiming.
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="2006", ATTRS{name}=="*IMU*", TAG+="uaccess"
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="2007", ATTRS{name}=="*IMU*", TAG+="uaccess"
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="200e", ATTRS{name}=="*IMU*", TAG+="uaccess"
+
+# The raw halves belong to joycond until it releases or combines them.
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="2006", ATTRS{name}!="*Combined*", ATTRS{name}!="*Virtual*", ATTRS{name}!="*IMU*", TAG-="uaccess", TAG+="joycond", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="joycond.service"
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="2007", ATTRS{name}!="*Combined*", ATTRS{name}!="*Virtual*", ATTRS{name}!="*IMU*", TAG-="uaccess", TAG+="joycond", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="joycond.service"
+ATTRS{id/vendor}=="057e", ATTRS{id/product}=="200e", ATTRS{name}!="*Combined*", ATTRS{name}!="*Virtual*", ATTRS{name}!="*IMU*", TAG-="uaccess", TAG+="joycond", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="joycond.service"
+
+LABEL="joycond_end"

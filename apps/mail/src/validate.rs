@@ -252,25 +252,23 @@ mod live_probe {
                 Ok((user, None))
             }
             AuthMethod::OAuth => {
-                let token = oauth_access_token(&cfg.email)?;
+                let token = oauth_access_token(cfg)?;
                 Ok((user, Some(token)))
             }
         }
     }
 
-    /// Read the OAuth access token for the account from the vault (it is sealed
-    /// there by the sign-in flow before the account is saved).
-    fn oauth_access_token(email: &str) -> Result<String, String> {
-        let vault = accounts::SecretVault::open();
-        let secret = vault
-            .get(&accounts::AccountId::from(email.to_string()))
-            .ok_or("sign in first — no OAuth token stored yet")?;
-        let tokens = crate::oauth::tokens_from_secret(&secret)
-            .ok_or("stored credential is not an OAuth token")?;
-        if tokens.access_token.is_empty() {
-            return Err("stored OAuth token is empty; sign in again".into());
-        }
-        Ok(tokens.access_token)
+    /// A current OAuth access token for the account from custody (the
+    /// sign-in flow sealed the grant before the account is saved).
+    fn oauth_access_token(cfg: &AccountConfig) -> Result<String, String> {
+        let provider = crate::oauth::OAuthProvider::for_account(&cfg.email, &cfg.imap_host)
+            .ok_or("OAuth sign-in is not supported for this provider")?;
+        crate::oauth::access_token(
+            &account_custody::Custodian::live(),
+            &cfg.email,
+            provider,
+            false,
+        )
     }
 
     pub fn imap_login(
@@ -401,61 +399,154 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "live")]
     #[test]
-    fn cancelling_setup_closes_a_stalled_tls_connection() {
-        use std::io::Read;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        use std::time::{Duration, Instant};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn setup_probe_persists_only_when_both_servers_succeed() {
+        // Phase `both_succeed_yields_ok_and_persists`.
+        {
+            let st = validate_account(
+                &good_cfg(),
+                &MockProbe {
+                    imap: Ok(()),
+                    smtp: Ok(()),
+                },
+            );
+            assert_eq!(st, ValidationState::Ok);
+            assert!(
+                st.persisted(),
+                "a fully-successful check persists the account"
+            );
+        }
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let mut cfg = good_cfg();
-        cfg.imap_host = "127.0.0.1".into();
-        cfg.imap_port = listener.local_addr().unwrap().port();
-        cfg.password = "local fixture secret".into();
-        let cancellation = Arc::new(AtomicBool::new(false));
-        let worker_cancellation = Arc::clone(&cancellation);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            sender
-                .send(validate_account_cancellable(&cfg, &worker_cancellation))
-                .unwrap();
-        });
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "verification never connected");
-                    std::thread::sleep(Duration::from_millis(10));
+        // Phase `imap_failure_does_not_persist_and_reports_imap`.
+        {
+            let st = validate_account(
+                &good_cfg(),
+                &MockProbe {
+                    imap: Err("auth rejected (535)".into()),
+                    smtp: Ok(()),
+                },
+            );
+            assert!(
+                !st.persisted(),
+                "an IMAP failure must not persist the account"
+            );
+            assert!(
+                st.message().contains("IMAP"),
+                "error names the failing stage: {}",
+                st.message()
+            );
+            assert!(st.message().contains("535"));
+        }
+
+        // Phase `smtp_failure_does_not_persist_and_reports_smtp`.
+        {
+            let st = validate_account(
+                &good_cfg(),
+                &MockProbe {
+                    imap: Ok(()),
+                    smtp: Err("connection refused".into()),
+                },
+            );
+            assert!(!st.persisted());
+            assert!(st.message().contains("SMTP"), "{}", st.message());
+        }
+
+        // Phase `invalid_config_short_circuits_before_network`.
+        {
+            // A blank IMAP host is a config error; the probe must never be reached.
+            struct PanicProbe;
+            // Panicking IS the assertion here: the test proves the probe is never
+            // reached, so returning Err instead would let a regression that does
+            // call it pass silently.
+            #[allow(
+                clippy::panic_in_result_fn,
+                reason = "the panic is the assertion — an Err return would let a regression that reaches the probe pass silently"
+            )]
+            impl ProbeTransport for PanicProbe {
+                fn imap_login(&self, _cfg: &AccountConfig) -> Result<(), String> {
+                    panic!("probe reached despite invalid config");
                 }
-                Err(error) => panic!("local listener: {error}"),
+                fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
+                    panic!("probe reached despite invalid config");
+                }
             }
-        };
-        // Windows accepted sockets inherit the listener's nonblocking mode.
-        // This fixture uses bounded blocking reads to observe TLS and EOF.
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut hello = [0; 4096];
-        assert!(
-            stream.read(&mut hello).unwrap() > 0,
-            "real TLS handshake began"
-        );
-        cancellation.store(true, Ordering::Relaxed);
-        let outcome = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(!outcome.persisted());
-        assert!(outcome.message().contains("cancelled"), "{outcome:?}");
-        let mut remaining = Vec::new();
-        stream
-            .read_to_end(&mut remaining)
-            .expect("cancellation must close the TLS socket");
-        worker.join().unwrap();
+            let mut cfg = good_cfg();
+            cfg.imap_host.clear();
+            let st = validate_account(&cfg, &PanicProbe);
+            assert!(matches!(st, ValidationState::Invalid(_)));
+            assert!(!st.persisted());
+        }
+
+        // Phase `offline_probe_reports_success`.
+        {
+            let st = validate_account(&good_cfg(), &OfflineProbe);
+            assert_eq!(
+                st,
+                ValidationState::Ok,
+                "offline probe lets an account save"
+            );
+        }
+
+        // Phase `cancelling_setup_closes_a_stalled_tls_connection`.
+        #[cfg(feature = "live")]
+        {
+            use std::io::Read;
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            };
+            use ui::time::Duration;
+            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+            const HANG_BOUND: Duration = Duration::from_secs(30);
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut cfg = good_cfg();
+            cfg.imap_host = "127.0.0.1".into();
+            cfg.imap_port = listener.local_addr().unwrap().port();
+            cfg.password = "local fixture secret".into();
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let worker_cancellation = Arc::clone(&cancellation);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                sender
+                    .send(validate_account_cancellable(&cfg, &worker_cancellation))
+                    .unwrap();
+            });
+            let deadline = tilo_test_env::hang_deadline();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(ui::time::now() < deadline, "verification never connected");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local listener: {error}"),
+                }
+            };
+            // Windows accepted sockets inherit the listener's nonblocking mode.
+            // This fixture uses bounded blocking reads to observe TLS and EOF.
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
+            let mut hello = [0; 4096];
+            assert!(
+                stream.read(&mut hello).unwrap() > 0,
+                "real TLS handshake began"
+            );
+            cancellation.store(true, Ordering::Relaxed);
+            let outcome = receiver.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            assert!(!outcome.persisted());
+            assert!(outcome.message().contains("cancelled"), "{outcome:?}");
+            let mut remaining = Vec::new();
+            stream
+                .read_to_end(&mut remaining)
+                .expect("cancellation must close the TLS socket");
+            worker.join().unwrap();
+        }
     }
 
     /// A programmable probe for the state-machine tests.
@@ -473,135 +564,56 @@ mod tests {
     }
 
     #[test]
-    fn both_succeed_yields_ok_and_persists() {
-        let st = validate_account(
-            &good_cfg(),
-            &MockProbe {
-                imap: Ok(()),
-                smtp: Ok(()),
-            },
-        );
-        assert_eq!(st, ValidationState::Ok);
-        assert!(
-            st.persisted(),
-            "a fully-successful check persists the account"
-        );
-    }
-
-    #[test]
-    fn imap_failure_does_not_persist_and_reports_imap() {
-        let st = validate_account(
-            &good_cfg(),
-            &MockProbe {
-                imap: Err("auth rejected (535)".into()),
-                smtp: Ok(()),
-            },
-        );
-        assert!(
-            !st.persisted(),
-            "an IMAP failure must not persist the account"
-        );
-        assert!(
-            st.message().contains("IMAP"),
-            "error names the failing stage: {}",
-            st.message()
-        );
-        assert!(st.message().contains("535"));
-    }
-
-    #[test]
-    fn smtp_failure_does_not_persist_and_reports_smtp() {
-        let st = validate_account(
-            &good_cfg(),
-            &MockProbe {
-                imap: Ok(()),
-                smtp: Err("connection refused".into()),
-            },
-        );
-        assert!(!st.persisted());
-        assert!(st.message().contains("SMTP"), "{}", st.message());
-    }
-
-    #[test]
-    fn invalid_config_short_circuits_before_network() {
-        // A blank IMAP host is a config error; the probe must never be reached.
-        struct PanicProbe;
-        // Panicking IS the assertion here: the test proves the probe is never
-        // reached, so returning Err instead would let a regression that does
-        // call it pass silently.
-        #[allow(
-            clippy::panic_in_result_fn,
-            reason = "the panic is the assertion — an Err return would let a regression that reaches the probe pass silently"
-        )]
-        impl ProbeTransport for PanicProbe {
-            fn imap_login(&self, _cfg: &AccountConfig) -> Result<(), String> {
-                panic!("probe reached despite invalid config");
-            }
-            fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
-                panic!("probe reached despite invalid config");
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn classify_maps_transport_errors_with_auth_first() {
+        // Phase `classify_maps_real_transport_errors_to_specific_reasons`.
+        {
+            // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
+            assert!(
+                classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
+                    .contains("authentication failed")
+            );
+            assert!(
+                classify_conn_failure("535 5.7.8 Username and Password not accepted")
+                    .contains("authentication failed")
+            );
+            // Connection refused (nothing listening on the port).
+            assert!(
+                classify_conn_failure("Connection refused (os error 111)")
+                    .contains("connection refused")
+            );
+            // DNS failure.
+            assert!(
+                classify_conn_failure(
+                    "failed to lookup address information: Name or service not known"
+                )
+                .contains("host not found")
+            );
+            // TLS/certificate.
+            assert!(
+                classify_conn_failure("invalid peer certificate: UnknownIssuer")
+                    .contains("TLS/certificate")
+            );
+            // Timeout.
+            assert!(classify_conn_failure("connection timed out").contains("timed out"));
+            // Unknown → the underlying detail is preserved, not swallowed.
+            let unknown = classify_conn_failure("some novel failure mode");
+            assert!(unknown.contains("some novel failure mode"), "{unknown}");
         }
-        let mut cfg = good_cfg();
-        cfg.imap_host.clear();
-        let st = validate_account(&cfg, &PanicProbe);
-        assert!(matches!(st, ValidationState::Invalid(_)));
-        assert!(!st.persisted());
-    }
 
-    #[test]
-    fn offline_probe_reports_success() {
-        let st = validate_account(&good_cfg(), &OfflineProbe);
-        assert_eq!(
-            st,
-            ValidationState::Ok,
-            "offline probe lets an account save"
-        );
-    }
-
-    #[test]
-    fn classify_maps_real_transport_errors_to_specific_reasons() {
-        // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
-        assert!(
-            classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
-                .contains("authentication failed")
-        );
-        assert!(
-            classify_conn_failure("535 5.7.8 Username and Password not accepted")
-                .contains("authentication failed")
-        );
-        // Connection refused (nothing listening on the port).
-        assert!(
-            classify_conn_failure("Connection refused (os error 111)")
-                .contains("connection refused")
-        );
-        // DNS failure.
-        assert!(
-            classify_conn_failure(
-                "failed to lookup address information: Name or service not known"
-            )
-            .contains("host not found")
-        );
-        // TLS/certificate.
-        assert!(
-            classify_conn_failure("invalid peer certificate: UnknownIssuer")
-                .contains("TLS/certificate")
-        );
-        // Timeout.
-        assert!(classify_conn_failure("connection timed out").contains("timed out"));
-        // Unknown → the underlying detail is preserved, not swallowed.
-        let unknown = classify_conn_failure("some novel failure mode");
-        assert!(unknown.contains("some novel failure mode"), "{unknown}");
-    }
-
-    #[test]
-    fn classify_prioritises_auth_over_generic_transport_words() {
-        // A message that mentions both a socket concept and auth must classify
-        // as auth (the more actionable, specific cause).
-        let msg = "AUTHENTICATE failed: login rejected";
-        assert!(
-            classify_conn_failure(msg).contains("authentication failed"),
-            "{}",
-            classify_conn_failure(msg)
-        );
+        // Phase `classify_prioritises_auth_over_generic_transport_words`.
+        {
+            // A message that mentions both a socket concept and auth must classify
+            // as auth (the more actionable, specific cause).
+            let msg = "AUTHENTICATE failed: login rejected";
+            assert!(
+                classify_conn_failure(msg).contains("authentication failed"),
+                "{}",
+                classify_conn_failure(msg)
+            );
+        }
     }
 }

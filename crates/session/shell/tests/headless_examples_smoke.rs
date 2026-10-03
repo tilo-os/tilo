@@ -47,6 +47,7 @@ fn shell_binary() -> PathBuf {
 }
 
 fn run_script(script_name: &str) -> std::process::Output {
+    tilo_test_env::require_isolated_desktop();
     let script = repo_root()
         .join("scripts")
         .join("headless-examples")

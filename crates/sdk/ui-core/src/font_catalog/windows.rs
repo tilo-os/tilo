@@ -128,61 +128,62 @@ mod tests {
     use sha2::Digest;
 
     #[test]
-    fn same_sha256_for_empty_short_and_multichunk_inputs() {
-        for bytes in [vec![], b"abc".to_vec(), vec![0x61; 1_000_000]] {
-            assert_eq!(
-                digest(bytes.as_slice()).unwrap().as_slice(),
-                sha2::Sha256::digest(&bytes).as_slice()
-            );
-        }
-    }
-
-    #[test]
-    fn read_failure_is_not_a_successful_partial_digest() {
-        struct Failure;
-        impl Read for Failure {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "fixture denial",
-                ))
+    fn packaged_font_digests_are_complete_sha256_over_every_input() {
+        // phase: same_sha256_for_empty_short_and_multichunk_inputs
+        {
+            for bytes in [vec![], b"abc".to_vec(), vec![0x61; 1_000_000]] {
+                assert_eq!(
+                    digest(bytes.as_slice()).unwrap().as_slice(),
+                    sha2::Sha256::digest(&bytes).as_slice()
+                );
             }
         }
-        assert_eq!(
-            digest(Failure).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-    }
-
-    #[test]
-    fn packaged_product_fonts_match_both_manifest_and_rust_sha256() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
-        let manifest = std::fs::read_to_string(root.join("manifest.toml")).unwrap();
-        let mut checked = 0;
-        for asset in manifest.split("[[font]]").skip(1) {
-            if !asset.lines().any(|line| line == "scope = \"product\"") {
-                continue;
+        // phase: read_failure_is_not_a_successful_partial_digest
+        {
+            struct Failure;
+            impl Read for Failure {
+                fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "fixture denial",
+                    ))
+                }
             }
-            let value = |name: &str| {
-                let prefix = format!("{name} = \"");
-                asset
-                    .lines()
-                    .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
-                    .unwrap()
-            };
-            let path = root.join(value("file"));
-            let bytes = std::fs::read(&path).unwrap();
-            let actual = digest(std::fs::File::open(&path).unwrap()).unwrap();
             assert_eq!(
-                actual.as_slice(),
-                sha2::Sha256::digest(&bytes).as_slice(),
-                "{path:?}"
+                digest(Failure).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
             );
-            let hex = hex::encode(actual);
-            assert_eq!(hex, value("sha256"), "{path:?}");
-            checked += 1;
         }
-        assert!(checked > 0, "must exercise actual product font files");
-        println!("Verified {checked} product font digests");
+        // phase: packaged_product_fonts_match_both_manifest_and_rust_sha256
+        {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+            let manifest = std::fs::read_to_string(root.join("manifest.toml")).unwrap();
+            let mut checked = 0;
+            for asset in manifest.split("[[font]]").skip(1) {
+                if !asset.lines().any(|line| line == "scope = \"product\"") {
+                    continue;
+                }
+                let value = |name: &str| {
+                    let prefix = format!("{name} = \"");
+                    asset
+                        .lines()
+                        .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
+                        .unwrap()
+                };
+                let path = root.join(value("file"));
+                let bytes = std::fs::read(&path).unwrap();
+                let actual = digest(std::fs::File::open(&path).unwrap()).unwrap();
+                assert_eq!(
+                    actual.as_slice(),
+                    sha2::Sha256::digest(&bytes).as_slice(),
+                    "{path:?}"
+                );
+                let hex = hex::encode(actual);
+                assert_eq!(hex, value("sha256"), "{path:?}");
+                checked += 1;
+            }
+            assert!(checked > 0, "must exercise actual product font files");
+            println!("Verified {checked} product font digests");
+        }
     }
 }

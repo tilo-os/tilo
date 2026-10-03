@@ -32,7 +32,7 @@ fn report_identity() -> String {
     format!(
         "{}-{:?}-{}",
         std::process::id(),
-        std::time::SystemTime::now(),
+        ui::time::wall(),
         NEXT_REPORT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -419,7 +419,7 @@ pub(super) struct MigrationStore {
 
 impl MigrationStore {
     pub(super) fn open_default() -> Result<Self, String> {
-        let root = xdg_paths::data_local_dir()
+        let root = tilo_paths::data_local_dir()
             .ok_or_else(|| "no private local data directory is available".to_string())?
             .join("tilo-imager")
             .join("migrations");
@@ -622,8 +622,8 @@ impl MigrationStore {
     }
 
     fn save_issues(&self, operation: &OperationRecord) -> Result<String, String> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let stamp = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
         let name = format!("{}.{stamp}.issues", operation.id);
@@ -919,7 +919,6 @@ pub(super) mod test_support {
         collections::HashMap,
         path::{Path, PathBuf},
         sync::{Mutex, OnceLock, mpsc},
-        time::Duration,
     };
     type Hook = (usize, mpsc::Sender<()>, mpsc::Receiver<()>);
     static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
@@ -945,7 +944,7 @@ pub(super) mod test_support {
         };
         if let Some((_, entered, release)) = hook {
             let _ = entered.send(());
-            release.recv_timeout(Duration::from_secs(10)).unwrap();
+            tilo_test_env::recv("the save release", &release);
         }
     }
 }
@@ -976,117 +975,145 @@ mod tests {
         (temp, store, job)
     }
 
+    /// Issue details across attempts, compaction and paging.
     #[test]
-    fn later_attempt_with_same_counts_cannot_inherit_earlier_details() {
-        let (_temp, store, job) = fixture();
-        let mut earlier = OperationRecord::new(&job);
-        earlier.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..40)
-                .map(|n| (PathBuf::from(format!("file-{n}")), "old reason".into()))
-                .collect(),
-            ..CopyReport::default()
-        }));
-        store.save(&[earlier]).unwrap();
-        let saved = store.load().unwrap().remove(0);
-        let mut later = OperationRecord::new(&job);
-        later.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..40)
-                .map(|n| {
-                    (
-                        PathBuf::from(format!("file-{n}")),
-                        if n < 8 { "old reason" } else { "new reason" }.into(),
-                    )
-                })
-                .collect(),
-            ..CopyReport::default()
-        }));
-        later.compact();
-        later.retain_detail_reference(&saved);
-        assert!(
-            store.issue_page(&later, 0).is_err(),
-            "a different attempt inherited an earlier issue page"
-        );
-    }
-
-    #[test]
-    fn queued_legacy_compaction_cannot_lose_the_new_detail_reference() {
-        let (_temp, store, job) = fixture();
-        let store = Arc::new(store);
-        let writer = StoreWriter::new(Arc::clone(&store)).unwrap();
-        let mut legacy = OperationRecord::new(&job);
-        legacy.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..40)
-                .map(|n| (PathBuf::from(format!("legacy-{n}")), "reason".into()))
-                .collect(),
-            ..CopyReport::default()
-        }));
-        let first = writer.save(vec![legacy.clone()]).unwrap();
-        legacy.compact();
-        let second = writer.save(vec![legacy]).unwrap();
-        first.recv().unwrap().unwrap();
-        second.recv().unwrap().unwrap();
-        let saved = store.load().unwrap().remove(0);
-        assert_eq!(store.issue_page(&saved, 0).unwrap().issues.len(), 32);
-    }
-
-    #[test]
-    fn saved_issue_pages_are_immutable_across_later_attempts() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..40)
-                .map(|n| (PathBuf::from(format!("old-{n}")), "old reason".into()))
-                .collect(),
-            ..CopyReport::default()
-        }));
-        store.save(&[operation.clone()]).unwrap();
-        let previous = store.load().unwrap().remove(0);
-        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..40)
-                .map(|n| (PathBuf::from(format!("new-{n}")), "new reason".into()))
-                .collect(),
-            ..CopyReport::default()
-        }));
-        store.save(&[operation]).unwrap();
-        assert_eq!(
-            store.issue_page(&previous, 0).unwrap().issues[0].0,
-            PathBuf::from("old-0")
-        );
-    }
-
-    #[test]
-    fn every_issue_remains_available_in_bounded_pages_after_restart() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            failed: (0..1000)
-                .map(|n| (PathBuf::from(format!("file-{n}")), format!("reason-{n}")))
-                .collect(),
-            scan_completed: true,
-            ..CopyReport::default()
-        }));
-        store.save(&[operation]).unwrap();
-        let reopened = store.load().unwrap().remove(0);
-        assert_eq!(reopened.issue_count(), 1000);
-        assert!(reopened.issues().unwrap().len() <= 8);
-        assert!(fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536);
-        let mut offset = 0;
-        let mut count = 0;
-        loop {
-            let page = store.issue_page(&reopened, offset).unwrap();
-            assert!(page.issues.len() <= 32);
-            for (path, reason) in page.issues {
-                assert_eq!(path, PathBuf::from(format!("file-{count}")));
-                assert_eq!(reason, format!("reason-{count}"));
-                count += 1;
-            }
-            if let Some(next) = page.next {
-                offset = next;
-            } else {
-                break;
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn issue_details_and_pages_stay_attempt_scoped_and_bounded() {
+        // Phase `later_attempt_with_same_counts_cannot_inherit_earlier_details`.
+        {
+            let (_temp, store, job) = fixture();
+            let mut earlier = OperationRecord::new(&job);
+            earlier.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..40)
+                    .map(|n| (PathBuf::from(format!("file-{n}")), "old reason".into()))
+                    .collect(),
+                ..CopyReport::default()
+            }));
+            store.save(&[earlier]).unwrap();
+            let saved = store.load().unwrap().remove(0);
+            let mut later = OperationRecord::new(&job);
+            later.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..40)
+                    .map(|n| {
+                        (
+                            PathBuf::from(format!("file-{n}")),
+                            if n < 8 { "old reason" } else { "new reason" }.into(),
+                        )
+                    })
+                    .collect(),
+                ..CopyReport::default()
+            }));
+            later.compact();
+            later.retain_detail_reference(&saved);
+            assert!(
+                store.issue_page(&later, 0).is_err(),
+                "a different attempt inherited an earlier issue page"
+            );
         }
-        assert_eq!(count, 1000);
+
+        // Phase `queued_legacy_compaction_cannot_lose_the_new_detail_reference`.
+        {
+            let (_temp, store, job) = fixture();
+            let store = Arc::new(store);
+            let writer = StoreWriter::new(Arc::clone(&store)).unwrap();
+            let mut legacy = OperationRecord::new(&job);
+            legacy.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..40)
+                    .map(|n| (PathBuf::from(format!("legacy-{n}")), "reason".into()))
+                    .collect(),
+                ..CopyReport::default()
+            }));
+            let first = writer.save(vec![legacy.clone()]).unwrap();
+            legacy.compact();
+            let second = writer.save(vec![legacy]).unwrap();
+            first.recv().unwrap().unwrap();
+            second.recv().unwrap().unwrap();
+            let saved = store.load().unwrap().remove(0);
+            assert_eq!(store.issue_page(&saved, 0).unwrap().issues.len(), 32);
+        }
+
+        // Phase `saved_issue_pages_are_immutable_across_later_attempts`.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..40)
+                    .map(|n| (PathBuf::from(format!("old-{n}")), "old reason".into()))
+                    .collect(),
+                ..CopyReport::default()
+            }));
+            store.save(&[operation.clone()]).unwrap();
+            let previous = store.load().unwrap().remove(0);
+            operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..40)
+                    .map(|n| (PathBuf::from(format!("new-{n}")), "new reason".into()))
+                    .collect(),
+                ..CopyReport::default()
+            }));
+            store.save(&[operation]).unwrap();
+            assert_eq!(
+                store.issue_page(&previous, 0).unwrap().issues[0].0,
+                PathBuf::from("old-0")
+            );
+        }
+
+        // Phase `every_issue_remains_available_in_bounded_pages_after_restart`.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                failed: (0..1000)
+                    .map(|n| (PathBuf::from(format!("file-{n}")), format!("reason-{n}")))
+                    .collect(),
+                scan_completed: true,
+                ..CopyReport::default()
+            }));
+            store.save(&[operation]).unwrap();
+            let reopened = store.load().unwrap().remove(0);
+            assert_eq!(reopened.issue_count(), 1000);
+            assert!(reopened.issues().unwrap().len() <= 8);
+            assert!(fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536);
+            let mut offset = 0;
+            let mut count = 0;
+            loop {
+                let page = store.issue_page(&reopened, offset).unwrap();
+                assert!(page.issues.len() <= 32);
+                for (path, reason) in page.issues {
+                    assert_eq!(path, PathBuf::from(format!("file-{count}")));
+                    assert_eq!(reason, format!("reason-{count}"));
+                    count += 1;
+                }
+                if let Some(next) = page.next {
+                    offset = next;
+                } else {
+                    break;
+                }
+            }
+            assert_eq!(count, 1000);
+        }
+
+        // Phase `index_does_not_duplicate_unbounded_verified_paths`.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            let report = CopyReport {
+                verified_files: (0..10000)
+                    .map(|n| PathBuf::from(format!("{n:08}-{}", "x".repeat(200))))
+                    .collect(),
+                scan_completed: true,
+                ..CopyReport::default()
+            };
+            operation.apply_outcome(WorkerOutcome::Complete(report));
+            store.save(&[operation]).unwrap();
+            assert!(
+                fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536,
+                "full paths duplicated in index"
+            );
+            assert_eq!(store.load().unwrap()[0].verified_file_count(), 10000);
+        }
     }
 
     #[test]
@@ -1102,240 +1129,236 @@ mod tests {
         }
     }
 
+    /// Store lock ownership.
     #[test]
-    fn ownership_releases_after_process_death_without_removing_lock_file() {
-        let (temp, store, _job) = fixture();
-        let root = store.root().to_owned();
-        drop(store);
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                &format!(
-                    "{}::store_lock_process_helper",
-                    module_path!().split_once("::").unwrap().1
-                ),
-            ])
-            .env("TILO_COPY_STORE_LOCK_TEST", &root)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !root.join("owner-ready").exists() {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "child did not acquire store lock in {}",
-                    temp.path().display()
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn store_ownership_is_exclusive_and_released_on_process_death() {
+        // Phase `ownership_releases_after_process_death_without_removing_lock_file`.
+        {
+            let (temp, store, _job) = fixture();
+            let root = store.root().to_owned();
+            drop(store);
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!(
+                        "{}::store_lock_process_helper",
+                        module_path!().split_once("::").unwrap().1
+                    ),
+                ])
+                .env("TILO_COPY_STORE_LOCK_TEST", &root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            while !root.join("owner-ready").exists() {
+                if ui::time::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "child did not acquire store lock in {}",
+                        temp.path().display()
+                    );
+                }
+                std::thread::yield_now();
             }
-            std::thread::yield_now();
+            assert!(MigrationStore::open_at(&root).is_err());
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(root.join("ownership.lock").is_file());
+            assert!(MigrationStore::open_at(&root).is_ok());
         }
-        assert!(MigrationStore::open_at(&root).is_err());
-        child.kill().unwrap();
-        child.wait().unwrap();
-        assert!(root.join("ownership.lock").is_file());
-        assert!(MigrationStore::open_at(&root).is_ok());
+
+        // Phase `second_owner_cannot_load_or_normalize_live_operation`.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.approve();
+            operation.mark_running().unwrap();
+            store.save(&[operation]).unwrap();
+            let before = fs::read(store.root().join(STORE_FILE)).unwrap();
+            assert!(
+                MigrationStore::open_at(store.root()).is_err(),
+                "second owner acquired live store"
+            );
+            assert_eq!(fs::read(store.root().join(STORE_FILE)).unwrap(), before);
+            let root = store.root().to_owned();
+            drop(store);
+            let reopened = MigrationStore::open_at(&root).unwrap();
+            assert_eq!(
+                reopened.load().unwrap()[0].state(),
+                OperationState::Interrupted
+            );
+        }
     }
 
+    /// Interrupted reopen, grants, incomplete reports, retries and native names.
     #[test]
-    fn second_owner_cannot_load_or_normalize_live_operation() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.approve();
-        operation.mark_running().unwrap();
-        store.save(&[operation]).unwrap();
-        let before = fs::read(store.root().join(STORE_FILE)).unwrap();
-        assert!(
-            MigrationStore::open_at(store.root()).is_err(),
-            "second owner acquired live store"
-        );
-        assert_eq!(fs::read(store.root().join(STORE_FILE)).unwrap(), before);
-        let root = store.root().to_owned();
-        drop(store);
-        let reopened = MigrationStore::open_at(&root).unwrap();
-        assert_eq!(
-            reopened.load().unwrap()[0].state(),
-            OperationState::Interrupted
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn operation_records_reopen_review_and_round_trip_truthfully() {
+        // Phase `running_operation_reopens_as_interrupted`.
+        // Catches treating an operation index's stale Running marker as evidence
+        // that work completed while the application was closed.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.approve();
+            operation.mark_running().unwrap();
+            store.save(&[operation]).unwrap();
 
-    #[test]
-    fn index_does_not_duplicate_unbounded_verified_paths() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        let report = CopyReport {
-            verified_files: (0..10000)
-                .map(|n| PathBuf::from(format!("{n:08}-{}", "x".repeat(200))))
-                .collect(),
-            scan_completed: true,
-            ..CopyReport::default()
-        };
-        operation.apply_outcome(WorkerOutcome::Complete(report));
-        store.save(&[operation]).unwrap();
-        assert!(
-            fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536,
-            "full paths duplicated in index"
-        );
-        assert_eq!(store.load().unwrap()[0].verified_file_count(), 10000);
-    }
+            let reopened = store.load().unwrap();
+            assert_eq!(reopened.len(), 1);
+            assert_eq!(reopened[0].state(), OperationState::Interrupted);
+            assert_ne!(reopened[0].state(), OperationState::Complete);
+        }
 
-    // Catches treating an operation index's stale Running marker as evidence
-    // that work completed while the application was closed.
-    #[test]
-    fn running_operation_reopens_as_interrupted() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.approve();
-        operation.mark_running().unwrap();
-        store.save(&[operation]).unwrap();
+        // Phase `changed_grants_require_a_fresh_review`.
+        // Catches changing a reviewed root while retaining approval for the old
+        // source/destination pair.
+        {
+            let (temp, _store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.approve();
+            assert!(operation.start_job().is_ok());
 
-        let reopened = store.load().unwrap();
-        assert_eq!(reopened.len(), 1);
-        assert_eq!(reopened[0].state(), OperationState::Interrupted);
-        assert_ne!(reopened[0].state(), OperationState::Complete);
-    }
+            let changed = MigrationJob::fresh(
+                "op_1",
+                job.source().to_path_buf(),
+                temp.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("somewhere-else/Imported"),
+                job.journal().to_path_buf(),
+            )
+            .unwrap();
+            let changed_operation = OperationRecord::new(&changed);
 
-    // Catches changing a reviewed root while retaining approval for the old
-    // source/destination pair.
-    #[test]
-    fn changed_grants_require_a_fresh_review() {
-        let (temp, _store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.approve();
-        assert!(operation.start_job().is_ok());
+            assert_eq!(changed_operation.state(), OperationState::AwaitingReview);
+            assert!(changed_operation.start_job().is_err());
+        }
 
-        let changed = MigrationJob::fresh(
-            "op_1",
-            job.source().to_path_buf(),
-            temp.path()
-                .canonicalize()
-                .unwrap()
-                .join("somewhere-else/Imported"),
-            job.journal().to_path_buf(),
-        )
-        .unwrap();
-        let changed_operation = OperationRecord::new(&changed);
+        // Phase `incomplete_report_round_trips_with_paths_and_disclosures`.
+        // Catches loss of terminal detail needed to distinguish partial failure
+        // from verified completion after restart.
+        {
+            let (_temp, store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.approve();
+            operation.mark_running().unwrap();
+            operation.apply_progress(&CopyProgress {
+                verified_files: 1,
+                verified_bytes: 4,
+                current_relative_path: "ok.txt".into(),
+            });
+            operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                verified_files: vec!["ok.txt".into()],
+                verified_bytes: 4,
+                skipped: vec![("linked".into(), "symbolic link".into())],
+                failed: vec![("private".into(), "permission denied".into())],
+                cancelled: false,
+                scan_completed: true,
+                metadata_limitations: vec!["ACLs are not preserved".into()],
+            }));
+            store.save(&[operation]).unwrap();
 
-        assert_eq!(changed_operation.state(), OperationState::AwaitingReview);
-        assert!(changed_operation.start_job().is_err());
-    }
+            let reopened = store.load().unwrap().remove(0);
+            assert_eq!(reopened.state(), OperationState::Incomplete);
+            assert_eq!(reopened.verified_bytes(), 4);
+            assert_eq!(
+                reopened.issues().unwrap(),
+                vec![
+                    ("linked".into(), "symbolic link".into()),
+                    ("private".into(), "permission denied".into())
+                ]
+            );
+            assert_eq!(reopened.metadata_limitations(), &["ACLs are not preserved"]);
+        }
 
-    // Catches loss of terminal detail needed to distinguish partial failure
-    // from verified completion after restart.
-    #[test]
-    fn incomplete_report_round_trips_with_paths_and_disclosures() {
-        let (_temp, store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.approve();
-        operation.mark_running().unwrap();
-        operation.apply_progress(&CopyProgress {
-            verified_files: 1,
-            verified_bytes: 4,
-            current_relative_path: "ok.txt".into(),
-        });
-        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            verified_files: vec!["ok.txt".into()],
-            verified_bytes: 4,
-            skipped: vec![("linked".into(), "symbolic link".into())],
-            failed: vec![("private".into(), "permission denied".into())],
-            cancelled: false,
-            scan_completed: true,
-            metadata_limitations: vec!["ACLs are not preserved".into()],
-        }));
-        store.save(&[operation]).unwrap();
+        // Phase `retry_progress_replaces_the_prior_incomplete_attempt`.
+        // Catches a retry continuing to display the previous attempt's counts,
+        // issues and current path after the new worker reports fresh progress.
+        {
+            let (_temp, _store, job) = fixture();
+            let mut operation = OperationRecord::new(&job);
+            operation.approve();
+            operation.mark_running().unwrap();
+            operation.apply_progress(&CopyProgress {
+                verified_files: 7,
+                verified_bytes: 70,
+                current_relative_path: "old.txt".into(),
+            });
+            operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+                verified_files: vec!["old.txt".into()],
+                verified_bytes: 70,
+                skipped: vec![("old-link".into(), "symbolic link".into())],
+                failed: vec![("old-private".into(), "permission denied".into())],
+                cancelled: false,
+                scan_completed: true,
+                metadata_limitations: vec!["old limitation".into()],
+            }));
 
-        let reopened = store.load().unwrap().remove(0);
-        assert_eq!(reopened.state(), OperationState::Incomplete);
-        assert_eq!(reopened.verified_bytes(), 4);
-        assert_eq!(
-            reopened.issues().unwrap(),
-            vec![
-                ("linked".into(), "symbolic link".into()),
-                ("private".into(), "permission denied".into())
-            ]
-        );
-        assert_eq!(reopened.metadata_limitations(), &["ACLs are not preserved"]);
-    }
+            operation.mark_running().unwrap();
+            operation.apply_progress(&CopyProgress {
+                verified_files: 2,
+                verified_bytes: 12,
+                current_relative_path: "new.txt".into(),
+            });
 
-    // Catches a retry continuing to display the previous attempt's counts,
-    // issues and current path after the new worker reports fresh progress.
-    #[test]
-    fn retry_progress_replaces_the_prior_incomplete_attempt() {
-        let (_temp, _store, job) = fixture();
-        let mut operation = OperationRecord::new(&job);
-        operation.approve();
-        operation.mark_running().unwrap();
-        operation.apply_progress(&CopyProgress {
-            verified_files: 7,
-            verified_bytes: 70,
-            current_relative_path: "old.txt".into(),
-        });
-        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
-            verified_files: vec!["old.txt".into()],
-            verified_bytes: 70,
-            skipped: vec![("old-link".into(), "symbolic link".into())],
-            failed: vec![("old-private".into(), "permission denied".into())],
-            cancelled: false,
-            scan_completed: true,
-            metadata_limitations: vec!["old limitation".into()],
-        }));
+            assert_eq!(operation.state(), OperationState::Running);
+            assert_eq!(operation.verified_file_count(), 2);
+            assert_eq!(operation.verified_bytes(), 12);
+            assert_eq!(
+                operation.current_relative_path().unwrap(),
+                Some("new.txt".into())
+            );
+            assert!(operation.issues().unwrap().is_empty());
+            assert!(operation.metadata_limitations().is_empty());
+        }
 
-        operation.mark_running().unwrap();
-        operation.apply_progress(&CopyProgress {
-            verified_files: 2,
-            verified_bytes: 12,
-            current_relative_path: "new.txt".into(),
-        });
+        // Phase `native_non_utf8_grants_round_trip_losslessly`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
 
-        assert_eq!(operation.state(), OperationState::Running);
-        assert_eq!(operation.verified_file_count(), 2);
-        assert_eq!(operation.verified_bytes(), 12);
-        assert_eq!(
-            operation.current_relative_path().unwrap(),
-            Some("new.txt".into())
-        );
-        assert!(operation.issues().unwrap().is_empty());
-        assert!(operation.metadata_limitations().is_empty());
-    }
+            let (temp, store, _job) = fixture();
+            let base = temp.path().canonicalize().unwrap();
+            let source = base.join(std::ffi::OsString::from_vec(vec![b's', 0xff]));
+            let job = MigrationJob::fresh(
+                "native",
+                source.clone(),
+                base.join("destination-parent/native"),
+                store.root().join("native.journal"),
+            )
+            .unwrap();
+            store.save(&[OperationRecord::new(&job)]).unwrap();
 
-    #[cfg(unix)]
-    #[test]
-    fn native_non_utf8_grants_round_trip_losslessly() {
-        use std::os::unix::ffi::OsStringExt;
+            assert_eq!(store.load().unwrap()[0].source().unwrap(), source);
+        }
 
-        let (temp, store, _job) = fixture();
-        let base = temp.path().canonicalize().unwrap();
-        let source = base.join(std::ffi::OsString::from_vec(vec![b's', 0xff]));
-        let job = MigrationJob::fresh(
-            "native",
-            source.clone(),
-            base.join("destination-parent/native"),
-            store.root().join("native.journal"),
-        )
-        .unwrap();
-        store.save(&[OperationRecord::new(&job)]).unwrap();
+        // Phase `creating_private_state_does_not_chmod_existing_parent`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-        assert_eq!(store.load().unwrap()[0].source().unwrap(), source);
-    }
+            let temp = tempfile::tempdir().unwrap();
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o751)).unwrap();
+            let before = fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777;
+            let parent = temp.path().canonicalize().unwrap();
+            let store = MigrationStore::open_at(&parent.join("migration-state")).unwrap();
+            let after = fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777;
 
-    #[cfg(unix)]
-    #[test]
-    fn creating_private_state_does_not_chmod_existing_parent() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o751)).unwrap();
-        let before = fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777;
-        let parent = temp.path().canonicalize().unwrap();
-        let store = MigrationStore::open_at(&parent.join("migration-state")).unwrap();
-        let after = fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777;
-
-        assert_eq!(before, after);
-        assert_eq!(
-            fs::metadata(store.root()).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+            assert_eq!(before, after);
+            assert_eq!(
+                fs::metadata(store.root()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
     }
 }

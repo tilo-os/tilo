@@ -2,8 +2,8 @@
 # Run workspace tests locally the way CI runs them.
 #
 #   scripts/test-local.sh                            # every workspace test but the goldens
-#   scripts/test-local.sh -p fs -p tilo-ui           # selected packages
-#   scripts/test-local.sh -p fs -- checked_restore   # ... and only matching tests
+#   scripts/test-local.sh -p tilo-fs -p tilo-ui           # selected packages
+#   scripts/test-local.sh -p tilo-fs -- checked_restore   # ... and only matching tests
 #   scripts/test-local.sh --goldens                  # only the visual goldens
 #
 # Arguments before `--` select what to build (packages, features); arguments
@@ -17,7 +17,7 @@
 #
 # Compilation runs first, in your own environment, so a compiler cache, a
 # build container or a remote builder keeps working
-# (CARGO=rcargo scripts/test-local.sh -p fs). The test run then reuses those
+# (CARGO=my-cargo scripts/test-local.sh -p tilo-fs). The test run then reuses those
 # binaries through nextest's build metadata and never invokes Cargo.
 set -euo pipefail
 

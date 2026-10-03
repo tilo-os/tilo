@@ -151,6 +151,12 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
                 opts.ephemeral = true;
                 i = i.saturating_add(1);
             }
+            "--user-home" => {
+                // The supervisor passes this for a terminal session. It is not
+                // implied by the environment, so a package shell stays isolated.
+                opts.user_home = true;
+                i = i.saturating_add(1);
+            }
             "--base" => {
                 opts.base = PathBuf::from(
                     args.get(i.saturating_add(1))
@@ -210,10 +216,8 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })),
-        PathBuf::from,
-    );
+    let runtime = xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
     runtime.join("tilo/services/ush.sock")
 }
 
@@ -942,62 +946,74 @@ explain when the host does not offer them.\n";
         }
 
         #[test]
-        fn management_aliases_and_read_only_operations_are_typed() {
-            assert_eq!(
-                management_request("app", &argv(&["u", "browser"])).unwrap(),
-                Request::AppUpdate {
-                    package: Some("browser".into())
-                }
-            );
-            assert_eq!(
-                management_request("tilo", &argv(&["app", "u", "browser"])).unwrap(),
-                Request::AppUpdate {
-                    package: Some("browser".into())
-                }
-            );
-            assert_eq!(
-                management_request("store", &argv(&["repo", "list"])).unwrap(),
-                Request::AppRepoList
-            );
-            assert_eq!(
-                management_request("app", &argv(&["list", "--json"])).unwrap(),
-                Request::AppList { json: true }
-            );
-            assert_eq!(
-                management_request("app", &argv(&["search", "browser"])).unwrap(),
-                Request::AppSearch {
-                    query: "browser".into()
-                }
-            );
+        fn management_commands_parse_into_typed_requests() {
+            // Aliases and read-only operations are typed.
+            let cases = [
+                (
+                    "app",
+                    argv(&["u", "browser"]),
+                    Request::AppUpdate {
+                        package: Some("browser".into()),
+                    },
+                ),
+                (
+                    "tilo",
+                    argv(&["app", "u", "browser"]),
+                    Request::AppUpdate {
+                        package: Some("browser".into()),
+                    },
+                ),
+                ("store", argv(&["repo", "list"]), Request::AppRepoList),
+                (
+                    "app",
+                    argv(&["list", "--json"]),
+                    Request::AppList { json: true },
+                ),
+                (
+                    "app",
+                    argv(&["search", "browser"]),
+                    Request::AppSearch {
+                        query: "browser".into(),
+                    },
+                ),
+            ];
+            for (program, args, want) in cases {
+                assert_eq!(
+                    management_request(program, &args).unwrap(),
+                    want,
+                    "case {program} {args:?}"
+                );
+            }
+
+            // System updates accept both yes spellings and require confirmation otherwise.
+            for flag in ["--yes", "-y"] {
+                let request = management_request("system", &argv(&["update", flag])).unwrap();
+                assert_eq!(request, Request::SystemUpdate, "case {flag}");
+                assert!(requires_confirmation(&request), "case {flag}");
+                assert!(has_yes(&argv(&["update", flag])), "case {flag}");
+            }
+            let request = management_request("tilo", &argv(&["update"])).unwrap();
+            assert_eq!(request, Request::AllUpdates);
+            assert!(requires_confirmation(&request));
+            assert!(!has_yes(&argv(&["update"])));
         }
 
         #[test]
-        fn management_help_is_available_without_broker_round_trips() {
-            assert!(
-                management_help("tilo", &[])
-                    .unwrap()
-                    .contains("tilo update")
-            );
-            assert!(
-                management_help("tilo", &argv(&["app", "--help"]))
-                    .unwrap()
-                    .contains("app u browser")
-            );
-            assert!(
-                management_help("store", &argv(&["repo", "--help"]))
-                    .unwrap()
-                    .contains("app repo list")
-            );
-            assert!(
-                management_help("system", &argv(&["update", "-h"]))
-                    .unwrap()
-                    .contains("system update")
-            );
+        fn help_and_confirmation_text_need_no_broker_round_trip() {
+            for (program, args, want) in [
+                ("tilo", argv(&[]), "tilo update"),
+                ("tilo", argv(&["app", "--help"]), "app u browser"),
+                ("store", argv(&["repo", "--help"]), "app repo list"),
+                ("system", argv(&["update", "-h"]), "system update"),
+            ] {
+                assert!(
+                    management_help(program, &args).unwrap().contains(want),
+                    "case {program} {args:?}"
+                );
+            }
             assert!(management_help("app", &argv(&["u", "browser"])).is_none());
-        }
 
-        #[test]
-        fn confirmation_names_the_state_that_will_change() {
+            // Confirmation names the state that will change.
             assert_eq!(
                 confirmation_prompt(&Request::AllUpdates),
                 "Update installed apps and every available system provider?"
@@ -1009,56 +1025,44 @@ explain when the host does not offer them.\n";
         }
 
         #[test]
-        fn system_updates_accept_both_yes_spellings_and_require_confirmation_otherwise() {
-            for flag in ["--yes", "-y"] {
-                let request = management_request("system", &argv(&["update", flag])).unwrap();
-                assert_eq!(request, Request::SystemUpdate);
-                assert!(requires_confirmation(&request));
-                assert!(has_yes(&argv(&["update", flag])));
+        fn management_parser_rejects_extra_arguments_and_unsupported_mutations() {
+            // phase: management_parser_rejects_ignored_extra_arguments
+            {
+                for (program, args) in [
+                    ("app", argv(&["list", "--json", "extra"])),
+                    ("system", argv(&["status", "--json", "extra"])),
+                    ("system", argv(&["update", "--yes", "extra"])),
+                    ("tilo", argv(&["update", "unexpected"])),
+                    ("tilo", argv(&["status", "--yes"])),
+                ] {
+                    assert!(
+                        management_request(program, &args).is_err(),
+                        "{program} {args:?} must not silently discard arguments"
+                    );
+                }
             }
-            let request = management_request("tilo", &argv(&["update"])).unwrap();
-            assert_eq!(request, Request::AllUpdates);
-            assert!(requires_confirmation(&request));
-            assert!(!has_yes(&argv(&["update"])));
-        }
+            // phase: unsupported_mutations_never_become_broker_requests
+            {
+                for args in [
+                    argv(&["install", "browser"]),
+                    argv(&["remove", "browser"]),
+                    argv(&["rollback"]),
+                    argv(&["boot", "old-image"]),
+                ] {
+                    assert!(management_request("tilo", &args).is_err());
+                }
 
-        #[test]
-        fn management_parser_rejects_ignored_extra_arguments() {
-            for (program, args) in [
-                ("app", argv(&["list", "--json", "extra"])),
-                ("system", argv(&["status", "--json", "extra"])),
-                ("system", argv(&["update", "--yes", "extra"])),
-                ("tilo", argv(&["update", "unexpected"])),
-                ("tilo", argv(&["status", "--yes"])),
-            ] {
-                assert!(
-                    management_request(program, &args).is_err(),
-                    "{program} {args:?} must not silently discard arguments"
-                );
+                let error = management_request("app", &argv(&["install", "browser"]))
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("`app install browser`"));
+                assert!(error.contains("app --help"));
+
+                let typo = management_request("app", &argv(&["udpate", "browser"]))
+                    .unwrap_err()
+                    .to_string();
+                assert!(typo.contains("did you mean `app update`?"), "{typo}");
             }
-        }
-
-        #[test]
-        fn unsupported_mutations_never_become_broker_requests() {
-            for args in [
-                argv(&["install", "browser"]),
-                argv(&["remove", "browser"]),
-                argv(&["rollback"]),
-                argv(&["boot", "old-image"]),
-            ] {
-                assert!(management_request("tilo", &args).is_err());
-            }
-
-            let error = management_request("app", &argv(&["install", "browser"]))
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("`app install browser`"));
-            assert!(error.contains("app --help"));
-
-            let typo = management_request("app", &argv(&["udpate", "browser"]))
-                .unwrap_err()
-                .to_string();
-            assert!(typo.contains("did you mean `app update`?"), "{typo}");
         }
     }
 }

@@ -210,14 +210,16 @@ impl<W: Widget> Harness<W> {
         let mut focus: Option<NodeId> = None;
         self.app.handle_event(
             event,
-            1.0,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            self.child,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.child,
+                taffy: &self.taffy,
+            },
         );
         if focus.is_some() {
             self.last_focus = focus;
@@ -229,8 +231,8 @@ impl<W: Widget> Harness<W> {
     /// event. Stopping after the leaf emits an invocation makes a working
     /// effect control look inert in this integration harness.
     fn dispatch_control_invocations(&mut self) {
-        while let Some(intent) = self.app.take_control_invocation() {
-            let resources = self.app.resources(&self.state.doc);
+        while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
+            let resources = ui::resources::resources(&self.app, &self.state.doc);
             let spec = tilo_actions::door::resolve(&resources, &intent.address)
                 .expect("action-bound test control must resolve in the current resource tree");
             assert!(
@@ -244,12 +246,14 @@ impl<W: Widget> Harness<W> {
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("bound control arguments must satisfy their contract");
             self.app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &self.state.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut self.state.doc,
                     &self.state.root,
                 )
                 .expect("bound resource operation must not fail")

@@ -150,7 +150,7 @@ impl ShellBackgroundService {
 
     pub fn at_path(dialogs: PortalDialogQueue, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = atomic_file::json::load_or_default(&path);
+        let state = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             dialogs,
             state: Arc::new(Mutex::new(state)),
@@ -204,7 +204,7 @@ impl ShellBackgroundService {
     }
 
     fn commit(&self, state: &AutostartFile) -> PortalResult<()> {
-        match atomic_file::json::write_private(&self.path, state) {
+        match tilo_files::native::atomic::json::write_private(&self.path, state) {
             Ok(()) => PortalResult::Success(()),
             Err(error) => PortalResult::Failed(format!("cannot commit background state: {error}")),
         }
@@ -220,10 +220,10 @@ impl BackgroundService for ShellBackgroundService {
         let review = ReviewRequest {
             handle: format!("{}:background", request.handle),
             app_id: request.app_id,
-            title: "Allow background activity?".into(),
+            title: crate::shell::i18n::t("portal-background-title"),
             reason: request.name,
-            resource: "The app may keep working after its window is closed.".into(),
-            confirm_label: "Allow in background".into(),
+            resource: crate::shell::i18n::t("portal-background-resource"),
+            confirm_label: crate::shell::i18n::t("portal-background-confirm"),
         };
         let receiver = match self.dialogs.enqueue_review(review) {
             Ok(receiver) => receiver,
@@ -262,7 +262,7 @@ impl BackgroundService for ShellBackgroundService {
             PortalResult::Cancelled => PortalResult::Cancelled,
             PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
             PortalResult::Failed(error) => {
-                *state = atomic_file::json::load_or_default(&self.path);
+                *state = tilo_files::native::atomic::json::load_or_default(&self.path);
                 PortalResult::Failed(error)
             }
         }
@@ -648,81 +648,88 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn state_is_bounded_and_values_are_validated() {
-        let backend = BackgroundBackend {
-            #[cfg(target_os = "linux")]
-            ctx: {
-                let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-                    crate::shell::state::Workspace::new(
-                        crate::shell::state::WorkspaceId(1),
-                        "test",
-                    ),
-                );
-                PortalContext::new_with_null_spawners(
-                    grants,
-                    crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-                    crate::portal::CallerMap::new(),
-                )
-            },
-            apps: Arc::new(Mutex::new(HashMap::new())),
-            service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
-            lifecycle: PortalLifecycle::new(),
-        };
-        assert!(backend.set_app_state("org.example.App", ACTIVE));
-        assert_eq!(backend.app_state("org.example.App"), Some(ACTIVE));
-        assert!(!backend.set_app_state("org.example.Bad", 3));
-        assert!(!valid_commandline(&vec!["bad\nargv".into()]));
+    fn background_state_is_validated_and_denials_are_not_grants() {
+        // Phase `state_is_bounded_and_values_are_validated`.
+        {
+            let backend = BackgroundBackend {
+                #[cfg(target_os = "linux")]
+                ctx: {
+                    let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
+                        crate::shell::state::Workspace::new(
+                            crate::shell::state::WorkspaceId(1),
+                            "test",
+                        ),
+                    );
+                    PortalContext::new_with_null_spawners(
+                        grants,
+                        crate::portal::PromptQueueHandle::new(
+                            crate::portal::PromptResolver::AutoDeny,
+                        ),
+                        crate::portal::CallerMap::new(),
+                    )
+                },
+                apps: Arc::new(Mutex::new(HashMap::new())),
+                service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
+                lifecycle: PortalLifecycle::new(),
+            };
+            assert!(backend.set_app_state("org.example.App", ACTIVE));
+            assert_eq!(backend.app_state("org.example.App"), Some(ACTIVE));
+            assert!(!backend.set_app_state("org.example.Bad", 3));
+            assert!(!valid_commandline(&vec!["bad\nargv".into()]));
+        }
+        // Phase `denial_result_is_not_a_fabricated_grant`.
+        {
+            let response = response_with_result(false);
+            assert_eq!(response.0, 0);
+            assert_eq!(
+                response
+                    .1
+                    .get("result")
+                    .and_then(|value| value.try_clone().ok())
+                    .and_then(|value| u32::try_from(value).ok()),
+                Some(0)
+            );
+        }
     }
 
     #[test]
-    fn denial_result_is_not_a_fabricated_grant() {
-        let response = response_with_result(false);
-        assert_eq!(response.0, 0);
-        assert_eq!(
-            response
-                .1
-                .get("result")
-                .and_then(|value| value.try_clone().ok())
-                .and_then(|value| u32::try_from(value).ok()),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn autostart_state_is_private_and_contains_package_ids_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        let service = ShellBackgroundService::at_path(PortalDialogQueue::default(), &path);
-        let file = AutostartFile {
-            packages: BTreeSet::from(["org.example.App".into()]),
-        };
-        assert!(matches!(service.commit(&file), PortalResult::Success(())));
-        assert_eq!(
-            ShellBackgroundService::at_path(PortalDialogQueue::default(), &path).enabled_packages(),
-            vec!["org.example.App"]
-        );
-        assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn session_start_chooses_only_the_active_workspace() {
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
-        let active = tree.desktop.active_workspace().unwrap().id;
-        // A second workspace models a restored multi-workspace session.
-        let second = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(active.0 + 100),
-            "other",
-        );
-        tree.desktop.workspaces.push(second);
-        let shared = tree.shared();
-        let chosen = shared
-            .read()
-            .desktop
-            .active_workspace()
-            .map(|workspace| workspace.id);
-        assert_eq!(chosen, Some(active));
+    fn autostart_is_private_package_scoped_and_workspace_bound() {
+        // Phase `autostart_state_is_private_and_contains_package_ids_only`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            let service = ShellBackgroundService::at_path(PortalDialogQueue::default(), &path);
+            let file = AutostartFile {
+                packages: BTreeSet::from(["org.example.App".into()]),
+            };
+            assert!(matches!(service.commit(&file), PortalResult::Success(())));
+            assert_eq!(
+                ShellBackgroundService::at_path(PortalDialogQueue::default(), &path)
+                    .enabled_packages(),
+                vec!["org.example.App"]
+            );
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // Phase `session_start_chooses_only_the_active_workspace`.
+        {
+            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+            let active = tree.desktop.active_workspace().unwrap().id;
+            // A second workspace models a restored multi-workspace session.
+            let second = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(active.0 + 100),
+                "other",
+            );
+            tree.desktop.workspaces.push(second);
+            let shared = tree.shared();
+            let chosen = shared
+                .read()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.id);
+            assert_eq!(chosen, Some(active));
+        }
     }
 }

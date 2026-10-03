@@ -133,6 +133,18 @@ fn default_priority() -> i32 {
     0
 }
 
+/// Local recovery contract for an admitted checkpoint publisher. This is
+/// intentionally absent from persisted configuration and wire protocols.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckpointPrefixRecovery {
+    /// Generic SDK/browser/relay publishers have no automatic resend promise.
+    #[default]
+    Disabled,
+    /// The native session owner republishes its complete durable baseline on
+    /// every new Ready session after an uncertain send.
+    NativeOwnerDurableBaseline,
+}
+
 /// A single workspace this relay is bound to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +171,14 @@ pub struct WorkspaceBinding {
     /// room-scoped rather than a relay-wide collaborator union.
     #[serde(default)]
     pub admitted_users: Vec<String>,
+    /// Local shell governor pin supplied by the native owner. Neither workspace
+    /// membership nor a same-user relay identity implies this authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_authority: Option<crate::retention::RetentionAuthority>,
+    /// Programmatic host capability. Persisted/admin configuration cannot opt
+    /// into checkpoint-prefix recovery semantics.
+    #[serde(skip)]
+    pub checkpoint_prefix_recovery: CheckpointPrefixRecovery,
 }
 
 mod workspace_id_serde {
@@ -305,6 +325,8 @@ impl RelayConfig {
             pin,
             replication: default_server_replication(),
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
         });
         true
     }
@@ -341,8 +363,13 @@ impl RelayConfig {
 mod tests {
     use super::*;
 
+    /// The two paths every hand-written config starts with.
+    const PRELUDE: &str =
+        "identity_root = \"/var/lib/tilo\"\nstate_root = \"/var/lib/tilo-relay\"\n";
+
     #[test]
-    fn defaults_are_usable() {
+    fn relay_config_defaults_and_toml_decoding() {
+        // Defaults are usable as-is.
         let cfg = RelayConfig::default();
         assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
@@ -355,105 +382,126 @@ mod tests {
         assert!(cfg.services.remote_control_relay);
         assert!(!cfg.services.app_serving);
         assert!(!cfg.services.compute);
-    }
 
-    #[test]
-    fn round_trip_via_disk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("relay.toml");
-        let mut cfg = RelayConfig::default();
-        cfg.add_workspace(7, true);
-        cfg.add_workspace(9, false);
-        cfg.save(&path).unwrap();
-        let back = RelayConfig::load(&path).unwrap();
-        assert_eq!(cfg, back);
-    }
+        // A minimal file names only the two roots.
+        let cfg: RelayConfig = toml::from_str(PRELUDE).unwrap();
+        assert_eq!(cfg.workspaces.len(), 0);
 
-    #[test]
-    fn workspace_ids_round_trip_above_toml_integer_range_and_parse_legacy_integers() {
+        // Peer relays parse, with priority defaulting to 0.
+        let cfg: RelayConfig = toml::from_str(&format!(
+            "{PRELUDE}\n[[peer_relays]]\niroh_node_id = \"aa\"\nlabel = \"west\"\npriority = 100\n\n\
+             [[peer_relays]]\niroh_node_id = \"bb\"\nlabel = \"east\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.peer_relays.len(), 2);
+        assert_eq!(cfg.peer_relays[0].label, "west");
+        assert_eq!(cfg.peer_relays[0].priority, 100);
+        assert_eq!(cfg.peer_relays[1].priority, 0);
+
+        // An unknown field is rejected rather than ignored.
+        assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
+
+        // Workspace ids above TOML's integer range round-trip as strings, and
+        // legacy integer ids still parse.
         let high = (i64::MAX as u64) + 42;
         let binding = WorkspaceBinding {
             id: high,
             pin: true,
             replication: ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
         };
         let text = toml::to_string(&binding).unwrap();
         assert!(text.contains(&format!("id = \"{high}\"")));
         assert_eq!(toml::from_str::<WorkspaceBinding>(&text).unwrap().id, high);
-
         let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
         assert_eq!(legacy.id, 42);
     }
 
     #[test]
-    fn parses_minimal_toml() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-        "#;
-        let cfg: RelayConfig = toml::from_str(text).unwrap();
-        assert_eq!(cfg.workspaces.len(), 0);
+    fn shell_authority_config_accepts_exact_local_binding() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tilo-relay/tests/fixtures/shell-proof/failure.json"
+        ))
+        .unwrap();
+        let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
+        let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
+        assert_eq!(
+            toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),
+            binding
+        );
+        assert_eq!(
+            binding.checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
+        );
+        let encoded = toml::to_string(&binding).unwrap();
+        assert!(!encoded.contains("checkpoint_prefix_recovery"));
+        assert!(
+            toml::from_str::<WorkspaceBinding>(
+                "id = 42\ncheckpoint_prefix_recovery = \"NativeOwnerDurableBaseline\""
+            )
+            .is_err(),
+            "persisted configuration cannot opt into a process recovery contract"
+        );
+        assert!(
+            serde_json::from_value::<WorkspaceBinding>(serde_json::json!({"id": "42"}))
+                .unwrap()
+                .shell_authority
+                .is_none()
+        );
     }
 
     #[test]
-    fn add_workspace_idempotent() {
+    fn checkpoint_prefix_recovery_is_runtime_only_when_serializing_toml_and_json() {
+        let mut binding: WorkspaceBinding =
+            serde_json::from_value(serde_json::json!({"id": "42"})).unwrap();
+        binding.checkpoint_prefix_recovery = CheckpointPrefixRecovery::NativeOwnerDurableBaseline;
+
+        let toml_text = toml::to_string(&binding).unwrap();
+        assert!(!toml_text.contains("checkpoint_prefix_recovery"));
+        assert_eq!(
+            toml::from_str::<WorkspaceBinding>(&toml_text)
+                .unwrap()
+                .checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
+        );
+
+        let json_value = serde_json::to_value(&binding).unwrap();
+        assert!(json_value.get("checkpoint_prefix_recovery").is_none());
+        assert_eq!(
+            serde_json::from_value::<WorkspaceBinding>(json_value)
+                .unwrap()
+                .checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
+        );
+    }
+
+    #[test]
+    fn relay_config_edits_are_idempotent_and_persist() {
         let mut cfg = RelayConfig::default();
         assert!(cfg.add_workspace(1, true));
-        assert!(!cfg.add_workspace(1, true));
+        assert!(!cfg.add_workspace(1, true), "adding twice is a no-op");
         assert_eq!(cfg.workspaces.len(), 1);
         assert_eq!(
             cfg.workspaces[0].replication,
             ReplicationIntent::WorkspaceOnly
         );
-    }
-
-    #[test]
-    fn remove_workspace() {
-        let mut cfg = RelayConfig::default();
-        cfg.add_workspace(1, true);
         assert!(cfg.remove_workspace(1));
-        assert!(!cfg.remove_workspace(1));
-    }
+        assert!(!cfg.remove_workspace(1), "removing twice is a no-op");
 
-    #[test]
-    fn parses_peer_relays_toml() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-
-            [[peer_relays]]
-            iroh_node_id = "aa"
-            label = "west"
-            priority = 100
-
-            [[peer_relays]]
-            iroh_node_id = "bb"
-            label = "east"
-        "#;
-        let cfg: RelayConfig = toml::from_str(text).unwrap();
-        assert_eq!(cfg.peer_relays.len(), 2);
-        assert_eq!(cfg.peer_relays[0].label, "west");
-        assert_eq!(cfg.peer_relays[0].priority, 100);
-        // Default priority for the second entry.
-        assert_eq!(cfg.peer_relays[1].priority, 0);
-    }
-
-    #[test]
-    fn add_peer_relay_dedups_by_node_id() {
-        let mut cfg = RelayConfig::default();
+        // Peer relays dedup by node id, case-insensitively.
         assert!(cfg.add_peer_relay("ABCD", "a", 1));
         assert!(!cfg.add_peer_relay("abcd", "again", 2));
         assert_eq!(cfg.peer_relays.len(), 1);
-    }
 
-    #[test]
-    fn unknown_field_rejected() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-            surprise = 3
-        "#;
-        assert!(toml::from_str::<RelayConfig>(text).is_err());
+        // Save + load is lossless.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("relay.toml");
+        let mut cfg = RelayConfig::default();
+        cfg.add_workspace(7, true);
+        cfg.add_workspace(9, false);
+        cfg.save(&path).unwrap();
+        assert_eq!(cfg, RelayConfig::load(&path).unwrap());
     }
 }

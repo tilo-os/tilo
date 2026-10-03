@@ -363,6 +363,7 @@ mod tests {
             author: "u".into(),
             ts: id as i64,
             text: text.into(),
+            body: Vec::new(),
             edited: false,
             history: Vec::new(),
             parent: None,
@@ -384,242 +385,263 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_uses_a_canonical_address() {
-        let (app, _) = seeded();
-        let providers = app.search_providers();
-        let provider = &providers[0];
-        assert!(
-            provider
-                .search("")
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn search_hits_carry_canonical_addresses_that_resolve_navigate_and_refuse_stale() {
+        // Phase: every_kind_uses_a_canonical_address.
+        {
+            let (app, _) = seeded();
+            let providers = ui::search::capability::search_providers(&app);
+            let provider = &providers[0];
+            assert!(
+                provider
+                    .search("")
+                    .iter()
+                    .all(|hit| hit.action_address().is_some())
+            );
+            let message = app
+                .search_messages
                 .iter()
-                .all(|hit| hit.action_address().is_some())
-        );
-        let message = app
-            .search_messages
-            .iter()
-            .find(|message| !message.text.is_empty())
-            .unwrap();
-        assert!(
-            provider
-                .search(&message.text)
-                .iter()
-                .any(|hit| hit.kind == MESSAGE_KIND && hit.action_address().is_some())
-        );
-        let person = app.search_users.first().unwrap();
-        assert!(
-            provider
-                .search(&person.name)
-                .iter()
-                .any(|hit| hit.kind == PERSON_KIND && hit.action_address().is_some())
-        );
-    }
-
-    #[test]
-    fn every_search_kind_resolves_its_canonical_open_resource() {
-        let (app, _) = seeded();
-        let providers = app.search_providers();
-        let provider = &providers[0];
-        for kind in [
-            WORKSPACE_KIND,
-            CHANNEL_KIND,
-            CATEGORY_KIND,
-            PERSON_KIND,
-            MESSAGE_KIND,
-        ] {
-            let hit = provider
+                .find(|message| !message.text.is_empty())
+                .unwrap();
+            assert!(
+                provider
+                    .search(&message.text)
+                    .iter()
+                    .any(|hit| hit.kind == MESSAGE_KIND && hit.action_address().is_some())
+            );
+            let person = app.search_users.first().unwrap();
+            assert!(
+                provider
+                    .search(&person.name)
+                    .iter()
+                    .any(|hit| hit.kind == PERSON_KIND && hit.action_address().is_some())
+            );
+        }
+        // Phase: every_search_kind_resolves_its_canonical_open_resource.
+        {
+            let (app, _) = seeded();
+            let providers = ui::search::capability::search_providers(&app);
+            let provider = &providers[0];
+            for kind in [
+                WORKSPACE_KIND,
+                CHANNEL_KIND,
+                CATEGORY_KIND,
+                PERSON_KIND,
+                MESSAGE_KIND,
+            ] {
+                let hit = provider
+                    .search("")
+                    .into_iter()
+                    .find(|hit| hit.kind == kind)
+                    .unwrap_or_else(|| panic!("missing search result kind {kind}"));
+                let address = hit.action_address().expect("canonical action address");
+                let resource = provider
+                    .resolve_action_resource(&address)
+                    .unwrap_or_else(|| panic!("{kind} did not resolve lazily"));
+                assert_eq!(resource.id.as_str(), address.resource);
+                assert!(resource.actions.iter().any(|action| action.id == "open"));
+            }
+        }
+        // Phase: limited_search_honours_the_materialisation_budget.
+        {
+            let (app, _) = seeded();
+            let providers = ui::search::capability::search_providers(&app);
+            let provider = &providers[0];
+            assert_eq!(provider.search_limited("", 1).len(), 1);
+            assert!(provider.search_limited("", 0).is_empty());
+        }
+        // Phase: search_addresses_resolve_and_navigate_exactly.
+        {
+            let (mut app, mut doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let providers = ui::search::capability::search_providers(&app);
+            let provider = &providers[0];
+            let channel_hit = provider
                 .search("")
                 .into_iter()
-                .find(|hit| hit.kind == kind)
-                .unwrap_or_else(|| panic!("missing search result kind {kind}"));
-            let address = hit.action_address().expect("canonical action address");
-            let resource = provider
-                .resolve_action_resource(&address)
-                .unwrap_or_else(|| panic!("{kind} did not resolve lazily"));
-            assert_eq!(resource.id.as_str(), address.resource);
-            assert!(resource.actions.iter().any(|action| action.id == "open"));
-        }
-    }
-
-    #[test]
-    fn limited_search_honours_the_materialisation_budget() {
-        let (app, _) = seeded();
-        let providers = app.search_providers();
-        let provider = &providers[0];
-        assert_eq!(provider.search_limited("", 1).len(), 1);
-        assert!(provider.search_limited("", 0).is_empty());
-    }
-
-    #[test]
-    fn search_addresses_resolve_and_navigate_exactly() {
-        let (mut app, doc) = seeded();
-        let resources = app.resources(&doc);
-        let providers = app.search_providers();
-        let provider = &providers[0];
-        let channel_hit = provider
-            .search("")
-            .into_iter()
-            .find(|hit| hit.title == "#frontend")
-            .expect("frontend");
-        let address = channel_hit.action_address().unwrap();
-        let encoded = tilo_actions::door::encode(&resources, &address, None)
-            .expect("exported channel action");
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &ROOT,
-        )
-        .unwrap();
-        assert_eq!(
-            app.active_channel,
-            address.resource.trim_start_matches("chat.channel:")
-        );
-
-        let message = app
-            .search_messages
-            .iter()
-            .find(|message| !message.text.is_empty())
-            .cloned()
-            .unwrap();
-        let message_hit = provider
-            .search(&message.text)
-            .into_iter()
-            .find(|hit| {
-                hit.action_address()
-                    .is_some_and(|a| a.resource == format!("chat.message:{}", message.id))
-            })
-            .unwrap();
-        let message_address = message_hit.action_address().unwrap();
-        let message_resource = provider
-            .resolve_action_resource(&message_address)
-            .expect("message resolves lazily");
-        let encoded = tilo_actions::door::encode(&[message_resource], &message_address, None)
-            .expect("exported message action");
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &ROOT,
-        )
-        .unwrap();
-        assert_eq!(app.active_channel, message.channel);
-        assert_eq!(app.revealed_message.as_deref(), Some(message.id.as_str()));
-        assert_eq!(app.thread_open, message.parent);
-
-        let person = app.search_users.first().cloned().unwrap();
-        let person_hit = provider
-            .search(&person.name)
-            .into_iter()
-            .find(|hit| hit.kind == PERSON_KIND)
-            .unwrap();
-        let encoded =
-            tilo_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)
-                .expect("exported person action");
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &ROOT,
-        )
-        .unwrap();
-        assert_eq!(app.revealed_person.as_deref(), Some(person.id.as_str()));
-        assert!(app.right_flap_open());
-    }
-
-    #[test]
-    fn unicode_late_message_remains_findable_in_a_large_history() {
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let messages = corpus
-                    .map(|row| {
-                        let text = if row.is_target {
-                            format!("{} late ÄTHER-needle 🧪", row.text)
-                        } else {
-                            row.text
-                        };
-                        message(row.index, text)
-                    })
-                    .collect::<Vec<_>>();
-                ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()])
-            },
-            3_000,
-        );
-        assert_eq!(
-            hit.action_address(),
-            Some(ActionAddress::new("chat.message:m_002999", "open"))
-        );
-
-        let page = provider.search_page("äther-needle 🧪", None, 8, 8);
-        assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
-        assert_eq!(page.results, vec![hit]);
-    }
-
-    #[test]
-    fn adversarial_message_search_pages_bound_work_and_materialization() {
-        let mut messages = (0..1_000)
-            .map(|index| message(index, "abcXbcd"))
-            .collect::<Vec<_>>();
-        messages.push(message(1_000, "the exact abcd message"));
-        let provider =
-            ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
-
-        let mut cursor = None;
-        let mut results = Vec::new();
-        loop {
-            let page = provider.search_page("abcd", cursor.as_ref(), 31, 4);
-            assert!(page.inspected <= 31);
-            assert!(page.results.len() <= 4);
-            assert!(
-                page.results
-                    .iter()
-                    .all(|result| result.action_address().is_some())
-            );
-            results.extend(page.results);
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
-        }
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title, "the exact abcd message");
-    }
-
-    #[test]
-    fn stale_search_resource_is_refused_at_activation() {
-        let (mut app, mut doc) = seeded();
-        let message = app
-            .search_messages
-            .iter()
-            .find(|message| !message.text.is_empty())
-            .cloned()
-            .unwrap();
-        let mut providers = app.search_providers();
-        let provider = providers.pop().unwrap();
-        let hit = provider
-            .search(&message.text)
-            .into_iter()
-            .find(|hit| {
-                hit.action_address().is_some_and(|address| {
-                    address.resource == format!("chat.message:{}", message.id)
-                })
-            })
-            .unwrap();
-        let address = hit.action_address().unwrap();
-        let stale = provider.resolve_action_resource(&address).unwrap();
-        let encoded = tilo_actions::door::encode(&[stale], &address, None).unwrap();
-        crate::doc::ChatDoc::delete_message(&mut doc, &message.channel, &message.id);
-        app.reload(&doc);
-
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+                .find(|hit| hit.title == "#frontend")
+                .expect("frontend");
+            let address = channel_hit.action_address().unwrap();
+            let encoded = tilo_actions::door::encode(&resources, &address, None)
+                .expect("exported channel action");
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
-            .is_err()
-        );
+            .map(|started| started.is_some())
+            .unwrap();
+            assert_eq!(
+                app.active_channel,
+                address.resource.trim_start_matches("chat.channel:")
+            );
+
+            let message = app
+                .search_messages
+                .iter()
+                .find(|message| !message.text.is_empty())
+                .cloned()
+                .unwrap();
+            let message_hit = provider
+                .search(&message.text)
+                .into_iter()
+                .find(|hit| {
+                    hit.action_address()
+                        .is_some_and(|a| a.resource == format!("chat.message:{}", message.id))
+                })
+                .unwrap();
+            let message_address = message_hit.action_address().unwrap();
+            let message_resource = provider
+                .resolve_action_resource(&message_address)
+                .expect("message resolves lazily");
+            let encoded = tilo_actions::door::encode(&[message_resource], &message_address, None)
+                .expect("exported message action");
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &ROOT,
+            )
+            .map(|started| started.is_some())
+            .unwrap();
+            assert_eq!(app.active_channel, message.channel);
+            assert_eq!(app.revealed_message.as_deref(), Some(message.id.as_str()));
+            assert_eq!(app.thread_open, message.parent);
+
+            let person = app.search_users.first().cloned().unwrap();
+            let person_hit = provider
+                .search(&person.name)
+                .into_iter()
+                .find(|hit| hit.kind == PERSON_KIND)
+                .unwrap();
+            let encoded =
+                tilo_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)
+                    .expect("exported person action");
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &ROOT,
+            )
+            .map(|started| started.is_some())
+            .unwrap();
+            assert_eq!(app.revealed_person.as_deref(), Some(person.id.as_str()));
+            assert!(app.right_flap_open());
+        }
+        // Phase: stale_search_resource_is_refused_at_activation.
+        {
+            let (mut app, mut doc) = seeded();
+            let message = app
+                .search_messages
+                .iter()
+                .find(|message| !message.text.is_empty())
+                .cloned()
+                .unwrap();
+            let mut providers = ui::search::capability::search_providers(&app);
+            let provider = providers.pop().unwrap();
+            let hit = provider
+                .search(&message.text)
+                .into_iter()
+                .find(|hit| {
+                    hit.action_address().is_some_and(|address| {
+                        address.resource == format!("chat.message:{}", message.id)
+                    })
+                })
+                .unwrap();
+            let address = hit.action_address().unwrap();
+            let stale = provider.resolve_action_resource(&address).unwrap();
+            let encoded = tilo_actions::door::encode(&[stale], &address, None).unwrap();
+            crate::doc::ChatDoc::delete_message(&mut doc, &message.channel, &message.id);
+            app.reload(&doc);
+
+            assert!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
+                )
+                .map(|started| started.is_some())
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn message_search_pages_bound_work_in_large_histories() {
+        // Phase: unicode_late_message_remains_findable_in_a_large_history.
+        {
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let messages = corpus
+                        .map(|row| {
+                            let text = if row.is_target {
+                                format!("{} late ÄTHER-needle 🧪", row.text)
+                            } else {
+                                row.text
+                            };
+                            message(row.index, text)
+                        })
+                        .collect::<Vec<_>>();
+                    ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()])
+                },
+                3_000,
+            );
+            assert_eq!(
+                hit.action_address(),
+                Some(ActionAddress::new("chat.message:m_002999", "open"))
+            );
+
+            let page = provider.search_page("äther-needle 🧪", None, 8, 8);
+            assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
+            assert_eq!(page.results, vec![hit]);
+        }
+        // Phase: adversarial_message_search_pages_bound_work_and_materialization.
+        {
+            let mut messages = (0..1_000)
+                .map(|index| message(index, "abcXbcd"))
+                .collect::<Vec<_>>();
+            messages.push(message(1_000, "the exact abcd message"));
+            let provider =
+                ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
+
+            let mut cursor = None;
+            let mut results = Vec::new();
+            loop {
+                let page = provider.search_page("abcd", cursor.as_ref(), 31, 4);
+                assert!(page.inspected <= 31);
+                assert!(page.results.len() <= 4);
+                assert!(
+                    page.results
+                        .iter()
+                        .all(|result| result.action_address().is_some())
+                );
+                results.extend(page.results);
+                let Some(next) = page.next else { break };
+                cursor = Some(next);
+            }
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].title, "the exact abcd message");
+        }
     }
 }

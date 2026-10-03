@@ -85,6 +85,11 @@ impl ParamType {
     }
 }
 
+/// Schema annotation naming the kind of resource a [`ParamType::Resource`]
+/// parameter takes; see [`ActionParam::of_resource_kind`]. An annotation,
+/// not an assertion: binding does not check it.
+pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
+
 /// One typed parameter an action declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -187,6 +192,38 @@ impl ActionParam {
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.schema = Some(schema);
         self
+    }
+
+    /// Name the kind of resource this [`ParamType::Resource`] parameter
+    /// takes (e.g. `files.entry`), as the [`RESOURCE_KIND_ANNOTATION`] of its
+    /// schema. Surfaces use it to offer the action on resources of that kind
+    /// and its sub-kinds.
+    #[must_use]
+    pub fn of_resource_kind(mut self, kind: impl Into<String>) -> Self {
+        let mut schema = match self.schema.take() {
+            Some(serde_json::Value::Object(schema)) => schema,
+            _ => serde_json::Map::new(),
+        };
+        schema.insert(
+            RESOURCE_KIND_ANNOTATION.into(),
+            serde_json::Value::String(kind.into()),
+        );
+        self.schema = Some(serde_json::Value::Object(schema));
+        self
+    }
+
+    /// The kind of resource this parameter takes, when it is a resource
+    /// parameter that names one ([`Self::of_resource_kind`]).
+    #[must_use]
+    pub fn resource_kind(&self) -> Option<&str> {
+        if self.ty != ParamType::Resource {
+            return None;
+        }
+        self.schema
+            .as_ref()?
+            .get(RESOURCE_KIND_ANNOTATION)?
+            .as_str()
+            .filter(|kind| !kind.is_empty())
     }
 
     #[must_use]
@@ -736,13 +773,7 @@ pub(crate) fn validate_schema(
         return Err("has a schema that is not an object".into());
     };
     if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
-        let matches = alternatives
-            .iter()
-            .filter(|alternative| validate_schema(value, alternative).is_ok())
-            .count();
-        if matches != 1 {
-            return Err("must match exactly one `oneOf` alternative".into());
-        }
+        validate_one_of(value, alternatives)?;
     }
     validate_schema_type(value, schema)?;
     validate_schema_equality(value, schema)?;
@@ -750,6 +781,114 @@ pub(crate) fn validate_schema(
     validate_schema_string(value, schema)?;
     validate_schema_array(value, schema)?;
     validate_schema_object(value, schema)
+}
+
+/// Exactly one alternative must accept `value`. When none does, the refusal
+/// says why in terms of the alternative the value evidently meant — the one
+/// whose required keys and constants it has (`{"SpliceText": {..}}` meant
+/// the `SpliceText` alternative) — or else names the alternatives, so a
+/// caller can correct the call rather than guess.
+fn validate_one_of(
+    value: &serde_json::Value,
+    alternatives: &[serde_json::Value],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut matched = 0_usize;
+    for alternative in alternatives {
+        match validate_schema(value, alternative) {
+            Ok(()) => matched = matched.saturating_add(1),
+            Err(reason) => failures.push((alternative, reason)),
+        }
+    }
+    match matched {
+        1 => return Ok(()),
+        0 => {}
+        _ => return Err("matches more than one `oneOf` alternative".into()),
+    }
+    let meant: Vec<_> = failures
+        .iter()
+        .filter(|(alternative, _)| selects(value, alternative))
+        .collect();
+    if let [(alternative, reason)] = meant.as_slice() {
+        return Err(match alternative_name(alternative) {
+            Some(name) => format!("as `{name}`: {reason}"),
+            None => reason.clone(),
+        });
+    }
+    let names: Option<Vec<String>> = alternatives.iter().map(alternative_name).collect();
+    Err(match names {
+        Some(names) if !names.is_empty() => format!("must be one of: {}", names.join(", ")),
+        _ => "must match exactly one `oneOf` alternative".into(),
+    })
+}
+
+/// Whether `value` carries what tells `alternative` apart: the values of its
+/// constant or enumerated properties (a tag, or one of several), or else all
+/// of its required keys.
+fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
+    let Some(schema) = alternative.as_object() else {
+        return false;
+    };
+    if let Some(expected) = schema.get("const") {
+        return value == expected;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let tags: Vec<(&String, &serde_json::Value)> = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, property)| property.get("const").is_some() || property.get("enum").is_some())
+        .collect();
+    if !tags.is_empty() {
+        return tags.iter().all(|(key, property)| {
+            object.get(key.as_str()).is_some_and(|given| {
+                property.get("const") == Some(given)
+                    || property
+                        .get("enum")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|names| names.contains(given))
+            })
+        });
+    }
+    let required = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !required.is_empty()
+        && required
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .all(|key| object.contains_key(key))
+}
+
+/// What an alternative is called: its title, its constant, the constant of
+/// its first required property, or its one required key.
+fn alternative_name(alternative: &serde_json::Value) -> Option<String> {
+    let schema = alternative.as_object()?;
+    if let Some(title) = schema.get("title").and_then(serde_json::Value::as_str) {
+        return Some(title.to_owned());
+    }
+    if let Some(constant) = schema.get("const") {
+        return Some(
+            constant
+                .as_str()
+                .map_or_else(|| constant.to_string(), str::to_owned),
+        );
+    }
+    let required = schema.get("required")?.as_array()?;
+    let first = required.first()?.as_str()?;
+    if let Some(constant) = schema
+        .get("properties")
+        .and_then(|properties| properties.get(first))
+        .and_then(|property| property.get("const"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(constant.to_owned());
+    }
+    (required.len() == 1).then(|| first.to_owned())
 }
 
 fn validate_schema_type(
@@ -1066,7 +1205,38 @@ mod rich_schema_tests {
     use super::*;
     use serde_json::json;
 
+    /// Structured arguments are typed and recursively validated; resource, datetime, secret and
+    /// nullable values round-trip; a malformed schema is rejected before it describes values; unique
+    /// array items are published and enforced.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn action_parameters_are_typed_validated_and_round_trip() {
+        structured_arguments_are_typed_and_recursively_validated();
+        resource_datetime_secret_and_nullable_values_round_trip();
+        malformed_schema_is_rejected_before_it_describes_values();
+        unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn a_refusal_names_the_alternative_an_enumerated_tag_selects() {
+        let schema = json!({"oneOf": [
+            {"type": "object", "required": ["action"], "properties": {
+                "action": {"enum": ["draw", "paint"]}, "args": {"type": "object"}
+            }, "additionalProperties": false},
+            {"type": "object", "required": ["action", "args"], "properties": {
+                "action": {"const": "apply"}, "args": {"type": "object", "required": ["action"]}
+            }, "additionalProperties": false},
+        ]});
+        assert!(validate_schema(&json!({"action": "draw", "args": {}}), &schema).is_ok());
+        let refused = validate_schema(&json!({"action": "apply", "args": {}}), &schema);
+        assert_eq!(
+            refused,
+            Err("as `apply`: property `args` must contain property `action`".into())
+        );
+        let refused = validate_schema(&json!({"action": "paint", "args": 3}), &schema).unwrap_err();
+        assert!(refused.contains("property `args`"), "{refused}");
+    }
+
     fn structured_arguments_are_typed_and_recursively_validated() {
         let params = vec![
             ActionParam::required("request", ParamType::Object, "request").with_schema(json!({
@@ -1115,7 +1285,6 @@ mod rich_schema_tests {
         );
     }
 
-    #[test]
     fn resource_datetime_secret_and_nullable_values_round_trip() {
         let params = vec![
             ActionParam::required("resource", ParamType::Resource, "target"),
@@ -1149,7 +1318,6 @@ mod rich_schema_tests {
         }
     }
 
-    #[test]
     fn malformed_schema_is_rejected_before_it_describes_values() {
         assert!(validate_schema_definition(&json!({"pattern":"["})).is_err());
         assert!(validate_schema_definition(&json!({"format":"tilo-maybe"})).is_err());
@@ -1177,7 +1345,6 @@ mod rich_schema_tests {
         assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
     }
 
-    #[test]
     fn unique_array_items_are_published_and_enforced() {
         let schema = json!({
             "type": "array",

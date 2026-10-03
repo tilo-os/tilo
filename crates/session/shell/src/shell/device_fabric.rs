@@ -342,13 +342,13 @@ pub enum PersonalFabricAction {
         notification: crate::notifications::ContinuityNotificationProjection,
     },
     NotificationRetire {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationDismiss {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationInvoke {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
         action_key: String,
     },
     /// Metadata-only realtime handoff offer. Capture grants, media handles,
@@ -449,21 +449,28 @@ pub enum PersonalFabricAction {
     RemoteCaptureChunk {
         chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
     },
-    /// Shell-owned liveness, RTT and clock probe. The random nonce is bound to
-    /// the exact authenticated peer and is never exposed through an app
-    /// contract. `sent_us` is the prober's `CLOCK_MONOTONIC` send time in
-    /// microseconds, echoed back so the report closes a four-timestamp
-    /// exchange.
+    /// Shell-owned liveness and RTT probe. The random nonce is bound to the
+    /// exact authenticated peer and is never exposed through an app contract.
     DeviceHealthProbe {
+        nonce: [u8; 16],
+    },
+    /// Power is diagnostic routing context, never authorization. Latency is
+    /// deliberately absent because the probing compositor measures it.
+    DeviceHealthReport {
+        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    },
+    /// Fabric clock probe, sent only while something on the prober holds
+    /// this peer's clock in sync. `sent_us` is the prober's
+    /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
+    /// report closes a four-timestamp exchange. Carries nothing else.
+    FabricClockProbe {
         nonce: [u8; 16],
         sent_us: u64,
     },
-    /// Power is diagnostic routing context, never authorization. Latency is
-    /// deliberately absent because the probing compositor measures it; the
-    /// reporter's receive and reply times let the prober estimate clock
-    /// offset and skew.
-    DeviceHealthReport {
-        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    /// The reporter's receive and reply times for one clock probe, from
+    /// which the prober estimates clock offset and skew.
+    FabricClockReport {
+        report: crate::shell::fabric_clock::ClockReport,
     },
     /// Consent-bound request, grant, sealed credential, or teardown for an
     /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
@@ -513,6 +520,10 @@ pub enum PersonalFabricAction {
     RemoteAudioKeepalive {
         session_id: [u8; 16],
         authorization: [u8; 16],
+        /// Sent by the playing device only: whether it has the source's
+        /// clock, so the source can show a member still syncing, or why it
+        /// cannot play in time.
+        playout: Option<crate::shell::fabric_clock::ClockSyncState>,
     },
     /// Ask one exact member device to join a group. The member's own
     /// compositor asks its user; nothing plays until it approves.
@@ -550,6 +561,52 @@ pub enum PersonalFabricAction {
     SpeakerGroupSessionStop {
         session_id: [u8; 16],
         authorization: Option<[u8; 16]>,
+    },
+    /// Play a short sound on one of the target's own outputs so the person
+    /// setting up speakers can tell which one it is. Rate-limited there.
+    SpeakerIdentify {
+        output: crate::shell::speaker_group::EndpointSelector,
+    },
+    /// The group's leader, calibrating, asks a member to play the
+    /// measurement sweep so its first sample leaves the speaker at `start_ns`
+    /// on the member's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through its estimate of the member's clock, and refuses to
+    /// calibrate without one.
+    SpeakerSweep {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        start_ns: i64,
+    },
+    /// The group's leader asks one of the person's devices to let it listen
+    /// with `microphone` while calibrating the group. That device's own
+    /// compositor asks its user; nothing is recorded until it approves.
+    SpeakerListenInvite {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        name: String,
+        microphone: crate::shell::speaker_group::EndpointSelector,
+    },
+    /// The answer. The durable consent itself is the listener record the
+    /// device authors in its own snapshot; this only reports promptly.
+    SpeakerListenDecision {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        accepted: bool,
+    },
+    /// The calibrating leader asks a consenting device to record around one
+    /// member's sweep, whose first sample leaves the speaker at `start_ns` on
+    /// the listening device's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through the fabric clock estimate it holds of that device, so
+    /// the listener needs no estimate of its own.
+    SpeakerListen {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        microphone: crate::shell::speaker_group::EndpointSelector,
+        start_ns: i64,
+    },
+    /// What that microphone heard of the sweep, measured on the device. The
+    /// recording itself never crosses the fabric.
+    SpeakerHeard {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        hearing: crate::shell::speaker_calibration::SpeakerHearing,
     },
 }
 
@@ -879,6 +936,7 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RemoteAudioKeepalive {
                 session_id,
                 authorization,
+                ..
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -898,7 +956,49 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SpeakerIdentify { output } => {
+                if !output.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerSweep { group, start_ns } => {
+                if !group.valid() || *start_ns <= 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerListenInvite {
+                group,
+                name,
+                microphone,
+            } => {
+                if !group.valid()
+                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !microphone.valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerListen {
+                group,
+                sweep,
+                microphone,
+                start_ns,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !microphone.valid() || *start_ns <= 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerHeard {
+                group,
+                sweep,
+                hearing,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !hearing.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
+            | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
                 if !group.valid() {
                     return Err(FabricError::InvalidAction);
@@ -950,13 +1050,19 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce, .. }
+            PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
             PersonalFabricAction::DeviceHealthReport { report } => {
+                if !report.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
@@ -2276,522 +2382,1329 @@ mod tests {
     }
 
     #[test]
-    fn media_handoff_preserves_playhead_and_pauses_source() {
-        let caps = FabricCapabilities {
-            display: true,
-            pointer: true,
-            audio_output: true,
-            video_output: true,
-            ..FabricCapabilities::default()
-        };
-        let mut laptop = snapshot("laptop", 1, 0, caps);
-        laptop.media.push(MediaSession {
-            id: "movie-1".into(),
-            app_id: "so.tilo.video".into(),
-            title: "Film".into(),
-            content_id: "record:film".into(),
-            position_ms: 42_000,
-            duration_ms: Some(90_000),
-            playing: true,
-            has_video: true,
-            output_device: id("laptop"),
-            stamp: stamp("laptop", 1),
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(laptop).unwrap();
-        fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
-        let transfer = fabric.handoff_media("movie-1", &id("tablet")).unwrap();
-        assert_eq!(transfer.position_ms, 42_000);
-        assert!(transfer.resume_playing && transfer.pause_source);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
+        fn media_handoff_preserves_playhead_and_pauses_source() {
+            let caps = FabricCapabilities {
+                display: true,
+                pointer: true,
+                audio_output: true,
+                video_output: true,
+                ..FabricCapabilities::default()
+            };
+            let mut laptop = snapshot("laptop", 1, 0, caps);
+            laptop.media.push(MediaSession {
+                id: "movie-1".into(),
+                app_id: "so.tilo.video".into(),
+                title: "Film".into(),
+                content_id: "record:film".into(),
+                position_ms: 42_000,
+                duration_ms: Some(90_000),
+                playing: true,
+                has_video: true,
+                output_device: id("laptop"),
+                stamp: stamp("laptop", 1),
+            });
+            let mut fabric = DeviceFabric::default();
+            fabric.upsert(laptop).unwrap();
+            fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
+            let transfer = fabric.handoff_media("movie-1", &id("tablet")).unwrap();
+            assert_eq!(transfer.position_ms, 42_000);
+            assert!(transfer.resume_playing && transfer.pause_source);
+        }
+
+        fn video_cannot_be_sent_to_an_audio_only_device() {
+            let mut source = snapshot(
+                "laptop",
+                1,
+                0,
+                FabricCapabilities {
+                    audio_output: true,
+                    video_output: true,
+                    ..FabricCapabilities::default()
+                },
+            );
+            source.media.push(MediaSession {
+                id: "movie".into(),
+                app_id: "video".into(),
+                title: String::new(),
+                content_id: "record:1".into(),
+                position_ms: 0,
+                duration_ms: None,
+                playing: false,
+                has_video: true,
+                output_device: id("laptop"),
+                stamp: stamp("laptop", 1),
+            });
+            let mut fabric = DeviceFabric::default();
+            fabric.upsert(source).unwrap();
+            fabric
+                .upsert(snapshot(
+                    "speaker",
+                    1,
+                    1000,
+                    FabricCapabilities {
+                        audio_output: true,
+                        ..FabricCapabilities::default()
+                    },
+                ))
+                .unwrap();
+            assert_eq!(
+                fabric.handoff_media("movie", &id("speaker")),
+                Err(FabricError::IncompatibleMediaTarget)
+            );
+        }
+
+        fn media_action_locators_reject_host_paths_and_url_credentials() {
+            let source = id("source");
+            let target = id("target");
+            for locator in [
+                MediaSourceLocator::Workspace {
+                    path: "../private/song.flac".into(),
+                },
+                MediaSourceLocator::RemoteStream {
+                    url: "https://secret@example.com/song".into(),
+                },
+                MediaSourceLocator::AppResource {
+                    uri: "1music://track/foreign".into(),
+                },
+                MediaSourceLocator::PersonalTransfer {
+                    transfer_id: [0; 16],
+                    file_name: "../foreign.mp4".into(),
+                },
+            ] {
+                let envelope = PersonalFabricActionEnvelope {
+                    request_id: [4; 16],
+                    source: source.clone(),
+                    target: target.clone(),
+                    issued_unix_ms: 10_000,
+                    action: PersonalFabricAction::ResumeMedia {
+                        session_id: "player:one".into(),
+                        app_id: "so.tilo.music".into(),
+                        workspace_id: "11111111-1111-1111-1111-111111111111".into(),
+                        title: "Track".into(),
+                        locator,
+                        position_ms: 0,
+                        resume_playing: true,
+                        has_video: false,
+                    },
+                };
+                assert_eq!(
+                    envelope.validate_at(&source, &target, 10_000),
+                    Err(FabricError::InvalidAction)
+                );
+            }
+        }
+
+        fn media_terminal_actions_require_exact_nonzero_request_and_session() {
+            let source = id("source");
+            let target = id("target");
+            for action in [
+                PersonalFabricAction::MediaRejected {
+                    request_id: [9; 16],
+                    session_id: "player:one".into(),
+                    failure: MediaHandoffFailure::OpenFailed,
+                },
+                PersonalFabricAction::MediaCancelled {
+                    request_id: [9; 16],
+                    session_id: "player:one".into(),
+                },
+            ] {
+                let envelope = PersonalFabricActionEnvelope {
+                    request_id: [4; 16],
+                    source: source.clone(),
+                    target: target.clone(),
+                    issued_unix_ms: 10_000,
+                    action,
+                };
+                assert_eq!(envelope.validate_at(&source, &target, 10_000), Ok(()));
+            }
+
+            let invalid = PersonalFabricActionEnvelope {
+                request_id: [4; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::MediaRejected {
+                    request_id: [0; 16],
+                    session_id: "player:one".into(),
+                    failure: MediaHandoffFailure::OpenFailed,
+                },
+            };
+            assert_eq!(
+                invalid.validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        media_handoff_preserves_playhead_and_pauses_source();
+        video_cannot_be_sent_to_an_audio_only_device();
+        media_action_locators_reject_host_paths_and_url_credentials();
+        media_terminal_actions_require_exact_nonzero_request_and_session();
     }
 
     #[test]
-    fn personal_display_negotiation_is_versioned_and_transport_bound() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let offered = DisplayStreamProfile {
-            codec: DisplayStreamCodec::H264AnnexB,
-            max_width: 3840,
-            max_height: 2160,
-            max_fps: 60,
-            max_bitrate_kbps: 20_000,
-        };
-        let receiver = DisplayStreamProfile {
-            codec: DisplayStreamCodec::H264AnnexB,
-            max_width: 1920,
-            max_height: 1080,
-            max_fps: 30,
-            max_bitrate_kbps: 8_000,
-        };
-        assert_eq!(
-            offered.negotiate(receiver),
-            Some(DisplayStreamProfile {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn personal_display_and_mirror_wire_is_versioned_bounded_and_consented() {
+        fn personal_display_negotiation_is_versioned_and_transport_bound() {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let offered = DisplayStreamProfile {
+                codec: DisplayStreamCodec::H264AnnexB,
+                max_width: 3840,
+                max_height: 2160,
+                max_fps: 60,
+                max_bitrate_kbps: 20_000,
+            };
+            let receiver = DisplayStreamProfile {
                 codec: DisplayStreamCodec::H264AnnexB,
                 max_width: 1920,
                 max_height: 1080,
                 max_fps: 30,
                 max_bitrate_kbps: 8_000,
-            })
-        );
-        let offer = PersonalDisplayMessage::Offer {
-            protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
-            session_id: [7; 16],
-            source: source.clone(),
-            target: target.clone(),
-            profile: offered,
-            issued_unix_ms: 10_000,
-        };
-        assert_eq!(offer.validate_at(&source, &target, 10_000), Ok(()));
-        assert_eq!(
-            offer.validate_at(&DeviceId::new("impostor").unwrap(), &target, 10_000),
-            Err(FabricError::InvalidDisplayStream)
-        );
+            };
+            assert_eq!(
+                offered.negotiate(receiver),
+                Some(DisplayStreamProfile {
+                    codec: DisplayStreamCodec::H264AnnexB,
+                    max_width: 1920,
+                    max_height: 1080,
+                    max_fps: 30,
+                    max_bitrate_kbps: 8_000,
+                })
+            );
+            let offer = PersonalDisplayMessage::Offer {
+                protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                session_id: [7; 16],
+                source: source.clone(),
+                target: target.clone(),
+                profile: offered,
+                issued_unix_ms: 10_000,
+            };
+            assert_eq!(offer.validate_at(&source, &target, 10_000), Ok(()));
+            assert_eq!(
+                offer.validate_at(&DeviceId::new("impostor").unwrap(), &target, 10_000),
+                Err(FabricError::InvalidDisplayStream)
+            );
 
-        let accept = PersonalDisplayMessage::Accept {
-            protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
-            session_id: [7; 16],
-            source: source.clone(),
-            target: target.clone(),
-            profile: receiver,
-        };
-        assert_eq!(accept.validate_at(&target, &source, 10_000), Ok(()));
-        assert_eq!(
-            accept.validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidDisplayStream),
-            "responses must travel target-to-source, not trust logical field order"
-        );
-    }
-
-    #[test]
-    fn personal_display_frames_are_strictly_bounded() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let frame = |annex_b: Vec<u8>| PersonalDisplayMessage::Frame {
-            session_id: [4; 16],
-            source: source.clone(),
-            target: target.clone(),
-            sequence: 1,
-            presentation_time_us: 0,
-            keyframe: true,
-            width: 1920,
-            height: 1080,
-            annex_b,
-        };
-        assert_eq!(
-            frame(vec![0, 0, 0, 1]).validate_at(&source, &target, 1),
-            Ok(())
-        );
-        assert_eq!(
-            frame(vec![0; MAX_DISPLAY_FRAME_BYTES + 1]).validate_at(&source, &target, 1),
-            Err(FabricError::InvalidDisplayStream)
-        );
-    }
-
-    #[test]
-    fn video_cannot_be_sent_to_an_audio_only_device() {
-        let mut source = snapshot(
-            "laptop",
-            1,
-            0,
-            FabricCapabilities {
-                audio_output: true,
-                video_output: true,
-                ..FabricCapabilities::default()
-            },
-        );
-        source.media.push(MediaSession {
-            id: "movie".into(),
-            app_id: "video".into(),
-            title: String::new(),
-            content_id: "record:1".into(),
-            position_ms: 0,
-            duration_ms: None,
-            playing: false,
-            has_video: true,
-            output_device: id("laptop"),
-            stamp: stamp("laptop", 1),
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(source).unwrap();
-        fabric
-            .upsert(snapshot(
-                "speaker",
-                1,
-                1000,
-                FabricCapabilities {
-                    audio_output: true,
-                    ..FabricCapabilities::default()
-                },
-            ))
-            .unwrap();
-        assert_eq!(
-            fabric.handoff_media("movie", &id("speaker")),
-            Err(FabricError::IncompatibleMediaTarget)
-        );
-    }
-
-    #[test]
-    fn clipboard_is_deduplicated_and_bounded() {
-        let mut history = ClipboardHistory::default();
-        for n in 0..=MAX_CLIPBOARD_ITEMS {
-            history
-                .push(
-                    ClipboardEntry::shareable(
-                        ClipboardPayload::Text(format!("item-{n}")),
-                        id("laptop"),
-                        n as u64,
-                        stamp("laptop", n as u64),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
+            let accept = PersonalDisplayMessage::Accept {
+                protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                session_id: [7; 16],
+                source: source.clone(),
+                target: target.clone(),
+                profile: receiver,
+            };
+            assert_eq!(accept.validate_at(&target, &source, 10_000), Ok(()));
+            assert_eq!(
+                accept.validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidDisplayStream),
+                "responses must travel target-to-source, not trust logical field order"
+            );
         }
-        assert_eq!(history.entries().count(), MAX_CLIPBOARD_ITEMS);
+
+        fn personal_display_frames_are_strictly_bounded() {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let frame = |annex_b: Vec<u8>| PersonalDisplayMessage::Frame {
+                session_id: [4; 16],
+                source: source.clone(),
+                target: target.clone(),
+                sequence: 1,
+                presentation_time_us: 0,
+                keyframe: true,
+                width: 1920,
+                height: 1080,
+                annex_b,
+            };
+            assert_eq!(
+                frame(vec![0, 0, 0, 1]).validate_at(&source, &target, 1),
+                Ok(())
+            );
+            assert_eq!(
+                frame(vec![0; MAX_DISPLAY_FRAME_BYTES + 1]).validate_at(&source, &target, 1),
+                Err(FabricError::InvalidDisplayStream)
+            );
+        }
+
+        fn display_mirror_actions_require_exact_bounded_session_consent() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = |action| PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            let request = envelope(PersonalFabricAction::DisplayMirrorRequest {
+                session_id: [7; 16],
+            });
+            assert!(request.validate_at(&source, &target, 10_100).is_ok());
+            assert!(
+                envelope(PersonalFabricAction::DisplayMirrorRequest {
+                    session_id: [0; 16],
+                })
+                .validate_at(&source, &target, 10_100)
+                .is_err()
+            );
+            assert!(
+                envelope(PersonalFabricAction::DisplayMirrorDecision {
+                    session_id: [7; 16],
+                    approved: true,
+                    profile: Some(DisplayStreamProfile {
+                        codec: DisplayStreamCodec::H264AnnexB,
+                        max_width: 1920,
+                        max_height: 1080,
+                        max_fps: 60,
+                        max_bitrate_kbps: 12_000,
+                    }),
+                })
+                .validate_at(&source, &target, 10_100)
+                .is_ok()
+            );
+            assert!(
+                envelope(PersonalFabricAction::DisplayMirrorDecision {
+                    session_id: [7; 16],
+                    approved: false,
+                    profile: Some(DisplayStreamProfile {
+                        codec: DisplayStreamCodec::H264AnnexB,
+                        max_width: 1920,
+                        max_height: 1080,
+                        max_fps: 60,
+                        max_bitrate_kbps: 12_000,
+                    }),
+                })
+                .validate_at(&source, &target, 10_100)
+                .is_err()
+            );
+        }
+
+        fn legacy_display_placement_bytes_decode_as_the_original_action() {
+            let action = PersonalFabricAction::SetDisplayPlacement {
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+            };
+            // The original wire tag and postcard field encoding, independent of
+            // the current enum serializer. Encoding and decoding must both agree.
+            let original = [2, 0, 0, 1, 1];
+            assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
+            assert_eq!(
+                postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
+                action
+            );
+        }
+
+        personal_display_negotiation_is_versioned_and_transport_bound();
+        personal_display_frames_are_strictly_bounded();
+        display_mirror_actions_require_exact_bounded_session_consent();
+        legacy_display_placement_bytes_decode_as_the_original_action();
     }
 
     #[test]
-    fn clipboard_hash_tampering_is_rejected() {
-        let mut entry = ClipboardEntry::shareable(
-            ClipboardPayload::Text("safe".into()),
-            id("phone"),
-            1,
-            stamp("phone", 1),
-        )
-        .unwrap();
-        entry.payload = ClipboardPayload::Text("changed".into());
-        let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
-        source.clipboard.push(entry);
-        assert_eq!(source.validate(), Err(FabricError::ClipboardHashMismatch));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
+        fn clipboard_is_deduplicated_and_bounded() {
+            let mut history = ClipboardHistory::default();
+            for n in 0..=MAX_CLIPBOARD_ITEMS {
+                history
+                    .push(
+                        ClipboardEntry::shareable(
+                            ClipboardPayload::Text(format!("item-{n}")),
+                            id("laptop"),
+                            n as u64,
+                            stamp("laptop", n as u64),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(history.entries().count(), MAX_CLIPBOARD_ITEMS);
+        }
+
+        fn clipboard_hash_tampering_is_rejected() {
+            let mut entry = ClipboardEntry::shareable(
+                ClipboardPayload::Text("safe".into()),
+                id("phone"),
+                1,
+                stamp("phone", 1),
+            )
+            .unwrap();
+            entry.payload = ClipboardPayload::Text("changed".into());
+            let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
+            source.clipboard.push(entry);
+            assert_eq!(source.validate(), Err(FabricError::ClipboardHashMismatch));
+        }
+
+        fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = |action| PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            assert_eq!(
+                envelope(PersonalFabricAction::NearbyTransferOffer {
+                    transfer_id: [4; 16],
+                    name: "Photos".into(),
+                    kind: crate::shell::nearby_transfer::TransferKind::FolderArchive,
+                    total_bytes: 100,
+                    content_hash: [5; 32],
+                })
+                .validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::NearbyTransferReady {
+                    request_id: [0; 16],
+                    transfer_id: [4; 16],
+                    committed_offset: 0,
+                    prefix_hash: *blake3::hash(&[]).as_bytes(),
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::NearbyTransferOffer {
+                    transfer_id: [4; 16],
+                    name: "../escape".into(),
+                    kind: crate::shell::nearby_transfer::TransferKind::File,
+                    total_bytes: 100,
+                    content_hash: [5; 32],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        fn nearby_drop_rejects_paths_tampering_and_oversize_payloads() {
+            let source = id("source");
+            let target = id("target");
+            for (name, bytes, hash) in [
+                ("../secret", b"ok".to_vec(), *blake3::hash(b"ok").as_bytes()),
+                ("note.txt", b"changed".to_vec(), [0; 32]),
+                ("note.txt", vec![1; MAX_NEARBY_DROP_BYTES + 1], [0; 32]),
+            ] {
+                let envelope = PersonalFabricActionEnvelope {
+                    request_id: [1; 16],
+                    source: source.clone(),
+                    target: target.clone(),
+                    issued_unix_ms: 10,
+                    action: PersonalFabricAction::NearbyDrop {
+                        file_name: name.into(),
+                        content_hash: hash,
+                        bytes,
+                    },
+                };
+                assert_eq!(
+                    envelope.validate_at(&source, &target, 10),
+                    Err(FabricError::InvalidAction)
+                );
+            }
+        }
+
+        clipboard_is_deduplicated_and_bounded();
+        clipboard_hash_tampering_is_rejected();
+        nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests();
+        nearby_drop_rejects_paths_tampering_and_oversize_payloads();
     }
 
     #[test]
-    fn local_hardware_settings_do_not_roam() {
-        for key in [
-            "tilo.device.name",
-            "tilo.display.hardware.edid",
-            "tilo.display.scale",
-            "tilo.network.interface.mac",
-            "tilo.storage.mount.usb",
-            "tilo.input.pen_output",
-            "tilo.audio.output_device",
-            "tilo.agent_providers.api_key",
-        ] {
-            let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
-            source.settings.push(RoamingSetting {
-                key: key.into(),
-                value: Value::Bool(true),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn roaming_settings_accept_only_audited_leaves_and_resolve_deterministically() {
+        fn local_hardware_settings_do_not_roam() {
+            for key in [
+                "tilo.device.name",
+                "tilo.display.hardware.edid",
+                "tilo.display.scale",
+                "tilo.network.interface.mac",
+                "tilo.storage.mount.usb",
+                "tilo.input.tablets",
+                "tilo.audio.output_device",
+                "tilo.agent_providers.api_key",
+            ] {
+                let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
+                source.settings.push(RoamingSetting {
+                    key: key.into(),
+                    value: Value::Bool(true),
+                    stamp: stamp("desktop", 1),
+                });
+                assert_eq!(source.validate(), Err(FabricError::InvalidRoamingSetting));
+            }
+        }
+
+        fn only_audited_personal_setting_leaves_are_accepted() {
+            for key in [
+                "tilo.accessibility.screen_reader",
+                "tilo.appearance.studio",
+                "tilo.locale.measurement",
+                "tilo.notifications.per_app",
+                "tilo.input.keyboard_layouts",
+                "tilo.audio.mono_output",
+                "tilo.display.night_light_temperature",
+                "tilo.shortcuts.bindings",
+                "tilo.desktop_controls.vim_mode",
+                "tilo.quick_settings.controls",
+                "tilo.text_assistance.auto_correct",
+            ] {
+                assert!(valid_setting_key(key), "expected {key} to roam");
+            }
+            for key in [
+                "tilo.appearance.wallpaper_path",
+                "tilo.input.future_device_serial",
+                "tilo.audio.input_device",
+                "tilo.display.auto_brightness",
+                "tilo.power.auto_suspend",
+                "tilo.updates.channel",
+                "tilo.security.local_credential.pin",
+            ] {
+                assert!(!valid_setting_key(key), "expected {key} to stay local");
+            }
+        }
+
+        fn newest_roaming_setting_wins_deterministically() {
+            let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
+            old.settings.push(RoamingSetting {
+                key: "tilo.appearance.theme".into(),
+                value: Value::Bool(false),
                 stamp: stamp("desktop", 1),
             });
-            assert_eq!(source.validate(), Err(FabricError::InvalidRoamingSetting));
-        }
-    }
-
-    #[test]
-    fn only_audited_personal_setting_leaves_are_accepted() {
-        for key in [
-            "tilo.accessibility.screen_reader",
-            "tilo.appearance.studio",
-            "tilo.locale.measurement",
-            "tilo.notifications.per_app",
-            "tilo.input.keyboard_layouts",
-            "tilo.audio.mono_output",
-            "tilo.display.night_light_temperature",
-            "tilo.shortcuts.bindings",
-            "tilo.desktop_controls.vim_mode",
-            "tilo.quick_settings.controls",
-            "tilo.text_assistance.auto_correct",
-        ] {
-            assert!(valid_setting_key(key), "expected {key} to roam");
-        }
-        for key in [
-            "tilo.appearance.wallpaper_path",
-            "tilo.input.future_device_serial",
-            "tilo.audio.input_device",
-            "tilo.display.auto_brightness",
-            "tilo.power.auto_suspend",
-            "tilo.updates.channel",
-            "tilo.security.local_credential.pin",
-        ] {
-            assert!(!valid_setting_key(key), "expected {key} to stay local");
-        }
-    }
-
-    #[test]
-    fn newest_roaming_setting_wins_deterministically() {
-        let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
-        old.settings.push(RoamingSetting {
-            key: "tilo.appearance.theme".into(),
-            value: Value::Bool(false),
-            stamp: stamp("desktop", 1),
-        });
-        let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
-        new.settings.push(RoamingSetting {
-            key: "tilo.appearance.theme".into(),
-            value: Value::Bool(true),
-            stamp: stamp("laptop", 2),
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(old).unwrap();
-        fabric.upsert(new).unwrap();
-        assert_eq!(
-            fabric.merged_settings()["tilo.appearance.theme"],
-            Value::Bool(true)
-        );
-    }
-
-    #[test]
-    fn wifi_secrets_must_be_sealed() {
-        let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
-        source.wifi.push(WifiCredential {
-            network_id: [1; 32],
-            ssid: "Home".into(),
-            security: os_actions::WifiSecurity::Wpa3,
-            sealed_secret: Vec::new(),
-            nonce: [2; 24],
-            stamp: stamp("phone", 1),
-        });
-        assert_eq!(source.validate(), Err(FabricError::InvalidWifiCredential));
-    }
-
-    #[test]
-    fn typed_wifi_security_decodes_the_legacy_string_postcard_shape() {
-        #[derive(Serialize)]
-        struct LegacyWifiCredential {
-            network_id: [u8; 32],
-            ssid: String,
-            security: String,
-            sealed_secret: Vec<u8>,
-            nonce: [u8; 24],
-            stamp: FabricStamp,
+            let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
+            new.settings.push(RoamingSetting {
+                key: "tilo.appearance.theme".into(),
+                value: Value::Bool(true),
+                stamp: stamp("laptop", 2),
+            });
+            let mut fabric = DeviceFabric::default();
+            fabric.upsert(old).unwrap();
+            fabric.upsert(new).unwrap();
+            assert_eq!(
+                fabric.merged_settings()["tilo.appearance.theme"],
+                Value::Bool(true)
+            );
         }
 
-        let legacy = LegacyWifiCredential {
-            network_id: [1; 32],
-            ssid: "Home".into(),
-            security: "wpa3".into(),
-            sealed_secret: vec![1, 2, 3],
-            nonce: [2; 24],
-            stamp: stamp("phone", 1),
-        };
-        let bytes = postcard::to_allocvec(&legacy).unwrap();
-        let decoded: WifiCredential = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.security, os_actions::WifiSecurity::Wpa3);
-        assert_eq!(postcard::to_allocvec(&decoded).unwrap(), bytes);
-    }
-
-    #[test]
-    fn legacy_enterprise_record_is_retained_but_cannot_supply_a_password() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let owner_text = hex::encode(key.verifying_key().to_bytes());
-        let owner = id(&owner_text);
-        let mut credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
-            "Corp",
-            os_actions::WifiSecurity::Wpa2,
-            "legacy-secret",
-            &owner,
-            [owner.clone()],
-            FabricStamp {
-                counter: 1,
-                device: owner.clone(),
-            },
-        )
-        .unwrap();
-        // Version 1 allowed this string even though its secret lacked the EAP
-        // identity and CA policy needed to safely recreate the profile.
-        credential.security = os_actions::WifiSecurity::Enterprise;
-
-        assert_eq!(
-            crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &key),
-            Err(crate::shell::device_fabric_secrets::WifiSecretError::InvalidCredential)
-        );
-
-        let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
-        source.wifi.push(credential);
-        source.settings.push(RoamingSetting {
-            key: "tilo.appearance.theme".into(),
-            value: Value::String("Nord".into()),
-            stamp: FabricStamp {
-                counter: 1,
-                device: owner,
-            },
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(source).unwrap();
-
-        assert_eq!(
-            fabric.merged_settings()["tilo.appearance.theme"],
-            Value::String("Nord".into())
-        );
-    }
-
-    #[test]
-    fn adjacent_displays_cross_without_a_vertical_jump() {
-        let caps = FabricCapabilities {
-            display: true,
-            pointer: true,
-            ..FabricCapabilities::default()
-        };
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
-        fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
-        let transition = fabric.cross_right_edge(&id("laptop"), 417).unwrap();
-        assert_eq!(transition.to, id("tablet"));
-        assert_eq!(transition.target_y, 417);
-    }
-
-    #[test]
-    fn every_touching_display_edge_maps_into_the_adjacent_screen() {
-        let caps = FabricCapabilities {
-            display: true,
-            pointer: true,
-            ..FabricCapabilities::default()
-        };
-        let mut center = snapshot("center", 1, 0, caps);
-        center.display.as_mut().unwrap().rect = DisplayRect {
-            x: 0,
-            y: 0,
-            width: 1000,
-            height: 800,
-        };
-        let mut left = snapshot("left", 1, -600, caps);
-        left.display.as_mut().unwrap().rect = DisplayRect {
-            x: -600,
-            y: 200,
-            width: 600,
-            height: 600,
-        };
-        let mut right = snapshot("right", 1, 1000, caps);
-        right.display.as_mut().unwrap().rect = DisplayRect {
-            x: 1000,
-            y: 100,
-            width: 700,
-            height: 700,
-        };
-        let mut top = snapshot("top", 1, 100, caps);
-        top.display.as_mut().unwrap().rect = DisplayRect {
-            x: 100,
-            y: -500,
-            width: 700,
-            height: 500,
-        };
-        let mut bottom = snapshot("bottom", 1, 200, caps);
-        bottom.display.as_mut().unwrap().rect = DisplayRect {
-            x: 200,
-            y: 800,
-            width: 800,
-            height: 400,
-        };
-        let mut fabric = DeviceFabric::default();
-        for display in [center, left, right, top, bottom] {
-            fabric.upsert(display).unwrap();
+        fn equal_revision_conflicts_fail_instead_of_using_arrival_order() {
+            let mut fabric = DeviceFabric::default();
+            let first = snapshot("laptop", 1, 0, FabricCapabilities::default());
+            let mut conflicting = first.clone();
+            conflicting.presence.label = "Different".into();
+            fabric.upsert(first).unwrap();
+            assert_eq!(
+                fabric.upsert(conflicting),
+                Err(FabricError::ConflictingRevision)
+            );
         }
-        let left = fabric
-            .cross_edge(&id("center"), DisplayEdge::Left, 0, 417)
-            .unwrap();
-        assert_eq!(
-            (left.to, left.target_x, left.target_y),
-            (id("left"), 599, 217)
-        );
-        let right = fabric
-            .cross_edge(&id("center"), DisplayEdge::Right, 999, 417)
-            .unwrap();
-        assert_eq!(
-            (right.to, right.target_x, right.target_y),
-            (id("right"), 0, 317)
-        );
-        let top = fabric
-            .cross_edge(&id("center"), DisplayEdge::Top, 417, 0)
-            .unwrap();
-        assert_eq!((top.to, top.target_x, top.target_y), (id("top"), 317, 499));
-        let bottom = fabric
-            .cross_edge(&id("center"), DisplayEdge::Bottom, 417, 799)
-            .unwrap();
-        assert_eq!(
-            (bottom.to, bottom.target_x, bottom.target_y),
-            (id("bottom"), 217, 0)
-        );
+
+        fn persisted_checkpoint_round_trips_only_validated_state() {
+            let mut fabric = DeviceFabric::default();
+            fabric
+                .upsert(snapshot("laptop", 4, 0, FabricCapabilities::default()))
+                .unwrap();
+            let encoded = fabric.encode_checkpoint().unwrap();
+            assert_eq!(DeviceFabric::decode_checkpoint(&encoded).unwrap(), fabric);
+
+            let mut trailing = encoded;
+            trailing.push(0xff);
+            assert_eq!(
+                DeviceFabric::decode_checkpoint(&trailing),
+                Err(FabricError::InvalidCheckpoint)
+            );
+        }
+
+        local_hardware_settings_do_not_roam();
+        only_audited_personal_setting_leaves_are_accepted();
+        newest_roaming_setting_wins_deterministically();
+        equal_revision_conflicts_fail_instead_of_using_arrival_order();
+        persisted_checkpoint_round_trips_only_validated_state();
     }
 
     #[test]
-    fn remote_input_requires_a_short_lived_explicit_lease() {
-        let lease = InputLease {
-            controller: id("laptop"),
-            target: id("tablet"),
-            issued_unix_ms: 100,
-            expires_unix_ms: 200,
-            nonce: [7; 16],
-            allow_keyboard: true,
-            allow_pointer: true,
-        };
-        assert_eq!(lease.validate_at(150), Ok(()));
-        assert_eq!(lease.validate_at(201), Err(FabricError::ExpiredInputLease));
-    }
+    fn wifi_records_are_sealed_typed_and_legacy_safe() {
+        fn wifi_secrets_must_be_sealed() {
+            let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
+            source.wifi.push(WifiCredential {
+                network_id: [1; 32],
+                ssid: "Home".into(),
+                security: os_actions::WifiSecurity::Wpa3,
+                sealed_secret: Vec::new(),
+                nonce: [2; 24],
+                stamp: stamp("phone", 1),
+            });
+            assert_eq!(source.validate(), Err(FabricError::InvalidWifiCredential));
+        }
 
-    #[test]
-    fn equal_revision_conflicts_fail_instead_of_using_arrival_order() {
-        let mut fabric = DeviceFabric::default();
-        let first = snapshot("laptop", 1, 0, FabricCapabilities::default());
-        let mut conflicting = first.clone();
-        conflicting.presence.label = "Different".into();
-        fabric.upsert(first).unwrap();
-        assert_eq!(
-            fabric.upsert(conflicting),
-            Err(FabricError::ConflictingRevision)
-        );
-    }
+        fn typed_wifi_security_decodes_the_legacy_string_postcard_shape() {
+            #[derive(Serialize)]
+            struct LegacyWifiCredential {
+                network_id: [u8; 32],
+                ssid: String,
+                security: String,
+                sealed_secret: Vec<u8>,
+                nonce: [u8; 24],
+                stamp: FabricStamp,
+            }
 
-    #[test]
-    fn persisted_checkpoint_round_trips_only_validated_state() {
-        let mut fabric = DeviceFabric::default();
-        fabric
-            .upsert(snapshot("laptop", 4, 0, FabricCapabilities::default()))
-            .unwrap();
-        let encoded = fabric.encode_checkpoint().unwrap();
-        assert_eq!(DeviceFabric::decode_checkpoint(&encoded).unwrap(), fabric);
+            let legacy = LegacyWifiCredential {
+                network_id: [1; 32],
+                ssid: "Home".into(),
+                security: "wpa3".into(),
+                sealed_secret: vec![1, 2, 3],
+                nonce: [2; 24],
+                stamp: stamp("phone", 1),
+            };
+            let bytes = postcard::to_allocvec(&legacy).unwrap();
+            let decoded: WifiCredential = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.security, os_actions::WifiSecurity::Wpa3);
+            assert_eq!(postcard::to_allocvec(&decoded).unwrap(), bytes);
+        }
 
-        let mut trailing = encoded;
-        trailing.push(0xff);
-        assert_eq!(
-            DeviceFabric::decode_checkpoint(&trailing),
-            Err(FabricError::InvalidCheckpoint)
-        );
-    }
-
-    #[test]
-    fn ephemeral_actions_are_transport_bound_and_fresh() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::ResumeMedia {
-                session_id: "player:one".into(),
-                app_id: "so.tilo.music".into(),
-                workspace_id: "11111111-1111-1111-1111-111111111111".into(),
-                title: "Track".into(),
-                locator: MediaSourceLocator::Workspace {
-                    path: "Music/track.flac".into(),
+        fn legacy_enterprise_record_is_retained_but_cannot_supply_a_password() {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let owner_text = hex::encode(key.verifying_key().to_bytes());
+            let owner = id(&owner_text);
+            let mut credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+                "Corp",
+                os_actions::WifiSecurity::Wpa2,
+                "legacy-secret",
+                &owner,
+                [owner.clone()],
+                FabricStamp {
+                    counter: 1,
+                    device: owner.clone(),
                 },
-                position_ms: 42,
-                resume_playing: true,
-                has_video: false,
-            },
-        };
-        assert_eq!(envelope.validate_at(&source, &target, 10_100), Ok(()));
-        assert_eq!(
-            envelope.validate_at(&id("intruder"), &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope.validate_at(&source, &id("other-target"), 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
-            Err(FabricError::InvalidAction)
-        );
+            )
+            .unwrap();
+            // Version 1 allowed this string even though its secret lacked the EAP
+            // identity and CA policy needed to safely recreate the profile.
+            credential.security = os_actions::WifiSecurity::Enterprise;
+
+            assert_eq!(
+                crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &key),
+                Err(crate::shell::device_fabric_secrets::WifiSecretError::InvalidCredential)
+            );
+
+            let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
+            source.wifi.push(credential);
+            source.settings.push(RoamingSetting {
+                key: "tilo.appearance.theme".into(),
+                value: Value::String("Nord".into()),
+                stamp: FabricStamp {
+                    counter: 1,
+                    device: owner,
+                },
+            });
+            let mut fabric = DeviceFabric::default();
+            fabric.upsert(source).unwrap();
+
+            assert_eq!(
+                fabric.merged_settings()["tilo.appearance.theme"],
+                Value::String("Nord".into())
+            );
+        }
+
+        wifi_secrets_must_be_sealed();
+        typed_wifi_security_decodes_the_legacy_string_postcard_shape();
+        legacy_enterprise_record_is_retained_but_cannot_supply_a_password();
+    }
+
+    #[test]
+    fn display_edges_map_into_the_adjacent_screen() {
+        fn adjacent_displays_cross_without_a_vertical_jump() {
+            let caps = FabricCapabilities {
+                display: true,
+                pointer: true,
+                ..FabricCapabilities::default()
+            };
+            let mut fabric = DeviceFabric::default();
+            fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
+            fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
+            let transition = fabric.cross_right_edge(&id("laptop"), 417).unwrap();
+            assert_eq!(transition.to, id("tablet"));
+            assert_eq!(transition.target_y, 417);
+        }
+
+        fn every_touching_display_edge_maps_into_the_adjacent_screen() {
+            let caps = FabricCapabilities {
+                display: true,
+                pointer: true,
+                ..FabricCapabilities::default()
+            };
+            let mut center = snapshot("center", 1, 0, caps);
+            center.display.as_mut().unwrap().rect = DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 800,
+            };
+            let mut left = snapshot("left", 1, -600, caps);
+            left.display.as_mut().unwrap().rect = DisplayRect {
+                x: -600,
+                y: 200,
+                width: 600,
+                height: 600,
+            };
+            let mut right = snapshot("right", 1, 1000, caps);
+            right.display.as_mut().unwrap().rect = DisplayRect {
+                x: 1000,
+                y: 100,
+                width: 700,
+                height: 700,
+            };
+            let mut top = snapshot("top", 1, 100, caps);
+            top.display.as_mut().unwrap().rect = DisplayRect {
+                x: 100,
+                y: -500,
+                width: 700,
+                height: 500,
+            };
+            let mut bottom = snapshot("bottom", 1, 200, caps);
+            bottom.display.as_mut().unwrap().rect = DisplayRect {
+                x: 200,
+                y: 800,
+                width: 800,
+                height: 400,
+            };
+            let mut fabric = DeviceFabric::default();
+            for display in [center, left, right, top, bottom] {
+                fabric.upsert(display).unwrap();
+            }
+            let left = fabric
+                .cross_edge(&id("center"), DisplayEdge::Left, 0, 417)
+                .unwrap();
+            assert_eq!(
+                (left.to, left.target_x, left.target_y),
+                (id("left"), 599, 217)
+            );
+            let right = fabric
+                .cross_edge(&id("center"), DisplayEdge::Right, 999, 417)
+                .unwrap();
+            assert_eq!(
+                (right.to, right.target_x, right.target_y),
+                (id("right"), 0, 317)
+            );
+            let top = fabric
+                .cross_edge(&id("center"), DisplayEdge::Top, 417, 0)
+                .unwrap();
+            assert_eq!((top.to, top.target_x, top.target_y), (id("top"), 317, 499));
+            let bottom = fabric
+                .cross_edge(&id("center"), DisplayEdge::Bottom, 417, 799)
+                .unwrap();
+            assert_eq!(
+                (bottom.to, bottom.target_x, bottom.target_y),
+                (id("bottom"), 217, 0)
+            );
+        }
+
+        adjacent_displays_cross_without_a_vertical_jump();
+        every_touching_display_edge_maps_into_the_adjacent_screen();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn remote_input_and_gamepad_actions_require_exact_bound_leases() {
+        fn remote_input_requires_a_short_lived_explicit_lease() {
+            let lease = InputLease {
+                controller: id("laptop"),
+                target: id("tablet"),
+                issued_unix_ms: 100,
+                expires_unix_ms: 200,
+                nonce: [7; 16],
+                allow_keyboard: true,
+                allow_pointer: true,
+            };
+            assert_eq!(lease.validate_at(150), Ok(()));
+            assert_eq!(lease.validate_at(201), Err(FabricError::ExpiredInputLease));
+        }
+
+        fn input_lease_must_be_issued_by_the_target_to_its_controller() {
+            let controller = id("controller");
+            let target = id("target");
+            let lease = InputLease {
+                controller: controller.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                expires_unix_ms: 20_000,
+                nonce: [8; 16],
+                allow_keyboard: true,
+                allow_pointer: true,
+            };
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [9; 16],
+                source: target.clone(),
+                target: controller.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::InputLeaseGranted { lease },
+            };
+            assert_eq!(envelope.validate_at(&target, &controller, 10_100), Ok(()));
+            assert_eq!(
+                envelope.validate_at(&id("forged-target"), &controller, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        fn input_actions_reject_unbound_or_malformed_events() {
+            let source = id("controller");
+            let target = id("target");
+            for (nonce, event) in [
+                ([0; 16], FabricInputEvent::PointerMotion { x: 10, y: 20 }),
+                (
+                    [1; 16],
+                    FabricInputEvent::PointerButton {
+                        button: 0,
+                        pressed: true,
+                    },
+                ),
+                (
+                    [1; 16],
+                    FabricInputEvent::Key {
+                        keycode: 0x300,
+                        pressed: true,
+                        modifiers: 0,
+                    },
+                ),
+            ] {
+                let envelope = PersonalFabricActionEnvelope {
+                    request_id: [2; 16],
+                    source: source.clone(),
+                    target: target.clone(),
+                    issued_unix_ms: 10_000,
+                    action: PersonalFabricAction::Input {
+                        lease_nonce: nonce,
+                        event,
+                    },
+                };
+                assert_eq!(
+                    envelope.validate_at(&source, &target, 10_100),
+                    Err(FabricError::InvalidAction)
+                );
+            }
+        }
+
+        fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = |action| PersonalFabricActionEnvelope {
+                request_id: [8; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            assert!(
+                envelope(PersonalFabricAction::GamepadForwardEvent {
+                    forwarding_id: [1; 16],
+                    lease_nonce: [2; 16],
+                    sequence: 1,
+                    event: os_actions::ForwardedGamepadEvent::Button {
+                        button: os_actions::GamepadButton::South,
+                        pressed: true,
+                    },
+                })
+                .validate_at(&source, &target, 10_001)
+                .is_ok()
+            );
+            for action in [
+                PersonalFabricAction::GamepadForwardGrant {
+                    forwarding_id: [1; 16],
+                    accepted: true,
+                    lease_nonce: [0; 16],
+                },
+                PersonalFabricAction::GamepadForwardGrant {
+                    forwarding_id: [1; 16],
+                    accepted: false,
+                    lease_nonce: [2; 16],
+                },
+                PersonalFabricAction::GamepadForwardEvent {
+                    forwarding_id: [1; 16],
+                    lease_nonce: [2; 16],
+                    sequence: 2,
+                    event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
+                },
+            ] {
+                assert_eq!(
+                    envelope(action).validate_at(&source, &target, 10_001),
+                    Err(FabricError::InvalidAction)
+                );
+            }
+        }
+
+        remote_input_requires_a_short_lived_explicit_lease();
+        input_lease_must_be_issued_by_the_target_to_its_controller();
+        input_actions_reject_unbound_or_malformed_events();
+        gamepad_actions_are_typed_exact_bound_and_nonzero();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
+        fn ephemeral_actions_are_transport_bound_and_fresh() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::ResumeMedia {
+                    session_id: "player:one".into(),
+                    app_id: "so.tilo.music".into(),
+                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
+                    title: "Track".into(),
+                    locator: MediaSourceLocator::Workspace {
+                        path: "Music/track.flac".into(),
+                    },
+                    position_ms: 42,
+                    resume_playing: true,
+                    has_video: false,
+                },
+            };
+            assert_eq!(envelope.validate_at(&source, &target, 10_100), Ok(()));
+            assert_eq!(
+                envelope.validate_at(&id("intruder"), &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope.validate_at(&source, &id("other-target"), 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        fn new_action_variants_do_not_renumber_existing_wire_actions() {
+            let placement = postcard::to_allocvec(&PersonalFabricAction::SetDisplayPlacement {
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+            })
+            .unwrap();
+            let input = postcard::to_allocvec(&PersonalFabricAction::Input {
+                lease_nonce: [1; 16],
+                event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
+            })
+            .unwrap();
+            let bluetooth = postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPrepare {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                name: "Headphones".into(),
+            })
+            .unwrap();
+            assert_eq!(placement.first(), Some(&2));
+            assert_eq!(input.first(), Some(&5));
+            assert_eq!(bluetooth.first(), Some(&6));
+            let pairing =
+                postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
+                    request_id: [2; 16],
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                    authorization: [4; 16],
+                })
+                .unwrap();
+            assert_eq!(pairing.first(), Some(&11));
+            let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
+                file_name: "note.txt".into(),
+                content_hash: *blake3::hash(b"hello").as_bytes(),
+                bytes: b"hello".to_vec(),
+            })
+            .unwrap();
+            assert_eq!(nearby.first(), Some(&13));
+            let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
+                    epoch: [1; 16],
+                    token: [2; 16],
+                },
+            })
+            .unwrap();
+            assert_eq!(notification.first(), Some(&21));
+            let realtime_id = crate::shell::realtime_session::RealtimeFabricSessionId {
+                broker: [1; 16],
+                nonce: [2; 16],
+            };
+            for (action, index) in [
+                (
+                    PersonalFabricAction::RealtimeOffer {
+                        offer: crate::shell::realtime_session::RealtimeFabricOffer {
+                            session_id: realtime_id,
+                            app_id: "so.tilo.chat".into(),
+                            workspace_id: "room".into(),
+                            provider: "chat".into(),
+                            room_id: "call".into(),
+                            semantic_position: None,
+                            media_bits: 1,
+                            controls: crate::shell::realtime_session::RealtimeControlState::default(
+                            ),
+                            expires_unix_ms: 20_000,
+                        },
+                    },
+                    24,
+                ),
+                (
+                    PersonalFabricAction::RealtimeAccept {
+                        session_id: realtime_id,
+                    },
+                    25,
+                ),
+                (
+                    PersonalFabricAction::RealtimeMediaReady {
+                        session_id: realtime_id,
+                    },
+                    26,
+                ),
+                (
+                    PersonalFabricAction::RealtimeStopSource {
+                        session_id: realtime_id,
+                    },
+                    27,
+                ),
+                (
+                    PersonalFabricAction::RealtimeCancel {
+                        session_id: realtime_id,
+                    },
+                    28,
+                ),
+            ] {
+                assert_eq!(
+                    postcard::to_allocvec(&action).unwrap().first(),
+                    Some(&index)
+                );
+            }
+            for (action, index) in [
+                (
+                    PersonalFabricAction::GamepadForwardRequest {
+                        forwarding_id: [3; 16],
+                        app_id: "so.tilo.game".into(),
+                        workspace_id: "workspace".into(),
+                        session_id: "session".into(),
+                        label: "Controller".into(),
+                    },
+                    29,
+                ),
+                (
+                    PersonalFabricAction::GamepadForwardGrant {
+                        forwarding_id: [3; 16],
+                        accepted: true,
+                        lease_nonce: [4; 16],
+                    },
+                    30,
+                ),
+                (
+                    PersonalFabricAction::GamepadForwardEvent {
+                        forwarding_id: [3; 16],
+                        lease_nonce: [4; 16],
+                        sequence: 1,
+                        event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
+                    },
+                    31,
+                ),
+                (
+                    PersonalFabricAction::GamepadForwardStop {
+                        forwarding_id: [3; 16],
+                        lease_nonce: [4; 16],
+                    },
+                    32,
+                ),
+            ] {
+                assert_eq!(
+                    postcard::to_allocvec(&action).unwrap().first(),
+                    Some(&index)
+                );
+            }
+        }
+
+        fn notification_actions_are_source_bound_bounded_and_fresh() {
+            let source = id("source");
+            let target = id("target");
+            let notification = crate::notifications::ContinuityNotificationProjection {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
+                    epoch: [1; 16],
+                    token: [2; 16],
+                },
+                app_id: "so.tilo.mail".into(),
+                app_name: "Mail".into(),
+                title: "New message".into(),
+                body: "Preview".into(),
+                body_redacted: false,
+                actions: vec![("reply".into(), "Reply".into())],
+                urgency: 1,
+                expires_unix_ms: 20_000,
+            };
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::NotificationProject { notification },
+            };
+            assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
+            assert_eq!(
+                envelope.validate_at(&id("spoof"), &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+
+            let invalid = PersonalFabricActionEnvelope {
+                action: PersonalFabricAction::NotificationInvoke {
+                    id: tilo_desktop::notifications::ContinuityNotificationId {
+                        epoch: [1; 16],
+                        token: [2; 16],
+                    },
+                    action_key: "bad\naction".into(),
+                },
+                ..envelope
+            };
+            assert_eq!(
+                invalid.validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
+            let source = id("source");
+            let target = id("target");
+            let mut offer = crate::shell::realtime_session::RealtimeFabricOffer {
+                session_id: crate::shell::realtime_session::RealtimeFabricSessionId {
+                    broker: [1; 16],
+                    nonce: [2; 16],
+                },
+                app_id: "so.tilo.chat".into(),
+                workspace_id: "room".into(),
+                provider: "chat".into(),
+                room_id: "call-7".into(),
+                semantic_position: Some("stage".into()),
+                media_bits: 1,
+                controls: crate::shell::realtime_session::RealtimeControlState::default(),
+                expires_unix_ms: 20_000,
+            };
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [9; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::RealtimeOffer {
+                    offer: offer.clone(),
+                },
+            };
+            assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
+            assert_eq!(
+                envelope.validate_at(&id("spoof"), &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+            offer.room_id = "https://secret.example/join?token=x".into();
+            assert_eq!(
+                PersonalFabricActionEnvelope {
+                    action: PersonalFabricAction::RealtimeOffer {
+                        offer: offer.clone(),
+                    },
+                    ..envelope.clone()
+                }
+                .validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+            offer.room_id = "call-7".into();
+            offer.expires_unix_ms = 9_999;
+            assert_eq!(
+                PersonalFabricActionEnvelope {
+                    action: PersonalFabricAction::RealtimeOffer { offer },
+                    ..envelope
+                }
+                .validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        ephemeral_actions_are_transport_bound_and_fresh();
+        new_action_variants_do_not_renumber_existing_wire_actions();
+        notification_actions_are_source_bound_bounded_and_fresh();
+        realtime_offer_rejects_spoofing_urls_and_stale_metadata();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn audio_and_bluetooth_wire_is_versioned_bounded_and_canonical() {
+        fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = |action| PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            let offer = || PersonalFabricAction::RemoteAudioOffer {
+                session_id: [4; 16],
+                protocol_version: REMOTE_AUDIO_PROTOCOL_VERSION,
+                label: "All system audio".into(),
+                sample_rate_hz: REMOTE_AUDIO_SAMPLE_RATE_HZ,
+                channels: REMOTE_AUDIO_CHANNELS,
+                frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
+            };
+            assert_eq!(
+                envelope(offer()).validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            let mut unsupported = offer();
+            if let PersonalFabricAction::RemoteAudioOffer {
+                protocol_version, ..
+            } = &mut unsupported
+            {
+                *protocol_version = REMOTE_AUDIO_PROTOCOL_VERSION + 1;
+            }
+            assert_eq!(
+                envelope(unsupported).validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioDecision {
+                    session_id: [4; 16],
+                    accepted: true,
+                    authorization: None,
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioFrame {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                    sequence: 1,
+                    media_ts: 48_000,
+                    presentation_ns: 1_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS,
+                    pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
+                })
+                .validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioFrame {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                    sequence: 2,
+                    media_ts: 0,
+                    presentation_ns: REMOTE_AUDIO_GROUP_LATENCY_NS,
+                    pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioCancel {
+                    session_id: [4; 16],
+                })
+                .validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioCancel {
+                    session_id: [0; 16],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                    playout: None,
+                })
+                .validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                    session_id: [4; 16],
+                    authorization: [0; 16],
+                    playout: None,
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        fn bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity() {
+            let source = id("source");
+            let target = id("target");
+            let envelope = |action| PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            assert_eq!(
+                envelope(PersonalFabricAction::BluetoothHandoffPrepare {
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                    name: "Headphones".into(),
+                })
+                .validate_at(&source, &target, 10_100),
+                Ok(())
+            );
+            for address in [
+                "AA:BB:CC:DD:EE",
+                "AA-BB-CC-DD-EE-FF",
+                "../../org/bluez/hci0",
+                "GG:BB:CC:DD:EE:FF",
+            ] {
+                assert_eq!(
+                    envelope(PersonalFabricAction::BluetoothHandoffPrepare {
+                        address: address.into(),
+                        name: "Headphones".into(),
+                    })
+                    .validate_at(&source, &target, 10_100),
+                    Err(FabricError::InvalidAction)
+                );
+            }
+            assert_eq!(
+                envelope(PersonalFabricAction::BluetoothHandoffCommit {
+                    request_id: [0; 16],
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+            assert_eq!(
+                envelope(PersonalFabricAction::BluetoothHandoffPairingOffered {
+                    request_id: [5; 16],
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                    authorization: [0; 16],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
+
+        remote_audio_wire_is_versioned_bounded_and_capability_bearing();
+        bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity();
     }
 
     #[test]
@@ -2820,105 +3733,6 @@ mod tests {
                 "a frame played before its capture or beyond the latency bound"
             );
         }
-    }
-
-    #[test]
-    fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        let offer = || PersonalFabricAction::RemoteAudioOffer {
-            session_id: [4; 16],
-            protocol_version: REMOTE_AUDIO_PROTOCOL_VERSION,
-            label: "All system audio".into(),
-            sample_rate_hz: REMOTE_AUDIO_SAMPLE_RATE_HZ,
-            channels: REMOTE_AUDIO_CHANNELS,
-            frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
-        };
-        assert_eq!(
-            envelope(offer()).validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        let mut unsupported = offer();
-        if let PersonalFabricAction::RemoteAudioOffer {
-            protocol_version, ..
-        } = &mut unsupported
-        {
-            *protocol_version = REMOTE_AUDIO_PROTOCOL_VERSION + 1;
-        }
-        assert_eq!(
-            envelope(unsupported).validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioDecision {
-                session_id: [4; 16],
-                accepted: true,
-                authorization: None,
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioFrame {
-                session_id: [4; 16],
-                authorization: [5; 16],
-                sequence: 1,
-                media_ts: 48_000,
-                presentation_ns: 1_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS,
-                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioFrame {
-                session_id: [4; 16],
-                authorization: [5; 16],
-                sequence: 2,
-                media_ts: 0,
-                presentation_ns: REMOTE_AUDIO_GROUP_LATENCY_NS,
-                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioCancel {
-                session_id: [4; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioCancel {
-                session_id: [0; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioKeepalive {
-                session_id: [4; 16],
-                authorization: [5; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::RemoteAudioKeepalive {
-                session_id: [4; 16],
-                authorization: [0; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
     }
 
     #[test]
@@ -3027,651 +3841,6 @@ mod tests {
             fabric.admit_speaker_group(group),
             Err(FabricError::IneligibleSpeakerMember),
             "the laptop does not offer that output"
-        );
-    }
-
-    #[test]
-    fn bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffPrepare {
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                name: "Headphones".into(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        for address in [
-            "AA:BB:CC:DD:EE",
-            "AA-BB-CC-DD-EE-FF",
-            "../../org/bluez/hci0",
-            "GG:BB:CC:DD:EE:FF",
-        ] {
-            assert_eq!(
-                envelope(PersonalFabricAction::BluetoothHandoffPrepare {
-                    address: address.into(),
-                    name: "Headphones".into(),
-                })
-                .validate_at(&source, &target, 10_100),
-                Err(FabricError::InvalidAction)
-            );
-        }
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffCommit {
-                request_id: [0; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [5; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [0; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    #[test]
-    fn display_mirror_actions_require_exact_bounded_session_consent() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        let request = envelope(PersonalFabricAction::DisplayMirrorRequest {
-            session_id: [7; 16],
-        });
-        assert!(request.validate_at(&source, &target, 10_100).is_ok());
-        assert!(
-            envelope(PersonalFabricAction::DisplayMirrorRequest {
-                session_id: [0; 16],
-            })
-            .validate_at(&source, &target, 10_100)
-            .is_err()
-        );
-        assert!(
-            envelope(PersonalFabricAction::DisplayMirrorDecision {
-                session_id: [7; 16],
-                approved: true,
-                profile: Some(DisplayStreamProfile {
-                    codec: DisplayStreamCodec::H264AnnexB,
-                    max_width: 1920,
-                    max_height: 1080,
-                    max_fps: 60,
-                    max_bitrate_kbps: 12_000,
-                }),
-            })
-            .validate_at(&source, &target, 10_100)
-            .is_ok()
-        );
-        assert!(
-            envelope(PersonalFabricAction::DisplayMirrorDecision {
-                session_id: [7; 16],
-                approved: false,
-                profile: Some(DisplayStreamProfile {
-                    codec: DisplayStreamCodec::H264AnnexB,
-                    max_width: 1920,
-                    max_height: 1080,
-                    max_fps: 60,
-                    max_bitrate_kbps: 12_000,
-                }),
-            })
-            .validate_at(&source, &target, 10_100)
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferOffer {
-                transfer_id: [4; 16],
-                name: "Photos".into(),
-                kind: crate::shell::nearby_transfer::TransferKind::FolderArchive,
-                total_bytes: 100,
-                content_hash: [5; 32],
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferReady {
-                request_id: [0; 16],
-                transfer_id: [4; 16],
-                committed_offset: 0,
-                prefix_hash: *blake3::hash(&[]).as_bytes(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferOffer {
-                transfer_id: [4; 16],
-                name: "../escape".into(),
-                kind: crate::shell::nearby_transfer::TransferKind::File,
-                total_bytes: 100,
-                content_hash: [5; 32],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    #[test]
-    fn legacy_display_placement_bytes_decode_as_the_original_action() {
-        let action = PersonalFabricAction::SetDisplayPlacement {
-            rect: DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-        };
-        // The original wire tag and postcard field encoding, independent of
-        // the current enum serializer. Encoding and decoding must both agree.
-        let original = [2, 0, 0, 1, 1];
-        assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
-        assert_eq!(
-            postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
-            action
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one table of wire encodings pins every existing action discriminant"
-    )]
-    fn new_action_variants_do_not_renumber_existing_wire_actions() {
-        let placement = postcard::to_allocvec(&PersonalFabricAction::SetDisplayPlacement {
-            rect: DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-        })
-        .unwrap();
-        let input = postcard::to_allocvec(&PersonalFabricAction::Input {
-            lease_nonce: [1; 16],
-            event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
-        })
-        .unwrap();
-        let bluetooth = postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPrepare {
-            address: "AA:BB:CC:DD:EE:FF".into(),
-            name: "Headphones".into(),
-        })
-        .unwrap();
-        assert_eq!(placement.first(), Some(&2));
-        assert_eq!(input.first(), Some(&5));
-        assert_eq!(bluetooth.first(), Some(&6));
-        let pairing =
-            postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [2; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [4; 16],
-            })
-            .unwrap();
-        assert_eq!(pairing.first(), Some(&11));
-        let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
-            file_name: "note.txt".into(),
-            content_hash: *blake3::hash(b"hello").as_bytes(),
-            bytes: b"hello".to_vec(),
-        })
-        .unwrap();
-        assert_eq!(nearby.first(), Some(&13));
-        let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-            id: crate::notifications::ContinuityNotificationId {
-                epoch: [1; 16],
-                token: [2; 16],
-            },
-        })
-        .unwrap();
-        assert_eq!(notification.first(), Some(&21));
-        let realtime_id = crate::shell::realtime_session::RealtimeFabricSessionId {
-            broker: [1; 16],
-            nonce: [2; 16],
-        };
-        for (action, index) in [
-            (
-                PersonalFabricAction::RealtimeOffer {
-                    offer: crate::shell::realtime_session::RealtimeFabricOffer {
-                        session_id: realtime_id,
-                        app_id: "so.tilo.chat".into(),
-                        workspace_id: "room".into(),
-                        provider: "chat".into(),
-                        room_id: "call".into(),
-                        semantic_position: None,
-                        media_bits: 1,
-                        controls: crate::shell::realtime_session::RealtimeControlState::default(),
-                        expires_unix_ms: 20_000,
-                    },
-                },
-                24,
-            ),
-            (
-                PersonalFabricAction::RealtimeAccept {
-                    session_id: realtime_id,
-                },
-                25,
-            ),
-            (
-                PersonalFabricAction::RealtimeMediaReady {
-                    session_id: realtime_id,
-                },
-                26,
-            ),
-            (
-                PersonalFabricAction::RealtimeStopSource {
-                    session_id: realtime_id,
-                },
-                27,
-            ),
-            (
-                PersonalFabricAction::RealtimeCancel {
-                    session_id: realtime_id,
-                },
-                28,
-            ),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&action).unwrap().first(),
-                Some(&index)
-            );
-        }
-        for (action, index) in [
-            (
-                PersonalFabricAction::GamepadForwardRequest {
-                    forwarding_id: [3; 16],
-                    app_id: "so.tilo.game".into(),
-                    workspace_id: "workspace".into(),
-                    session_id: "session".into(),
-                    label: "Controller".into(),
-                },
-                29,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardGrant {
-                    forwarding_id: [3; 16],
-                    accepted: true,
-                    lease_nonce: [4; 16],
-                },
-                30,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardEvent {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                    sequence: 1,
-                    event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
-                },
-                31,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardStop {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                },
-                32,
-            ),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&action).unwrap().first(),
-                Some(&index)
-            );
-        }
-    }
-
-    #[test]
-    fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [8; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert!(
-            envelope(PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 1,
-                event: os_actions::ForwardedGamepadEvent::Button {
-                    button: os_actions::GamepadButton::South,
-                    pressed: true,
-                },
-            })
-            .validate_at(&source, &target, 10_001)
-            .is_ok()
-        );
-        for action in [
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: true,
-                lease_nonce: [0; 16],
-            },
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: false,
-                lease_nonce: [2; 16],
-            },
-            PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 2,
-                event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
-            },
-        ] {
-            assert_eq!(
-                envelope(action).validate_at(&source, &target, 10_001),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    #[test]
-    fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
-        let source = id("source");
-        let target = id("target");
-        let mut offer = crate::shell::realtime_session::RealtimeFabricOffer {
-            session_id: crate::shell::realtime_session::RealtimeFabricSessionId {
-                broker: [1; 16],
-                nonce: [2; 16],
-            },
-            app_id: "so.tilo.chat".into(),
-            workspace_id: "room".into(),
-            provider: "chat".into(),
-            room_id: "call-7".into(),
-            semantic_position: Some("stage".into()),
-            media_bits: 1,
-            controls: crate::shell::realtime_session::RealtimeControlState::default(),
-            expires_unix_ms: 20_000,
-        };
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [9; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::RealtimeOffer {
-                offer: offer.clone(),
-            },
-        };
-        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
-        assert_eq!(
-            envelope.validate_at(&id("spoof"), &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-        offer.room_id = "https://secret.example/join?token=x".into();
-        assert_eq!(
-            PersonalFabricActionEnvelope {
-                action: PersonalFabricAction::RealtimeOffer {
-                    offer: offer.clone(),
-                },
-                ..envelope.clone()
-            }
-            .validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-        offer.room_id = "call-7".into();
-        offer.expires_unix_ms = 9_999;
-        assert_eq!(
-            PersonalFabricActionEnvelope {
-                action: PersonalFabricAction::RealtimeOffer { offer },
-                ..envelope
-            }
-            .validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    #[test]
-    fn notification_actions_are_source_bound_bounded_and_fresh() {
-        let source = id("source");
-        let target = id("target");
-        let notification = crate::notifications::ContinuityNotificationProjection {
-            id: crate::notifications::ContinuityNotificationId {
-                epoch: [1; 16],
-                token: [2; 16],
-            },
-            app_id: "so.tilo.mail".into(),
-            app_name: "Mail".into(),
-            title: "New message".into(),
-            body: "Preview".into(),
-            body_redacted: false,
-            actions: vec![("reply".into(), "Reply".into())],
-            urgency: 1,
-            expires_unix_ms: 20_000,
-        };
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::NotificationProject { notification },
-        };
-        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
-        assert_eq!(
-            envelope.validate_at(&id("spoof"), &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-
-        let invalid = PersonalFabricActionEnvelope {
-            action: PersonalFabricAction::NotificationInvoke {
-                id: crate::notifications::ContinuityNotificationId {
-                    epoch: [1; 16],
-                    token: [2; 16],
-                },
-                action_key: "bad\naction".into(),
-            },
-            ..envelope
-        };
-        assert_eq!(
-            invalid.validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    #[test]
-    fn nearby_drop_rejects_paths_tampering_and_oversize_payloads() {
-        let source = id("source");
-        let target = id("target");
-        for (name, bytes, hash) in [
-            ("../secret", b"ok".to_vec(), *blake3::hash(b"ok").as_bytes()),
-            ("note.txt", b"changed".to_vec(), [0; 32]),
-            ("note.txt", vec![1; MAX_NEARBY_DROP_BYTES + 1], [0; 32]),
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [1; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10,
-                action: PersonalFabricAction::NearbyDrop {
-                    file_name: name.into(),
-                    content_hash: hash,
-                    bytes,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    #[test]
-    fn input_lease_must_be_issued_by_the_target_to_its_controller() {
-        let controller = id("controller");
-        let target = id("target");
-        let lease = InputLease {
-            controller: controller.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            expires_unix_ms: 20_000,
-            nonce: [8; 16],
-            allow_keyboard: true,
-            allow_pointer: true,
-        };
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [9; 16],
-            source: target.clone(),
-            target: controller.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::InputLeaseGranted { lease },
-        };
-        assert_eq!(envelope.validate_at(&target, &controller, 10_100), Ok(()));
-        assert_eq!(
-            envelope.validate_at(&id("forged-target"), &controller, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    #[test]
-    fn input_actions_reject_unbound_or_malformed_events() {
-        let source = id("controller");
-        let target = id("target");
-        for (nonce, event) in [
-            ([0; 16], FabricInputEvent::PointerMotion { x: 10, y: 20 }),
-            (
-                [1; 16],
-                FabricInputEvent::PointerButton {
-                    button: 0,
-                    pressed: true,
-                },
-            ),
-            (
-                [1; 16],
-                FabricInputEvent::Key {
-                    keycode: 0x300,
-                    pressed: true,
-                    modifiers: 0,
-                },
-            ),
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [2; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::Input {
-                    lease_nonce: nonce,
-                    event,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10_100),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    #[test]
-    fn media_action_locators_reject_host_paths_and_url_credentials() {
-        let source = id("source");
-        let target = id("target");
-        for locator in [
-            MediaSourceLocator::Workspace {
-                path: "../private/song.flac".into(),
-            },
-            MediaSourceLocator::RemoteStream {
-                url: "https://secret@example.com/song".into(),
-            },
-            MediaSourceLocator::AppResource {
-                uri: "1music://track/foreign".into(),
-            },
-            MediaSourceLocator::PersonalTransfer {
-                transfer_id: [0; 16],
-                file_name: "../foreign.mp4".into(),
-            },
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [4; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::ResumeMedia {
-                    session_id: "player:one".into(),
-                    app_id: "so.tilo.music".into(),
-                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
-                    title: "Track".into(),
-                    locator,
-                    position_ms: 0,
-                    resume_playing: true,
-                    has_video: false,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    #[test]
-    fn media_terminal_actions_require_exact_nonzero_request_and_session() {
-        let source = id("source");
-        let target = id("target");
-        for action in [
-            PersonalFabricAction::MediaRejected {
-                request_id: [9; 16],
-                session_id: "player:one".into(),
-                failure: MediaHandoffFailure::OpenFailed,
-            },
-            PersonalFabricAction::MediaCancelled {
-                request_id: [9; 16],
-                session_id: "player:one".into(),
-            },
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [4; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action,
-            };
-            assert_eq!(envelope.validate_at(&source, &target, 10_000), Ok(()));
-        }
-
-        let invalid = PersonalFabricActionEnvelope {
-            request_id: [4; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::MediaRejected {
-                request_id: [0; 16],
-                session_id: "player:one".into(),
-                failure: MediaHandoffFailure::OpenFailed,
-            },
-        };
-        assert_eq!(
-            invalid.validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidAction)
         );
     }
 }

@@ -2,22 +2,26 @@
 name = "settings-store"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The shared Tilo desktop settings file: one resolver, one forgiving read, one atomic write."
 
 [lib]
 name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { path = "../tilo-clock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
 # `$HOME/.config`), shared with every other reader of the settings file.
-xdg-paths = { path = "../xdg-paths" }
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Directory watch behind `watch_settings`; only long-lived readers opt in.
 notify = { workspace = true, optional = true }
 
@@ -25,7 +29,13 @@ notify = { workspace = true, optional = true }
 watch = ["dep:notify"]
 
 [dev-dependencies]
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

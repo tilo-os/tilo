@@ -60,6 +60,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: false,
                 note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();
@@ -97,6 +98,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: true,
                 note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();
@@ -279,6 +281,13 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert!(snapshot.channel_authorization.is_some());
     assert!(storage.load_staged_promotion().unwrap().is_none());
     let live_authorization = snapshot.channel_authorization.clone().unwrap();
+    // The channel key signs the compact form too.
+    let compact = storage.load_compact_snapshot().unwrap().unwrap();
+    registry_types::verify_compact_snapshot(&compact, &owner_hex, compact.issued_at_unix).unwrap();
+    assert_eq!(
+        compact.snapshot_hash_hex,
+        registry_types::snapshot_hash(&snapshot).unwrap()
+    );
 
     // Simulate a crash after the signed snapshot and moderation state became
     // durable and the staged manifest was consumed, but before the promotion
@@ -340,6 +349,9 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     assert_eq!(snapshot.sequence, 2);
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+    let compact = storage.load_compact_snapshot().unwrap().unwrap();
+    assert_eq!(compact.sequence, 2);
+    registry_types::verify_compact_snapshot(&compact, &owner_hex, compact.issued_at_unix).unwrap();
 
     // A higher-generation root authorization revokes the old channel at the
     // serving boundary immediately, even while its certificate is unexpired.
@@ -373,6 +385,100 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[test]
+fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let publisher_key = SigningKey::from_bytes(&[55; 32]);
+    let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+    let publisher_hex = hex::encode(publisher.public_key_bytes());
+    storage
+        .save_allowlist(&PublisherAllowlist {
+            publishers: vec![PublisherRow {
+                pubkey_hex: publisher_hex.clone(),
+                can_add_new: true,
+                note: "first party".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+            }],
+        })
+        .unwrap();
+    let (bytes, package_id) = signed_tapp(&publisher);
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let submission = |id: &str, url: &str, blake3_hex: &str| {
+        let entry = RegistryEntry {
+            package_id: id.into(),
+            name: "Editor".into(),
+            description: "Editor".into(),
+            tagline: "Edit video on Tilo OS".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
+            categories: vec!["Productivity".into()],
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: publisher_hex.clone(),
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                tapp_url: url.into(),
+                tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
+                tapp_size_bytes: bytes.len() as u64,
+                released_at_unix: 1,
+                tapp_blake3_hex: blake3_hex.into(),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
+            }],
+            updated_at_unix: 1,
+            signature_hex: String::new(),
+        };
+        PendingSubmission {
+            submission_id: id.into(),
+            submitted_at_unix: 1,
+            change: sign_change_request(EntryAction::Add, entry, &publisher_key),
+        }
+    };
+    // The advertised URL no longer serves these bytes, but the registry
+    // already holds them under the digest the publisher signed.
+    let collectable = submission(
+        "so.tilo.editor",
+        "https://apps.tilo.so/artifacts/gone/editor-x86_64.tapp",
+        &digest,
+    );
+    let uncollectable = submission(
+        "so.tilo.viewer",
+        "file:///untrusted/viewer-x86_64.tapp",
+        &"cc".repeat(32),
+    );
+    storage.save_pending(&collectable).unwrap();
+    storage.save_pending(&uncollectable).unwrap();
+    storage.save_staged_artifact(&digest, &bytes).unwrap();
+
+    let collected = run(
+        temp.path(),
+        &["collect-first-party", "--publisher-pubkey", &publisher_hex],
+    );
+    assert!(!collected.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&collected.stdout).unwrap();
+    assert_eq!(report["status"], "incomplete");
+    assert_eq!(report["collected"], 1);
+    assert_eq!(report["failed"][0]["submission"], "so.tilo.viewer");
+    let staged = storage.load_staged_promotion().unwrap().unwrap();
+    assert_eq!(staged.submissions, vec![collectable]);
+    assert_eq!(staged.artifacts.len(), 1);
+    assert_eq!(staged.artifacts[0].blake3_hex, digest);
+    assert!(
+        storage
+            .load_pending("so.tilo.viewer")
+            .unwrap()
+            .is_some_and(|pending| pending == uncollectable)
+    );
 }
 
 fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, tilo_app_package::PackageId) {

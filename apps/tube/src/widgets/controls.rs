@@ -5,8 +5,8 @@
 //! focus treatment, and accessibility semantics.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -75,8 +75,6 @@ impl Switch {
 }
 
 impl Widget for Switch {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -128,21 +126,11 @@ impl Widget for Switch {
         Toggle::paint(scene, transform, theme, &face);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hovered = self.rect.contains(point);
                 if hovered != self.hovered {
                     self.hovered = hovered;
@@ -153,10 +141,10 @@ impl Widget for Switch {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if self.hovered && !*handled => {
+            } if self.hovered && !*ctx.handled => {
                 self.activate();
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -165,8 +153,8 @@ impl Widget for Switch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(
             action,
@@ -238,6 +226,7 @@ impl Widget for Switch {
 mod tests {
     use super::*;
     use crate::action::{self, SettingFlag};
+    use automerge::AutoCommit;
 
     fn switch() -> Switch {
         Switch::new(
@@ -250,44 +239,46 @@ mod tests {
     }
 
     #[test]
-    fn switch_preserves_id_and_exposes_switch_state() {
-        let mut switch = switch();
-        switch.set_focus(true);
+    fn switch_exposes_state_activates_via_bus_and_hit_tests_its_rect() {
+        // Case `switch_preserves_id_and_exposes_switch_state`.
+        {
+            let mut switch = switch();
+            switch.set_focus(true);
 
-        assert_eq!(switch.test_id(), Some("switch_autoplay"));
-        let node = switch.accessibility().expect("switch accessibility");
-        assert_eq!(node.role, ui::a11y::Role::Switch);
-        assert_eq!(node.name.as_deref(), Some("Autoplay"));
-        assert_eq!(node.state.checked, Some(false));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-    }
+            assert_eq!(switch.test_id(), Some("switch_autoplay"));
+            let node = switch.accessibility().expect("switch accessibility");
+            assert_eq!(node.role, ui::a11y::Role::Switch);
+            assert_eq!(node.name.as_deref(), Some("Autoplay"));
+            assert_eq!(node.state.checked, Some(false));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+        }
+        // Case `accessibility_activation_uses_tube_action_bus`.
+        {
+            let bus = action::new_bus();
+            let mut switch =
+                Switch::new(true, &bus, Action::ToggleSetting(SettingFlag::ShowComments));
+            let mut state = AutoCommit::new();
 
-    #[test]
-    fn accessibility_activation_uses_tube_action_bus() {
-        let bus = action::new_bus();
-        let mut switch = Switch::new(true, &bus, Action::ToggleSetting(SettingFlag::ShowComments));
-        let mut state = AutoCommit::new();
-
-        assert!(switch.perform_action(
-            &ui::a11y::Action::ToggleCheck,
-            &mut state,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            action::drain(&bus),
-            vec![Action::ToggleSetting(SettingFlag::ShowComments)]
-        );
-    }
-
-    #[test]
-    fn pointer_hit_testing_stays_inside_switch_rect() {
-        let mut switch = switch();
-        switch.rect = Rect::new(10.0, 20.0, 56.0, 46.0);
-        assert_eq!(
-            switch.cursor_shape(Point::new(11.0, 21.0)),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-        assert_eq!(switch.cursor_shape(Point::new(9.0, 21.0)), None);
+            assert!(switch.perform_action(
+                &ui::a11y::Action::ToggleCheck,
+                &mut state,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                action::drain(&bus),
+                vec![Action::ToggleSetting(SettingFlag::ShowComments)]
+            );
+        }
+        // Case `pointer_hit_testing_stays_inside_switch_rect`.
+        {
+            let mut switch = switch();
+            switch.rect = Rect::new(10.0, 20.0, 56.0, 46.0);
+            assert_eq!(
+                switch.cursor_shape(Point::new(11.0, 21.0)),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+            assert_eq!(switch.cursor_shape(Point::new(9.0, 21.0)), None);
+        }
     }
 }

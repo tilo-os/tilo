@@ -2,9 +2,11 @@
 name = "durable-store"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Keyed, host-acknowledged durable storage for application records and views."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "durable_store"
@@ -23,3 +25,7 @@ thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

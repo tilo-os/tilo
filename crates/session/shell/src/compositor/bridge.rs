@@ -223,166 +223,168 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn bind_creates_bridge_socket_file() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream = runtime.path().join("wayland-0");
-        // Bind-only verification: the upstream doesn't need to be a real
-        // listener because we never call `start`.
-        std::fs::File::create(&upstream).unwrap();
+    fn bind_creates_a_fresh_socket_and_never_unlinks_a_non_socket() {
+        // Phase `bind_creates_bridge_socket_file`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream = runtime.path().join("wayland-0");
+            // Bind-only verification: the upstream doesn't need to be a real
+            // listener because we never call `start`.
+            std::fs::File::create(&upstream).unwrap();
 
-        let bridge = BridgeSocket::bind(42, runtime.path(), &upstream).unwrap();
-        assert!(
-            bridge.path().exists(),
-            "bridge socket file should exist after bind"
-        );
-        let path = bridge.path().to_path_buf();
-        drop(bridge);
-        assert!(!path.exists(), "bridge cleans up its socket on drop");
-    }
-
-    #[test]
-    fn bind_clears_stale_socket_file() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream = runtime.path().join("wayland-0");
-        std::fs::File::create(&upstream).unwrap();
-
-        // Plant a stale same-uid socket at the bridge path.
-        let stale_path = runtime.path().join("tilo-ws-7");
-        let stale = UnixListener::bind(&stale_path).unwrap();
-        drop(stale);
-        assert!(stale_path.exists());
-
-        // bind should unlink the stale and re-bind cleanly.
-        let bridge = BridgeSocket::bind(7, runtime.path(), &upstream).unwrap();
-        assert_eq!(bridge.path(), stale_path);
-        assert!(bridge.path().exists());
-    }
-
-    #[test]
-    fn bind_never_unlinks_a_non_socket_at_the_predictable_path() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream = runtime.path().join("wayland-0");
-        std::fs::File::create(&upstream).unwrap();
-        let occupied = runtime.path().join("tilo-ws-8");
-        std::fs::write(&occupied, b"keep me").unwrap();
-
-        let error = BridgeSocket::bind(8, runtime.path(), &upstream)
-            .err()
-            .expect("regular file must be refused");
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read(&occupied).unwrap(), b"keep me");
-    }
-
-    /// End-to-end round trip: upstream listener → bridge → client.
-    /// Bytes a client sends should hit the upstream, and bytes the
-    /// upstream replies with should come back to the client.
-    ///
-    /// Polls for up to 30s on each step before giving up and surfacing
-    /// the failure rather than hanging.
-    #[test]
-    fn relay_round_trips_bytes() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream_path = runtime.path().join("wayland-0");
-
-        // Bring up an upstream listener that echoes whatever it reads.
-        let upstream_listener = UnixListener::bind(&upstream_path).unwrap();
-        let upstream_thread = thread::spawn(move || {
-            let (mut conn, _) = upstream_listener.accept().expect("upstream accept");
-            let mut buf = [0u8; 5];
-            conn.read_exact(&mut buf).expect("upstream read");
-            assert_eq!(&buf, b"hello");
-            conn.write_all(b"world").expect("upstream write");
-        });
-
-        let mut bridge = BridgeSocket::bind(99, runtime.path(), &upstream_path).unwrap();
-        bridge.start().unwrap();
-
-        // Connect through the bridge — small retry loop because the
-        // accept thread may not have entered `accept` yet.
-        let bridge_path = bridge.path().to_path_buf();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut client = loop {
-            match UnixStream::connect(&bridge_path) {
-                Ok(s) => break s,
-                Err(_) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => panic!("client connect to bridge failed: {e}"),
-            }
-        };
-
-        client
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .unwrap();
-
-        client.write_all(b"hello").expect("client write");
-
-        let mut reply = [0u8; 5];
-        client.read_exact(&mut reply).expect("client read");
-        assert_eq!(&reply, b"world");
-
-        upstream_thread.join().expect("upstream thread");
-    }
-
-    /// Signalling shutdown causes the accept loop to exit promptly
-    /// without waiting for an external client.
-    #[test]
-    fn shutdown_flag_breaks_accept_loop() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream = runtime.path().join("wayland-0");
-        std::fs::File::create(&upstream).unwrap();
-
-        let mut bridge = BridgeSocket::bind(11, runtime.path(), &upstream).unwrap();
-        bridge.start().unwrap();
-
-        // Steal the handle so we can join it after signalling — we
-        // don't want Drop to fire mid-test.
-        let handle = bridge.accept_thread.take().expect("accept thread present");
-        // Signal shutdown.
-        bridge.shutdown();
-        // The non-blocking accept polls every ~20ms; the thread should
-        // exit well within 100ms of the flag flip.
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            if handle.is_finished() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(5));
+            let bridge = BridgeSocket::bind(42, runtime.path(), &upstream).unwrap();
+            assert!(
+                bridge.path().exists(),
+                "bridge socket file should exist after bind"
+            );
+            let path = bridge.path().to_path_buf();
+            drop(bridge);
+            assert!(!path.exists(), "bridge cleans up its socket on drop");
         }
-        assert!(
-            handle.is_finished(),
-            "accept loop should exit within 500ms of shutdown flag"
-        );
-        handle.join().expect("clean join after shutdown");
+        // Phase `bind_clears_stale_socket_file`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream = runtime.path().join("wayland-0");
+            std::fs::File::create(&upstream).unwrap();
+
+            // Plant a stale same-uid socket at the bridge path.
+            let stale_path = runtime.path().join("tilo-ws-7");
+            let stale = UnixListener::bind(&stale_path).unwrap();
+            drop(stale);
+            assert!(stale_path.exists());
+
+            // bind should unlink the stale and re-bind cleanly.
+            let bridge = BridgeSocket::bind(7, runtime.path(), &upstream).unwrap();
+            assert_eq!(bridge.path(), stale_path);
+            assert!(bridge.path().exists());
+        }
+        // Phase `bind_never_unlinks_a_non_socket_at_the_predictable_path`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream = runtime.path().join("wayland-0");
+            std::fs::File::create(&upstream).unwrap();
+            let occupied = runtime.path().join("tilo-ws-8");
+            std::fs::write(&occupied, b"keep me").unwrap();
+
+            let error = BridgeSocket::bind(8, runtime.path(), &upstream)
+                .err()
+                .expect("regular file must be refused");
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(std::fs::read(&occupied).unwrap(), b"keep me");
+        }
     }
 
-    /// Drop joins the accept-loop thread once shutdown is signalled
-    /// (set automatically inside Drop), within its 1s budget.
     #[test]
-    fn drop_joins_accept_thread_when_shutdown_signalled() {
-        let runtime = tempfile::tempdir().unwrap();
-        let upstream = runtime.path().join("wayland-0");
-        std::fs::File::create(&upstream).unwrap();
+    fn relay_round_trips_bytes_and_shutdown_joins_the_accept_loop() {
+        // Phase `relay_round_trips_bytes`.
+        // End-to-end round trip: upstream listener → bridge → client.
+        // Bytes a client sends should hit the upstream, and bytes the
+        // upstream replies with should come back to the client.
+        //
+        // Polls for up to 30s on each step before giving up and surfacing
+        // the failure rather than hanging.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream_path = runtime.path().join("wayland-0");
 
-        let mut bridge = BridgeSocket::bind(12, runtime.path(), &upstream).unwrap();
-        bridge.start().unwrap();
-        // Sanity-check the thread is alive before we drop.
-        assert!(
-            bridge
-                .accept_thread
-                .as_ref()
-                .is_some_and(|h| !h.is_finished()),
-            "accept thread should be running before drop"
-        );
-        let started = Instant::now();
-        drop(bridge);
-        let elapsed = started.elapsed();
-        // Drop's join budget is 1s; in practice the loop notices in
-        // ~20ms. Cap the assertion at 900ms so we're testing the
-        // happy path, not the detach fallback.
-        assert!(
-            elapsed < Duration::from_millis(900),
-            "drop should complete promptly via join; took {elapsed:?}"
-        );
+            // Bring up an upstream listener that echoes whatever it reads.
+            let upstream_listener = UnixListener::bind(&upstream_path).unwrap();
+            let upstream_thread = thread::spawn(move || {
+                let (mut conn, _) = upstream_listener.accept().expect("upstream accept");
+                let mut buf = [0u8; 5];
+                conn.read_exact(&mut buf).expect("upstream read");
+                assert_eq!(&buf, b"hello");
+                conn.write_all(b"world").expect("upstream write");
+            });
+
+            let mut bridge = BridgeSocket::bind(99, runtime.path(), &upstream_path).unwrap();
+            bridge.start().unwrap();
+
+            // Connect through the bridge — small retry loop because the
+            // accept thread may not have entered `accept` yet.
+            let bridge_path = bridge.path().to_path_buf();
+            let deadline = tilo_test_env::hang_deadline();
+            let mut client = loop {
+                match UnixStream::connect(&bridge_path) {
+                    Ok(s) => break s,
+                    Err(_) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("client connect to bridge failed: {e}"),
+                }
+            };
+
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+
+            client.write_all(b"hello").expect("client write");
+
+            let mut reply = [0u8; 5];
+            client.read_exact(&mut reply).expect("client read");
+            assert_eq!(&reply, b"world");
+
+            upstream_thread.join().expect("upstream thread");
+        }
+        // Phase `shutdown_flag_breaks_accept_loop`.
+        // Signalling shutdown causes the accept loop to exit promptly
+        // without waiting for an external client.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream = runtime.path().join("wayland-0");
+            std::fs::File::create(&upstream).unwrap();
+
+            let mut bridge = BridgeSocket::bind(11, runtime.path(), &upstream).unwrap();
+            bridge.start().unwrap();
+
+            // Steal the handle so we can join it after signalling — we
+            // don't want Drop to fire mid-test.
+            let handle = bridge.accept_thread.take().expect("accept thread present");
+            // Signal shutdown.
+            bridge.shutdown();
+            // The non-blocking accept polls every ~20ms; the thread should
+            // exit well within 100ms of the flag flip.
+            let deadline = tilo_test_env::hang_deadline();
+            while Instant::now() < deadline {
+                if handle.is_finished() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                handle.is_finished(),
+                "accept loop should exit within 500ms of shutdown flag"
+            );
+            handle.join().expect("clean join after shutdown");
+        }
+        // Phase `drop_joins_accept_thread_when_shutdown_signalled`.
+        // Drop joins the accept-loop thread once shutdown is signalled
+        // (set automatically inside Drop), within its 1s budget.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let upstream = runtime.path().join("wayland-0");
+            std::fs::File::create(&upstream).unwrap();
+
+            let mut bridge = BridgeSocket::bind(12, runtime.path(), &upstream).unwrap();
+            bridge.start().unwrap();
+            // Sanity-check the thread is alive before we drop.
+            assert!(
+                bridge
+                    .accept_thread
+                    .as_ref()
+                    .is_some_and(|h| !h.is_finished()),
+                "accept thread should be running before drop"
+            );
+            let started = Instant::now();
+            drop(bridge);
+            let elapsed = started.elapsed();
+            // Drop's join budget is 1s; in practice the loop notices in
+            // ~20ms. Cap the assertion at 900ms so we're testing the
+            // happy path, not the detach fallback.
+            assert!(
+                elapsed < Duration::from_millis(900),
+                "drop should complete promptly via join; took {elapsed:?}"
+            );
+        }
     }
 }

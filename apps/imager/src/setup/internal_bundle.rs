@@ -203,8 +203,8 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
         if name == "console" {
             require(
                 consoles.insert(*token)
-                    && consoles.len() <= 2
-                    && matches!(value, "tty0" | "ttyS0,115200"),
+                    && consoles.len() <= 3
+                    && matches!(value, "tty0" | "ttyAMA0,115200" | "ttyS0,115200"),
                 "unsupported console",
             )?;
             continue;
@@ -977,601 +977,710 @@ pub(crate) mod tests {
         data["boot_binding"]["uki_cmdline"] = json!(cmdline);
         validate_internal_bundle(&bytes(&data))
     }
+    /// Python-compatible fixture, live cmdline, root floor and closed cmdline profile.
     #[test]
-    fn python_compatible_positive() {
-        assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
-        assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
-        let bundle = validate_internal_bundle(SHARED_FIXTURE.as_bytes()).unwrap();
-        assert_eq!(bundle.purpose(), PURPOSE);
-        assert_eq!(bundle.purpose(), "tilo-internal-installer");
-    }
-    #[test]
-    fn shared_fixture_is_the_live_cmdline() {
-        let text = cmdline();
-        let tokens: Vec<_> = text.split_ascii_whitespace().collect();
-        for token in [
-            "root=tilo-auto",
-            "rd.luks.options=tpm2-device=auto,fido2-device=auto",
-            "tilo.install",
-            "tilo.mode=normal",
-            "tilo.generation=7",
-            "preempt=full",
-            "rw",
-        ] {
-            assert!(tokens.contains(&token), "fixture lacks {token}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn live_cmdline_profile_and_root_floor_are_closed_contracts() {
+        // Phase `python_compatible_positive`.
+        {
+            assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
+            assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+            let bundle = validate_internal_bundle(SHARED_FIXTURE.as_bytes()).unwrap();
+            assert_eq!(bundle.purpose(), PURPOSE);
+            assert_eq!(bundle.purpose(), "tilo-internal-installer");
         }
-        assert!(!text.contains("tilo.root="));
-        assert!(!text.contains("root=UUID="));
-        assert!(!text.contains("tilo.luks="));
-        assert!(!text.contains("tilo.unlock="));
+
+        // Phase `shared_fixture_is_the_live_cmdline`.
+        {
+            let text = cmdline();
+            let tokens: Vec<_> = text.split_ascii_whitespace().collect();
+            for token in [
+                "root=tilo-auto",
+                "rd.luks.options=tpm2-device=auto,fido2-device=auto",
+                "tilo.install",
+                "tilo.mode=normal",
+                "tilo.generation=7",
+                "preempt=full",
+                "rw",
+            ] {
+                assert!(tokens.contains(&token), "fixture lacks {token}");
+            }
+            assert!(!text.contains("tilo.root="));
+            assert!(!text.contains("root=UUID="));
+            assert!(!text.contains("tilo.luks="));
+            assert!(!text.contains("tilo.unlock="));
+        }
+
+        // Phase `minimised_root_fits_its_live_floor_partition`.
+        {
+            let data = fixture();
+            let root = &data["components"][1];
+            assert!(root["byte_size"].as_u64() < root["minimum_partition_bytes"].as_u64());
+            let bundle = validate_internal_bundle(&bytes(&data)).unwrap();
+            let view = bundle.component_by_role("staging-root").unwrap();
+            assert_eq!(view.minimum_partition_bytes, LIVE_ROOT_FLOOR_BYTES);
+            assert_eq!(view.byte_size, 8192);
+            assert_eq!(view.partition_type_guid, STAGING_ROOT_TYPE);
+            assert_eq!(view.filesystem_uuid, ROOT_UUID);
+            let esp = bundle.component_by_role("staging-esp").unwrap();
+            assert_eq!((esp.byte_size, esp.minimum_partition_bytes), (4096, 4096));
+            assert_eq!(esp.filesystem_uuid, "1234-ABCD");
+            assert!(bundle.component_by_role("target-root").is_none());
+            assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
+            assert_eq!(bundle.uki_sha256(), "a".repeat(64));
+            // A root that fills its partition exactly is still a valid bundle.
+            let mut full = fixture();
+            full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES);
+            full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES);
+            assert!(validate_internal_bundle(&bytes(&full)).is_ok());
+            full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES + 512);
+            full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES + 512);
+            assert!(validate_internal_bundle(&bytes(&full)).is_err());
+        }
+
+        // Phase `cmdline_profile_is_closed`.
+        {
+            let base = cmdline();
+            for tail in [
+                " ro",
+                " rw",
+                " init=/bin/sh",
+                " console=tty0",
+                " console=tty1",
+                " tilo.generation=12",
+                " unknown",
+                " loglevel=3",
+                " systemd.show_status=auto",
+                " rd.udev.log_level=3",
+                " vt.global_cursor_default=0",
+                " root=tilo-auto",
+                " rd.luks.options=tpm2-device=auto,fido2-device=auto",
+                " tilo.luks=000000000000000000000000000000000000000000000",
+            ] {
+                assert!(
+                    with_cmdline(&format!("{base}{tail}")).is_err(),
+                    "accepted {tail}"
+                );
+            }
+            for (old, new) in [
+                ("tilo.mode=normal", "tilo.mode=repair"),
+                ("preempt=full", "preempt=none"),
+                ("tilo.generation=7", "tilo.generation=0"),
+                ("tilo.generation=7", "tilo.generation=07"),
+                ("tilo.generation=7", "tilo.generation=12345678901"),
+                ("root=tilo-auto", "root=tilo-auto2"),
+                ("fido2-device=auto", "fido2-device=none"),
+                (" rw ", " ro "),
+            ] {
+                assert!(base.contains(old), "fixture lacks {old}");
+                assert!(
+                    with_cmdline(&base.replacen(old, new, 1)).is_err(),
+                    "accepted {new}"
+                );
+            }
+            for accepted in [
+                base.clone(),
+                base.replacen("tilo.generation=7", "tilo.generation=4294967295", 1),
+                base.replacen(" tilo.generation=7", "", 1),
+                base.replacen(
+                    " console=tty0 console=ttyAMA0,115200 console=ttyS0,115200",
+                    "",
+                    1,
+                ),
+            ] {
+                assert!(with_cmdline(&accepted).is_ok(), "rejected {accepted}");
+            }
+            for required in ["tilo.install", "rw", "root=tilo-auto"] {
+                let removed = base
+                    .split_ascii_whitespace()
+                    .filter(|token| *token != required)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert!(
+                    with_cmdline(&removed).is_err(),
+                    "accepted without {required}"
+                );
+            }
+        }
+
+        // Phase `device_bound_cmdlines_are_rejected`.
+        {
+            let base = cmdline();
+            let auto = "root=tilo-auto";
+            for cmdline in [
+                base.replacen(auto, &format!("root=UUID={ROOT_UUID}"), 1),
+                base.replacen(auto, &format!("root=PARTUUID={ROOT_UUID}"), 1),
+                base.replacen(auto, &format!("tilo.root={}", "0".repeat(37)), 1),
+            ] {
+                assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
+            }
+        }
     }
+    /// Schema corruption, ambiguous JSON, architectures and object representation.
     #[test]
-    fn rejects_single_field_schema_corruptions() {
-        let cases = [
-            ("/schema", json!(1)),
-            ("/schema", json!(3)),
-            ("/purpose", json!("removable-media")),
-            ("/firmware", json!("bios")),
-            ("/secure_boot", json!("enabled")),
-            ("/installer_protocol", json!(2)),
-            ("/architecture", json!("arm")),
-            ("/release_id", json!("../escape")),
-            ("/source_image_bytes", json!(1_u64 << 41)),
-            ("/components/1/role", json!("staging-esp")),
-            ("/components/1/filename", json!("staging-esp.img")),
-            ("/components/0/filename", json!("../escape.img")),
-            ("/components/0/sha256", json!("A".repeat(64))),
-            ("/components/0/byte_size", json!(4095)),
-            ("/components/0/source_offset", json!(0)),
-            ("/components/1/source_offset", json!(17408)),
-            ("/components/1/minimum_partition_bytes", json!(4096)),
-            (
-                "/components/1/minimum_partition_bytes",
-                json!(LIVE_ROOT_FLOOR_BYTES - 512),
-            ),
-            ("/components/0/minimum_partition_bytes", json!(2048)),
-            (
-                "/components/1/filesystem_uuid",
-                json!("00000000-0000-0000-0000-000000000000"),
-            ),
-            ("/components/0/filesystem_uuid", json!("1234-abcd")),
-            ("/components/0/filesystem_type", json!("btrfs")),
-            (
-                "/components/1/partition_type_guid",
-                json!("b921b045-1df0-41c3-af44-4c6f280d3fae"),
-            ),
-            (
-                "/components/1/partition_type_guid",
-                json!("4f68bce3-e8cd-4db1-96e7-fbcaf984b709"),
-            ),
-            (
-                "/components/1/partition_type_guid",
-                json!("7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"),
-            ),
-            (
-                "/components/1/partition_type_guid",
-                json!("0fc63daf-8483-4772-8e79-3d69d8477de4"),
-            ),
-            ("/boot_binding/uki_architecture", json!("aarch64")),
-            ("/boot_binding/efi_path", json!("/EFI/../evil.efi")),
-            ("/boot_binding/efi_path", json!("/EFI/Linux/fixture.efi")),
-            ("/boot_binding/efi_path", json!("/EFI/BOOT/BOOTAA64.EFI")),
-            ("/boot_binding/efi_path", json!("/EFI/BOOT/bootx64.efi")),
-            ("/boot_binding/composefs_digest", json!("c".repeat(128))),
-            ("/boot_binding/uki_sha256", json!("A".repeat(64))),
-        ];
-        for (path, value) in cases {
-            let mut data = fixture();
-            *data.pointer_mut(path).unwrap() = value.clone();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn bundle_schema_rejects_corrupt_ambiguous_or_positional_records() {
+        // Phase `rejects_single_field_schema_corruptions`.
+        {
+            let cases = [
+                ("/schema", json!(1)),
+                ("/schema", json!(3)),
+                ("/purpose", json!("removable-media")),
+                ("/firmware", json!("bios")),
+                ("/secure_boot", json!("enabled")),
+                ("/installer_protocol", json!(2)),
+                ("/architecture", json!("arm")),
+                ("/release_id", json!("../escape")),
+                ("/source_image_bytes", json!(1_u64 << 41)),
+                ("/components/1/role", json!("staging-esp")),
+                ("/components/1/filename", json!("staging-esp.img")),
+                ("/components/0/filename", json!("../escape.img")),
+                ("/components/0/sha256", json!("A".repeat(64))),
+                ("/components/0/byte_size", json!(4095)),
+                ("/components/0/source_offset", json!(0)),
+                ("/components/1/source_offset", json!(17408)),
+                ("/components/1/minimum_partition_bytes", json!(4096)),
+                (
+                    "/components/1/minimum_partition_bytes",
+                    json!(LIVE_ROOT_FLOOR_BYTES - 512),
+                ),
+                ("/components/0/minimum_partition_bytes", json!(2048)),
+                (
+                    "/components/1/filesystem_uuid",
+                    json!("00000000-0000-0000-0000-000000000000"),
+                ),
+                ("/components/0/filesystem_uuid", json!("1234-abcd")),
+                ("/components/0/filesystem_type", json!("btrfs")),
+                (
+                    "/components/1/partition_type_guid",
+                    json!("b921b045-1df0-41c3-af44-4c6f280d3fae"),
+                ),
+                (
+                    "/components/1/partition_type_guid",
+                    json!("4f68bce3-e8cd-4db1-96e7-fbcaf984b709"),
+                ),
+                (
+                    "/components/1/partition_type_guid",
+                    json!("7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"),
+                ),
+                (
+                    "/components/1/partition_type_guid",
+                    json!("0fc63daf-8483-4772-8e79-3d69d8477de4"),
+                ),
+                ("/boot_binding/uki_architecture", json!("aarch64")),
+                ("/boot_binding/efi_path", json!("/EFI/../evil.efi")),
+                ("/boot_binding/efi_path", json!("/EFI/Linux/fixture.efi")),
+                ("/boot_binding/efi_path", json!("/EFI/BOOT/BOOTAA64.EFI")),
+                ("/boot_binding/efi_path", json!("/EFI/BOOT/bootx64.efi")),
+                ("/boot_binding/composefs_digest", json!("c".repeat(128))),
+                ("/boot_binding/uki_sha256", json!("A".repeat(64))),
+            ];
+            for (path, value) in cases {
+                let mut data = fixture();
+                *data.pointer_mut(path).unwrap() = value.clone();
+                assert!(
+                    validate_internal_bundle(&bytes(&data)).is_err(),
+                    "accepted {path} = {value}"
+                );
+            }
+        }
+
+        // Phase `rejects_ambiguous_or_unbounded_json`.
+        {
+            let raw = String::from_utf8(bytes(&fixture())).unwrap();
+            assert!(raw.contains("\"schema\":2"));
             assert!(
-                validate_internal_bundle(&bytes(&data)).is_err(),
-                "accepted {path} = {value}"
+                validate_internal_bundle(
+                    raw.replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1)
+                        .as_bytes()
+                )
+                .is_err()
             );
-        }
-    }
-    #[test]
-    fn minimised_root_fits_its_live_floor_partition() {
-        let data = fixture();
-        let root = &data["components"][1];
-        assert!(root["byte_size"].as_u64() < root["minimum_partition_bytes"].as_u64());
-        let bundle = validate_internal_bundle(&bytes(&data)).unwrap();
-        let view = bundle.component_by_role("staging-root").unwrap();
-        assert_eq!(view.minimum_partition_bytes, LIVE_ROOT_FLOOR_BYTES);
-        assert_eq!(view.byte_size, 8192);
-        assert_eq!(view.partition_type_guid, STAGING_ROOT_TYPE);
-        assert_eq!(view.filesystem_uuid, ROOT_UUID);
-        let esp = bundle.component_by_role("staging-esp").unwrap();
-        assert_eq!((esp.byte_size, esp.minimum_partition_bytes), (4096, 4096));
-        assert_eq!(esp.filesystem_uuid, "1234-ABCD");
-        assert!(bundle.component_by_role("target-root").is_none());
-        assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
-        assert_eq!(bundle.uki_sha256(), "a".repeat(64));
-        // A root that fills its partition exactly is still a valid bundle.
-        let mut full = fixture();
-        full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES);
-        full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES);
-        assert!(validate_internal_bundle(&bytes(&full)).is_ok());
-        full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES + 512);
-        full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES + 512);
-        assert!(validate_internal_bundle(&bytes(&full)).is_err());
-    }
-    #[test]
-    fn rejects_ambiguous_or_unbounded_json() {
-        let raw = String::from_utf8(bytes(&fixture())).unwrap();
-        assert!(raw.contains("\"schema\":2"));
-        assert!(
-            validate_internal_bundle(
-                raw.replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1)
-                    .as_bytes()
-            )
-            .is_err()
-        );
-        for value in [json!(true), json!(2.0), json!("2"), json!(-2)] {
+            for value in [json!(true), json!(2.0), json!("2"), json!(-2)] {
+                let mut data = fixture();
+                data["schema"] = value;
+                assert!(validate_internal_bundle(&bytes(&data)).is_err());
+            }
             let mut data = fixture();
-            data["schema"] = value;
+            data["components"][0]["source_attributes"] = json!(0);
             assert!(validate_internal_bundle(&bytes(&data)).is_err());
+            // The device-bound root locator of earlier exports is not a field.
+            let mut data = fixture();
+            data["boot_binding"]["root_locator"] = json!(format!("UUID={ROOT_UUID}"));
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+            let mut raw = bytes(&fixture());
+            raw.resize(MAX_MANIFEST_BYTES + 1, b' ');
+            assert!(validate_internal_bundle(&raw).is_err());
         }
-        let mut data = fixture();
-        data["components"][0]["source_attributes"] = json!(0);
-        assert!(validate_internal_bundle(&bytes(&data)).is_err());
-        // The device-bound root locator of earlier exports is not a field.
-        let mut data = fixture();
-        data["boot_binding"]["root_locator"] = json!(format!("UUID={ROOT_UUID}"));
-        assert!(validate_internal_bundle(&bytes(&data)).is_err());
-        let mut raw = bytes(&fixture());
-        raw.resize(MAX_MANIFEST_BYTES + 1, b' ');
-        assert!(validate_internal_bundle(&raw).is_err());
-    }
-    #[test]
-    fn cmdline_profile_is_closed() {
-        let base = cmdline();
-        for tail in [
-            " ro",
-            " rw",
-            " init=/bin/sh",
-            " console=tty0",
-            " console=tty1",
-            " tilo.generation=12",
-            " unknown",
-            " loglevel=3",
-            " systemd.show_status=auto",
-            " rd.udev.log_level=3",
-            " vt.global_cursor_default=0",
-            " root=tilo-auto",
-            " rd.luks.options=tpm2-device=auto,fido2-device=auto",
-            " tilo.luks=000000000000000000000000000000000000000000000",
-        ] {
-            assert!(
-                with_cmdline(&format!("{base}{tail}")).is_err(),
-                "accepted {tail}"
+
+        // Phase `accepts_both_architectures_and_rejects_nested_unknown_or_duplicate_keys`.
+        {
+            let mut value = fixture();
+            value["architecture"] = json!("aarch64");
+            value["boot_binding"]["uki_architecture"] = json!("aarch64");
+            // Each architecture boots through its own fallback loader path.
+            assert!(validate_internal_bundle(&bytes(&value)).is_err());
+            value["boot_binding"]["efi_path"] = json!("/EFI/BOOT/BOOTAA64.EFI");
+            assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+            assert_eq!(fallback_loader("aarch64"), Some("/EFI/BOOT/BOOTAA64.EFI"));
+            assert_eq!(fallback_loader("riscv64"), None);
+            for path in ["/boot_binding", "/components/0"] {
+                let mut value = fixture();
+                value.pointer_mut(path).unwrap()["unknown"] = json!(true);
+                assert!(validate_internal_bundle(&bytes(&value)).is_err());
+            }
+            let raw = String::from_utf8(bytes(&fixture())).unwrap();
+            for field in ["filename", "uki_architecture"] {
+                let marker = format!("\"{field}\":");
+                let changed = raw.replacen(&marker, &format!("\"{field}\":\"bad\",{marker}"), 1);
+                assert!(validate_internal_bundle(changed.as_bytes()).is_err());
+            }
+        }
+
+        // Phase `representation_manifest_must_be_an_object`.
+        {
+            let value = fixture();
+            assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+            let array = positional_record(
+                &value,
+                "schema purpose release_id architecture firmware secure_boot installer_protocol source_image_bytes components boot_binding",
             );
+            assert!(validate_internal_bundle(&bytes(&array)).is_err());
         }
-        for (old, new) in [
-            ("tilo.mode=normal", "tilo.mode=repair"),
-            ("preempt=full", "preempt=none"),
-            ("tilo.generation=7", "tilo.generation=0"),
-            ("tilo.generation=7", "tilo.generation=07"),
-            ("tilo.generation=7", "tilo.generation=12345678901"),
-            ("root=tilo-auto", "root=tilo-auto2"),
-            ("fido2-device=auto", "fido2-device=none"),
-            (" rw ", " ro "),
-        ] {
-            assert!(base.contains(old), "fixture lacks {old}");
-            assert!(
-                with_cmdline(&base.replacen(old, new, 1)).is_err(),
-                "accepted {new}"
+
+        // Phase `representation_component_must_be_an_object`.
+        {
+            let mut value = fixture();
+            assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+            value["components"][0] = positional_record(
+                &value["components"][0],
+                "role filename byte_size sha256 partition_type_guid filesystem_type filesystem_uuid minimum_partition_bytes source_offset",
             );
+            assert!(validate_internal_bundle(&bytes(&value)).is_err());
         }
-        for accepted in [
-            base.clone(),
-            base.replacen("tilo.generation=7", "tilo.generation=4294967295", 1),
-            base.replacen(" tilo.generation=7", "", 1),
-            base.replacen(" console=tty0 console=ttyS0,115200", "", 1),
-        ] {
-            assert!(with_cmdline(&accepted).is_ok(), "rejected {accepted}");
-        }
-        for required in ["tilo.install", "rw", "root=tilo-auto"] {
-            let removed = base
-                .split_ascii_whitespace()
-                .filter(|token| *token != required)
-                .collect::<Vec<_>>()
-                .join(" ");
-            assert!(
-                with_cmdline(&removed).is_err(),
-                "accepted without {required}"
+
+        // Phase `representation_boot_binding_must_be_an_object`.
+        {
+            let mut value = fixture();
+            assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+            value["boot_binding"] = positional_record(
+                &value["boot_binding"],
+                "efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest",
             );
+            assert!(validate_internal_bundle(&bytes(&value)).is_err());
         }
     }
+    /// Missing components, exact bytes, special files, replacement and cancellation.
     #[test]
-    fn device_bound_cmdlines_are_rejected() {
-        let base = cmdline();
-        let auto = "root=tilo-auto";
-        for cmdline in [
-            base.replacen(auto, &format!("root=UUID={ROOT_UUID}"), 1),
-            base.replacen(auto, &format!("root=PARTUUID={ROOT_UUID}"), 1),
-            base.replacen(auto, &format!("tilo.root={}", "0".repeat(37)), 1),
-        ] {
-            assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
-        }
-    }
-    #[test]
-    fn missing_components_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-    }
-    #[test]
-    fn component_bytes_must_match_exact_length_and_digest() {
-        let (dir, bundle) = ordinary_bundle();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok());
-        for data in [vec![b'R'; 8191], vec![b'R'; 8193], vec![b'X'; 8192]] {
-            std::fs::write(dir.path().join("staging-root.img"), data).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn component_verification_requires_exact_stable_regular_files() {
+        // Phase `missing_components_are_rejected`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
             assert!(
                 verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
             );
         }
-    }
-    #[cfg(unix)]
-    #[test]
-    fn rejects_links_directories_and_fifos_without_blocking() {
-        use std::os::unix::fs::symlink;
-        let (dir, bundle) = ordinary_bundle();
-        let root = dir.path().join("staging-root.img");
-        std::fs::rename(&root, dir.path().join("saved.img")).unwrap();
-        symlink("saved.img", &root).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-        std::fs::remove_file(&root).unwrap();
-        std::fs::hard_link(dir.path().join("saved.img"), &root).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-        std::fs::remove_file(&root).unwrap();
-        std::fs::create_dir(&root).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-        std::fs::remove_dir(&root).unwrap();
-        let name = std::ffi::CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: the temporary pathname is NUL-terminated and remains live.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-        let alias = dir.path().with_extension("link");
-        symlink(dir.path(), &alias).unwrap();
-        assert!(verify_internal_components(&bundle, &alias, &AtomicBool::new(false)).is_err());
-        std::fs::remove_file(alias).unwrap();
-    }
-    #[cfg(unix)]
-    #[test]
-    fn rejects_replacement_after_open_and_of_an_earlier_component() {
-        for target in ["staging-root.img", "staging-esp.img"] {
+
+        // Phase `component_bytes_must_match_exact_length_and_digest`.
+        {
             let (dir, bundle) = ordinary_bundle();
-            let root = dir.path().to_owned();
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok()
+            );
+            for data in [vec![b'R'; 8191], vec![b'R'; 8193], vec![b'X'; 8192]] {
+                std::fs::write(dir.path().join("staging-root.img"), data).unwrap();
+                assert!(
+                    verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false))
+                        .is_err()
+                );
+            }
+        }
+
+        // Phase `rejects_links_directories_and_fifos_without_blocking`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let (dir, bundle) = ordinary_bundle();
+            let root = dir.path().join("staging-root.img");
+            std::fs::rename(&root, dir.path().join("saved.img")).unwrap();
+            symlink("saved.img", &root).unwrap();
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
+            );
+            std::fs::remove_file(&root).unwrap();
+            std::fs::hard_link(dir.path().join("saved.img"), &root).unwrap();
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
+            );
+            std::fs::remove_file(&root).unwrap();
+            std::fs::create_dir(&root).unwrap();
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
+            );
+            std::fs::remove_dir(&root).unwrap();
+            let name = std::ffi::CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: the temporary pathname is NUL-terminated and remains live.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
+            );
+            let alias = dir.path().with_extension("link");
+            symlink(dir.path(), &alias).unwrap();
+            assert!(verify_internal_components(&bundle, &alias, &AtomicBool::new(false)).is_err());
+            std::fs::remove_file(alias).unwrap();
+        }
+
+        // Phase `rejects_replacement_after_open_and_of_an_earlier_component`.
+        #[cfg(unix)]
+        {
+            for target in ["staging-root.img", "staging-esp.img"] {
+                let (dir, bundle) = ordinary_bundle();
+                let root = dir.path().to_owned();
+                with_hook(
+                    Box::new(move |stage, name, _| {
+                        if stage == "opened" && name == "staging-root.img" {
+                            std::fs::rename(root.join(target), root.join("retained.img")).unwrap();
+                            std::fs::write(
+                                root.join(target),
+                                vec![
+                                    if target == "staging-root.img" {
+                                        b'R'
+                                    } else {
+                                        b'E'
+                                    };
+                                    if target == "staging-root.img" {
+                                        8192
+                                    } else {
+                                        4096
+                                    }
+                                ],
+                            )
+                            .unwrap();
+                        }
+                    }),
+                    || {
+                        assert!(
+                            verify_internal_components(
+                                &bundle,
+                                dir.path(),
+                                &AtomicBool::new(false)
+                            )
+                            .is_err()
+                        )
+                    },
+                );
+            }
+        }
+
+        // Phase `rejects_directory_replacement_even_when_pinned_bytes_match`.
+        #[cfg(unix)]
+        {
+            let parent = tempfile::tempdir().unwrap();
+            let path = parent.path().join("bundle");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
+            std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
+            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
+            let root = path.clone();
+            let moved = parent.path().join("retained");
             with_hook(
                 Box::new(move |stage, name, _| {
-                    if stage == "opened" && name == "staging-root.img" {
-                        std::fs::rename(root.join(target), root.join("retained.img")).unwrap();
-                        std::fs::write(
-                            root.join(target),
-                            vec![
-                                if target == "staging-root.img" {
-                                    b'R'
-                                } else {
-                                    b'E'
-                                };
-                                if target == "staging-root.img" {
-                                    8192
-                                } else {
-                                    4096
-                                }
-                            ],
-                        )
-                        .unwrap();
+                    if stage == "opened" && name == "staging-esp.img" {
+                        std::fs::rename(&root, &moved).unwrap();
+                        std::fs::create_dir(&root).unwrap();
                     }
                 }),
                 || {
                     assert!(
-                        verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false))
+                        verify_internal_components(&bundle, &path, &AtomicBool::new(false))
                             .is_err()
                     )
                 },
             );
         }
-    }
-    #[test]
-    fn observes_cancellation_before_open_first_middle_last_read_and_eof() {
-        use std::sync::{Arc, atomic::Ordering};
-        let (dir, _) = ordinary_bundle();
-        // Three reads, with the final read shorter than the fixed buffer.
-        let payload = vec![b'R'; 131584];
-        std::fs::write(dir.path().join("staging-root.img"), &payload).unwrap();
-        let mut manifest = fixture();
-        manifest["components"][1]["byte_size"] = json!(payload.len());
-        manifest["components"][1]["sha256"] = json!(hex::encode(Sha256::digest(&payload)));
-        manifest["source_image_bytes"] = json!(21504 + payload.len());
-        let bundle = validate_internal_bundle(&bytes(&manifest)).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok());
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(true)).is_err());
-        for (stage, count) in [
-            ("opened", 0),
-            ("read", 65536),
-            ("read", 131072),
-            ("read", 131584),
-            ("eof", 131584),
-            ("readback", 131584),
-        ] {
-            let cancel = Arc::new(AtomicBool::new(false));
-            let signal = cancel.clone();
-            with_hook(
-                Box::new(move |observed, name, bytes| {
-                    if name == "staging-root.img" && observed == stage && bytes == count {
-                        signal.store(true, Ordering::Release);
-                    }
-                }),
-                || {
-                    assert!(
-                        verify_internal_components(&bundle, dir.path(), &cancel).is_err(),
-                        "missed {stage}/{count}"
-                    )
-                },
+
+        // Phase `observes_cancellation_before_open_first_middle_last_read_and_eof`.
+        {
+            use std::sync::{Arc, atomic::Ordering};
+            let (dir, _) = ordinary_bundle();
+            // Three reads, with the final read shorter than the fixed buffer.
+            let payload = vec![b'R'; 131584];
+            std::fs::write(dir.path().join("staging-root.img"), &payload).unwrap();
+            let mut manifest = fixture();
+            manifest["components"][1]["byte_size"] = json!(payload.len());
+            manifest["components"][1]["sha256"] = json!(hex::encode(Sha256::digest(&payload)));
+            manifest["source_image_bytes"] = json!(21504 + payload.len());
+            let bundle = validate_internal_bundle(&bytes(&manifest)).unwrap();
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok()
             );
+            assert!(
+                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(true)).is_err()
+            );
+            for (stage, count) in [
+                ("opened", 0),
+                ("read", 65536),
+                ("read", 131072),
+                ("read", 131584),
+                ("eof", 131584),
+                ("readback", 131584),
+            ] {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let signal = cancel.clone();
+                with_hook(
+                    Box::new(move |observed, name, bytes| {
+                        if name == "staging-root.img" && observed == stage && bytes == count {
+                            signal.store(true, Ordering::Release);
+                        }
+                    }),
+                    || {
+                        assert!(
+                            verify_internal_components(&bundle, dir.path(), &cancel).is_err(),
+                            "missed {stage}/{count}"
+                        )
+                    },
+                );
+            }
         }
     }
-
     fn windows_path(text: &str) -> Result<WindowsDirectoryPath, String> {
         windows_directory_path(text.encode_utf16())
     }
 
+    /// Windows Unicode ancestor names, bounds and bridges.
     #[test]
-    fn windows_unicode_ancestors_retain_exact_names() {
-        for name in [
-            "André",
-            "用户",
-            "e\u{301}",
-            "cache-😀",
-            "O'Neil",
-            "$cache",
-            "CONsole",
-            "COM10",
-            "COM¹safe",
-        ] {
-            let parsed = windows_path(&format!("C:\\Users\\{name}\\cache")).unwrap();
-            assert_eq!(parsed.root, [b'C' as u16, b':' as u16, b'\\' as u16]);
-            assert_eq!(parsed.names[1], name.encode_utf16().collect::<Vec<_>>());
-        }
-        assert!(windows_path("c:\\").unwrap().names.is_empty());
-        let composed = windows_path("C:\\é").unwrap();
-        let decomposed = windows_path("C:\\e\u{301}").unwrap();
-        assert_eq!(composed.names, vec![vec![0xe9]]);
-        assert_eq!(decomposed.names, vec![vec![b'e' as u16, 0x301]]);
-        assert_ne!(composed, decomposed);
-    }
-
-    #[test]
-    fn windows_unicode_ancestor_bounds_count_utf16_units() {
-        let leaf = format!("{}a", "😀".repeat(127));
-        assert_eq!(leaf.encode_utf16().count(), 255);
-        assert!(windows_path(&format!("C:\\{leaf}")).is_ok());
-        assert!(windows_path(&format!("C:\\{leaf}a")).is_err());
-        let mut names = vec!["é".repeat(255); 15];
-        names.push("é".repeat(253));
-        let path = format!("C:\\{}", names.join("\\"));
-        assert_eq!(path.encode_utf16().count(), 4096);
-        assert!(windows_path(&path).is_ok());
-        // The last leaf remains below 255; only the total path limit changes.
-        assert!(windows_path(&(path + "a")).is_err());
-        assert!(windows_path(&format!("C:\\{}", vec!["é"; 64].join("\\"))).is_ok());
-        assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
-    }
-
-    #[test]
-    fn windows_unicode_raw_collection_is_bounded() {
-        let mut consumed = 0;
-        let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
-        assert!(windows_directory_path(raw).is_err());
-        assert_eq!(consumed, 4097);
-    }
-
-    #[test]
-    fn windows_unicode_unpaired_surrogates_are_preserved() {
-        let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
-        let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
-        raw.extend_from_slice(&name);
-        assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
-    }
-
-    #[test]
-    fn windows_unicode_raw_namespaces_and_separators_are_refused() {
-        assert!(windows_path("C:\\Users\\ordinary").is_ok());
-        for path in [
-            "",
-            "C:",
-            "C:ordinary",
-            "\\ordinary",
-            "ordinary",
-            "1:\\ordinary",
-            "\\\\server\\share",
-            "\\\\?\\C:\\ordinary",
-            "\\\\.\\C:\\ordinary",
-            "\\??\\C:\\ordinary",
-            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
-            "C:/ordinary",
-            "C:\\Users/ordinary",
-            "C:\\Users\\",
-            "C:\\Users\\\\ordinary",
-            "C:\\Users\\.\\ordinary",
-            "C:\\Users\\..\\ordinary",
-        ] {
-            assert!(windows_path(path).is_err(), "accepted {path:?}");
-        }
-    }
-
-    #[test]
-    fn windows_unicode_leaf_aliases_and_control_units_are_refused() {
-        assert!(windows_path("C:\\Users\\ordinary").is_ok());
-        for name in [
-            ".",
-            "..",
-            "file.",
-            "file ",
-            "CON",
-            "prn.txt",
-            "aux",
-            "nul.cache",
-            "CONIN$",
-            "conout$.txt",
-            "CoN .txt",
-            "COM0",
-            "com1.ext",
-            "COM9",
-            "LPT0",
-            "lpt1.ext",
-            "LPT9",
-            "COM¹",
-            "com².ext",
-            "CoM³",
-            "LPT¹.ext",
-            "lpt²",
-            "LPT³",
-            "PROGRA~1",
-            "file:stream",
-        ] {
-            assert!(
-                windows_path(&format!("C:\\Users\\{name}")).is_err(),
-                "accepted {name:?}"
-            );
-        }
-        for unit in (0_u16..=31).chain("<>:\"/\\|?*~".encode_utf16()) {
-            let mut raw: Vec<_> = "C:\\Users\\".encode_utf16().collect();
-            raw.push(unit);
-            assert!(windows_directory_path(raw).is_err(), "accepted {unit:x}");
-        }
-    }
-
-    #[test]
-    fn windows_unicode_ancestors_do_not_broaden_authenticated_filenames() {
-        assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
-        for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {
-            assert!(!windows_leaf_supported(name));
-            let mut manifest = fixture();
-            manifest["components"][0]["filename"] = json!(name);
-            assert!(validate_internal_bundle(&bytes(&manifest)).is_err());
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_unicode_os_string_bridge_is_lossless() {
-        use std::{
-            ffi::OsString,
-            os::windows::ffi::{OsStrExt, OsStringExt},
-        };
-        let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
-        raw.extend([0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00]);
-        let path = std::path::PathBuf::from(OsString::from_wide(&raw));
-        assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), raw);
-        let parsed = windows_directory_path(path.as_os_str().encode_wide()).unwrap();
-        let mut rebuilt: Vec<_> = OsString::from_wide(&parsed.root).encode_wide().collect();
-        for (index, name) in parsed.names.iter().enumerate() {
-            if index != 0 {
-                rebuilt.push(b'\\' as u16);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_unicode_ancestors_are_exact_bounded_and_lossless() {
+        // Phase `windows_unicode_ancestors_retain_exact_names`.
+        {
+            for name in [
+                "André",
+                "用户",
+                "e\u{301}",
+                "cache-😀",
+                "O'Neil",
+                "$cache",
+                "CONsole",
+                "COM10",
+                "COM¹safe",
+            ] {
+                let parsed = windows_path(&format!("C:\\Users\\{name}\\cache")).unwrap();
+                assert_eq!(parsed.root, [b'C' as u16, b':' as u16, b'\\' as u16]);
+                assert_eq!(parsed.names[1], name.encode_utf16().collect::<Vec<_>>());
             }
-            rebuilt.extend(OsString::from_wide(name).encode_wide());
+            assert!(windows_path("c:\\").unwrap().names.is_empty());
+            let composed = windows_path("C:\\é").unwrap();
+            let decomposed = windows_path("C:\\e\u{301}").unwrap();
+            assert_eq!(composed.names, vec![vec![0xe9]]);
+            assert_eq!(decomposed.names, vec![vec![b'e' as u16, 0x301]]);
+            assert_ne!(composed, decomposed);
         }
-        assert_eq!(rebuilt, raw);
-    }
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_unicode_directory_verifies_ordinary_payloads() {
-        let parent = tempfile::tempdir().unwrap();
-        let path = parent.path().join("André-用户-e\u{301}-😀");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
-        std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
-        let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_ok());
-        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(true)).is_err());
-        std::fs::write(path.join("staging-root.img"), vec![b'X'; 8192]).unwrap();
-        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err());
-    }
-
-    #[test]
-    fn windows_names_cannot_enter_device_stream_or_alias_namespaces() {
-        for name in [
-            "",
-            ".",
-            "..",
-            "file.",
-            "file ",
-            "CON.img",
-            "lpt1.img",
-            "aux",
-            "nul.txt",
-            "COM9.img",
-            "file:stream",
-            "a/b",
-            "a\\b",
-        ] {
-            assert!(!windows_leaf_supported(name), "accepted {name}");
+        // Phase `windows_unicode_ancestor_bounds_count_utf16_units`.
+        {
+            let leaf = format!("{}a", "😀".repeat(127));
+            assert_eq!(leaf.encode_utf16().count(), 255);
+            assert!(windows_path(&format!("C:\\{leaf}")).is_ok());
+            assert!(windows_path(&format!("C:\\{leaf}a")).is_err());
+            let mut names = vec!["é".repeat(255); 15];
+            names.push("é".repeat(253));
+            let path = format!("C:\\{}", names.join("\\"));
+            assert_eq!(path.encode_utf16().count(), 4096);
+            assert!(windows_path(&path).is_ok());
+            // The last leaf remains below 255; only the total path limit changes.
+            assert!(windows_path(&(path + "a")).is_err());
+            assert!(windows_path(&format!("C:\\{}", vec!["é"; 64].join("\\"))).is_ok());
+            assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
         }
-        assert!(windows_leaf_supported("staging-root.img"));
-    }
 
-    #[test]
-    fn windows_drive_root_cannot_hide_a_subdirectory_mapping() {
-        assert!(windows_volume_root(
-            r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\"
-        ));
-        assert!(!windows_volume_root(
-            r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\mapped"
-        ));
-        assert!(!windows_volume_root(r"\\?\UNC\server\share\"));
-    }
+        // Phase `windows_unicode_raw_collection_is_bounded`.
+        {
+            let mut consumed = 0;
+            let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
+            assert!(windows_directory_path(raw).is_err());
+            assert_eq!(consumed, 4097);
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn rejects_directory_replacement_even_when_pinned_bytes_match() {
-        let parent = tempfile::tempdir().unwrap();
-        let path = parent.path().join("bundle");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
-        std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
-        let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-        let root = path.clone();
-        let moved = parent.path().join("retained");
-        with_hook(
-            Box::new(move |stage, name, _| {
-                if stage == "opened" && name == "staging-esp.img" {
-                    std::fs::rename(&root, &moved).unwrap();
-                    std::fs::create_dir(&root).unwrap();
+        // Phase `windows_unicode_unpaired_surrogates_are_preserved`.
+        {
+            let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
+            let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
+            raw.extend_from_slice(&name);
+            assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
+        }
+
+        // Phase `windows_unicode_os_string_bridge_is_lossless`.
+        #[cfg(windows)]
+        {
+            use std::{
+                ffi::OsString,
+                os::windows::ffi::{OsStrExt, OsStringExt},
+            };
+            let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
+            raw.extend([0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00]);
+            let path = std::path::PathBuf::from(OsString::from_wide(&raw));
+            assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), raw);
+            let parsed = windows_directory_path(path.as_os_str().encode_wide()).unwrap();
+            let mut rebuilt: Vec<_> = OsString::from_wide(&parsed.root).encode_wide().collect();
+            for (index, name) in parsed.names.iter().enumerate() {
+                if index != 0 {
+                    rebuilt.push(b'\\' as u16);
                 }
-            }),
-            || {
-                assert!(
-                    verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err()
-                )
-            },
-        );
+                rebuilt.extend(OsString::from_wide(name).encode_wide());
+            }
+            assert_eq!(rebuilt, raw);
+        }
+
+        // Phase `windows_unicode_directory_verifies_ordinary_payloads`.
+        #[cfg(windows)]
+        {
+            let parent = tempfile::tempdir().unwrap();
+            let path = parent.path().join("André-用户-e\u{301}-😀");
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
+            std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
+            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
+            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_ok());
+            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(true)).is_err());
+            std::fs::write(path.join("staging-root.img"), vec![b'X'; 8192]).unwrap();
+            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err());
+        }
     }
+
+    /// Namespaces, separators, aliases, devices, streams and drive roots.
     #[test]
-    fn accepts_both_architectures_and_rejects_nested_unknown_or_duplicate_keys() {
-        let mut value = fixture();
-        value["architecture"] = json!("aarch64");
-        value["boot_binding"]["uki_architecture"] = json!("aarch64");
-        // Each architecture boots through its own fallback loader path.
-        assert!(validate_internal_bundle(&bytes(&value)).is_err());
-        value["boot_binding"]["efi_path"] = json!("/EFI/BOOT/BOOTAA64.EFI");
-        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
-        assert_eq!(fallback_loader("aarch64"), Some("/EFI/BOOT/BOOTAA64.EFI"));
-        assert_eq!(fallback_loader("riscv64"), None);
-        for path in ["/boot_binding", "/components/0"] {
-            let mut value = fixture();
-            value.pointer_mut(path).unwrap()["unknown"] = json!(true);
-            assert!(validate_internal_bundle(&bytes(&value)).is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_names_cannot_alias_escape_or_broaden_authenticated_files() {
+        // Phase `windows_unicode_raw_namespaces_and_separators_are_refused`.
+        {
+            assert!(windows_path("C:\\Users\\ordinary").is_ok());
+            for path in [
+                "",
+                "C:",
+                "C:ordinary",
+                "\\ordinary",
+                "ordinary",
+                "1:\\ordinary",
+                "\\\\server\\share",
+                "\\\\?\\C:\\ordinary",
+                "\\\\.\\C:\\ordinary",
+                "\\??\\C:\\ordinary",
+                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+                "C:/ordinary",
+                "C:\\Users/ordinary",
+                "C:\\Users\\",
+                "C:\\Users\\\\ordinary",
+                "C:\\Users\\.\\ordinary",
+                "C:\\Users\\..\\ordinary",
+            ] {
+                assert!(windows_path(path).is_err(), "accepted {path:?}");
+            }
         }
-        let raw = String::from_utf8(bytes(&fixture())).unwrap();
-        for field in ["filename", "uki_architecture"] {
-            let marker = format!("\"{field}\":");
-            let changed = raw.replacen(&marker, &format!("\"{field}\":\"bad\",{marker}"), 1);
-            assert!(validate_internal_bundle(changed.as_bytes()).is_err());
+
+        // Phase `windows_unicode_leaf_aliases_and_control_units_are_refused`.
+        {
+            assert!(windows_path("C:\\Users\\ordinary").is_ok());
+            for name in [
+                ".",
+                "..",
+                "file.",
+                "file ",
+                "CON",
+                "prn.txt",
+                "aux",
+                "nul.cache",
+                "CONIN$",
+                "conout$.txt",
+                "CoN .txt",
+                "COM0",
+                "com1.ext",
+                "COM9",
+                "LPT0",
+                "lpt1.ext",
+                "LPT9",
+                "COM¹",
+                "com².ext",
+                "CoM³",
+                "LPT¹.ext",
+                "lpt²",
+                "LPT³",
+                "PROGRA~1",
+                "file:stream",
+            ] {
+                assert!(
+                    windows_path(&format!("C:\\Users\\{name}")).is_err(),
+                    "accepted {name:?}"
+                );
+            }
+            for unit in (0_u16..=31).chain("<>:\"/\\|?*~".encode_utf16()) {
+                let mut raw: Vec<_> = "C:\\Users\\".encode_utf16().collect();
+                raw.push(unit);
+                assert!(windows_directory_path(raw).is_err(), "accepted {unit:x}");
+            }
+        }
+
+        // Phase `windows_unicode_ancestors_do_not_broaden_authenticated_filenames`.
+        {
+            assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+            for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {
+                assert!(!windows_leaf_supported(name));
+                let mut manifest = fixture();
+                manifest["components"][0]["filename"] = json!(name);
+                assert!(validate_internal_bundle(&bytes(&manifest)).is_err());
+            }
+        }
+
+        // Phase `windows_names_cannot_enter_device_stream_or_alias_namespaces`.
+        {
+            for name in [
+                "",
+                ".",
+                "..",
+                "file.",
+                "file ",
+                "CON.img",
+                "lpt1.img",
+                "aux",
+                "nul.txt",
+                "COM9.img",
+                "file:stream",
+                "a/b",
+                "a\\b",
+            ] {
+                assert!(!windows_leaf_supported(name), "accepted {name}");
+            }
+            assert!(windows_leaf_supported("staging-root.img"));
+        }
+
+        // Phase `windows_drive_root_cannot_hide_a_subdirectory_mapping`.
+        {
+            assert!(windows_volume_root(
+                r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\"
+            ));
+            assert!(!windows_volume_root(
+                r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\mapped"
+            ));
+            assert!(!windows_volume_root(r"\\?\UNC\server\share\"));
         }
     }
+
     #[cfg(unix)]
     #[test]
     fn case_aliases_cannot_satisfy_both_component_roles() {
@@ -1596,35 +1705,5 @@ pub(crate) mod tests {
                 .map(|key| value[key].clone())
                 .collect(),
         )
-    }
-    #[test]
-    fn representation_manifest_must_be_an_object() {
-        let value = fixture();
-        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
-        let array = positional_record(
-            &value,
-            "schema purpose release_id architecture firmware secure_boot installer_protocol source_image_bytes components boot_binding",
-        );
-        assert!(validate_internal_bundle(&bytes(&array)).is_err());
-    }
-    #[test]
-    fn representation_component_must_be_an_object() {
-        let mut value = fixture();
-        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
-        value["components"][0] = positional_record(
-            &value["components"][0],
-            "role filename byte_size sha256 partition_type_guid filesystem_type filesystem_uuid minimum_partition_bytes source_offset",
-        );
-        assert!(validate_internal_bundle(&bytes(&value)).is_err());
-    }
-    #[test]
-    fn representation_boot_binding_must_be_an_object() {
-        let mut value = fixture();
-        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
-        value["boot_binding"] = positional_record(
-            &value["boot_binding"],
-            "efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest",
-        );
-        assert!(validate_internal_bundle(&bytes(&value)).is_err());
     }
 }

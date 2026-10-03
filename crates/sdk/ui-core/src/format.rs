@@ -134,10 +134,11 @@ const WEEK: i64 = 7 * DAY;
 const MONTH: i64 = 30 * DAY;
 const YEAR: i64 = 365 * DAY;
 
-/// Format a past interval (in seconds) as a coarse relative label: `just now`,
-/// `3 min ago`, `2 hr ago`, `yesterday`, `4 days ago`, `2 weeks ago`,
-/// `3 months ago`, `1 year ago`. Zero and negative deltas (clock skew) read
-/// `just now`.
+/// Format a past interval (in seconds) as a coarse relative label in the
+/// host's language: `just now`, `3 min ago`, `2 hr ago`, `yesterday`,
+/// `4 days ago`, `2 weeks ago`, `3 months ago`, `1 year ago`. Zero and
+/// negative deltas (clock skew) read `just now`. Counts go through Fluent
+/// plurals, so each language words its own singular and plural forms.
 ///
 /// ```
 /// use tilo_ui::format::relative;
@@ -148,33 +149,35 @@ const YEAR: i64 = 365 * DAY;
 /// ```
 #[must_use]
 pub fn relative(secs_ago: i64) -> String {
-    if secs_ago < 45 {
-        "just now".to_string()
+    use crate::i18n::widget_format;
+    let (key, count) = if secs_ago < 45 {
+        return widget_format("relative-ago-just-now", &[]);
     } else if secs_ago < 90 {
-        "1 min ago".to_string()
+        ("relative-ago-minutes", 1)
     } else if secs_ago < HOUR {
-        format!("{} min ago", secs_ago / MINUTE)
+        ("relative-ago-minutes", secs_ago / MINUTE)
     } else if secs_ago < 90 * MINUTE {
-        "1 hr ago".to_string()
+        ("relative-ago-hours", 1)
     } else if secs_ago < DAY {
-        format!("{} hr ago", secs_ago / HOUR)
+        ("relative-ago-hours", secs_ago / HOUR)
     } else if secs_ago < 2 * DAY {
-        "yesterday".to_string()
+        return widget_format("relative-ago-yesterday", &[]);
     } else if secs_ago < WEEK {
-        format!("{} days ago", secs_ago / DAY)
+        ("relative-ago-days", secs_ago / DAY)
     } else if secs_ago < 2 * WEEK {
-        "1 week ago".to_string()
+        ("relative-ago-weeks", 1)
     } else if secs_ago < MONTH {
-        format!("{} weeks ago", secs_ago / WEEK)
+        ("relative-ago-weeks", secs_ago / WEEK)
     } else if secs_ago < 2 * MONTH {
-        "1 month ago".to_string()
+        ("relative-ago-months", 1)
     } else if secs_ago < YEAR {
-        format!("{} months ago", secs_ago / MONTH)
+        ("relative-ago-months", secs_ago / MONTH)
     } else if secs_ago < 2 * YEAR {
-        "1 year ago".to_string()
+        ("relative-ago-years", 1)
     } else {
-        format!("{} years ago", secs_ago / YEAR)
-    }
+        ("relative-ago-years", secs_ago / YEAR)
+    };
+    widget_format(key, &[("count", count.into())])
 }
 
 /// Format a past interval (in seconds) as a narrow column label: `now`,
@@ -326,130 +329,143 @@ mod tests {
     /// one *kibibyte*, so `bytes(1024)` must read `KiB`, never `KB`; the
     /// SI/base-1000 variant must read `kB`, never `KiB`.
     #[test]
-    fn byte_unit_label_matches_its_base() {
-        assert_eq!(bytes(1024), "1.0 KiB");
-        assert_eq!(bytes(1024 * 1024), "1.0 MiB");
-        assert_eq!(bytes(1024 * 1024 * 1024), "1.0 GiB");
+    fn byte_sizes_and_rates_use_units_matching_their_base() {
         assert!(bytes(1024).ends_with("KiB"));
         assert!(!bytes(1024).contains("KB"));
         assert!(!bytes(1024).ends_with(" KB"));
-
-        assert_eq!(bytes_si(1000), "1.0 kB");
-        assert_eq!(bytes_si(1_000_000), "1.0 MB");
         assert!(!bytes_si(1000).contains("KiB"));
         assert!(!bytes_si(1000).contains("iB"));
+
+        let binary: &[(u64, &str)] = &[
+            (0, "0 B"),
+            (1, "1 B"),
+            (512, "512 B"),
+            // Just below the 1024 boundary stays in bytes; exactly at it rolls
+            // to the next unit.
+            (1023, "1023 B"),
+            (1024, "1.0 KiB"),
+            (2048, "2.0 KiB"),
+            (1024 * 1024, "1.0 MiB"),
+            (1024 * 1024 * 1024, "1.0 GiB"),
+            (3 * 1024 * 1024 * 1024, "3.0 GiB"),
+            (2 * 1024_u64.pow(4), "2.0 TiB"),
+        ];
+        let si: &[(u64, &str)] = &[
+            (0, "0 B"),
+            (999, "999 B"),
+            (1000, "1.0 kB"),
+            (1_000_000, "1.0 MB"),
+            (1_500_000, "1.5 MB"),
+        ];
+        for (formatter, name, cases) in [
+            (bytes as fn(u64) -> String, "bytes", binary),
+            (bytes_si, "bytes_si", si),
+        ] {
+            for &(n, want) in cases {
+                assert_eq!(formatter(n), want, "{name}({n})");
+            }
+        }
+
+        for (n, want) in [
+            (0.0, "0 B/s"),
+            (-5.0, "0 B/s"), // negatives clamp
+            (512.0, "512 B/s"),
+            (1024.0, "1.0 KiB/s"),
+            (6_710_886.0, "6.4 MiB/s"),
+        ] {
+            assert_eq!(rate(n), want, "rate({n})");
+        }
     }
 
     #[test]
-    fn bytes_edges_and_boundaries() {
-        assert_eq!(bytes(0), "0 B");
-        assert_eq!(bytes(1), "1 B");
-        assert_eq!(bytes(512), "512 B");
-        // just below the 1024 boundary stays in bytes
-        assert_eq!(bytes(1023), "1023 B");
-        // exactly at the boundary rolls to the next unit
-        assert_eq!(bytes(1024), "1.0 KiB");
-        assert_eq!(bytes(2048), "2.0 KiB");
-        assert_eq!(bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-        assert_eq!(bytes(2 * 1024_u64.pow(4)), "2.0 TiB");
-    }
-
-    #[test]
-    fn bytes_si_edges_and_boundaries() {
-        assert_eq!(bytes_si(0), "0 B");
-        assert_eq!(bytes_si(999), "999 B");
-        assert_eq!(bytes_si(1000), "1.0 kB");
-        assert_eq!(bytes_si(1_500_000), "1.5 MB");
-    }
-
-    #[test]
-    fn rate_scales_and_labels() {
-        assert_eq!(rate(0.0), "0 B/s");
-        assert_eq!(rate(-5.0), "0 B/s"); // negatives clamp
-        assert_eq!(rate(512.0), "512 B/s");
-        assert_eq!(rate(1024.0), "1.0 KiB/s");
-        assert_eq!(rate(6_710_886.0), "6.4 MiB/s");
-    }
-
-    #[test]
-    fn timecode_formats() {
-        assert_eq!(timecode(0), "0:00");
-        assert_eq!(timecode(5), "0:05");
-        assert_eq!(timecode(59), "0:59");
-        assert_eq!(timecode(60), "1:00");
-        assert_eq!(timecode(75), "1:15");
-        assert_eq!(timecode(600), "10:00");
-        assert_eq!(timecode(3599), "59:59");
-        assert_eq!(timecode(3600), "1:00:00");
-        assert_eq!(timecode(3661), "1:01:01");
+    fn durations_and_relative_times_bucket_at_their_boundaries() {
+        for (secs, want) in [
+            (0, "0:00"),
+            (5, "0:05"),
+            (59, "0:59"),
+            (60, "1:00"),
+            (75, "1:15"),
+            (600, "10:00"),
+            (3599, "59:59"),
+            (3600, "1:00:00"),
+            (3661, "1:01:01"),
+        ] {
+            assert_eq!(timecode(secs), want, "timecode({secs})");
+        }
         assert_eq!(duration(3661), timecode(3661));
+
+        for (secs, want) in [
+            (0, "just now"),
+            (-10, "just now"), // future / clock skew
+            (44, "just now"),
+            (45, "1 min ago"), // singular
+            (89, "1 min ago"),
+            (180, "3 min ago"),
+            (59 * 60, "59 min ago"),
+            (60 * 60, "1 hr ago"), // singular
+            (2 * 3600, "2 hr ago"),
+            (90_000, "yesterday"), // ~25h
+            (3 * 86_400, "3 days ago"),
+            (8 * 86_400, "1 week ago"), // singular
+            (20 * 86_400, "2 weeks ago"),
+            (31 * 86_400, "1 month ago"), // singular
+            (90 * 86_400, "3 months ago"),
+            (400 * 86_400, "1 year ago"), // singular
+            (800 * 86_400, "2 years ago"),
+        ] {
+            assert_eq!(relative(secs), want, "relative({secs})");
+        }
+
+        for (secs, want) in [
+            (-10, "now"),
+            (59, "now"),
+            (60, "1m"),
+            (59 * 60, "59m"),
+            (3600, "1h"),
+            (23 * 3600, "23h"),
+            (86_400, "1d"),
+            (6 * 86_400, "6d"),
+            (7 * 86_400, "1w"),
+            (29 * 86_400, "4w"),
+            (30 * 86_400, "1mo"),
+            (364 * 86_400, "12mo"),
+            (365 * 86_400, "1y"),
+        ] {
+            assert_eq!(relative_compact(secs), want, "relative_compact({secs})");
+        }
     }
 
     #[test]
-    fn relative_buckets_and_plurals() {
-        assert_eq!(relative(0), "just now");
-        assert_eq!(relative(-10), "just now"); // future / clock skew
-        assert_eq!(relative(44), "just now");
-        assert_eq!(relative(45), "1 min ago"); // singular
-        assert_eq!(relative(89), "1 min ago");
-        assert_eq!(relative(180), "3 min ago");
-        assert_eq!(relative(59 * 60), "59 min ago");
-        assert_eq!(relative(60 * 60), "1 hr ago"); // singular
-        assert_eq!(relative(2 * 3600), "2 hr ago");
-        assert_eq!(relative(90_000), "yesterday"); // ~25h
-        assert_eq!(relative(3 * 86_400), "3 days ago");
-        assert_eq!(relative(8 * 86_400), "1 week ago"); // singular
-        assert_eq!(relative(20 * 86_400), "2 weeks ago");
-        assert_eq!(relative(31 * 86_400), "1 month ago"); // singular
-        assert_eq!(relative(90 * 86_400), "3 months ago");
-        assert_eq!(relative(400 * 86_400), "1 year ago"); // singular
-        assert_eq!(relative(800 * 86_400), "2 years ago");
-    }
+    fn compact_counts_and_calendar_names_hit_their_boundaries() {
+        for (n, want) in [
+            (0, "0"),
+            (1, "1"),
+            (999, "999"),  // just below the K boundary
+            (1_000, "1K"), // exactly at it
+            (12_300, "12.3K"),
+            (12_000, "12K"),
+            (999_999, "1M"),
+            (1_000_000, "1M"),
+            (4_100_000, "4.1M"),
+            (1_000_000_000, "1B"),
+            (1_100_000_000, "1.1B"),
+        ] {
+            assert_eq!(compact_count(n), want, "compact_count({n})");
+        }
 
-    #[test]
-    fn relative_compact_buckets() {
-        assert_eq!(relative_compact(-10), "now");
-        assert_eq!(relative_compact(59), "now");
-        assert_eq!(relative_compact(60), "1m");
-        assert_eq!(relative_compact(59 * 60), "59m");
-        assert_eq!(relative_compact(3600), "1h");
-        assert_eq!(relative_compact(23 * 3600), "23h");
-        assert_eq!(relative_compact(86_400), "1d");
-        assert_eq!(relative_compact(6 * 86_400), "6d");
-        assert_eq!(relative_compact(7 * 86_400), "1w");
-        assert_eq!(relative_compact(29 * 86_400), "4w");
-        assert_eq!(relative_compact(30 * 86_400), "1mo");
-        assert_eq!(relative_compact(364 * 86_400), "12mo");
-        assert_eq!(relative_compact(365 * 86_400), "1y");
-    }
-
-    #[test]
-    fn compact_count_boundaries() {
-        assert_eq!(compact_count(0), "0");
-        assert_eq!(compact_count(1), "1");
-        assert_eq!(compact_count(999), "999"); // just below the K boundary
-        assert_eq!(compact_count(1_000), "1K"); // exactly at it
-        assert_eq!(compact_count(12_300), "12.3K");
-        assert_eq!(compact_count(12_000), "12K");
-        assert_eq!(compact_count(999_999), "1M");
-        assert_eq!(compact_count(1_000_000), "1M");
-        assert_eq!(compact_count(4_100_000), "4.1M");
-        assert_eq!(compact_count(1_000_000_000), "1B");
-        assert_eq!(compact_count(1_100_000_000), "1.1B");
-    }
-
-    #[test]
-    fn month_and_weekday_tables() {
-        assert_eq!(month_abbrev(0), "Jan");
-        assert_eq!(month_abbrev(11), "Dec");
-        assert_eq!(month_name(0), "January");
-        assert_eq!(month_name(11), "December");
-        // 1-based callers pass `month - 1`; wrap keeps it panic-free
-        assert_eq!(month_abbrev(12), "Jan");
-
-        assert_eq!(weekday_abbrev(0), "Sun");
-        assert_eq!(weekday_abbrev(6), "Sat");
-        assert_eq!(weekday_name(1), "Monday");
-        assert_eq!(weekday_abbrev(7), "Sun"); // wraps
+        // 1-based callers pass `month - 1`; wrap keeps it panic-free.
+        for (name, got, want) in [
+            ("month_abbrev(0)", month_abbrev(0), "Jan"),
+            ("month_abbrev(11)", month_abbrev(11), "Dec"),
+            ("month_name(0)", month_name(0), "January"),
+            ("month_name(11)", month_name(11), "December"),
+            ("month_abbrev(12) wraps", month_abbrev(12), "Jan"),
+            ("weekday_abbrev(0)", weekday_abbrev(0), "Sun"),
+            ("weekday_abbrev(6)", weekday_abbrev(6), "Sat"),
+            ("weekday_name(1)", weekday_name(1), "Monday"),
+            ("weekday_abbrev(7) wraps", weekday_abbrev(7), "Sun"),
+        ] {
+            assert_eq!(got, want, "{name}");
+        }
     }
 }

@@ -291,157 +291,160 @@ mod tests {
     use super::*;
 
     #[test]
-    fn address_round_trips_through_the_object_path() {
-        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-        assert_eq!(
-            address_from_path(path).as_deref(),
-            Some("AA:BB:CC:DD:EE:FF")
-        );
-        assert_eq!(
-            path_for_address("/org/bluez/hci0", "AA:BB:CC:DD:EE:FF"),
-            path
-        );
+    fn device_addresses_paths_and_passkeys_round_trip_and_render() {
+        // Phase `address_round_trips_through_the_object_path`.
+        {
+            let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+            assert_eq!(
+                address_from_path(path).as_deref(),
+                Some("AA:BB:CC:DD:EE:FF")
+            );
+            assert_eq!(
+                path_for_address("/org/bluez/hci0", "AA:BB:CC:DD:EE:FF"),
+                path
+            );
+        }
+        // Phase `non_device_paths_have_no_address`.
+        {
+            assert_eq!(address_from_path("/org/bluez/hci0"), None);
+            assert_eq!(address_from_path("/org/bluez"), None);
+            // A service under a device is not itself a device.
+            assert_eq!(
+                address_from_path("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001"),
+                None
+            );
+            // Non-hex where hex is required.
+            assert_eq!(
+                address_from_path("/org/bluez/hci0/dev_ZZ_BB_CC_DD_EE_FF"),
+                None
+            );
+        }
+        // Phase `passkeys_render_zero_padded_to_six_digits`.
+        {
+            let p = PairingPrompt::ConfirmPasskey { passkey: 12345 };
+            assert_eq!(p.passkey_text().as_deref(), Some("012345"));
+            let p = PairingPrompt::DisplayPasskey {
+                passkey: 0,
+                entered: 0,
+            };
+            assert_eq!(p.passkey_text().as_deref(), Some("000000"));
+            let p = PairingPrompt::ConfirmPasskey { passkey: 999_999 };
+            assert_eq!(p.passkey_text().as_deref(), Some("999999"));
+        }
+        // Phase `oversized_pin_reply_is_not_a_valid_pairing_answer`.
+        {
+            assert!(!reply_answers(
+                &PairingPrompt::RequestPinCode,
+                &PairingReply::PinCode("x".repeat(crate::agent::MAX_PIN_CODE_BYTES + 1)),
+            ));
+        }
     }
 
     #[test]
-    fn oversized_pin_reply_is_not_a_valid_pairing_answer() {
-        assert!(!reply_answers(
-            &PairingPrompt::RequestPinCode,
-            &PairingReply::PinCode("x".repeat(crate::agent::MAX_PIN_CODE_BYTES + 1)),
-        ));
+    fn pairing_replies_must_answer_the_prompt_asked() {
+        // Phase `display_prompts_take_no_answer`.
+        {
+            assert!(
+                !PairingPrompt::DisplayPasskey {
+                    passkey: 1,
+                    entered: 0
+                }
+                .expects_answer()
+            );
+            assert!(!PairingPrompt::DisplayPinCode { pin: "0000".into() }.expects_answer());
+            assert!(PairingPrompt::ConfirmPasskey { passkey: 1 }.expects_answer());
+            assert!(PairingPrompt::ConfirmPairing.expects_answer());
+            assert!(PairingPrompt::RequestPasskey.expects_answer());
+        }
+        // Phase `entry_prompts_are_the_two_typed_ones`.
+        {
+            assert!(PairingPrompt::RequestPasskey.expects_entry());
+            assert!(PairingPrompt::RequestPinCode.expects_entry());
+            assert!(!PairingPrompt::ConfirmPasskey { passkey: 1 }.expects_entry());
+            assert!(!PairingPrompt::AuthorizeService { uuid: "x".into() }.expects_entry());
+        }
+        // Phase `a_reply_must_answer_the_question_asked`.
+        {
+            // A yes/no answer to "type the passkey" is not an answer.
+            assert!(!reply_answers(
+                &PairingPrompt::RequestPasskey,
+                &PairingReply::Accept
+            ));
+            assert!(reply_answers(
+                &PairingPrompt::RequestPasskey,
+                &PairingReply::Passkey(42)
+            ));
+            assert!(reply_answers(
+                &PairingPrompt::RequestPasskey,
+                &PairingReply::Reject
+            ));
+            // And a typed passkey is not an answer to "do these match?".
+            assert!(!reply_answers(
+                &PairingPrompt::ConfirmPasskey { passkey: 1 },
+                &PairingReply::Passkey(1)
+            ));
+            assert!(reply_answers(
+                &PairingPrompt::ConfirmPasskey { passkey: 1 },
+                &PairingReply::Accept
+            ));
+            assert!(reply_answers(
+                &PairingPrompt::RequestPinCode,
+                &PairingReply::PinCode("0000".into())
+            ));
+            assert!(!reply_answers(
+                &PairingPrompt::RequestPinCode,
+                &PairingReply::Passkey(0)
+            ));
+        }
     }
 
     #[test]
-    fn non_device_paths_have_no_address() {
-        assert_eq!(address_from_path("/org/bluez/hci0"), None);
-        assert_eq!(address_from_path("/org/bluez"), None);
-        // A service under a device is not itself a device.
-        assert_eq!(
-            address_from_path("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001"),
-            None
-        );
-        // Non-hex where hex is required.
-        assert_eq!(
-            address_from_path("/org/bluez/hci0/dev_ZZ_BB_CC_DD_EE_FF"),
-            None
-        );
-    }
-
-    #[test]
-    fn passkeys_render_zero_padded_to_six_digits() {
-        let p = PairingPrompt::ConfirmPasskey { passkey: 12345 };
-        assert_eq!(p.passkey_text().as_deref(), Some("012345"));
-        let p = PairingPrompt::DisplayPasskey {
-            passkey: 0,
-            entered: 0,
-        };
-        assert_eq!(p.passkey_text().as_deref(), Some("000000"));
-        let p = PairingPrompt::ConfirmPasskey { passkey: 999_999 };
-        assert_eq!(p.passkey_text().as_deref(), Some("999999"));
-    }
-
-    #[test]
-    fn display_prompts_take_no_answer() {
-        assert!(
-            !PairingPrompt::DisplayPasskey {
-                passkey: 1,
-                entered: 0
-            }
-            .expects_answer()
-        );
-        assert!(!PairingPrompt::DisplayPinCode { pin: "0000".into() }.expects_answer());
-        assert!(PairingPrompt::ConfirmPasskey { passkey: 1 }.expects_answer());
-        assert!(PairingPrompt::ConfirmPairing.expects_answer());
-        assert!(PairingPrompt::RequestPasskey.expects_answer());
-    }
-
-    #[test]
-    fn entry_prompts_are_the_two_typed_ones() {
-        assert!(PairingPrompt::RequestPasskey.expects_entry());
-        assert!(PairingPrompt::RequestPinCode.expects_entry());
-        assert!(!PairingPrompt::ConfirmPasskey { passkey: 1 }.expects_entry());
-        assert!(!PairingPrompt::AuthorizeService { uuid: "x".into() }.expects_entry());
-    }
-
-    #[test]
-    fn a_reply_must_answer_the_question_asked() {
-        // A yes/no answer to "type the passkey" is not an answer.
-        assert!(!reply_answers(
-            &PairingPrompt::RequestPasskey,
-            &PairingReply::Accept
-        ));
-        assert!(reply_answers(
-            &PairingPrompt::RequestPasskey,
-            &PairingReply::Passkey(42)
-        ));
-        assert!(reply_answers(
-            &PairingPrompt::RequestPasskey,
-            &PairingReply::Reject
-        ));
-        // And a typed passkey is not an answer to "do these match?".
-        assert!(!reply_answers(
-            &PairingPrompt::ConfirmPasskey { passkey: 1 },
-            &PairingReply::Passkey(1)
-        ));
-        assert!(reply_answers(
-            &PairingPrompt::ConfirmPasskey { passkey: 1 },
-            &PairingReply::Accept
-        ));
-        assert!(reply_answers(
-            &PairingPrompt::RequestPinCode,
-            &PairingReply::PinCode("0000".into())
-        ));
-        assert!(!reply_answers(
-            &PairingPrompt::RequestPinCode,
-            &PairingReply::Passkey(0)
-        ));
-    }
-
-    #[test]
-    fn devices_sort_connected_then_paired_then_by_signal() {
-        let mut v = vec![
-            DeviceInfo {
-                name: "far".into(),
-                rssi: Some(-90),
-                ..Default::default()
-            },
-            DeviceInfo {
-                name: "paired".into(),
-                paired: true,
-                ..Default::default()
-            },
-            DeviceInfo {
-                name: "near".into(),
-                rssi: Some(-40),
-                ..Default::default()
-            },
-            DeviceInfo {
-                name: "live".into(),
-                connected: true,
-                paired: true,
-                ..Default::default()
-            },
-        ];
-        sort_devices(&mut v);
-        let order: Vec<&str> = v.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(order, ["live", "paired", "near", "far"]);
-    }
-
-    #[test]
-    fn unknown_signal_sorts_after_every_known_one() {
-        let mut v = vec![
-            DeviceInfo {
-                name: "silent".into(),
-                rssi: None,
-                ..Default::default()
-            },
-            DeviceInfo {
-                name: "weak".into(),
-                rssi: Some(-99),
-                ..Default::default()
-            },
-        ];
-        sort_devices(&mut v);
-        assert_eq!(v[0].name, "weak");
+    fn devices_sort_connected_paired_then_by_known_signal() {
+        // Phase `devices_sort_connected_then_paired_then_by_signal`.
+        {
+            let mut v = vec![
+                DeviceInfo {
+                    name: "far".into(),
+                    rssi: Some(-90),
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    name: "paired".into(),
+                    paired: true,
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    name: "near".into(),
+                    rssi: Some(-40),
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    name: "live".into(),
+                    connected: true,
+                    paired: true,
+                    ..Default::default()
+                },
+            ];
+            sort_devices(&mut v);
+            let order: Vec<&str> = v.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(order, ["live", "paired", "near", "far"]);
+        }
+        // Phase `unknown_signal_sorts_after_every_known_one`.
+        {
+            let mut v = vec![
+                DeviceInfo {
+                    name: "silent".into(),
+                    rssi: None,
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    name: "weak".into(),
+                    rssi: Some(-99),
+                    ..Default::default()
+                },
+            ];
+            sort_devices(&mut v);
+            assert_eq!(v[0].name, "weak");
+        }
     }
 }

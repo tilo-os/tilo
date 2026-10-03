@@ -11,7 +11,7 @@ Current deployment and measured startup results are recorded in the
   request full checks on both native architectures (x86-64 and ARM64).
 - `lint.yml` runs formatting, repository policy, dependency policy and dependency
   usage checks on the reserved quality lane with its pinned lean tools image.
-- `nightly.yml` runs the complete workspace, all targets, examples, and live
+- `ci-nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
@@ -59,12 +59,42 @@ job. Run #21842, a 74-package shard, took about 29 minutes that way: 12.5 of
 test execution after a 3-minute test compile, 2.6 of check and 8.5 of Clippy.
 Now the critical path is the test job alone. `check` and `clippy` use the
 architecture's ordinary runner because they link nothing. The jobs no longer
-share a warm target tree. Each fetches dependency artifacts from sccache
-instead, and compiles proc-macro and build-script crates, which sccache does
-not store, once per job. That is the CPU cost of the shorter wall time. The
+share a warm target tree within a run; each keeps the target tree of its runner
+slot instead (see [Cache layers](#cache-layers)), and a cold slot fetches
+dependency artifacts from sccache and compiles proc-macro and build-script
+crates, which sccache does not store. The
 `checks` aggregate accepts them only when all selected jobs succeed (the
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
+
+A tested package too heavy to share a test job (`DEDICATED_TEST_WEIGHT` in
+`tools/ci/affected_packages.py`; in practice `shell`) gets a test shard of its
+own, which builds and runs its tests in one job beside the balanced shards.
+Splitting it into nextest partitions fed by a separately built archive put two
+runner queue waits in series on the critical path, which cost more than the
+parallel test time saved.
+
+When the selection includes an app with an Android host example (an
+`<app>-android` example; today calculator and notes, so every change to the SDK
+crates beneath them), a separate `android` job lints those examples with
+`-D warnings` for `aarch64-linux-android` and `x86_64-linux-android` on an
+ordinary x86-64 runner. It is a type-check, not an APK build: packaging needs
+the Android SDK, and nothing here runs on a device. The builder image carries
+the pinned NDK (`tools/ci/install-android-ndk.sh`); the job runs the same script
+first so a builder published before that recipe change still works, at the cost
+of one ~700 MB download per job until the next builder is promoted. The
+aggregate requires the job exactly when the selector does.
+
+When the selection includes a browser crate (one built on `wasm-bindgen`; the
+web core depends on the toolkit and every app of its collection, so every
+change to the SDK crates beneath them), a separate `wasm` job type-checks the
+selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
+runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
+features its build script uses (the web desktop with every web app, the page
+runtime, the registry verifier), code the per-crate check does not compile. Native jobs compile neither code gated to wasm32 nor the browser's
+view of modules gated away from it. It is a type check, not a build: linking
+needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
+the selector does.
 
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
@@ -182,6 +212,13 @@ does not fit this codebase is changed in the workspace table, with its reason.
 
 The weekly quality workflow runs the same script with `--workspace`.
 
+sccache caches Clippy's library targets across runners like any other
+compile: the script sets `RUSTC=rustc`, the only compiler argument sccache
+accepts after `clippy-driver`, and clippy-driver records `Cargo.toml`,
+`clippy.toml` and `CLIPPY_ARGS` in the dep-info that the cache key hashes.
+Test, binary and example targets carry no `--crate-type`, so sccache leaves
+them to the slot's target tree.
+
 ## Cache layers
 
 - sccache stores compiler outputs in S3 namespaces configured by the runner,
@@ -194,6 +231,21 @@ The weekly quality workflow runs the same script with `--workspace`.
   to compress and upload from every revision, and overlaps the compiler
   objects already handled by sccache. Within one job, later Cargo steps reuse
   the live target tree directly.
+- Each runner slot keeps `target/` and the Cargo downloads of check.yml's Rust
+  jobs in a Docker volume of its persistent store, bind-mounted at the ordinary
+  `<workspace>/target` (`tools/ci/slot_cache.py`), so links, build scripts and
+  proc-macros of unchanged crates are not redone and sccache keys do not
+  change. There is one volume per trust class: only a push to main reads and
+  writes the trusted one, so no build script a pull request ran writes a tree a
+  main build uses; publications never mount one. A tree is keyed by the
+  compiler and the builder image's package set, wiped weekly, above 60 GiB, or
+  when the store passes 75%. Checkout gives files new mtimes; the helper
+  restores them for blobs a sealed previous job built from, and an unsealed job
+  leaves nothing to restore.
+- `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
+  builder per slot and trust class (`setup-buildx` `persistent`), so the
+  compile step's `target/` cache mount and pulled layers survive the job.
+  Publications start from a fresh builder.
 - The OS image build uses a registry-backed BuildKit cache because its
   intermediate container layers are not compiler outputs.
 
@@ -237,7 +289,7 @@ fingerprint. Leaving dev at its default therefore made the all-target and
 example steps rebuild dependencies that nextest had already emitted, solely to
 add debugger data that CI never consumes.
 
-A controlled qdoc-pdf probe used fresh target directories and no compiler
+A controlled tilo-doc-pdf probe used fresh target directories and no compiler
 cache. After `cargo test --no-run`, building its examples took 3.35 seconds
 with matching zero-debuginfo profiles versus 54.47 seconds with Cargo's default
 dev debuginfo. A smaller collab-types test/check probe reduced the subsequent

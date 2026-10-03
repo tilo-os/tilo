@@ -794,45 +794,49 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 mod tests {
     use super::*;
 
+    /// Sizes, memory usage, percentages and references parse, and destructive actions are flagged.
     #[test]
-    fn parse_size_handles_units() {
-        assert_eq!(parse_size("512B"), 512);
-        assert_eq!(parse_size("2KiB"), 2048);
-        assert_eq!(parse_size("18.0MB"), 18 * 1024 * 1024);
-        assert_eq!(parse_size("1.0GiB"), 1024 * 1024 * 1024);
-        assert_eq!(parse_size(""), 0);
-    }
+    fn podman_output_parsing_and_destructive_flags() {
+        // --- phase: parse_size_handles_units ---
+        {
+            assert_eq!(parse_size("512B"), 512);
+            assert_eq!(parse_size("2KiB"), 2048);
+            assert_eq!(parse_size("18.0MB"), 18 * 1024 * 1024);
+            assert_eq!(parse_size("1.0GiB"), 1024 * 1024 * 1024);
+            assert_eq!(parse_size(""), 0);
+        }
 
-    #[test]
-    fn parse_mem_usage_splits_used_and_limit() {
-        let (used, limit) = parse_mem_usage("18.0MB / 256MB");
-        assert_eq!(used, 18 * 1024 * 1024);
-        assert_eq!(limit, 256 * 1024 * 1024);
-    }
+        // --- phase: parse_mem_usage_splits_used_and_limit ---
+        {
+            let (used, limit) = parse_mem_usage("18.0MB / 256MB");
+            assert_eq!(used, 18 * 1024 * 1024);
+            assert_eq!(limit, 256 * 1024 * 1024);
+        }
 
-    #[test]
-    fn parse_percent_strips_sign() {
-        assert_eq!(parse_percent("12.5%"), 12.5);
-        assert_eq!(parse_percent("0.00%"), 0.0);
-    }
+        // --- phase: parse_percent_strips_sign ---
+        {
+            assert_eq!(parse_percent("12.5%"), 12.5);
+            assert_eq!(parse_percent("0.00%"), 0.0);
+        }
 
-    #[test]
-    fn split_reference_separates_tag() {
-        assert_eq!(
-            split_reference("docker.io/library/nginx:1.27"),
-            ("docker.io/library/nginx".into(), "1.27".into())
-        );
-        // registry-with-port host must not be mistaken for a tag.
-        assert_eq!(
-            split_reference("registry.local:5000/app"),
-            ("registry.local:5000/app".into(), "latest".into())
-        );
-    }
+        // --- phase: split_reference_separates_tag ---
+        {
+            assert_eq!(
+                split_reference("docker.io/library/nginx:1.27"),
+                ("docker.io/library/nginx".into(), "1.27".into())
+            );
+            // registry-with-port host must not be mistaken for a tag.
+            assert_eq!(
+                split_reference("registry.local:5000/app"),
+                ("registry.local:5000/app".into(), "latest".into())
+            );
+        }
 
-    #[test]
-    fn destructive_actions_flagged() {
-        assert!(Action::Remove.is_destructive());
-        assert!(!Action::Stop.is_destructive());
-        assert!(!Action::Start.is_destructive());
+        // --- phase: destructive_actions_flagged ---
+        {
+            assert!(Action::Remove.is_destructive());
+            assert!(!Action::Stop.is_destructive());
+            assert!(!Action::Start.is_destructive());
+        }
     }
 }

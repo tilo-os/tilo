@@ -345,9 +345,9 @@ impl HistoryRegistration {
         }
         for source in &self.sources {
             if let HistorySourceRegistration::CheckedFiles { scope, source } = source {
-                let root_registration = root
-                    .history_registration()?
-                    .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+                let root_registration =
+                    crate::history_mode::capability::history_registration(root)?
+                        .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                 if root_registration.definition.app_id != self.definition.app_id || !root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::CheckedFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other))) { return Err(HistoryRegistrationError::UnsupportedOwner); }
             }
         }

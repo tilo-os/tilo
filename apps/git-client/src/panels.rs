@@ -6,13 +6,10 @@
 //! buttons are hit-testable so the app can dispatch the corresponding
 //! git operation against the live backend.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
+use vello::kurbo::{Point, Rect};
 
-use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::{TextStyle, TextWeight};
 use ui::widget::ButtonFace;
 
 use crate::draw;
@@ -62,31 +59,18 @@ impl PanelsView {
     /// Draw the panels grid into `area`. Returns hit closures for the
     /// remote-action toolbar buttons.
     pub fn draw(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &RepoModel,
         hover_action: Option<RemoteAction>,
     ) -> PanelsDraw {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, area, c.surfaces.base);
+        ctx.fill_rect(area, ctx.theme.tokens.colors.surfaces.base);
 
         let mut regions: Vec<HitRegion> = Vec::new();
 
         // Toolbar across the top.
         let toolbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + 56.0);
-        Self::toolbar(
-            scene,
-            tr,
-            t,
-            theme,
-            toolbar,
-            model,
-            hover_action,
-            &mut regions,
-        );
+        Self::toolbar(ctx, toolbar, model, hover_action, &mut regions);
 
         // Two-column grid below the toolbar.
         let gap = 16.0;
@@ -102,36 +86,24 @@ impl PanelsView {
         let row_h = (body.height() - gap) / 2.0;
 
         Self::branches_card(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             Rect::new(col1_x, body.y0, col1_x + col_w, body.y0 + row_h),
             model,
             &mut regions,
         );
         Self::tags_card(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             Rect::new(col2_x, body.y0, col2_x + col_w, body.y0 + row_h),
             model,
         );
         Self::stashes_card(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             Rect::new(col1_x, body.y0 + row_h + gap, col1_x + col_w, body.y1),
             model,
             &mut regions,
         );
         Self::remotes_card(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             Rect::new(col2_x, body.y0 + row_h + gap, col2_x + col_w, body.y1),
             model,
         );
@@ -158,25 +130,17 @@ impl PanelsView {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a paint helper carrying the shared scene/tr/t/theme context plus its own rect/model/hover/regions, matching the sibling draw helpers in draw.rs"
-    )]
     fn toolbar(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         model: &RepoModel,
         hover: Option<RemoteAction>,
         regions: &mut Vec<HitRegion>,
     ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, rect, c.surfaces.raised);
+        let c = &ctx.theme.tokens.colors;
+        ctx.fill_rect(rect, c.surfaces.raised);
         draw::hline(
-            scene,
-            t,
+            ctx,
             rect.y1,
             rect.x0,
             rect.x1,
@@ -194,26 +158,18 @@ impl PanelsView {
             ),
             None => "detached".to_string(),
         };
-        draw::text(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &model.head,
-            14.0,
+            &TextStyle::new(14.0),
             c.text_primary,
-            rect.x0 + 16.0,
-            rect.y0 + 12.0,
+            Point::new(rect.x0 + 16.0, rect.y0 + 12.0),
             None,
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &status,
-            11.5,
+            &TextStyle::new(11.5),
             c.text_dim,
-            rect.x0 + 16.0,
-            rect.y0 + 32.0,
+            Point::new(rect.x0 + 16.0, rect.y0 + 32.0),
             None,
         );
 
@@ -231,7 +187,11 @@ impl PanelsView {
             // padding) rather than a fixed 84px that a longer locale
             // overflows; keep a comfortable minimum so short verbs stay
             // easy to hit.
-            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
+            let lw = f64::from(
+                ctx.text
+                    .measure_weighted(label, 12.0, None, TextWeight::Medium)
+                    .0,
+            );
             let bw = (lw + 32.0).max(72.0);
             bx -= bw;
             let brect = Rect::new(bx, by, bx + bw, by + bh);
@@ -244,7 +204,7 @@ impl PanelsView {
                 .text_size(12.0)
                 .hovered(hovered);
             let face = if primary { face.primary() } else { face };
-            draw::button(scene, tr, t, theme, &face);
+            draw::button(ctx, &face);
             regions.push(HitRegion {
                 rect: brect,
                 action: PanelHit::Remote(*action),
@@ -253,50 +213,47 @@ impl PanelsView {
         }
     }
 
-    fn card_frame(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        rect: Rect,
-        title: &str,
-        count: usize,
-    ) -> Rect {
-        let c = &theme.tokens.colors;
-        draw::card(scene, t, rect, 10.0, c.surfaces.raised);
+    fn card_frame(ctx: &mut PaintCtx<'_>, rect: Rect, title: &str, count: usize) -> Rect {
+        let c = &ctx.theme.tokens.colors;
+        draw::card(ctx, rect, 10.0, c.surfaces.raised);
         // Title and count pill share the header band's centre line.
         let header_h = 40.0;
-        let (cw, _) = tr.measure_weighted(title, 13.0, None, TextWeight::Semibold);
-        let ty_2 = draw::centered_top(tr, title, 13.0, TextWeight::Semibold, rect.y0, header_h);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        let (cw, _) = ctx
+            .text
+            .measure_weighted(title, 13.0, None, TextWeight::Semibold);
+        let title_y = draw::centered_top(
+            ctx.text,
             title,
             13.0,
-            c.text_primary,
-            rect.x0 + 16.0,
-            ty_2,
-            None,
             TextWeight::Semibold,
+            rect.y0,
+            header_h,
+        );
+        ctx.text(
+            title,
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
+            c.text_primary,
+            Point::new(rect.x0 + 16.0, title_y),
+            None,
         );
         // 12 px label → 18 px pill at 1×; the pill grows with its label.
-        let pill_h = draw::pill_height(tr, 12.0);
+        let pill_h = draw::pill_height(ctx.text, 12.0);
         draw::pill(
-            scene,
-            tr,
-            t,
-            rect.x0 + 16.0 + f64::from(cw) + 8.0,
-            rect.y0 + (header_h - pill_h) / 2.0,
-            12.0,
+            ctx,
+            Point::new(
+                rect.x0 + 16.0 + f64::from(cw) + 8.0,
+                rect.y0 + (header_h - pill_h) / 2.0,
+            ),
             &count.to_string(),
-            c.text_dim,
-            c.lift(0.72),
-            draw::PillEdge::Derived,
+            &draw::PillStyle {
+                size: 12.0,
+                fg: c.text_dim,
+                bg: c.lift(0.72),
+                edge: draw::PillEdge::Derived,
+            },
         );
         draw::hline(
-            scene,
-            t,
+            ctx,
             rect.y0 + 40.0,
             rect.x0 + 12.0,
             rect.x1 - 12.0,
@@ -306,24 +263,27 @@ impl PanelsView {
         Rect::new(rect.x0, rect.y0 + 48.0, rect.x1, rect.y1 - 12.0)
     }
 
+    /// Clip the card content that follows to `body`; paired with `pop_layer`.
+    fn clip(ctx: &mut PaintCtx<'_>, body: &Rect) {
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            body,
+        );
+    }
+
     fn branches_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         model: &RepoModel,
         regions: &mut Vec<HitRegion>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let body = Self::card_frame(scene, tr, t, theme, rect, "Branches", model.branches.len());
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
+        let body = Self::card_frame(ctx, rect, "Branches", model.branches.len());
+        Self::clip(ctx, &body);
         let mut y = body.y0 + 4.0;
         for b in &model.branches {
             if y > body.y1 - 18.0 {
@@ -338,9 +298,7 @@ impl PanelsView {
             } else {
                 c.text_dim
             };
-            draw::fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 Rect::new(body.x0 + 16.0, y + 6.0, body.x0 + 22.0, y + 12.0),
                 3.0,
                 icon_color,
@@ -356,17 +314,12 @@ impl PanelsView {
             } else {
                 TextWeight::Regular
             };
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 &b.name,
-                12.5,
+                &TextStyle::new(12.5).with_weight(weight),
                 name_color,
-                body.x0 + 30.0,
-                y,
+                Point::new(body.x0 + 30.0, y),
                 Some((body.width() - 170.0) as f32),
-                weight,
             );
 
             // Right edge: tip id, ahead/behind, and a delete affordance for
@@ -381,17 +334,12 @@ impl PanelsView {
                 let dw = 16.0;
                 let drect = Rect::new(rx - dw, y, rx, y + 16.0);
                 checkout_x1 = drect.x0 - f64::from(theme.tokens.spacing.s2);
-                draw::text_weighted(
-                    scene,
-                    tr,
-                    t,
+                ctx.text(
                     "✕",
-                    12.0,
+                    &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                     c.semantic.danger,
-                    drect.x0 + 2.0,
-                    y,
+                    Point::new(drect.x0 + 2.0, y),
                     None,
-                    TextWeight::Medium,
                 );
                 regions.push(HitRegion {
                     rect: drect,
@@ -400,14 +348,20 @@ impl PanelsView {
                 rx -= dw + 8.0;
             }
             let tip = &b.tip;
-            let tw = f64::from(draw::mono_width(tr, tip, 11.0));
+            let tw = f64::from(draw::mono_width(ctx.text, tip, 11.0));
             rx -= tw;
-            draw::mono(scene, tr, t, tip, 11.0, c.neutral[5], rx, y + 1.0);
+            draw::mono(ctx, tip, 11.0, c.neutral[5], Point::new(rx, y + 1.0));
             if b.ahead > 0 || b.behind > 0 {
                 let ab = format!("↑{} ↓{}", b.ahead, b.behind);
-                let abw = f64::from(tr.measure(&ab, 10.5, None).0);
+                let abw = f64::from(ctx.text.measure(&ab, 10.5, None).0);
                 rx -= abw + 10.0;
-                draw::text(scene, tr, t, &ab, 10.5, c.text_dim, rx, y + 1.0, None);
+                ctx.text(
+                    &ab,
+                    &TextStyle::new(10.5),
+                    c.text_dim,
+                    Point::new(rx, y + 1.0),
+                    None,
+                );
             }
 
             // Clicking the row checks out the branch (head no-op). The delete
@@ -420,110 +374,73 @@ impl PanelsView {
             }
             y += 26.0;
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
-    fn tags_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        rect: Rect,
-        model: &RepoModel,
-    ) {
-        let c = &theme.tokens.colors;
-        let body = Self::card_frame(scene, tr, t, theme, rect, "Tags", model.tags.len());
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
+    fn tags_card(ctx: &mut PaintCtx<'_>, rect: Rect, model: &RepoModel) {
+        let c = &ctx.theme.tokens.colors;
+        let body = Self::card_frame(ctx, rect, "Tags", model.tags.len());
+        Self::clip(ctx, &body);
         // 12 px tag label → 18 px pill on a 28 px pitch at 1×; both follow the
         // measured pill at larger text scales, and the target hash / message
         // centre on the pill instead of a fixed `+ 2`.
-        let pill_h = draw::pill_height(tr, 12.0);
+        let pill_h = draw::pill_height(ctx.text, 12.0);
         let pitch = (pill_h + 10.0).max(28.0);
+        let a = c.semantic.warning;
+        let tag_pill = draw::PillStyle {
+            size: 12.0,
+            fg: c.surfaces.base,
+            bg: ui::paint::with_alpha(a, 220),
+            edge: draw::PillEdge::Bare,
+        };
         let mut y = body.y0 + 4.0;
         for tag in &model.tags {
             if y > body.y1 - pill_h {
                 break;
             }
-            let a = c.semantic.warning;
-            draw::pill(
-                scene,
-                tr,
-                t,
-                body.x0 + 16.0,
-                y,
-                12.0,
-                &tag.name,
-                c.surfaces.base,
-                Color::from_rgba8(a.r(), a.g(), a.b(), 220),
-                draw::PillEdge::Bare,
-            );
-            let nw = draw::pill_width(tr, &tag.name, 12.0) + 8.0;
-            let tw = f64::from(draw::mono_width(tr, &tag.target, 11.0));
-            let target_y = draw::mono_centered_top(tr, &tag.target, 11.0, y, pill_h);
+            draw::pill(ctx, Point::new(body.x0 + 16.0, y), &tag.name, &tag_pill);
+            let nw = draw::pill_width(ctx.text, &tag.name, 12.0) + 8.0;
+            let tw = f64::from(draw::mono_width(ctx.text, &tag.target, 11.0));
+            let target_y = draw::mono_centered_top(ctx.text, &tag.target, 11.0, y, pill_h);
             draw::mono(
-                scene,
-                tr,
-                t,
+                ctx,
                 &tag.target,
                 11.0,
                 c.neutral[5],
-                body.x1 - 16.0 - tw,
-                target_y,
+                Point::new(body.x1 - 16.0 - tw, target_y),
             );
             if let Some(msg) = &tag.message {
-                let msg_y = draw::centered_top(tr, msg, 11.0, TextWeight::Regular, y, pill_h);
-                draw::text(
-                    scene,
-                    tr,
-                    t,
+                let msg_y = draw::centered_top(ctx.text, msg, 11.0, TextWeight::Regular, y, pill_h);
+                ctx.text(
                     msg,
-                    11.0,
+                    &TextStyle::new(11.0),
                     c.text_dim,
-                    body.x0 + 24.0 + nw,
-                    msg_y,
+                    Point::new(body.x0 + 24.0 + nw, msg_y),
                     Some((body.width() - nw - 90.0) as f32),
                 );
             }
             y += pitch;
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     fn stashes_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         model: &RepoModel,
         regions: &mut Vec<HitRegion>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let body = Self::card_frame(scene, tr, t, theme, rect, "Stashes", model.stashes.len());
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
+        let body = Self::card_frame(ctx, rect, "Stashes", model.stashes.len());
+        Self::clip(ctx, &body);
         let mut y = body.y0 + 4.0;
         if model.stashes.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 "No stashed changes",
-                12.0,
+                &TextStyle::new(12.0),
                 c.neutral[5],
-                body.x0 + 16.0,
-                y + 2.0,
+                Point::new(body.x0 + 16.0, y + 2.0),
                 None,
             );
         }
@@ -533,43 +450,35 @@ impl PanelsView {
             }
             let idx = format!("stash@{{{}}}", s.index);
             draw::mono(
-                scene,
-                tr,
-                t,
+                ctx,
                 &idx,
                 11.0,
                 theme.accent_primary,
-                body.x0 + 16.0,
-                y + 1.0,
+                Point::new(body.x0 + 16.0, y + 1.0),
             );
-            let iw = f64::from(draw::mono_width(tr, &idx, 11.0));
-            draw::text(
-                scene,
-                tr,
-                t,
+            let iw = f64::from(draw::mono_width(ctx.text, &idx, 11.0));
+            ctx.text(
                 &s.message,
-                12.0,
+                &TextStyle::new(12.0),
                 c.text_primary,
-                body.x0 + 24.0 + iw,
-                y,
+                Point::new(body.x0 + 24.0 + iw, y),
                 Some((body.width() - iw - 90.0) as f32),
             );
 
             // "Apply" affordance on the right.
             let label = "Apply";
-            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
+            let lw = f64::from(
+                ctx.text
+                    .measure_weighted(label, 11.0, None, TextWeight::Medium)
+                    .0,
+            );
             let lx = body.x1 - lw - 14.0;
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 label,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Medium),
                 theme.accent_primary,
-                lx,
-                y + 1.0,
+                Point::new(lx, y + 1.0),
                 None,
-                TextWeight::Medium,
             );
             regions.push(HitRegion {
                 rect: Rect::new(lx - 6.0, y - 2.0, body.x1, y + 18.0),
@@ -577,56 +486,34 @@ impl PanelsView {
             });
             y += 26.0;
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
-    fn remotes_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        rect: Rect,
-        model: &RepoModel,
-    ) {
-        let c = &theme.tokens.colors;
-        let body = Self::card_frame(scene, tr, t, theme, rect, "Remotes", model.remotes.len());
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
+    fn remotes_card(ctx: &mut PaintCtx<'_>, rect: Rect, model: &RepoModel) {
+        let c = &ctx.theme.tokens.colors;
+        let body = Self::card_frame(ctx, rect, "Remotes", model.remotes.len());
+        Self::clip(ctx, &body);
         let mut y = body.y0 + 4.0;
         for r in &model.remotes {
             if y > body.y1 - 28.0 {
                 break;
             }
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 &r.name,
-                12.5,
+                &TextStyle::new(12.5).with_weight(TextWeight::Medium),
                 c.text_primary,
-                body.x0 + 16.0,
-                y,
+                Point::new(body.x0 + 16.0, y),
                 None,
-                TextWeight::Medium,
             );
-            draw::text(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 &r.url,
-                11.0,
+                &TextStyle::new(11.0),
                 c.text_dim,
-                body.x0 + 16.0,
-                y + 16.0,
+                Point::new(body.x0 + 16.0, y + 16.0),
                 Some((body.width() - 32.0) as f32),
             );
             y += 40.0;
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 }

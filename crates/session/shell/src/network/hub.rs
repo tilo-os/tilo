@@ -110,50 +110,52 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_delivers_to_all_other_subscribers() {
-        let a = make_sub(1);
-        let b = make_sub(2);
-        let c = make_sub(3);
+    fn broadcast_reaches_every_other_subscriber_but_not_the_sender() {
+        // Phase `broadcast_delivers_to_all_other_subscribers`.
+        {
+            let a = make_sub(1);
+            let b = make_sub(2);
+            let c = make_sub(3);
 
-        let mut hub = Hub::new();
-        hub.attach(Box::new(ArcSub(a.clone())));
-        hub.attach(Box::new(ArcSub(b.clone())));
-        hub.attach(Box::new(ArcSub(c.clone())));
+            let mut hub = Hub::new();
+            hub.attach(Box::new(ArcSub(a.clone())));
+            hub.attach(Box::new(ArcSub(b.clone())));
+            hub.attach(Box::new(ArcSub(c.clone())));
 
-        let msg = NeighbourMsg::SyncReq {
-            since: vec![9, 9, 9],
-            room: "6b3f9a10-0000-4000-8000-00000000000b".to_string(),
-            invite_id: None,
-        };
-        hub.broadcast(1, &msg);
+            let msg = NeighbourMsg::SyncReq {
+                since: vec![9, 9, 9],
+                room: "6b3f9a10-0000-4000-8000-00000000000b".to_string(),
+                invite_id: None,
+            };
+            hub.broadcast(1, &msg);
 
-        assert!(a.lock().unwrap().recv.is_empty(), "sender must not echo");
-        assert_eq!(
-            b.lock().unwrap().recv,
-            vec![(PeerOrigin::hub(1), msg.clone())]
-        );
-        assert_eq!(c.lock().unwrap().recv, vec![(PeerOrigin::hub(1), msg)]);
-    }
+            assert!(a.lock().unwrap().recv.is_empty(), "sender must not echo");
+            assert_eq!(
+                b.lock().unwrap().recv,
+                vec![(PeerOrigin::hub(1), msg.clone())]
+            );
+            assert_eq!(c.lock().unwrap().recv, vec![(PeerOrigin::hub(1), msg)]);
+        }
+        // Phase `broadcast_does_not_echo_to_sender`.
+        {
+            let a = make_sub(10);
+            let b = make_sub(20);
 
-    #[test]
-    fn broadcast_does_not_echo_to_sender() {
-        let a = make_sub(10);
-        let b = make_sub(20);
+            let mut hub = Hub::new();
+            hub.attach(Box::new(ArcSub(a.clone())));
+            hub.attach(Box::new(ArcSub(b.clone())));
 
-        let mut hub = Hub::new();
-        hub.attach(Box::new(ArcSub(a.clone())));
-        hub.attach(Box::new(ArcSub(b.clone())));
+            let msg = NeighbourMsg::PresenceCleared {
+                peer: 10,
+                key: "cursor".to_string(),
+            };
+            hub.broadcast(10, &msg);
 
-        let msg = NeighbourMsg::PresenceCleared {
-            peer: 10,
-            key: "cursor".to_string(),
-        };
-        hub.broadcast(10, &msg);
-
-        assert!(
-            a.lock().unwrap().recv.is_empty(),
-            "the sender (id=10) must not receive its own broadcast"
-        );
-        assert_eq!(b.lock().unwrap().recv, vec![(PeerOrigin::hub(10), msg)]);
+            assert!(
+                a.lock().unwrap().recv.is_empty(),
+                "the sender (id=10) must not receive its own broadcast"
+            );
+            assert_eq!(b.lock().unwrap().recv, vec![(PeerOrigin::hub(10), msg)]);
+        }
     }
 }

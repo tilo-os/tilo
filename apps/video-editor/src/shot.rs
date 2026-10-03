@@ -69,7 +69,7 @@ pub fn compose(
     // had actually done — the picture has to be of the real control, not of a
     // control the capture path starved.
     let status = state.undo_status(None);
-    widget.set_undo_status(&mut || status.clone());
+    ui::undo::set_undo_status(widget, &mut || status.clone());
 
     let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
@@ -177,6 +177,31 @@ mod tests {
         fingerprint(capture(scenario, size).harness().scene())
     }
 
+    /// The scenarios whose determinism is asserted: the plain demo frame and
+    /// the ones whose content arrives from the document's collections.
+    const DETERMINISM_SCENARIOS: [Option<&str>; 5] = [
+        None,
+        Some("markers"),
+        Some("filters"),
+        Some("split"),
+        Some("effects"),
+    ];
+
+    /// `part` of `parts` near-equal slices of `all`. Each capture is a whole
+    /// app build, so a scenario list is spread over a few tests that the
+    /// runner schedules in parallel; the last slice takes the remainder, so
+    /// every entry lands in exactly one part however the list grows.
+    fn part_of<T>(all: &[T], part: usize, parts: usize) -> &[T] {
+        let per = all.len().div_ceil(parts);
+        let start = (per * part).min(all.len());
+        let end = if part + 1 == parts {
+            all.len()
+        } else {
+            (start + per).min(all.len())
+        };
+        &all[start..end]
+    }
+
     /// Every build of one scenario must describe the same picture exactly.
     ///
     /// Three builds rather than two, because the failures this exists for do
@@ -192,15 +217,8 @@ mod tests {
     /// order each run, which is the same set of shapes emitted in a different
     /// sequence -- identical counts, identical stream lengths, different
     /// bytes, and a capture nobody could diff.
-    #[test]
-    fn a_scenario_composes_the_same_scene_every_time() {
-        for scenario in [
-            None,
-            Some("markers"),
-            Some("filters"),
-            Some("split"),
-            Some("effects"),
-        ] {
+    fn assert_scenarios_compose_the_same_scene_every_time(part: usize) {
+        for &scenario in part_of(&DETERMINISM_SCENARIOS, part, 3) {
             let first = print_of(scenario, (1280, 800));
             for again in 1..3 {
                 assert_eq!(
@@ -210,6 +228,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_scenario_composes_the_same_scene_every_time_part_1() {
+        assert_scenarios_compose_the_same_scene_every_time(0);
+    }
+
+    #[test]
+    fn a_scenario_composes_the_same_scene_every_time_part_2() {
+        assert_scenarios_compose_the_same_scene_every_time(1);
+    }
+
+    #[test]
+    fn a_scenario_composes_the_same_scene_every_time_part_3() {
+        assert_scenarios_compose_the_same_scene_every_time(2);
+    }
+
+    /// The parts above and below cover their lists exactly once: no scenario
+    /// is dropped from the determinism or staging check by the split.
+    #[test]
+    fn the_scenario_parts_cover_every_scenario_once() {
+        fn joined<T: Clone>(all: &[T], parts: usize) -> Vec<T> {
+            (0..parts)
+                .flat_map(|part| part_of(all, part, parts).to_vec())
+                .collect()
+        }
+        assert_eq!(joined(&DETERMINISM_SCENARIOS, 3), DETERMINISM_SCENARIOS);
+        assert_eq!(
+            joined(crate::app::ShotScenario::ALL_NAMES, STAGING_PARTS),
+            crate::app::ShotScenario::ALL_NAMES,
+        );
     }
 
     /// The picture itself, twice, through the real GPU path a `--shots`
@@ -259,19 +308,45 @@ mod tests {
         );
     }
 
+    /// How many tests the launcher's scenario list is spread over.
+    const STAGING_PARTS: usize = 4;
+
     /// Every scenario the launcher accepts stages on the framework host, and
     /// its view state lands: the capture differs from the plain demo frame.
-    #[test]
-    fn every_scenario_stages_through_the_host() {
+    fn assert_scenarios_stage_through_the_host(part: usize) {
         let plain = print_of(None, (1280, 800));
-        for name in crate::app::ShotScenario::ALL_NAMES {
+        for name in part_of(crate::app::ShotScenario::ALL_NAMES, part, STAGING_PARTS) {
             assert_ne!(
                 print_of(Some(name), (1280, 800)),
                 plain,
                 "{name} staged nothing visible"
             );
         }
-        // `--narrow` reveals the collapsed bin, which only collapses narrow.
+    }
+
+    #[test]
+    fn every_scenario_stages_through_the_host_part_1() {
+        assert_scenarios_stage_through_the_host(0);
+    }
+
+    #[test]
+    fn every_scenario_stages_through_the_host_part_2() {
+        assert_scenarios_stage_through_the_host(1);
+    }
+
+    #[test]
+    fn every_scenario_stages_through_the_host_part_3() {
+        assert_scenarios_stage_through_the_host(2);
+    }
+
+    #[test]
+    fn every_scenario_stages_through_the_host_part_4() {
+        assert_scenarios_stage_through_the_host(3);
+    }
+
+    /// `--narrow` reveals the collapsed bin, which only collapses narrow.
+    #[test]
+    fn the_narrow_capture_opens_the_bin_overlay() {
         assert_ne!(
             print_of(Some(crate::app::NARROW_CAPTURE), (720, 820)),
             print_of(None, (720, 820)),

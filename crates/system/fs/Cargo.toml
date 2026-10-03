@@ -1,9 +1,16 @@
 [package]
-name = "fs"
+name = "tilo-fs"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable content-addressed storage and the default Tilo filesystem service."
+
+[lib]
+name = "fs"
+path = "src/lib.rs"
 
 # The content plane is portable. Filesystem projection, mounting and service
 # protocols remain enabled by default for the OS; app-only consumers opt out.
@@ -18,12 +25,12 @@ filesystem = [
     "dep:iroh-gossip",
     "dep:automerge",
     "dep:tilo-automerge",
-    "dep:qdoc",
-    "dep:qdoc-codecs",
+    "dep:tilo-doc",
+    "dep:tilo-doc-codecs",
     "dep:tilo-content",
     "dep:collab-types",
     "dep:ed25519-dalek",
-    "dep:thumbnail",
+    "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
     "document-media",
@@ -33,13 +40,20 @@ filesystem = [
     "dep:toml",
     "dep:uuid",
     "dep:thiserror",
-    "dep:hex",
-    "dep:blake3",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
     "dep:fs-native",
-    "dep:redb",
+    "dep:accounts",
+    "dep:cloud-source",
+    "dep:cloud-source-dav",
+    "dep:cloud-source-gdrive",
+    "dep:cloud-source-onedrive",
+    "dep:cloud-source-dropbox",
+    "dep:cloud-source-icloud",
+    "dep:notify",
+    "dep:zeroize",
+    "dep:wire-frame",
 ]
 
 [[bin]]
@@ -87,22 +101,33 @@ name = "native_sync_bench"
 path = "tests/native_sync_bench.rs"
 required-features = ["filesystem"]
 
+[[test]]
+name = "cloud_mount"
+path = "tests/cloud_mount.rs"
+required-features = ["filesystem"]
+
 [dependencies]
-bounded-command = { path = "../bounded-command" }
-atomic-file = { path = "../atomic-file" }
+bounded-command = { version = "0.1.0", path = "../bounded-command" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
+# The content format (chunking, manifests) and the pieces of iroh-blobs
+# the content store builds its file-backed provider from.
+fs-content = { version = "0.1.0", path = "../fs-content" }
+bao-tree = { workspace = true }
+irpc = { workspace = true }
+ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
-qdoc = { path = "../../doc/qdoc", optional = true }
-tilo-content = { path = "../content", optional = true }
-qdoc-codecs = { path = "../../doc/qdoc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
-collab-types = { path = "../../collab/collab-types", optional = true }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
+tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
+tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
@@ -110,14 +135,14 @@ ed25519-dalek = { workspace = true, optional = true }
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-thumbnail = { path = "../../media/thumbnail", optional = true }
-tilo-clock = { path = "../tilo-clock" }
+tilo-thumbnail = { version = "0.1.0", path = "../../media/thumbnail", optional = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
-tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
-runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
+tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
+runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
 moka.workspace = true
 serde.workspace = true
@@ -129,17 +154,31 @@ tempfile.workspace = true
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
-hex = { workspace = true, optional = true }
-blake3 = { workspace = true, optional = true }
+hex.workspace = true
+blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
-redb = { workspace = true, optional = true }
+redb.workspace = true
+# Cloud accounts as mounted folders: the account store and credential
+# handoff, the provider interface and the providers.
+accounts = { version = "0.1.0", path = "../accounts", optional = true }
+cloud-source = { version = "0.1.0", path = "../cloud-source", optional = true }
+cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", optional = true }
+cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { version = "0.1.0", path = "../cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", optional = true }
+cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", optional = true }
+notify = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+tracing.workspace = true
+wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 tilo-test-env = { path = "../../dev/test-env" }
+cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 
 [lints]
 workspace = true
@@ -150,8 +189,12 @@ fuser = { workspace = true, optional = true }
 # The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
 # pre-content placeholders. Linux-only kernel interfaces.
 [target.'cfg(target_os = "linux")'.dependencies]
-fs-native = { path = "../fs-native", optional = true }
+fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.
 [target.'cfg(target_os = "macos")'.dependencies]
 fuser = { workspace = true, features = ["macos-no-mount"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

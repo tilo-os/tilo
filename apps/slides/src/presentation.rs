@@ -4,20 +4,22 @@
 //! every transient concern of a running talk: timer, blanking, presenter/notes
 //! views, cross-fades, and the pointer/key policy that chooses a command.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Vec2};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use ui::i18n::ArgValue;
 
 use crate::assets::ImageStore;
 use crate::model::{Deck, Palette, PaletteKind, SLIDE_H, SLIDE_W};
+use crate::render::DeckAssets;
 use crate::strings::{tr, tr_args};
 use crate::{chrome, render};
 
@@ -159,7 +161,7 @@ impl Presentation {
     pub(crate) fn start(&mut self) {
         self.blank = Blank::None;
         self.transition = None;
-        self.started = Some(Instant::now());
+        self.started = Some(ui::time::now());
         self.paused_elapsed = None;
         self.paused_total = Duration::ZERO;
     }
@@ -179,7 +181,7 @@ impl Presentation {
     }
 
     pub(crate) fn start_transition(&mut self, from: usize) {
-        self.transition = Some((from, Instant::now()));
+        self.transition = Some((from, ui::time::now()));
         self.blank = Blank::None;
     }
 
@@ -346,7 +348,7 @@ impl Presentation {
     }
 
     fn reset_timer(&mut self) {
-        self.started = Some(Instant::now());
+        self.started = Some(ui::time::now());
         self.paused_elapsed = None;
         self.paused_total = Duration::ZERO;
     }
@@ -411,15 +413,14 @@ impl Presentation {
             && let Some(previous) = frame.deck.slides.get(from)
         {
             render::draw_slide(
-                scene,
-                transform,
-                text,
-                theme,
-                &palette,
+                &mut PaintCtx::new(scene, transform, text, theme),
+                DeckAssets {
+                    palette: &palette,
+                    images: frame.images,
+                },
                 previous,
                 destination,
                 0.0,
-                frame.images,
             );
         }
         if alpha < 1.0 {
@@ -432,15 +433,14 @@ impl Presentation {
                     &destination,
                 );
                 render::draw_slide(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &palette,
+                    &mut PaintCtx::new(scene, transform, text, theme),
+                    DeckAssets {
+                        palette: &palette,
+                        images: frame.images,
+                    },
                     slide,
                     destination,
                     0.0,
-                    frame.images,
                 );
                 scene.pop_layer();
             }
@@ -462,10 +462,6 @@ impl Presentation {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "render target, shared text/theme state, presentation frame, palette and destination are independent inputs"
-    )]
     fn append_settled_slide(
         cache_slot: &mut Option<PresentCache>,
         scene: &mut Scene,
@@ -488,15 +484,14 @@ impl Presentation {
             let mut fragment = Scene::new();
             if let Some(slide) = frame.slide() {
                 render::draw_slide(
-                    &mut fragment,
-                    Affine::IDENTITY,
-                    text,
-                    theme,
-                    palette,
+                    &mut PaintCtx::new(&mut fragment, Affine::IDENTITY, text, theme),
+                    DeckAssets {
+                        palette,
+                        images: frame.images,
+                    },
                     slide,
                     destination,
                     0.0,
-                    frame.images,
                 );
             }
             let (_, _, _, dest) = PresentCache::key(
@@ -549,15 +544,14 @@ impl Presentation {
             && let Some(previous) = frame.deck.slides.get(from)
         {
             render::draw_slide(
-                scene,
-                transform,
-                text,
-                theme,
-                &palette,
+                &mut PaintCtx::new(scene, transform, text, theme),
+                DeckAssets {
+                    palette: &palette,
+                    images: frame.images,
+                },
                 previous,
                 destination,
                 0.0,
-                frame.images,
             );
         }
         if alpha < 1.0 {
@@ -570,15 +564,14 @@ impl Presentation {
                     &destination,
                 );
                 render::draw_slide(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &palette,
+                    &mut PaintCtx::new(scene, transform, text, theme),
+                    DeckAssets {
+                        palette: &palette,
+                        images: frame.images,
+                    },
                     slide,
                     destination,
                     0.0,
-                    frame.images,
                 );
                 scene.pop_layer();
             }
@@ -596,10 +589,6 @@ impl Presentation {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "render target, shared text/theme state, presentation frame, palette and panel geometry are independent inputs"
-    )]
     fn draw_notes_panel(
         &self,
         scene: &mut Scene,
@@ -674,15 +663,14 @@ impl Presentation {
                 TextWeight::Semibold,
             );
             render::draw_slide(
-                scene,
-                transform,
-                text,
-                theme,
-                palette,
+                &mut PaintCtx::new(scene, transform, text, theme),
+                DeckAssets {
+                    palette,
+                    images: frame.images,
+                },
                 next,
                 preview,
                 6.0,
-                frame.images,
             );
             // A frame on the raised notes panel: its derived edge.
             chrome::stroke_round(
@@ -705,50 +693,51 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
         palette: &Palette,
     ) {
-        let colors = &theme.tokens.colors;
-        chrome::fill_rect(scene, transform, frame.rect, colors.surfaces.base);
-        let outer = 28.0;
+        chrome::fill_rect(
+            scene,
+            transform,
+            frame.rect,
+            theme.tokens.colors.surfaces.base,
+        );
         // Header and footer bands follow the measured line boxes of the text
         // they hold (classic 60 / 40 px as the 1× floors), so a 2× title
         // never paints over the PRESENTER VIEW caption or the position line
         // over the timer, and the key hints keep clear of the notes panel.
         let m = PresenterMetrics::resolve(text, theme);
+        let outer = 28.0;
         let body = Rect::new(
             frame.rect.x0 + outer,
             frame.rect.y0 + m.header_h(),
             frame.rect.x1 - outer,
             frame.rect.y1 - m.footer_h(),
         );
-        self.draw_presenter_header(scene, transform, text, frame, colors, palette, outer, &m);
+        let view = PresenterView {
+            frame,
+            palette,
+            outer,
+            m,
+        };
+        let ctx = &mut PaintCtx::new(scene, transform, text, theme);
+        self.draw_presenter_header(ctx, &view);
 
         let left_width = (body.width() * 0.62).min(body.width() - 320.0);
         let current = Rect::new(body.x0, body.y0, body.x0 + left_width, body.y1);
         let right = Rect::new(current.x1 + 24.0, body.y0, body.x1, body.y1);
-        draw_presenter_current(
-            scene, transform, text, theme, frame, colors, palette, current, &m,
-        );
-        let next = draw_presenter_next(
-            scene, transform, text, theme, frame, colors, palette, right, &m,
-        );
-        draw_presenter_notes(scene, transform, text, frame, colors, right, body, next, &m);
-        draw_presenter_footer(scene, transform, text, frame, colors, palette, outer, &m);
+        draw_presenter_current(ctx, &view, current);
+        let next = draw_presenter_next(ctx, &view, right);
+        draw_presenter_notes(ctx, &view, Rect::new(right.x0, next.y1, right.x1, body.y1));
+        draw_presenter_footer(ctx, &view);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "render target, presentation frame, resolved colors and header geometry are independent inputs"
-    )]
-    fn draw_presenter_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        frame: &PresentationFrame<'_>,
-        colors: &ui::tokens::Colors,
-        palette: &Palette,
-        outer: f64,
-        m: &PresenterMetrics,
-    ) {
+    fn draw_presenter_header(&self, ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
+        let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+        let colors = &ctx.theme.tokens.colors;
+        let PresenterView {
+            frame,
+            palette,
+            outer,
+            m,
+        } = view;
         let clock = self.clock();
         let (clock_width, _) = text.measure_weighted(&clock, FONT_CLOCK, None, TextWeight::Bold);
         let position = tr_args(
@@ -827,6 +816,16 @@ impl Presentation {
             TextWeight::Semibold,
         );
     }
+}
+
+/// One presenter-dashboard frame: the deck view, its resolved palette, the
+/// side inset of its header, body and footer, and the measured chrome metrics
+/// every panel lays out against.
+struct PresenterView<'a> {
+    frame: &'a PresentationFrame<'a>,
+    palette: &'a Palette,
+    outer: f64,
+    m: PresenterMetrics,
 }
 
 /// Presenter-view chrome fonts. Passed unscaled to the renderer, which
@@ -949,26 +948,16 @@ fn draw_progress(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Current-slide painting combines render context, presentation content, chrome colors, slide palette, and presenter geometry."
-)]
-fn draw_presenter_current(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    frame: &PresentationFrame<'_>,
-    colors: &ui::tokens::Colors,
-    palette: &Palette,
-    area: Rect,
-    m: &PresenterMetrics,
-) {
-    text.draw_text_weighted(
+fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: Rect) {
+    let PresenterView {
+        frame, palette, m, ..
+    } = view;
+    let (scene, transform) = (&mut *ctx.scene, ctx.transform);
+    ctx.text.draw_text_weighted(
         scene,
         &tr("slides-current"),
         FONT_CAPTION,
-        colors.text_dim,
+        ctx.theme.tokens.colors.text_dim,
         transform * Affine::translate((area.x0, area.y0)),
         None,
         TextWeight::Semibold,
@@ -979,30 +968,29 @@ fn draw_presenter_current(
         area.x1,
         area.y1,
     ));
-    chrome::fill_round(
+    ui::surface::shadow(
         scene,
         transform,
-        (destination + Vec2::new(0.0, 6.0)).inflate(2.0, 2.0),
+        destination,
         12.0,
-        render::with_alpha(Color::BLACK, 80),
+        &ctx.theme.tokens.elevation.e3,
     );
     if let Some(slide) = frame.slide() {
         render::draw_slide(
-            scene,
-            transform,
-            text,
-            theme,
-            palette,
+            ctx,
+            DeckAssets {
+                palette,
+                images: frame.images,
+            },
             slide,
             destination,
             12.0,
-            frame.images,
         );
     }
     // The slide frame is the stage's derived edge (the presenter stage is
     // painted `Color::BLACK`, see `draw_presenter`).
     chrome::stroke_round(
-        scene,
+        ctx.scene,
         transform,
         destination,
         12.0,
@@ -1011,23 +999,13 @@ fn draw_presenter_current(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Next-slide painting combines render context, deck position, chrome colors, slide palette, and presenter geometry."
-)]
-fn draw_presenter_next(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    frame: &PresentationFrame<'_>,
-    colors: &ui::tokens::Colors,
-    palette: &Palette,
-    area: Rect,
-    m: &PresenterMetrics,
-) -> Rect {
-    text.draw_text_weighted(
-        scene,
+fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: Rect) -> Rect {
+    let PresenterView {
+        frame, palette, m, ..
+    } = view;
+    let (transform, colors) = (ctx.transform, &ctx.theme.tokens.colors);
+    ctx.text.draw_text_weighted(
+        ctx.scene,
         &tr("slides-next"),
         FONT_CAPTION,
         colors.text_dim,
@@ -1044,18 +1022,17 @@ fn draw_presenter_next(
     );
     if let Some(next) = frame.deck.slides.get(frame.current + 1) {
         render::draw_slide(
-            scene,
-            transform,
-            text,
-            theme,
-            palette,
+            ctx,
+            DeckAssets {
+                palette,
+                images: frame.images,
+            },
             next,
             destination,
             8.0,
-            frame.images,
         );
         chrome::stroke_round(
-            scene,
+            ctx.scene,
             transform,
             destination,
             8.0,
@@ -1063,47 +1040,41 @@ fn draw_presenter_next(
             1.0,
         );
     } else {
-        ui::surface::card(scene, transform, destination, 8.0, colors.surfaces.raised);
-        chrome::text_centered(
-            scene,
+        ui::surface::card(
+            ctx.scene,
             transform,
-            text,
+            destination,
+            8.0,
+            colors.surfaces.raised,
+        );
+        chrome::text_centered(
+            ctx,
             &tr("slides-end-of-deck"),
             destination,
-            14.0,
+            &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             colors.text_dim,
-            TextWeight::Semibold,
         );
     }
     destination
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Speaker-note painting uses scene/transform/text, slide content and colors, adjacent panel bounds, and caption metrics."
-)]
-fn draw_presenter_notes(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    frame: &PresentationFrame<'_>,
-    colors: &ui::tokens::Colors,
-    right: Rect,
-    body: Rect,
-    next: Rect,
-    m: &PresenterMetrics,
-) {
-    let top = next.y1 + 22.0;
+/// The speaker-notes caption and panel filling `column`, whose top is the
+/// bottom of the next-slide preview.
+fn draw_presenter_notes(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, column: Rect) {
+    let PresenterView { frame, m, .. } = view;
+    let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+    let colors = &ctx.theme.tokens.colors;
+    let top = column.y0 + 22.0;
     text.draw_text_weighted(
         scene,
         &tr("slides-speaker-notes"),
         FONT_CAPTION,
         colors.text_dim,
-        transform * Affine::translate((right.x0, top)),
+        transform * Affine::translate((column.x0, top)),
         None,
         TextWeight::Semibold,
     );
-    let panel = Rect::new(right.x0, top + m.caption_adv(), right.x1, body.y1);
+    let panel = Rect::new(column.x0, top + m.caption_adv(), column.x1, column.y1);
     ui::surface::card(scene, transform, panel, 10.0, colors.surfaces.raised);
     let notes = frame.slide().map_or("", |slide| slide.notes.as_str());
     let no_notes = tr("slides-no-notes");
@@ -1126,16 +1097,15 @@ fn draw_presenter_notes(
     );
 }
 
-fn draw_presenter_footer(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    frame: &PresentationFrame<'_>,
-    colors: &ui::tokens::Colors,
-    palette: &Palette,
-    outer: f64,
-    m: &PresenterMetrics,
-) {
+fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
+    let PresenterView {
+        frame,
+        palette,
+        outer,
+        m,
+    } = view;
+    let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+    let colors = &ctx.theme.tokens.colors;
     // Centred in the footer band and elided to the window, so the 2× hints
     // end inside the frame instead of running off its right edge.
     let hints = text.elide_to_width_weighted(
@@ -1176,120 +1146,128 @@ fn fit_slide_top(area: Rect) -> Rect {
 mod tests {
     use super::*;
 
+    /// Blank navigation, presenter clicks and the paused timer.
     #[test]
-    fn blank_navigation_resumes_before_advancing() {
-        let mut p = Presentation::default();
-        p.set_blank(Blank::Black);
-        assert_eq!(
-            p.handle_key(&Key::Named(NamedKey::ArrowRight)),
-            Some(Command::None)
-        );
-        assert_eq!(
-            p.handle_key(&Key::Named(NamedKey::ArrowRight)),
-            Some(Command::Advance)
-        );
+    fn presentation_navigation_and_timer_state() {
+        // Case `blank_navigation_resumes_before_advancing`.
+        {
+            let mut p = Presentation::default();
+            p.set_blank(Blank::Black);
+            assert_eq!(
+                p.handle_key(&Key::Named(NamedKey::ArrowRight)),
+                Some(Command::None)
+            );
+            assert_eq!(
+                p.handle_key(&Key::Named(NamedKey::ArrowRight)),
+                Some(Command::Advance)
+            );
+        }
+
+        // Case `presenter_click_never_advances`.
+        {
+            let mut p = Presentation::default();
+            p.set_presenter_view(true);
+            assert_eq!(p.pointer_command(), Command::None);
+        }
+
+        // Case `paused_timer_is_stable_and_reset_resumes`.
+        {
+            let mut p = Presentation::default();
+            p.start();
+            p.handle_key(&Key::Character("k".into()));
+            let frozen = p.elapsed();
+            std::thread::sleep(Duration::from_millis(10));
+            assert_eq!(p.elapsed(), frozen);
+            p.handle_key(&Key::Character("0".into()));
+            assert!(!p.is_paused());
+            assert!(p.elapsed() < Duration::from_millis(50));
+        }
     }
 
+    /// The settled slide cache reuses unchanged renders and keys every input.
     #[test]
-    fn presenter_click_never_advances() {
-        let mut p = Presentation::default();
-        p.set_presenter_view(true);
-        assert_eq!(p.pointer_command(), Command::None);
-    }
+    fn settled_slide_cache_reuses_and_keys_every_input() {
+        // Case `settled_slide_cache_reuses_an_unchanged_render`.
+        {
+            let deck = crate::model::seed_deck();
+            let images = ImageStore::new(tilo_content::ContentStore::memory());
+            let frame =
+                PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
+            let theme = Theme::dark();
+            let palette = Palette::resolve(deck.palette, &theme);
+            let destination = Rect::new(100.0, 50.0, 1180.0, 660.0);
+            let mut presentation = Presentation::default();
+            let mut text = TextRenderer::new();
 
-    #[test]
-    fn paused_timer_is_stable_and_reset_resumes() {
-        let mut p = Presentation::default();
-        p.start();
-        p.handle_key(&Key::Character("k".into()));
-        let frozen = p.elapsed();
-        std::thread::sleep(Duration::from_millis(10));
-        assert_eq!(p.elapsed(), frozen);
-        p.handle_key(&Key::Character("0".into()));
-        assert!(!p.is_paused());
-        assert!(p.elapsed() < Duration::from_millis(50));
-    }
+            assert!(Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
+            assert!(!Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
 
-    #[test]
-    fn settled_slide_cache_reuses_an_unchanged_render() {
-        let deck = crate::model::seed_deck();
-        let images = ImageStore::new(tilo_content::ContentStore::memory());
-        let frame =
-            PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
-        let theme = Theme::dark();
-        let palette = Palette::resolve(deck.palette, &theme);
-        let destination = Rect::new(100.0, 50.0, 1180.0, 660.0);
-        let mut presentation = Presentation::default();
-        let mut text = TextRenderer::new();
+            presentation.invalidate_cache();
+            assert!(Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
+        }
 
-        assert!(Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-        assert!(!Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-
-        presentation.invalidate_cache();
-        assert!(Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-    }
-
-    #[test]
-    fn settled_slide_cache_key_covers_all_render_inputs() {
-        let destination = Rect::new(100.2, 50.2, 1180.2, 660.2);
-        let base = PresentCache::key(destination, 1, 7, PaletteKind::Indigo);
-        assert_eq!(
-            base,
-            PresentCache::key(
-                Rect::new(100.4, 50.4, 1180.4, 660.4),
-                1,
-                7,
-                PaletteKind::Indigo,
-            ),
-            "subpixel destination jitter remains a cache hit"
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 2, 7, PaletteKind::Indigo)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 1, 8, PaletteKind::Indigo)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 1, 7, PaletteKind::Amber)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(
-                Rect::new(101.2, 50.2, 1181.2, 660.2),
-                1,
-                7,
-                PaletteKind::Indigo,
-            )
-        );
+        // Case `settled_slide_cache_key_covers_all_render_inputs`.
+        {
+            let destination = Rect::new(100.2, 50.2, 1180.2, 660.2);
+            let base = PresentCache::key(destination, 1, 7, PaletteKind::Indigo);
+            assert_eq!(
+                base,
+                PresentCache::key(
+                    Rect::new(100.4, 50.4, 1180.4, 660.4),
+                    1,
+                    7,
+                    PaletteKind::Indigo,
+                ),
+                "subpixel destination jitter remains a cache hit"
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 2, 7, PaletteKind::Indigo)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 1, 8, PaletteKind::Indigo)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 1, 7, PaletteKind::Amber)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(
+                    Rect::new(101.2, 50.2, 1181.2, 660.2),
+                    1,
+                    7,
+                    PaletteKind::Indigo,
+                )
+            );
+        }
     }
 }

@@ -47,10 +47,19 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
-use crate::cert::DeviceCert;
+use crate::cert::{
+    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert_at,
+};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only Linux can fail to disable dumps; callers share one signature"
+    )
+)]
 fn protect_secret_process() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -66,29 +75,18 @@ fn protect_secret_process() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
-    const RESOLVE_BENEATH: u64 = 0x08;
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
-    // Fedora Atomic deliberately exposes /home as a symlink to /var/home.
-    // Resolving an absolute path with RESOLVE_NO_SYMLINKS therefore rejects a
-    // perfectly normal login before it ever reaches Tilo's identity tree.
-    // Managed IdentityPaths can sit below that distribution-owned symlink.
-    // Anchor them at the parent of the nearest canonical identity directory;
-    // resolving the remainder beneath this descriptor preserves symlink
-    // rejection inside Tilo's storage. Explicit CLI paths have no such managed
-    // boundary, so retain the strict absolute-path behavior for them.
-    let managed = path
-        .ancestors()
+/// Distributions and platforms put ordinary directories behind symlinks they
+/// own: Fedora Atomic exposes /home as a symlink to /var/home, and macOS puts
+/// /tmp and /var (so every `$TMPDIR`) behind /private. Resolving an absolute
+/// path while rejecting every symlink would refuse a perfectly normal login
+/// before it reaches Tilo's identity tree. Managed `IdentityPaths` are
+/// therefore anchored at the parent of the nearest identity directory, and
+/// the remainder is resolved beneath that canonical directory, which keeps
+/// symlink rejection inside Tilo's storage. Explicit CLI paths have no such
+/// managed boundary and keep the strict absolute-path behavior.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_root(path: &Path) -> Option<(&Path, &Path)> {
+    path.ancestors()
         .zip(path.ancestors().skip(1))
         .find_map(|(child, parent)| {
             let name = child.file_name()?.to_str()?;
@@ -96,8 +94,12 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
                 return None;
             }
             Some((parent, path.strip_prefix(parent).ok()?))
-        });
-    let (root, candidate, resolve) = if let Some((root, relative)) = managed {
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    let (root, candidate, beneath) = if let Some((root, relative)) = managed_root(path) {
         let canonical_root = fs::canonicalize(root)?;
         let root_path = CString::new(canonical_root.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(
@@ -119,11 +121,7 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
         }
         // SAFETY: libc::open returned an owned descriptor.
         let root = unsafe { fs::File::from_raw_fd(root_fd) };
-        (
-            Some(root),
-            candidate,
-            RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-        )
+        (Some(root), candidate, true)
     } else {
         let candidate = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(
@@ -131,51 +129,59 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
                 "identity artifact path contains an embedded NUL byte",
             )
         })?;
-        (None, candidate, RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS)
+        (None, candidate, false)
     };
-    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .map_err(|_| io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: 0,
-        resolve,
+    crate::nofollow::open(
+        root.as_ref(),
+        &candidate,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        0,
+        beneath,
+    )
+}
+
+/// Darwin rejects symlinks in every component of the path it resolves
+/// (`O_NOFOLLOW_ANY`), matching Linux openat2 `RESOLVE_NO_SYMLINKS`; managed
+/// paths resolve beneath their canonical root descriptor (see
+/// [`managed_root`]).
+#[cfg(target_os = "macos")]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let (root, candidate) = match managed_root(path) {
+        Some((root, relative)) => (Some(fs::File::open(fs::canonicalize(root)?)?), relative),
+        None => (None, path),
     };
+    let candidate = CString::new(candidate.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity artifact path contains an embedded NUL byte",
+        )
+    })?;
     let directory = root
         .as_ref()
         .map_or(libc::AT_FDCWD, std::os::fd::AsRawFd::as_raw_fd);
-    // SAFETY: path and open_how remain live for this syscall. A successful
-    // descriptor is uniquely transferred into File below.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            directory,
-            candidate.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
+    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW_ANY;
+    // SAFETY: `candidate` is NUL-terminated and `directory` is AT_FDCWD or a
+    // descriptor `root` keeps open for this call.
+    let descriptor = unsafe { libc::openat(directory, candidate.as_ptr(), flags) };
     if descriptor < 0 {
         return Err(io::Error::last_os_error());
     }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    // SAFETY: openat returned this owned descriptor and no other File owns it.
     Ok(unsafe { fs::File::from_raw_fd(descriptor) })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        let flags = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-        // Darwin can reject symlinks in every path component atomically,
-        // matching Linux openat2 RESOLVE_NO_SYMLINKS.
-        #[cfg(target_os = "macos")]
-        let flags = (flags & !libc::O_NOFOLLOW) | libc::O_NOFOLLOW_ANY;
-        options.custom_flags(flags);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -221,6 +227,21 @@ pub struct IdentityPaths {
     pub device_privkey: std::path::PathBuf,
     /// `<root>/device/cert.bin`
     pub device_cert: std::path::PathBuf,
+    /// Where the device key itself is kept.
+    pub device_key_custody: DeviceKeyCustody,
+}
+
+/// Where a layout keeps this device's private key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeviceKeyCustody {
+    /// A group-private file at [`IdentityPaths::device_privkey`]: the Tilo OS
+    /// layout, where the root filesystem daemon and the session share it.
+    #[default]
+    File,
+    /// The user's login Keychain. A key file an earlier build left at
+    /// [`IdentityPaths::device_privkey`] moves into it once, on first use.
+    #[cfg(target_os = "macos")]
+    Keychain,
 }
 
 impl IdentityPaths {
@@ -238,7 +259,15 @@ impl IdentityPaths {
             user_privkey: root.join("user-identity/privkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
+            device_key_custody: DeviceKeyCustody::File,
         }
+    }
+
+    /// This layout with its device key kept in `custody`.
+    #[must_use]
+    pub fn with_device_key_custody(mut self, custody: DeviceKeyCustody) -> Self {
+        self.device_key_custody = custody;
+        self
     }
 
     /// Ensure the two subdirectories exist (best-effort). Does not
@@ -254,7 +283,11 @@ impl IdentityPaths {
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
-        if let Some(parent) = self.device_privkey.parent() {
+        if let Some(parent) = self
+            .device_privkey
+            .parent()
+            .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
+        {
             #[cfg(windows)]
             private_fs::directory(parent)?;
             #[cfg(not(windows))]
@@ -391,7 +424,7 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    atomic_file::write(path, pubkey)
+    tilo_files::native::atomic::write(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -531,7 +564,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), 0o600)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
 /// Mode the device key is stored with: owner read/write, group read,
@@ -563,17 +596,24 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
 }
 
-/// Read the former group-owned key during its one-time privileged migration.
-/// Historical versions allowed the session account to create that inode, so
-/// ownership can be tightened only after adoption into the protected store.
-/// New callers must use [`read_device_key`].
+/// Read this device's key from wherever `paths` keeps it.
 ///
 /// # Errors
 ///
-/// Applies the same bounded no-follow, regular-file, mode, link-count, and
-/// length checks as [`read_device_key`], except for the historical owner rule.
-pub fn read_legacy_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, SecretOwner::Any)
+/// As [`read_device_key`] for a key file. A Keychain that holds no key, or
+/// refuses or fails to answer, is an error: a missing device key is never
+/// replaced here.
+pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
+    match paths.device_key_custody {
+        DeviceKeyCustody::File => read_device_key(&paths.device_privkey),
+        #[cfg(target_os = "macos")]
+        DeviceKeyCustody::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
+            PersistError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the login Keychain holds no Tilo device key",
+            ))
+        }),
+    }
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
@@ -590,7 +630,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -630,6 +670,10 @@ pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     protect_secret_process()?;
+    #[cfg(target_os = "macos")]
+    if paths.device_key_custody == DeviceKeyCustody::Keychain {
+        return crate::keychain::load_or_create(paths);
+    }
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
@@ -654,15 +698,50 @@ pub fn load_or_create_device_key(
     }
 }
 
+/// Whether the `renameat2` that just failed did so because the filesystem
+/// has no `RENAME_NOREPLACE` (gVisor's gofer mounts answer `EINVAL`).
+#[cfg(target_os = "linux")]
+fn no_replace_rename_unsupported() -> bool {
+    matches!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL | libc::ENOSYS)
+    )
+}
+
+/// Claim `destination` with a hard link, which fails on an existing name as
+/// `RENAME_NOREPLACE` would, then drop the source name. Both names are in the
+/// same private directory for the moment between. Returns 0 or -1 with
+/// `errno` set, like the syscall it stands in for.
+#[cfg(target_os = "linux")]
+fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
+    // SAFETY: both pointers refer to live NUL-terminated path buffers.
+    let linked = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            0,
+        )
+    };
+    if linked != 0 {
+        return -1;
+    }
+    // SAFETY: `source` is a live NUL-terminated path buffer.
+    unsafe { libc::unlink(source.as_ptr()) };
+    0
+}
+
 /// Publish a complete device key exactly once.
 ///
-/// `atomic_file::write_with_mode` is intentionally not used here: its final
+/// `tilo_files::native::atomic::write_with_mode` is intentionally not used here: its final
 /// rename correctly replaces a file for ordinary updates, but device-key
 /// creation must never replace a key another first-login process just made.
 /// The candidate is fully written and synced under a unique same-directory
 /// temporary name, then Linux `renameat2(RENAME_NOREPLACE)` atomically claims
 /// the final name only if it is still absent. Unlike a hard-link claim, the
-/// private key is never briefly reachable through two names. A caller that
+/// private key is never briefly reachable through two names; a filesystem
+/// without `RENAME_NOREPLACE` falls back to that claim. A caller that
 /// loses returns `Ok(false)` and must load the winner from disk.
 #[cfg(not(windows))]
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
@@ -716,6 +795,12 @@ fn publish_identity_bytes_no_clobber(
             libc::RENAME_NOREPLACE,
         )
     };
+    #[cfg(target_os = "linux")]
+    let result = if result != 0 && no_replace_rename_unsupported() {
+        link_claim(&source, &destination)
+    } else {
+        result
+    };
     #[cfg(target_os = "macos")]
     // SAFETY: both paths are live NUL-terminated strings. RENAME_EXCL is the
     // Darwin atomic no-replace claim; it cannot overwrite another creator.
@@ -750,7 +835,7 @@ fn publish_identity_bytes_no_clobber(
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
             // survives a power loss after the no-clobber rename.
-            atomic_file::sync_directory(parent)?;
+            tilo_files::native::atomic::sync_directory(parent)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
@@ -834,6 +919,12 @@ pub fn adopt_device_key(
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
+    if paths.device_key_custody != DeviceKeyCustody::File {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only a device key file adopts an earlier subsystem key",
+        )));
+    }
     let path = paths.device_privkey.as_path();
     paths.ensure_directories()?;
     let sk = SigningKey::from_bytes(seed);
@@ -876,8 +967,197 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     fs::create_dir_all(parent)?;
-    atomic_file::write(path, &bytes)?;
+    tilo_files::native::atomic::write(path, &bytes)?;
     Ok(())
+}
+
+/// Certify a new device for a person whose root key stays on the setup machine.
+///
+/// `sign` is the person's existing root capability. It receives the device
+/// certificate digest and returns the signature. This function never receives
+/// or writes the root secret. It writes the person's public key, a freshly
+/// generated device key, and the signed certificate under `paths`. An existing
+/// device key is left untouched.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Io`] when the label is empty or longer than 64
+/// bytes, the device key is already present, or signing or writing fails.
+pub fn provision_joined_device(
+    paths: &IdentityPaths,
+    user_public_key: [u8; 32],
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    label: &str,
+    now_ns: u64,
+) -> Result<DeviceCert, PersistError> {
+    if label.is_empty() || label.len() > 64 {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device label must be 1 to 64 bytes",
+        )));
+    }
+    if paths.device_privkey.exists() || paths.device_cert.exists() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target already has a device identity",
+        )));
+    }
+    paths.ensure_directories()?;
+    let device = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut cert = DeviceCert {
+        user_public_key,
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: label.to_string(),
+        capabilities: DeviceCapabilities {
+            can_own_workspaces: true,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: true,
+            foreign: false,
+        },
+        issued_at_ns: now_ns,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    let digest = device_cert_signing_digest(&cert).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("device certificate digest failed: {error}"),
+        ))
+    })?;
+    cert.signature = sign(&digest).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("device certificate was not signed: {error}"),
+        ))
+    })?;
+    verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device certificate did not verify: {error}"),
+        ))
+    })?;
+    write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
+    if !publish_device_key_no_clobber(&paths.device_privkey, &device)? {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target already has a device identity",
+        )));
+    }
+    write_device_cert(&paths.device_cert, &cert)?;
+    if paths.user_privkey.exists() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "setup must not place the human root secret on the target",
+        )));
+    }
+    Ok(cert)
+}
+
+/// Install a root-signed certificate for this device's existing key, as a
+/// device that joined without the root: the user public key and the
+/// certificate (default and per-user). The root never comes here. Refuses a
+/// certificate for another key, one that does not verify at `now_ns`, one
+/// that admits devices, and a second identity once one is installed; the
+/// same identity may install a renewed certificate.
+///
+/// # Errors
+///
+/// [`PersistError::Io`] with `InvalidData` for a certificate this device
+/// must not take, `AlreadyExists` for another identity, or a write failure.
+pub fn install_device_cert(
+    paths: &IdentityPaths,
+    cert: &DeviceCert,
+    now_ns: u64,
+) -> Result<(), PersistError> {
+    let refused = |kind, message: String| PersistError::Io(io::Error::new(kind, message));
+    if paths.user_privkey.exists() {
+        return Err(refused(
+            io::ErrorKind::AlreadyExists,
+            "this device holds a user root".into(),
+        ));
+    }
+    let device = read_device_key(&paths.device_privkey)?;
+    if cert.device_public_key != device.verifying_key().to_bytes() {
+        return Err(refused(
+            io::ErrorKind::InvalidData,
+            "the certificate is for another device key".into(),
+        ));
+    }
+    verify_device_cert_at(cert, now_ns).map_err(|error| {
+        refused(
+            io::ErrorKind::InvalidData,
+            format!("the certificate did not verify: {error}"),
+        )
+    })?;
+    if cert.capabilities.can_admit_devices {
+        return Err(refused(
+            io::ErrorKind::InvalidData,
+            "a device without the root does not admit devices".into(),
+        ));
+    }
+    if paths.user_pubkey.is_file() && read_public_key(&paths.user_pubkey)? != cert.user_public_key {
+        return Err(refused(
+            io::ErrorKind::AlreadyExists,
+            "this device already belongs to another identity".into(),
+        ));
+    }
+    if let Some(parent) = paths.user_pubkey.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
+    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), cert)?;
+    write_device_cert(&paths.device_cert, cert)?;
+    Ok(())
+}
+
+/// Whether `paths` already holds a setup-machine enrollment and no human root.
+///
+/// Missing files are `Ok(false)`, so ordinary first boot still creates an
+/// identity. Present but inconsistent files are an error: first boot must not
+/// replace them with a new person.
+///
+/// # Errors
+///
+/// Returns [`PersistError`] when a present identity file cannot be read or the
+/// certificate does not match its keys.
+pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool, PersistError> {
+    if paths.user_privkey.exists() {
+        return Ok(false);
+    }
+    let present = paths.user_pubkey.is_file()
+        && paths.device_privkey.is_file()
+        && paths.device_cert.is_file();
+    if !present {
+        return Ok(false);
+    }
+    let pubkey = read_public_key(&paths.user_pubkey)?;
+    let device = read_device_key(&paths.device_privkey)?;
+    let cert = read_device_cert(&paths.device_cert)?;
+    verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("enrolled device certificate did not verify: {error}"),
+        ))
+    })?;
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not one the imager already enrolled, even when its root
+    // secret lives in the identity record rather than
+    // user-identity/privkey.bin, so first-boot provisioning must still run
+    // for each OS user.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
+    if cert.user_public_key != pubkey
+        || cert.device_public_key != device.verifying_key().to_bytes()
+        || !cert.capabilities.can_read_all_workspaces
+    {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "enrolled device certificate does not match its keys",
+        )));
+    }
+    Ok(true)
 }
 
 #[cfg(unix)]
@@ -909,6 +1189,121 @@ mod tests {
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
 
+    #[test]
+    fn joined_device_is_certified_without_copying_the_human_root() {
+        let root = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let cert = provision_joined_device(
+            &paths,
+            root.verifying_key().to_bytes(),
+            |digest| Ok(root.sign(digest).to_bytes()),
+            "orange-pi",
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_ne!(cert.device_public_key, cert.user_public_key);
+        assert!(cert.capabilities.can_read_all_workspaces);
+        assert!(!cert.capabilities.can_admit_devices);
+        verify_device_cert_at(&cert, 1_000).unwrap();
+        assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+        assert_eq!(
+            read_device_key(&paths.device_privkey)
+                .unwrap()
+                .verifying_key()
+                .to_bytes(),
+            cert.device_public_key
+        );
+        assert!(!paths.user_privkey.exists());
+        assert!(
+            provision_joined_device(
+                &paths,
+                root.verifying_key().to_bytes(),
+                |digest| Ok(root.sign(digest).to_bytes()),
+                "orange-pi",
+                2_000,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("already has a device identity")
+        );
+    }
+
+    /// A device whose key was made first takes the certificate a root
+    /// signed for it elsewhere, and is then a ready joined device.
+    #[test]
+    fn a_certificate_signed_elsewhere_installs_for_the_existing_key() {
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let (device, _) = load_or_create_device_key(&paths).unwrap();
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let cert = |root: &SigningKey, device: [u8; 32], capabilities| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device,
+                device_label: "node".into(),
+                capabilities,
+                issued_at_ns: 1_000,
+                expires_at_ns: Some(10_000),
+                signature: [0; 64],
+            };
+            crate::sign_device_cert(&mut cert, root).unwrap();
+            cert
+        };
+        let own = device.verifying_key().to_bytes();
+        let node = crate::cloud_enrollment::host_capabilities;
+        let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
+
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, [9; 32], node()),
+                2_000
+            ))
+            .contains("another device key")
+        );
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, own, node()),
+                20_000
+            ))
+            .contains("did not verify")
+        );
+        let primary = DeviceCapabilities::primary();
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, own, primary),
+                2_000
+            ))
+            .contains("does not admit")
+        );
+        assert!(!joined_device_is_ready(&paths, 2_000).unwrap());
+
+        let installed = cert(&root, own, node());
+        install_device_cert(&paths, &installed, 2_000).unwrap();
+        assert!(joined_device_is_ready(&paths, 2_000).unwrap());
+        assert_eq!(read_device_cert(&paths.device_cert).unwrap(), installed);
+        assert_eq!(
+            read_device_cert(&paths.device_cert_for_user(&installed.user_public_key)).unwrap(),
+            installed
+        );
+        // A renewal from the same root replaces it; another root does not.
+        install_device_cert(&paths, &cert(&root, own, node()), 3_000).unwrap();
+        let stranger = SigningKey::from_bytes(&[4; 32]);
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&stranger, own, node()),
+                2_000
+            ))
+            .contains("another identity")
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn secret_operations_make_the_process_non_dumpable() {
@@ -917,460 +1312,495 @@ mod tests {
         assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
     }
 
+    /// Replacing a signing key keeps it private; a round trip enforces 0600; world-readable,
+    /// symlinked or multiply-named key files are rejected; secret-key owner policies are distinct; a
+    /// wrong-length key is rejected.
     #[test]
-    fn replacing_a_signing_key_preserves_private_readability() {
-        let root = identity_tempdir();
-        let path = root.path().join("signing.bin");
-        let first = SigningKey::from_bytes(&[17; 32]);
-        let second = SigningKey::from_bytes(&[29; 32]);
-        write_signing_key(&path, &first).unwrap();
-        assert_eq!(
-            read_signing_key(&path).unwrap().to_bytes(),
-            first.to_bytes()
-        );
-        write_signing_key(&path, &second).unwrap();
-        assert_eq!(
-            read_signing_key(&path).unwrap().to_bytes(),
-            second.to_bytes()
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn public_windows_key_is_neither_read_nor_silently_replaced() {
-        let root = identity_tempdir();
-        let paths = IdentityPaths::under(root.path());
-        let (original, _) = load_or_create_device_key(&paths).unwrap();
-        let result = std::process::Command::new("icacls.exe")
-            .arg(&paths.device_privkey)
-            .args(["/grant", "*S-1-1-0:(R)"])
-            .output()
-            .unwrap();
-        assert!(result.status.success(), "{result:?}");
-        for result in [
-            read_signing_key(&paths.device_privkey),
-            read_device_key(&paths.device_privkey),
-            load_or_create_device_key(&paths).map(|(key, _)| key),
-        ] {
-            assert!(matches!(result, Err(PersistError::Io(error))
-                if error.kind() == io::ErrorKind::PermissionDenied));
-        }
-        assert_eq!(
-            write_device_key(&paths.device_privkey, &SigningKey::from_bytes(&[9; 32]))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied,
-        );
-        assert_eq!(
-            fs::read(&paths.device_privkey).unwrap(),
-            original.to_bytes()
-        );
-    }
-
-    #[test]
-    fn explicit_public_key_path_outside_managed_layout_round_trips() {
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("pubkey.bin");
-        let key = [7u8; 32];
-        write_public_key(&path, &key).unwrap();
-        let back = read_public_key(&path).unwrap();
-        assert_eq!(key, back);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn authorization_artifacts_never_follow_symlinks() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = identity_tempdir();
-        let identity_root = tmp.path().join("identity-root");
-        let user_identity = identity_root.join("user-identity");
-        fs::create_dir_all(&user_identity).unwrap();
-        let real = user_identity.join("pubkey.bin");
-        let link = user_identity.join("linked-pubkey.bin");
-        fs::write(&real, [7_u8; 32]).unwrap();
-        symlink(&real, &link).unwrap();
-        assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
-        let real_parent = identity_root.join("real-parent");
-        fs::create_dir_all(&real_parent).unwrap();
-        fs::write(real_parent.join("pubkey.bin"), [9_u8; 32]).unwrap();
-        let linked_parent = user_identity.join("linked-parent");
-        symlink(&real_parent, &linked_parent).unwrap();
-        assert!(matches!(
-            read_public_key(&linked_parent.join("pubkey.bin")),
-            Err(PersistError::Io(_))
-        ));
-
-        write_public_key(&link, &[8_u8; 32]).unwrap();
-        assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
-        assert_eq!(read_public_key(&link).unwrap(), [8_u8; 32]);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn authorization_artifact_under_distro_home_symlink_is_readable() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let real_home = tmp.path().join("var/home/alice");
-        let identity = real_home.join(".local/share/tilo/user-identity");
-        fs::create_dir_all(&identity).unwrap();
-        symlink(tmp.path().join("var/home"), tmp.path().join("home")).unwrap();
-        let path = tmp
-            .path()
-            .join("home/alice/.local/share/tilo/user-identity/pubkey.bin");
-        fs::write(&path, [11_u8; 32]).unwrap();
-
-        assert_eq!(read_public_key(&path).unwrap(), [11_u8; 32]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_round_trip_enforces_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("keypair.bin");
-        let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
-        write_signing_key(&path, &sk).unwrap();
-
-        // Written file should be 0600.
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-
-        let loaded = read_signing_key(&path).unwrap();
-        // Signing with either should give the same signature.
-        let msg = b"round-trip";
-        assert_eq!(sk.sign(msg).to_bytes(), loaded.sign(msg).to_bytes());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_rejects_world_readable() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("keypair.bin");
-        let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
-        write_signing_key(&path, &sk).unwrap();
-        // Loosen to 0644.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        match read_signing_key(&path).unwrap_err() {
-            PersistError::InsecurePermissions { mode, .. } => assert_eq!(mode, 0o644),
-            other => panic!("expected InsecurePermissions, got {other:?}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_never_follows_a_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = identity_tempdir();
-        let real = tmp.path().join("real.key");
-        let link = tmp.path().join("linked.key");
-        let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
-        write_signing_key(&real, &sk).unwrap();
-        symlink(&real, &link).unwrap();
-
-        match read_signing_key(&link).unwrap_err() {
-            PersistError::Io(_) => {}
-            other => panic!("expected symlink refusal, got {other:?}"),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn signing_keys_are_private_single_named_files_of_the_right_length() {
+        // Phase: replacing_a_signing_key_preserves_private_readability.
+        {
+            let root = identity_tempdir();
+            let path = root.path().join("signing.bin");
+            let first = SigningKey::from_bytes(&[17; 32]);
+            let second = SigningKey::from_bytes(&[29; 32]);
+            write_signing_key(&path, &first).unwrap();
+            assert_eq!(
+                read_signing_key(&path).unwrap().to_bytes(),
+                first.to_bytes()
+            );
+            write_signing_key(&path, &second).unwrap();
+            assert_eq!(
+                read_signing_key(&path).unwrap().to_bytes(),
+                second.to_bytes()
+            );
         }
 
-        let linked_parent = tmp.path().join("linked-parent");
-        symlink(tmp.path(), &linked_parent).unwrap();
-        match read_signing_key(&linked_parent.join("real.key")).unwrap_err() {
-            PersistError::Io(_) => {}
-            other => panic!("expected parent-symlink refusal, got {other:?}"),
+        // Phase: signing_key_round_trip_enforces_0600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("keypair.bin");
+            let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+            write_signing_key(&path, &sk).unwrap();
+
+            // Written file should be 0600.
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+
+            let loaded = read_signing_key(&path).unwrap();
+            // Signing with either should give the same signature.
+            let msg = b"round-trip";
+            assert_eq!(sk.sign(msg).to_bytes(), loaded.sign(msg).to_bytes());
         }
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_rejects_an_inode_with_multiple_names() {
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("private.key");
-        let alias = tmp.path().join("unexpected-alias.key");
-        let sk = SigningKey::from_bytes(&[9_u8; 32]);
-        write_signing_key(&path, &sk).unwrap();
-        fs::hard_link(&path, &alias).unwrap();
-
-        match read_signing_key(&path).unwrap_err() {
-            PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
-            other => panic!("expected hard-link refusal, got {other:?}"),
+        // Phase: signing_key_rejects_world_readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("keypair.bin");
+            let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+            write_signing_key(&path, &sk).unwrap();
+            // Loosen to 0644.
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            match read_signing_key(&path).unwrap_err() {
+                PersistError::InsecurePermissions { mode, .. } => assert_eq!(mode, 0o644),
+                other => panic!("expected InsecurePermissions, got {other:?}"),
+            }
         }
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn secret_key_owner_policies_are_distinct() {
-        assert!(secret_key_owner_is_accepted(SecretOwner::Any, 1001, 1000));
-        assert!(secret_key_owner_is_accepted(
-            SecretOwner::Reader,
-            1000,
-            1000
-        ));
-        assert!(!secret_key_owner_is_accepted(SecretOwner::Reader, 0, 1000));
-        assert!(secret_key_owner_is_accepted(
-            SecretOwner::RootOrReader,
-            0,
-            1000
-        ));
-        assert!(secret_key_owner_is_accepted(
-            SecretOwner::RootOrReader,
-            1000,
-            1000
-        ));
-        assert!(!secret_key_owner_is_accepted(
-            SecretOwner::RootOrReader,
-            1001,
-            1000
-        ));
-    }
+        // Phase: signing_key_never_follows_a_symlink.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
 
-    #[test]
-    fn wrong_length_key_rejected() {
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("pubkey.bin");
-        fs::write(&path, [0u8; 16]).unwrap();
-        match read_public_key(&path).unwrap_err() {
-            PersistError::WrongKeyLength(16) => {}
-            other => panic!("expected WrongKeyLength(16), got {other:?}"),
+            let tmp = identity_tempdir();
+            let real = tmp.path().join("real.key");
+            let link = tmp.path().join("linked.key");
+            let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+            write_signing_key(&real, &sk).unwrap();
+            symlink(&real, &link).unwrap();
+
+            match read_signing_key(&link).unwrap_err() {
+                PersistError::Io(_) => {}
+                other => panic!("expected symlink refusal, got {other:?}"),
+            }
+
+            let linked_parent = tmp.path().join("linked-parent");
+            symlink(tmp.path(), &linked_parent).unwrap();
+            match read_signing_key(&linked_parent.join("real.key")).unwrap_err() {
+                PersistError::Io(_) => {}
+                other => panic!("expected parent-symlink refusal, got {other:?}"),
+            }
         }
-    }
 
-    #[test]
-    fn cert_round_trip() {
-        use crate::cert::{DeviceCapabilities, sign_device_cert};
-        use crate::{DeviceIdentity, UserIdentity};
+        // Phase: signing_key_rejects_an_inode_with_multiple_names.
+        #[cfg(unix)]
+        {
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("private.key");
+            let alias = tmp.path().join("unexpected-alias.key");
+            let sk = SigningKey::from_bytes(&[9_u8; 32]);
+            write_signing_key(&path, &sk).unwrap();
+            fs::hard_link(&path, &alias).unwrap();
 
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("cert.bin");
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let (_dev_sk, dev) = DeviceIdentity::generate("laptop", 2);
-        let mut cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: dev.public_key,
-            device_label: dev.label,
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 3,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-        };
-        sign_device_cert(&mut cert, &root_sk).unwrap();
-        write_device_cert(&path, &cert).unwrap();
-        let back = read_device_cert(&path).unwrap();
-        assert_eq!(cert, back);
-    }
+            match read_signing_key(&path).unwrap_err() {
+                PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
+                other => panic!("expected hard-link refusal, got {other:?}"),
+            }
+        }
 
-    #[test]
-    fn identity_specific_cert_paths_do_not_collide() {
-        let paths = IdentityPaths::under("/var/lib/tilo");
-        let alice = paths.device_cert_for_user(&[1; 32]);
-        let bob = paths.device_cert_for_user(&[2; 32]);
-        assert_ne!(alice, bob);
-        assert!(alice.starts_with("/var/lib/tilo/device/certs"));
-    }
+        // Phase: secret_key_owner_policies_are_distinct.
+        #[cfg(unix)]
+        {
+            assert!(secret_key_owner_is_accepted(SecretOwner::Any, 1001, 1000));
+            assert!(secret_key_owner_is_accepted(
+                SecretOwner::Reader,
+                1000,
+                1000
+            ));
+            assert!(!secret_key_owner_is_accepted(SecretOwner::Reader, 0, 1000));
+            assert!(secret_key_owner_is_accepted(
+                SecretOwner::RootOrReader,
+                0,
+                1000
+            ));
+            assert!(secret_key_owner_is_accepted(
+                SecretOwner::RootOrReader,
+                1000,
+                1000
+            ));
+            assert!(!secret_key_owner_is_accepted(
+                SecretOwner::RootOrReader,
+                1001,
+                1000
+            ));
+        }
 
-    /// The device key is deliberately group-readable — two components
-    /// running as two uids present the one device identity — but a user
-    /// outside that group must not be able to read it, and that is
-    /// enforced on every read rather than trusted to whoever set the
-    /// mode.
-    #[cfg(unix)]
-    #[test]
-    fn device_key_permits_the_trust_group_and_nobody_else() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        let (sk, _) = load_or_create_device_key(&paths).unwrap();
-        let path = &paths.device_privkey;
-
-        let written = fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(written, DEVICE_KEY_MODE);
-        assert_eq!(written & 0o007, 0, "no bits for users outside the group");
-
-        // Group read: accepted.
-        fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
-        assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
-        // Owner only: also fine.
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
-
-        // Any bit for `other`: refused.
-        for mode in [0o644u32, 0o604, 0o601, 0o666] {
-            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
-            match read_device_key(path) {
-                Err(PersistError::InsecurePermissions { .. }) => {}
-                other => panic!("mode {mode:o} must be refused, got {other:?}"),
+        // Phase: wrong_length_key_rejected.
+        {
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("pubkey.bin");
+            fs::write(&path, [0u8; 16]).unwrap();
+            match read_public_key(&path).unwrap_err() {
+                PersistError::WrongKeyLength(16) => {}
+                other => panic!("expected WrongKeyLength(16), got {other:?}"),
             }
         }
     }
 
-    #[cfg(unix)]
+    /// A public Windows key is neither read nor silently replaced; an explicit public-key path
+    /// outside the managed layout round-trips; authorization artifacts never follow symlinks, except
+    /// under a distro home symlink where they are readable.
     #[test]
-    fn device_key_rejects_an_inode_with_multiple_names() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        let (_, outcome) = load_or_create_device_key(&paths).unwrap();
-        assert_eq!(outcome, DeviceKeyOutcome::Created);
-        let alias = tmp.path().join("device-key-alias.bin");
-        fs::hard_link(&paths.device_privkey, &alias).unwrap();
-
-        match read_device_key(&paths.device_privkey).unwrap_err() {
-            PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
-            other => panic!("expected hard-link refusal, got {other:?}"),
+    fn public_keys_and_authorization_artifacts_are_read_only_from_trusted_paths() {
+        // Phase: public_windows_key_is_neither_read_nor_silently_replaced.
+        #[cfg(windows)]
+        {
+            let root = identity_tempdir();
+            let paths = IdentityPaths::under(root.path());
+            let (original, _) = load_or_create_device_key(&paths).unwrap();
+            let result = std::process::Command::new("icacls.exe")
+                .arg(&paths.device_privkey)
+                .args(["/grant", "*S-1-1-0:(R)"])
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            for result in [
+                read_signing_key(&paths.device_privkey),
+                read_device_key(&paths.device_privkey),
+                load_or_create_device_key(&paths).map(|(key, _)| key),
+            ] {
+                assert!(matches!(result, Err(PersistError::Io(error))
+                    if error.kind() == io::ErrorKind::PermissionDenied));
+            }
+            assert_eq!(
+                write_device_key(&paths.device_privkey, &SigningKey::from_bytes(&[9; 32]))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied,
+            );
+            assert_eq!(
+                fs::read(&paths.device_privkey).unwrap(),
+                original.to_bytes()
+            );
         }
-    }
 
-    /// The relaxation is scoped to the device key. A user-scoped secret
-    /// still has to be owner-only — the group that reads the device key
-    /// has no business reading the user's own signing key.
-    #[cfg(unix)]
-    #[test]
-    fn user_scoped_secret_still_refuses_group_read() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = identity_tempdir();
-        let path = tmp.path().join("privkey.bin");
-        let sk = SigningKey::from_bytes(&[8u8; 32]);
-        write_signing_key(&path, &sk).unwrap();
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-        match read_signing_key(&path) {
-            Err(PersistError::InsecurePermissions { mode, .. }) => assert_eq!(mode, 0o640),
-            other => panic!("group-readable user secret must be refused, got {other:?}"),
+        // Phase: explicit_public_key_path_outside_managed_layout_round_trips.
+        {
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("pubkey.bin");
+            let key = [7u8; 32];
+            write_public_key(&path, &key).unwrap();
+            let back = read_public_key(&path).unwrap();
+            assert_eq!(key, back);
         }
-    }
 
-    #[test]
-    fn device_key_is_created_once_then_reloaded() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-
-        let (first, outcome) = load_or_create_device_key(&paths).unwrap();
-        assert_eq!(outcome, DeviceKeyOutcome::Created);
-
-        let (second, outcome) = load_or_create_device_key(&paths).unwrap();
-        assert_eq!(outcome, DeviceKeyOutcome::Loaded);
-        assert_eq!(
-            first.verifying_key().to_bytes(),
-            second.verifying_key().to_bytes(),
-            "the device identity must survive a restart"
-        );
+        // Phase: authorization_artifacts_never_follow_symlinks.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
+            use std::os::unix::fs::symlink;
+
+            let tmp = identity_tempdir();
+            let identity_root = tmp.path().join("identity-root");
+            let user_identity = identity_root.join("user-identity");
+            fs::create_dir_all(&user_identity).unwrap();
+            let real = user_identity.join("pubkey.bin");
+            let link = user_identity.join("linked-pubkey.bin");
+            fs::write(&real, [7_u8; 32]).unwrap();
+            symlink(&real, &link).unwrap();
+            assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
+            let real_parent = identity_root.join("real-parent");
+            fs::create_dir_all(&real_parent).unwrap();
+            fs::write(real_parent.join("pubkey.bin"), [9_u8; 32]).unwrap();
+            let linked_parent = user_identity.join("linked-parent");
+            symlink(&real_parent, &linked_parent).unwrap();
+            assert!(matches!(
+                read_public_key(&linked_parent.join("pubkey.bin")),
+                Err(PersistError::Io(_))
+            ));
+
+            write_public_key(&link, &[8_u8; 32]).unwrap();
+            assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
+            assert_eq!(read_public_key(&link).unwrap(), [8_u8; 32]);
+        }
+
+        // Phase: authorization_artifact_under_distro_home_symlink_is_readable.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::symlink;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let real_home = tmp.path().join("var/home/alice");
+            let identity = real_home.join(".local/share/tilo/user-identity");
+            fs::create_dir_all(&identity).unwrap();
+            symlink(tmp.path().join("var/home"), tmp.path().join("home")).unwrap();
+            let path = tmp
+                .path()
+                .join("home/alice/.local/share/tilo/user-identity/pubkey.bin");
+            fs::write(&path, [11_u8; 32]).unwrap();
+
+            assert_eq!(read_public_key(&path).unwrap(), [11_u8; 32]);
         }
     }
 
+    /// `ensure_directories` creates the expected layout, certificates round-trip, and identity-specific
+    /// cert paths do not collide.
     #[test]
-    fn simultaneous_device_key_creation_uses_one_persisted_key() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        let start = Arc::new(Barrier::new(3));
+    fn the_identity_layout_holds_per_identity_certificates() {
+        // Phase: ensure_directories_creates_expected_layout.
+        {
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            paths.ensure_directories().unwrap();
+            assert!(tmp.path().join("user-identity").is_dir());
+            assert!(tmp.path().join("device-private").is_dir());
+            assert!(tmp.path().join("device").is_dir());
+        }
 
-        let first_paths = paths.clone();
-        let first_start = Arc::clone(&start);
-        let first = std::thread::spawn(move || {
-            first_start.wait();
-            load_or_create_device_key(&first_paths).map(|(key, outcome)| (key.to_bytes(), outcome))
-        });
-        let second_paths = paths.clone();
-        let second_start = Arc::clone(&start);
-        let second = std::thread::spawn(move || {
-            second_start.wait();
-            load_or_create_device_key(&second_paths).map(|(key, outcome)| (key.to_bytes(), outcome))
-        });
-        start.wait();
+        // Phase: cert_round_trip.
+        {
+            use crate::cert::{DeviceCapabilities, sign_device_cert};
+            use crate::{DeviceIdentity, UserIdentity};
 
-        let first = first.join().expect("first device-key thread").unwrap();
-        let second = second.join().expect("second device-key thread").unwrap();
-        assert_eq!(
-            usize::from(first.1 == DeviceKeyOutcome::Created)
-                + usize::from(second.1 == DeviceKeyOutcome::Created),
-            1,
-            "one claimant creates the shared device key and the other loads it"
-        );
-        assert_eq!(
-            first.0, second.0,
-            "every concurrent caller must return the one persisted device key"
-        );
-        assert_eq!(
-            read_device_key(&paths.device_privkey).unwrap().to_bytes(),
-            first.0,
-            "the final file matches both callers and was never overwritten"
-        );
-        assert_eq!(
-            fs::read(&paths.device_privkey).unwrap().len(),
-            32,
-            "the published final device key is complete"
-        );
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("cert.bin");
+            let (root_sk, user) = UserIdentity::generate("Alice", 1);
+            let (_dev_sk, dev) = DeviceIdentity::generate("laptop", 2);
+            let mut cert = DeviceCert {
+                user_public_key: user.public_key,
+                device_public_key: dev.public_key,
+                device_label: dev.label,
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 3,
+                expires_at_ns: None,
+                signature: [0u8; 64],
+            };
+            sign_device_cert(&mut cert, &root_sk).unwrap();
+            write_device_cert(&path, &cert).unwrap();
+            let back = read_device_cert(&path).unwrap();
+            assert_eq!(cert, back);
+        }
+
+        // Phase: identity_specific_cert_paths_do_not_collide.
+        {
+            let paths = IdentityPaths::under("/var/lib/tilo");
+            let alice = paths.device_cert_for_user(&[1; 32]);
+            let bob = paths.device_cert_for_user(&[2; 32]);
+            assert_ne!(alice, bob);
+            assert!(alice.starts_with("/var/lib/tilo/device/certs"));
+        }
     }
 
-    /// The defining property: an unreadable key file must raise, not
-    /// be replaced. A device that silently re-keys drops every grant
-    /// written against its old identity and reports nothing.
+    /// The device key permits the trust group and nobody else and rejects a multiply-named inode; a
+    /// user-scoped secret still refuses group read; the device key is created once then reloaded,
+    /// simultaneous creation persists one key, an unreadable key raises instead of rotating, and
+    /// adopting a key seeds a new device but never replaces one.
     #[test]
-    fn unreadable_device_key_raises_instead_of_rotating() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        paths.ensure_directories().unwrap();
-        fs::write(&paths.device_privkey, b"not a key").unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn device_keys_are_group_private_created_once_and_never_rotated_silently() {
+        // Phase: device_key_permits_the_trust_group_and_nobody_else.
+        // The device key is deliberately group-readable — two components
+        // running as two uids present the one device identity — but a user
+        // outside that group must not be able to read it, and that is
+        // enforced on every read rather than trusted to whoever set the
+        // mode.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&paths.device_privkey, fs::Permissions::from_mode(0o600)).unwrap();
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            let (sk, _) = load_or_create_device_key(&paths).unwrap();
+            let path = &paths.device_privkey;
+
+            let written = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(written, DEVICE_KEY_MODE);
+            assert_eq!(written & 0o007, 0, "no bits for users outside the group");
+
+            // Group read: accepted.
+            fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+            assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+            // Owner only: also fine.
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+
+            // Any bit for `other`: refused.
+            for mode in [0o644u32, 0o604, 0o601, 0o666] {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+                match read_device_key(path) {
+                    Err(PersistError::InsecurePermissions { .. }) => {}
+                    other => panic!("mode {mode:o} must be refused, got {other:?}"),
+                }
+            }
         }
 
-        match load_or_create_device_key(&paths) {
-            Err(PersistError::WrongKeyLength(9)) => {}
-            Ok(_) => panic!("a corrupt device key must not be silently replaced"),
-            Err(other) => panic!("expected WrongKeyLength(9), got {other:?}"),
-        }
-        // …and the bytes on disk are untouched, so a restore is still
-        // possible.
-        assert_eq!(fs::read(&paths.device_privkey).unwrap(), b"not a key");
-    }
-
-    #[test]
-    fn adopt_device_key_seeds_a_new_device_but_never_replaces_one() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        let seed = [23u8; 32];
-
-        let adopted = adopt_device_key(&paths, &seed).unwrap();
-        assert_eq!(adopted.to_bytes(), seed);
+        // Phase: device_key_rejects_an_inode_with_multiple_names.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
-        }
-        let (loaded, outcome) = load_or_create_device_key(&paths).unwrap();
-        assert_eq!(outcome, DeviceKeyOutcome::Loaded);
-        assert_eq!(loaded.to_bytes(), seed);
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            let (_, outcome) = load_or_create_device_key(&paths).unwrap();
+            assert_eq!(outcome, DeviceKeyOutcome::Created);
+            let alias = tmp.path().join("device-key-alias.bin");
+            fs::hard_link(&paths.device_privkey, &alias).unwrap();
 
-        let err = adopt_device_key(&paths, &[99u8; 32]).unwrap_err();
-        match err {
-            PersistError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
-            other => panic!("expected AlreadyExists, got {other:?}"),
+            match read_device_key(&paths.device_privkey).unwrap_err() {
+                PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
+                other => panic!("expected hard-link refusal, got {other:?}"),
+            }
         }
-        assert_eq!(
-            read_device_key(&paths.device_privkey).unwrap().to_bytes(),
-            seed
-        );
-    }
 
-    #[test]
-    fn ensure_directories_creates_expected_layout() {
-        let tmp = identity_tempdir();
-        let paths = IdentityPaths::under(tmp.path());
-        paths.ensure_directories().unwrap();
-        assert!(tmp.path().join("user-identity").is_dir());
-        assert!(tmp.path().join("device-private").is_dir());
-        assert!(tmp.path().join("device").is_dir());
+        // Phase: user_scoped_secret_still_refuses_group_read.
+        // The relaxation is scoped to the device key. A user-scoped secret
+        // still has to be owner-only — the group that reads the device key
+        // has no business reading the user's own signing key.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = identity_tempdir();
+            let path = tmp.path().join("privkey.bin");
+            let sk = SigningKey::from_bytes(&[8u8; 32]);
+            write_signing_key(&path, &sk).unwrap();
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            match read_signing_key(&path) {
+                Err(PersistError::InsecurePermissions { mode, .. }) => assert_eq!(mode, 0o640),
+                other => panic!("group-readable user secret must be refused, got {other:?}"),
+            }
+        }
+
+        // Phase: device_key_is_created_once_then_reloaded.
+        {
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+
+            let (first, outcome) = load_or_create_device_key(&paths).unwrap();
+            assert_eq!(outcome, DeviceKeyOutcome::Created);
+
+            let (second, outcome) = load_or_create_device_key(&paths).unwrap();
+            assert_eq!(outcome, DeviceKeyOutcome::Loaded);
+            assert_eq!(
+                first.verifying_key().to_bytes(),
+                second.verifying_key().to_bytes(),
+                "the device identity must survive a restart"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
+            }
+        }
+
+        // Phase: simultaneous_device_key_creation_uses_one_persisted_key.
+        {
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            let start = Arc::new(Barrier::new(3));
+
+            let first_paths = paths.clone();
+            let first_start = Arc::clone(&start);
+            let first = std::thread::spawn(move || {
+                first_start.wait();
+                load_or_create_device_key(&first_paths)
+                    .map(|(key, outcome)| (key.to_bytes(), outcome))
+            });
+            let second_paths = paths.clone();
+            let second_start = Arc::clone(&start);
+            let second = std::thread::spawn(move || {
+                second_start.wait();
+                load_or_create_device_key(&second_paths)
+                    .map(|(key, outcome)| (key.to_bytes(), outcome))
+            });
+            start.wait();
+
+            let first = first.join().expect("first device-key thread").unwrap();
+            let second = second.join().expect("second device-key thread").unwrap();
+            assert_eq!(
+                usize::from(first.1 == DeviceKeyOutcome::Created)
+                    + usize::from(second.1 == DeviceKeyOutcome::Created),
+                1,
+                "one claimant creates the shared device key and the other loads it"
+            );
+            assert_eq!(
+                first.0, second.0,
+                "every concurrent caller must return the one persisted device key"
+            );
+            assert_eq!(
+                read_device_key(&paths.device_privkey).unwrap().to_bytes(),
+                first.0,
+                "the final file matches both callers and was never overwritten"
+            );
+            assert_eq!(
+                fs::read(&paths.device_privkey).unwrap().len(),
+                32,
+                "the published final device key is complete"
+            );
+        }
+
+        // Phase: unreadable_device_key_raises_instead_of_rotating.
+        // The defining property: an unreadable key file must raise, not
+        // be replaced. A device that silently re-keys drops every grant
+        // written against its old identity and reports nothing.
+        {
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            paths.ensure_directories().unwrap();
+            fs::write(&paths.device_privkey, b"not a key").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&paths.device_privkey, fs::Permissions::from_mode(0o600))
+                    .unwrap();
+            }
+
+            match load_or_create_device_key(&paths) {
+                Err(PersistError::WrongKeyLength(9)) => {}
+                Ok(_) => panic!("a corrupt device key must not be silently replaced"),
+                Err(other) => panic!("expected WrongKeyLength(9), got {other:?}"),
+            }
+            // …and the bytes on disk are untouched, so a restore is still
+            // possible.
+            assert_eq!(fs::read(&paths.device_privkey).unwrap(), b"not a key");
+        }
+
+        // Phase: adopt_device_key_seeds_a_new_device_but_never_replaces_one.
+        {
+            let tmp = identity_tempdir();
+            let paths = IdentityPaths::under(tmp.path());
+            let seed = [23u8; 32];
+
+            let adopted = adopt_device_key(&paths, &seed).unwrap();
+            assert_eq!(adopted.to_bytes(), seed);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
+            }
+            let (loaded, outcome) = load_or_create_device_key(&paths).unwrap();
+            assert_eq!(outcome, DeviceKeyOutcome::Loaded);
+            assert_eq!(loaded.to_bytes(), seed);
+
+            let err = adopt_device_key(&paths, &[99u8; 32]).unwrap_err();
+            match err {
+                PersistError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
+                other => panic!("expected AlreadyExists, got {other:?}"),
+            }
+            assert_eq!(
+                read_device_key(&paths.device_privkey).unwrap().to_bytes(),
+                seed
+            );
+        }
     }
 }

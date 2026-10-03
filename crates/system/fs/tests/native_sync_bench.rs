@@ -16,6 +16,11 @@
 //! - `TILO_FS_BENCH_DELAY_MS`: one-way delay between the devices. Non-zero
 //!   runs each daemon in its own network namespace joined by a veth pair
 //!   with `netem` on both ends (needs `ip` and `tc`);
+//! - `TILO_FS_BENCH_NETNS=1`: use the veth pair even without a delay, so
+//!   the bytes the peer received are counted (`peer_rx_bytes`);
+//! - `TILO_FS_BENCH_EDIT_MIB` / `TILO_FS_BENCH_EDIT_BYTES`: the incremental
+//!   edit scenario (default 1 MiB changed in the middle of a 1024 MiB file;
+//!   it always runs on the veth pair to count bytes);
 //! - `TILO_FS_BENCH_ONLY`: comma-separated scenario names to run;
 //! - `TILO_FS_BENCH_DIR`: where caches and mount points go (default
 //!   `/var/tmp`; the content store holds a copy of everything synced).
@@ -165,6 +170,7 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
 /// on both ends, removed on drop.
 struct Link {
     names: [String; 2],
+    devices: [String; 2],
 }
 
 impl Link {
@@ -199,11 +205,27 @@ impl Link {
                 .unwrap();
             assert!(status.success(), "tc netem failed");
         }
-        Self { names }
+        Self {
+            names,
+            devices: [va, vb],
+        }
     }
 
     fn netns(&self, i: usize) -> &str {
         &self.names[i]
+    }
+
+    /// Bytes received so far by the device in namespace `i`.
+    fn rx_bytes(&self, i: usize) -> u64 {
+        let out = Command::new("ip")
+            .args(["netns", "exec", &self.names[i], "cat"])
+            .arg(format!(
+                "/sys/class/net/{}/statistics/rx_bytes",
+                self.devices[i]
+            ))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
     }
 }
 
@@ -413,11 +435,20 @@ struct Pair {
     host: Daemon,
     peer: Daemon,
     _rooms: Rooms,
-    _link: Option<Link>,
+    link: Option<Link>,
     _dir: tempfile::TempDir,
 }
 
 fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
+    start_pair_with(store_a, store_b, seed, false)
+}
+
+/// Bytes the peer has received over the link, when there is one.
+fn peer_rx(pair: &Pair) -> Option<u64> {
+    pair.link.as_ref().map(|link| link.rx_bytes(1))
+}
+
+fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pair {
     let base =
         std::env::var_os("TILO_FS_BENCH_DIR").map_or_else(|| "/var/tmp".into(), PathBuf::from);
     let temp = tempfile::tempdir_in(base).unwrap();
@@ -441,7 +472,8 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
     );
     full_access_acl(&dir.join("acl.json"), person);
     let delay = env_u64("TILO_FS_BENCH_DELAY_MS", 0);
-    let link = (delay > 0).then(|| Link::new(delay));
+    let netns = netns || env_u64("TILO_FS_BENCH_NETNS", 0) == 1;
+    let link = (delay > 0 || netns).then(|| Link::new(delay));
     let mut host = Daemon::spawn(
         "host",
         &dir,
@@ -467,7 +499,7 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
         host,
         peer,
         _rooms: rooms,
-        _link: link,
+        link,
         _dir: temp,
     }
 }
@@ -567,6 +599,70 @@ fn many_small_files() {
     );
 }
 
+/// Bytes of `(seed, offset)` a large-file scenario writes, with each
+/// `(edit seed, start, len)` range overlaid by the edit seed's bytes.
+fn expected(seed: u64, edits: &[(u64, u64, u64)], offset: u64, out: &mut [u8]) {
+    fill(seed, offset, out);
+    let end = offset + out.len() as u64;
+    for &(edit_seed, start, len) in edits {
+        let (from, to) = (start.max(offset), (start + len).min(end));
+        if from < to {
+            let slice = &mut out[(from - offset) as usize..(to - offset) as usize];
+            fill(edit_seed, from, slice);
+        }
+    }
+}
+
+const BLOCK: usize = 8 * 1024 * 1024;
+
+/// Writes `size` bytes of `seed` at `path` and syncs them.
+fn write_big(path: &Path, seed: u64, size: u64) {
+    let mut buf = vec![0u8; BLOCK];
+    let mut f = std::fs::File::create(path).unwrap();
+    let mut off = 0u64;
+    while off < size {
+        let n = BLOCK.min((size - off) as usize);
+        fill(seed, off, &mut buf[..n]);
+        f.write_all(&buf[..n]).unwrap();
+        off += n as u64;
+    }
+    f.sync_all().unwrap();
+}
+
+/// Reads `path` from start to end and checks every byte.
+fn read_big(path: &Path, seed: u64, edits: &[(u64, u64, u64)], size: u64) {
+    let mut f = std::fs::File::open(path).unwrap();
+    let mut got = vec![0u8; BLOCK];
+    let mut want = vec![0u8; BLOCK];
+    let mut off = 0u64;
+    while off < size {
+        let n = BLOCK.min((size - off) as usize);
+        f.read_exact(&mut got[..n]).unwrap();
+        expected(seed, edits, off, &mut want[..n]);
+        if got[..n] != want[..n] {
+            let first = got[..n]
+                .iter()
+                .zip(&want[..n])
+                .position(|(a, b)| a != b)
+                .unwrap();
+            let last = n - got[..n]
+                .iter()
+                .zip(&want[..n])
+                .rev()
+                .position(|(a, b)| a != b)
+                .unwrap();
+            let zeros = got[first..last].iter().all(|b| *b == 0);
+            panic!(
+                "bytes differ in {}..{} (read block at {off}; the wrong bytes are {})",
+                off + first as u64,
+                off + last as u64,
+                if zeros { "all zero" } else { "not zero" }
+            );
+        }
+        off += n as u64;
+    }
+}
+
 #[test]
 fn one_large_file() {
     let scenario = "large";
@@ -577,20 +673,9 @@ fn one_large_file() {
     let size = mib * 1024 * 1024;
     let mut pair = start_pair(&a, &b, 0x72);
     let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
-    let block = 8 * 1024 * 1024usize;
-    let mut buf = vec![0u8; block];
+    let rx0 = peer_rx(&pair);
     let t0 = Instant::now();
-    {
-        let mut f = std::fs::File::create(m1.join("big.bin")).unwrap();
-        let mut off = 0u64;
-        while off < size {
-            let n = block.min((size - off) as usize);
-            fill(7, off, &mut buf[..n]);
-            f.write_all(&buf[..n]).unwrap();
-            off += n as u64;
-        }
-        f.sync_all().unwrap();
-    }
+    write_big(&m1.join("big.bin"), 7, size);
     let written = t0.elapsed();
     let target = m2.join("big.bin");
     wait_for(&mut pair, "the large file on the peer", || {
@@ -599,18 +684,7 @@ fn one_large_file() {
     let visible = t0.elapsed();
     eprintln!("reading the large file cold on the peer");
     let t1 = Instant::now();
-    {
-        let mut f = std::fs::File::open(&target).unwrap();
-        let mut got = vec![0u8; block];
-        let mut off = 0u64;
-        while off < size {
-            let n = block.min((size - off) as usize);
-            f.read_exact(&mut got[..n]).unwrap();
-            fill(7, off, &mut buf[..n]);
-            assert!(got[..n] == buf[..n], "bytes differ at {off}");
-            off += n as u64;
-        }
-    }
+    read_big(&target, 7, &[], size);
     let read = t1.elapsed();
     report(scenario, "bytes", size as f64, "B");
     report(scenario, "write", written.as_secs_f64(), "s");
@@ -627,6 +701,79 @@ fn one_large_file() {
         "end_to_end_throughput",
         size as f64 / (visible + read).as_secs_f64() / 1e6,
         "MB/s",
+    );
+    if let (Some(before), Some(after)) = (rx0, peer_rx(&pair)) {
+        report(scenario, "peer_rx_bytes", (after - before) as f64, "B");
+    }
+}
+
+/// A large file that is already on both devices changes in a small range:
+/// the author saves it the usual way (a new file renamed over the old
+/// one). Reports how long the new version takes to show and to read, and
+/// how many bytes the peer received for it.
+#[test]
+fn incremental_edit() {
+    let scenario = "edit";
+    let Some((a, b)) = stores(scenario) else {
+        return;
+    };
+    let size = env_u64("TILO_FS_BENCH_EDIT_MIB", 1024) * 1024 * 1024;
+    let change = env_u64("TILO_FS_BENCH_EDIT_BYTES", 1024 * 1024).min(size);
+    let mut pair = start_pair_with(&a, &b, 0x74, true);
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let (host_file, target) = (m1.join("big.bin"), m2.join("big.bin"));
+    write_big(&host_file, 9, size);
+    wait_for(&mut pair, "the first version on the peer", || {
+        (std::fs::metadata(&target).ok()?.len() == size).then_some(())
+    });
+    read_big(&target, 9, &[], size);
+    let first_rx = peer_rx(&pair).unwrap();
+
+    // Save the edited file: a copy with the change applied, synced and
+    // renamed over the original.
+    let at = size / 2 + 12_345;
+    let edits = [(10, at, change)];
+    let staged = m1.join(".big.bin.save");
+    let t0 = Instant::now();
+    {
+        let mut buf = vec![0u8; BLOCK];
+        let mut f = std::fs::File::create(&staged).unwrap();
+        let mut off = 0u64;
+        while off < size {
+            let n = BLOCK.min((size - off) as usize);
+            expected(9, &edits, off, &mut buf[..n]);
+            f.write_all(&buf[..n]).unwrap();
+            off += n as u64;
+        }
+        f.sync_all().unwrap();
+    }
+    std::fs::rename(&staged, &host_file).unwrap();
+    let saved = t0.elapsed();
+    let mut probe = vec![0u8; change as usize];
+    let mut want = vec![0u8; change as usize];
+    expected(9, &edits, at, &mut want);
+    wait_for(&mut pair, "the edited version on the peer", || {
+        use std::os::unix::fs::FileExt as _;
+        let f = std::fs::File::open(&target).ok()?;
+        f.read_exact_at(&mut probe, at).ok()?;
+        (probe == want).then_some(())
+    });
+    let visible = t0.elapsed();
+    let t1 = Instant::now();
+    read_big(&target, 9, &edits, size);
+    let read = t1.elapsed();
+    let rx = peer_rx(&pair).unwrap() - first_rx;
+    report(scenario, "bytes", size as f64, "B");
+    report(scenario, "changed", change as f64, "B");
+    report(scenario, "save", saved.as_secs_f64(), "s");
+    report(scenario, "edit_visible", visible.as_secs_f64(), "s");
+    report(scenario, "edit_read", read.as_secs_f64(), "s");
+    report(scenario, "peer_rx_bytes", rx as f64, "B");
+    report(
+        scenario,
+        "rx_per_changed_byte",
+        rx as f64 / change as f64,
+        "x",
     );
 }
 

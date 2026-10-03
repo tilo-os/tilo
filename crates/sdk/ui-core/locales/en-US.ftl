@@ -9,6 +9,235 @@ standalone-history-select = Select changes
 standalone-history-compare = Compare selected changes
 standalone-history-entry-ids = Changes
 standalone-history-selected-details = Selected changes
+standalone-history-restore = Restore this version…
+standalone-history-restore-title = Restore this version?
+standalone-history-restore-body = The document goes back to how it was after “{ $version }”. This adds a new change: later versions stay in History, and Undo reverses the restore.
+standalone-history-restore-confirm = Restore version
+standalone-history-restore-cancel = Cancel
+standalone-history-restore-action = Restore version
+standalone-history-restore-done = Version restored. Undo reverses it.
+standalone-history-restore-stale = The document changed while you were reviewing. Select the version again to restore it.
+standalone-history-restore-pending = Finish the current edit, then restore the version.
+standalone-history-restore-denied = Only editors can restore a version.
+standalone-history-restore-unavailable = This version can't be restored here.
+standalone-history-preview-resource = Document
+host-search = Search…
+host-search-placeholder = Search
+host-undo = Undo
+host-undo-named = Undo { $change }
+host-redo = Redo
+host-redo-named = Redo { $change }
+host-history-show = Show History
+host-history-hide = Hide History
+host-history-compare = Compare Selection
+host-history-recent = { $author } · { $change } — { $when }
+host-history-unavailable = There is no document to show History for.
+host-history-compare-unavailable = Select two or more changes to compare them.
+host-menu-file = File
+host-menu-edit = Edit
+host-menu-view = View
+host-menu-history = History
+host-menu-window = Window
+host-menu-help = Help
+host-menu-about = About { $app }
+host-menu-services = Services
+host-menu-hide = Hide { $app }
+host-menu-hide-others = Hide Others
+host-menu-show-all = Show All
+host-menu-quit = Quit { $app }
+host-menu-close = Close Window
+host-menu-minimize = Minimize
+host-menu-zoom = Zoom
+host-menu-front = Bring All to Front
+host-window-minimize = Minimize
+host-window-maximize = Maximize
+host-window-close = Close
+history-genesis = Created
+history-edited-field = { $more ->
+    [0] Edited { $path }
+   *[other] Edited { $path } and { $more } more
+}
+history-removed-field = { $more ->
+    [0] Removed { $path }
+   *[other] Removed { $path } and { $more } more
+}
+history-edited-fields = { $count ->
+    [one] Edited 1 field
+   *[other] Edited { $count } fields
+}
+history-removed-fields = { $count ->
+    [one] Removed 1 field
+   *[other] Removed { $count } fields
+}
+history-review-title = Restore { $resource }
+history-review-confirm = Restore version
+history-review-refresh = Refresh review
+history-review-cancel = Cancel
+history-review-body = Version: { $version }
+
+    Restoring returns the document to exactly this version as one new change. Later changes stay in history, and Undo reverses the restore.
+history-review-selected-version = Selected version
+history-review-not-content = This activity does not contain restorable document content.
+history-review-no-clock = The current time is unavailable. Restore cannot check permission expiry.
+history-restore-unsupported = This version cannot be restored safely with this application's content format.
+history-preview-description = { $resource } as of this version
+
+# The History host's own controls and status, beside the live app.
+history-mode-title = History
+history-mode-unavailable = History unavailable
+history-mode-content-unavailable = Historical content unavailable
+history-mode-back-to-activity = Back to activity
+history-mode-back-to-live = Back to live
+history-mode-before = Before
+history-mode-after = After
+history-mode-showing-before = Historical: Before
+history-mode-showing-after = Historical: After
+history-mode-restore = Restore…
+history-mode-live-updates = Live content has updates
+history-mode-page = Page
+history-mode-previous-page = Previous page
+history-mode-next-page = Next page
+history-mode-pending = Pending #{ $id } from { $owner }: { $action } arguments { $arguments }
+history-mode-continue = Continue
+history-mode-confirm = Confirm
+history-mode-cancel = Cancel
+history-mode-confirmation-unavailable = confirmation unavailable
+history-mode-type-to-confirm = Type { $phrase } to confirm
+history-mode-owner-gone = History owner is no longer available
+history-mode-custody-lost = The original component custody could not be recovered during History
+history-mode-control-owner-closed = The original registered control owner is closed
+history-mode-loading-media = Loading historical media
+history-media-too-many = Historical media exceeds the 4096 asset preview limit
+history-media-too-large = Historical media is too large
+history-media-over-limit = Historical media exceeds the 128 MiB preview limit
+history-media-hash-mismatch = Historical media does not match its recorded content hash
+
+## History groups and catch-up briefs
+history-group-changes = { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+history-group-edits = { $count ->
+    [one] 1 edit
+   *[other] { $count } edits
+}
+history-group-comments = { $count ->
+    [one] 1 comment
+   *[other] { $count } comments
+}
+history-group-access-changes = { $count ->
+    [one] 1 permission change
+   *[other] { $count } permission changes
+}
+history-group-deletions = { $count ->
+    [one] 1 deletion
+   *[other] { $count } deletions
+}
+history-group-over = { $count } over { $span }
+history-group-chars = +{ $inserted } -{ $deleted } chars
+history-group-from = from “{ $summary }”
+history-group-named-by = named by { $name }
+history-span-minutes = { $count } min
+history-span-hours = { $count } h
+history-span-days = { $count } d
+history-authors-two = { $first } and { $second }
+history-authors-more = { $first }, { $second } + { $rest }
+history-outcome-access = Updated workspace access
+history-outcome-discussion = Continued the discussion
+history-outcome-discussed = Discussed { $resource }
+history-outcome-organized-content = Organized shared content
+history-outcome-organized = Organized { $resource }
+history-outcome-updated-content = Updated shared content
+history-outcome-worked-on = Worked on { $resource }
+history-outcome-workspace = Updated the workspace
+history-chip-all = All
+history-chip-edits = Edits
+history-chip-edits-short = Edit
+history-chip-comments = Comments
+history-chip-comments-short = Note
+history-chip-access = Access
+history-chip-access-short = Access
+history-chip-deletions = Deletions
+history-chip-deletions-short = Del.
+history-op-splice = Text / structure
+history-op-edit-meta = Metadata
+history-op-move = Move
+history-op-comment = Comments
+history-op-tombstone = Delete
+history-op-restore = Restore
+history-op-govern = Access
+history-op-compaction = Checkpoints
+history-op-redact = Redaction
+history-selection-count = { $count ->
+    [one] 1 change selected
+   *[other] { $count } changes selected
+}
+history-selection-name = Name these
+history-selection-clear = Clear
+history-sync-finish-edit = Finish the current edit before receiving remote changes
+history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
+history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
+history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
+
+# File history in the History host.
+history-files-select-file = Select a file with versioned history
+history-files-choose-parent = Choose an actual parent revision for Before
+history-files-no-earlier = No earlier version
+history-files-checking-compensation = File: { $file }
+
+    Checking a fresh compensation review
+history-files-refresh-activity = Refresh activity
+history-files-check-restore = Check restore result
+history-files-retry-restore = Retry same restore
+history-files-redo-restore = Redo file restore…
+history-files-undo-restore = Undo file restore…
+history-files-current-unavailable = Current file revision pointer unavailable
+history-files-current-revision = Current file revision: { $revision }
+history-files-live-updates = Live file has updates; selected immutable version remains pinned
+history-files-before-parent = Before parent { $revision }
+history-files-showing-parent = Before parent: { $revision }
+history-files-created = Created
+history-files-edited = Edited
+history-files-renamed = Renamed
+history-files-moved = Moved
+history-files-deleted = Deleted
+history-files-restored = Restored
+history-files-conflict-resolved = Conflict resolved
+history-files-unknown-author = Unknown author
+history-files-author = Author { $identity }
+history-files-loading = Loading file history
+history-files-loading-version = Loading immutable version
+history-files-checking-permissions = Checking current file permissions and frontier
+history-files-earlier-pending = An earlier restore is still pending; check its exact result
+history-files-submitting = Submitting checked restore
+history-files-version-count = { $count ->
+        [one] { $count } immutable version
+       *[other] { $count } immutable versions
+    }
+history-files-binding-changed = File binding changed; reopen History for the current file
+history-files-unavailable-host = File history is unavailable on this host
+history-files-historical-version = Historical version
+history-files-foreign-response = History response belongs to another file
+history-files-restore-explainer = Restore creates a new file revision and preserves existing history
+history-files-foreign-review = Review belongs to another file or mount
+history-files-invalid-result = Invalid backend result; the exact request remains unresolved
+history-files-not-visible = This file is no longer visible
+history-files-error-stale = File history changed; refresh activity and retry this version
+history-files-error-missing-version = This immutable version is unavailable
+history-files-error-invalid = Invalid history response
+history-files-error-unavailable = File history is temporarily unavailable
+history-files-error-too-large = Historical preview exceeds the supported size
+history-files-error-no-content = This version has no recorded content reference
+history-files-outcome-applied = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: observed revision.
+history-files-outcome-applied-legacy = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: legacy content representative; prior authorship unknown.
+history-files-outcome-unchanged = Selected content already matches; no new revision or undo entry
+history-files-outcome-pending = Restore is pending. Check result or retry the same intent
+history-files-outcome-review = Live file changed. Refresh review; the selected old version remains pinned
+history-files-outcome-read-only = This file is read-only; restore and compensation are unavailable
+history-files-outcome-pending-writes = Pending file edits must settle before restore; buffered content is preserved
+history-files-outcome-unsupported-owner = Unsupported checked content owner: { $mapping }
+history-files-outcome-unavailable = Restore acknowledgement is unavailable. Keep this intent and check its result
+history-files-outcome-invalid = Invalid checked restore request; no legacy fallback is available
 
 music-open-audio-file = Open audio file
 
@@ -48,6 +277,7 @@ block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: w
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
+widget-maximized-restore = Restore
 tree-rename-field = Rename
 tree-move-up = Move up
 tree-move-down = Move down
@@ -59,3 +289,110 @@ greeter-welcome-back = Welcome back to Tilo
 greeter-sign-in = Sign in to continue
 greeter-passcode-intro = Enter your passcode to open your desktop.
 lock-welcome-back = Welcome back
+
+# Now playing: Quick Settings and the lock screen.
+now-playing-title = Now playing
+now-playing-play = Play
+now-playing-pause = Pause
+now-playing-previous = Previous track
+now-playing-next = Next track
+now-playing-seek = Playback position
+now-playing-seek-help = Use Left and Right Arrow to move five seconds
+now-playing-choose-player = Choose player
+now-playing-choose-output = Choose where to play
+now-playing-output-local = On this computer
+now-playing-output-device = One of your devices
+now-playing-output-speaker-group = One of your speaker groups
+now-playing-route-gone = That destination is no longer available
+
+# The inline permission prompt a sandboxed app raises.
+permission-prompt-allow = Allow
+permission-prompt-session = This session
+permission-prompt-always = Always allow
+permission-prompt-deny = Deny
+permission-prompt-requested = { $capability } requested by { $app }
+
+# Relative times, as history and activity rows show them.
+relative-time-just-now = just now
+relative-time-minutes = { $count ->
+        [one] { $count } min ago
+       *[other] { $count } min ago
+    }
+relative-time-hours = { $count ->
+        [one] { $count } h ago
+       *[other] { $count } h ago
+    }
+relative-time-days = { $count ->
+        [one] { $count } d ago
+       *[other] { $count } d ago
+    }
+
+# Coarse relative times ("3 days ago"), as lists and cards show them.
+relative-ago-just-now = just now
+relative-ago-minutes = { $count } min ago
+relative-ago-hours = { $count } hr ago
+relative-ago-yesterday = yesterday
+relative-ago-days = { $count ->
+        [one] { $count } day ago
+       *[other] { $count } days ago
+    }
+relative-ago-weeks = { $count ->
+        [one] { $count } week ago
+       *[other] { $count } weeks ago
+    }
+relative-ago-months = { $count ->
+        [one] { $count } month ago
+       *[other] { $count } months ago
+    }
+relative-ago-years = { $count ->
+        [one] { $count } year ago
+       *[other] { $count } years ago
+    }
+
+# A software participant in history, presence and activity rows.
+participant-agent = { $name } · Agent
+participant-unknown-agent = Unknown agent
+
+# History as published actions, for the palette, scripts, agents and assistive technology.
+history-action-resource = Document history
+history-action-open = Open history
+history-action-list = List changes
+history-action-view-at = Preview a version
+history-action-compare = Compare changes
+history-action-close = Close preview
+history-action-restore = Restore a version
+history-action-param-resource = The document whose history to use, as History lists it. Defaults to the open document.
+history-action-param-cursor = Where the previous page ended.
+history-action-param-entry = One change, as History lists it.
+history-action-param-entries = Changes, as History lists them.
+history-action-param-session = A preview opened by Preview a version.
+history-action-param-heads = The live heads the preview reported. Restore is refused if the document changed since.
+history-action-denied = You don't have permission for this part of the document's history.
+history-action-stale-document = That document is no longer open.
+history-action-stale-cursor = The history changed since this page. List it again from the start.
+history-action-unknown-entry = That change isn't in this document's history.
+history-action-unknown-session = That preview isn't open.
+history-action-invalid = That History request isn't valid.
+
+# Command palette chrome: footer key hints, result count and empty states.
+palette-name = Command palette
+palette-results = Results
+palette-placeholder = Search…
+palette-hint-navigate = Navigate
+palette-hint-select = Select
+palette-hint-open = Open
+palette-hint-run = Run
+palette-hint-close = Close
+palette-result-count = { $count ->
+    [one] 1 result
+   *[other] { $count } results
+}
+palette-empty = Nothing to show
+palette-no-results = No results for “{ $query }”
+palette-no-results-hint = Try fewer words, or widen the scope
+
+# Calendar section headings in the workspace activity timeline.
+history-day-today = Today
+history-day-yesterday = Yesterday
+history-day-this-week = This week
+history-day-earlier = Earlier

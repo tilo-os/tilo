@@ -18,11 +18,12 @@
 #                                     disk passphrase on stdin line 2
 #                                     (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
-#     --codecs                        the owner opted in to the additional codecs
-#                                     pack: record it for the installed system,
-#                                     which downloads the pack from RPM Fusion and
-#                                     Cisco once it is online (nothing is fetched
-#                                     here; see /usr/share/doc/tilo/codec-pack.md)
+#     --extension ID                  the owner turned on the Tilo extension ID
+#                                     (e.g. media-codecs; repeatable): record it
+#                                     for the installed system, which downloads
+#                                     it from its publishers once it is online
+#                                     (nothing is fetched here; see
+#                                     /usr/share/tilo/system-extensions/README.md)
 #     --alongside --root-partition P --efi-partition P
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
@@ -249,6 +250,56 @@ if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then
   die "systemd-run is required for the enforced installer backend"
 fi
 
+# Only the transient backend owns this lock. The greeter launcher re-execs
+# through systemd first and must neither access root-private state nor hold
+# the lock while waiting for its child unit.
+if [ -d /run/tilo-installer/code-refresh ]; then
+  exec {installer_code_lock}>/run/tilo-installer/code-refresh/lock
+  flock -n "$installer_code_lock" || { echo 'installer code refresh is running' >&2; exit 1; }
+  python3 -c 'import json; from pathlib import Path; p=Path("/run/tilo-installer/code-refresh/active.json"); assert not p.exists() or json.loads(p.read_text())["state"] == "applied", "installer code refresh is incomplete"'
+fi
+
+# TILO_VM_CODE_REFRESH_PROBE_V1: read-only execution evidence for the opted-in
+# local helper loop. Runs AFTER the real transient re-exec and backend lock.
+if { [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --cached-target ]; }; } && [ "$1" = --dev-code-refresh-probe ]; then
+  [ "${TILO_INSTALL_TRANSIENT:-}" = 1 ] && [ "$(id -u)" = 0 ] \
+    && [ -f /usr/share/tilo/unverified-vm-install ] \
+    && [ "$(cat /usr/lib/tilo/image-flavour)" = dev ] \
+    && [ -c /dev/virtio-ports/org.tilo.installer-code ] \
+    && [ -c /dev/virtio-ports/org.tilo.vm-install-proof ] \
+    && grep -qw tilo.install /proc/cmdline \
+    && timeout 5s systemd-detect-virt --vm --quiet \
+    || die "backend code probe requires the opted-in development VM"
+  python3 - "$0" "${2:-}" <<'PY'
+import hashlib, importlib.util, json, os, sys
+from pathlib import Path
+context = Path('/proc/self/attr/current').read_text().strip().strip('\0')
+enforcing = Path('/sys/fs/selinux/enforce').read_bytes().strip() == b'1'
+assert enforcing and context.split(':')[2] in ('init_t', 'unconfined_service_t'), f'backend probe did not execute in enforcing system service: enforcing={enforcing} domain={context!r}'
+resolver = None
+target = None
+helper_path = Path('/usr/libexec/tilo-installer-dev-target-uki.py')
+spec = importlib.util.spec_from_file_location('runtime_projection_probe', helper_path)
+helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+if hasattr(helper, 'PROFILE_TOOLS'):
+    module_path = helper.PROFILE_TOOLS / 'hardware_profile.py'
+    module = helper.load_module(module_path, 'runtime_profile_probe')
+    module.resolve_profile(Path('/'), os.uname().release, 'aarch64')
+    resolver = hashlib.sha256(module_path.read_bytes()).hexdigest()
+if sys.argv[2] == '--cached-target':
+    path = Path('/etc/tilo/installer-code-bootstrap/tilo-installer-code-target-probe.py')
+    spec = importlib.util.spec_from_file_location('cached_target_probe', path)
+    probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
+    target = probe.probe()
+print(json.dumps({'schema':'tilo.installer-code-backend-probe.v1', 'transient':1,
+                  'domain':context, 'enforcing':enforcing, 'tag':'initial',
+                  'profile_resolver_sha256':resolver,
+                  'cached_target':target,
+                  'helper_sha256':hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()}, sort_keys=True))
+PY
+  exit 0
+fi
+
 # --- parse args --------------------------------------------------------------
 DISK=""
 USERNAME=""
@@ -264,7 +315,7 @@ KEYVARIANT_VAL=""    # xkb variant (empty → none)
 ENCRYPT=1            # Native Tilo is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
-WANT_CODECS=0        # --codecs → seed the codec-pack opt-in for first boot
+EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
 GUIDED_ALONGSIDE=0
 PREFLIGHT_ALONGSIDE=0
@@ -314,7 +365,17 @@ while [ $# -gt 0 ]; do
     --encrypt) ENCRYPT=1; shift ;;
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
-    --codecs) WANT_CODECS=1; shift ;;
+    --extension)
+      case "${2:-}" in
+        [a-z0-9]*) ;;
+        *) die "--extension needs an extension id" ;;
+      esac
+      case "${2}" in
+        *[!a-z0-9-]*) die "invalid extension id: ${2}" ;;
+      esac
+      [ -f "/usr/share/tilo/system-extensions/sysext.d/${2}.json" ] \
+        || die "this image has no extension ${2}"
+      EXTENSIONS="$EXTENSIONS ${2}"; shift 2 ;;
     --alongside) ALONGSIDE=1; shift ;;
     --preflight-alongside) ALONGSIDE=1; PREFLIGHT_ALONGSIDE=1; shift ;;
     --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
@@ -375,7 +436,23 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
   die "expected disk identity contains control characters"
 fi
 
+ALONGSIDE_BOOTC_PODMAN_ARGS=()
+ALONGSIDE_BOOTC_COMMAND=(bootc)
 if [ "$ALONGSIDE" -eq 1 ]; then
+  # Upstream bootc may choose the first ESP on the disk rather than the one
+  # mounted at target /boot/efi. Check the corrected installer binary before
+  # guided partition creation, formatting, or any other disk mutation.
+  ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside
+  [ -f "$ALONGSIDE_BOOTC" ] && [ ! -L "$ALONGSIDE_BOOTC" ] \
+    && [ -x "$ALONGSIDE_BOOTC" ] \
+    && [ "$(stat -c '%u:%g' "$ALONGSIDE_BOOTC")" = 0:0 ] \
+    && [ "$("$ALONGSIDE_BOOTC" --version)" = 'bootc 1.16.13' ] \
+    || die "alongside install requires the pinned mounted-ESP bootc helper"
+  # The pinned binary must be executable in the container; Podman may inherit
+  # a noexec source mount from the sealed installer when :exec is omitted.
+  ALONGSIDE_BOOTC_PODMAN_ARGS=(-v "$ALONGSIDE_BOOTC:/run/tilo-bootc-alongside:ro,exec" \
+    --entrypoint /run/tilo-bootc-alongside)
+  ALONGSIDE_BOOTC_COMMAND=()
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     [ -z "$ROOT_PARTITION$BOOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
@@ -901,6 +978,29 @@ log "  update ref  : $TILO_TARGET_IMGREF"
 promote_target_uki() {
   local esp="$1" TARGET_UKI TARGET_VARIANT
   local -a target_digests installed_digests
+  # CI development targets may use a board UKI or a generic split kernel.
+  # Project the installed target UKI
+  # only inside the already guarded development scenario, without modifying
+  # its OCI image or borrowing boot bytes from the generic live medium.
+  if [ "$OFFLINE_TARGET" -eq 2 ]; then
+    local dev_image_root dev_result
+    dev_image_root="$(podman image mount "$LOCAL_IMG")" \
+      || die "could not mount the selected immutable development target"
+    if [ ! -f "$dev_image_root/boot/tilo-target/tilo-target.efi" ]; then
+      if dev_result="$(REQUIRE_TPM_PREDICTION="${REQUIRE_TPM_PREDICTION:-0}" \
+          python3 /usr/libexec/tilo-installer-dev-target-uki.py promote \
+          --image-root "$dev_image_root" --target-root "$ENC_MNT" --esp "$esp")"; then
+        podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
+        [[ "$dev_result" =~ ^[0-9a-f]{128}$ ]] || die "development UKI returned an invalid digest"
+        TARGET_COMPOSEFS_DIGEST="$dev_result"
+        return
+      else
+        podman image unmount "$LOCAL_IMG" || true
+        die "development target UKI failed verification"
+      fi
+    fi
+    podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
+  fi
   # Promote the deterministic installed-target UKI. It was built over this
   # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
   # per-machine bytes enter PCR 11.
@@ -916,9 +1016,20 @@ promote_target_uki() {
     --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
   TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
-  TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
-    /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
-    || die "target boot bundle failed authority/prediction verification"
+  # The on-demand unsigned development medium has no PCR prediction. Permit
+  # its passphrase-only self-install solely inside the disposable scenario VM
+  # with the named proof port. A physical install and every offline signed
+  # target still require the exact authority/prediction preflight.
+  if [ -f /usr/share/tilo/unverified-vm-install ] \
+     && [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] \
+     && [ -c /dev/virtio-ports/org.tilo.vm-install-proof ] \
+     && systemd-detect-virt --vm --quiet; then
+    log "development VM: unverified target boot bundle permitted for passphrase install"
+  else
+    TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
+      /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
+      || die "target boot bundle failed authority/prediction verification"
+  fi
   mapfile -t target_digests < <(/usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" |
     tr ' ' '\n' | sed -n 's/^composefs=//p')
   [ "${#target_digests[@]}" -eq 1 ] && [[ "${target_digests[0]}" =~ ^[0-9a-f]{128}$ ]] \
@@ -1006,8 +1117,8 @@ use_encrypted_copy_scratch() {
     || die "/var/tmp is not the reviewed encrypted scratch directory"
 }
 copy_booted_image() {
-  if [ "$OFFLINE_TARGET" -eq 1 ]; then
-    step "Importing the independently signed offline Tilo target"
+  if [ "$OFFLINE_TARGET" -ne 0 ]; then
+    step "Importing the selected offline Tilo target"
     LOCAL_IMG="$(python3 /usr/libexec/tilo-installer-offline-target.py import)" \
       || die "offline target import or embedded update origin failed"
     [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
@@ -1062,6 +1173,9 @@ if [ -e /var/lib/tilo-installer/target-oci ] \
   # against target SLSA and the target image's embedded hardware profile.
   TILO_TARGET_IMGREF="$offline_origin"
   OFFLINE_TARGET=1
+  if python3 -c 'import json,sys; sys.exit(json.load(open("/run/tilo-installer/offline-target.json"))["schema"] != "tilo.installer-dev-target.v1")'; then
+    OFFLINE_TARGET=2
+  fi
 fi
 
 # Recheck the selected disk before preparing the encrypted target. The source
@@ -1175,9 +1289,10 @@ if [ "$ENCRYPT" -eq 1 ]; then
     -v /var/lib/containers:/var/lib/containers \
     -v /dev:/dev \
     -v "$ENC_MNT:/target" \
-    --security-opt label=type:unconfined_t \
+    --security-opt label=disable \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
     "$LOCAL_IMG" \
-    bootc install to-filesystem \
+    "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --composefs-backend \
       --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
@@ -1193,7 +1308,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   step "Formatting only $ROOT_PARTITION for Tilo; preserving every other partition"
   case "$FILESYSTEM" in
     btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -L root "$ROOT_PARTITION" ;;
+    ext4) mkfs.ext4 -q -F -O verity -L root "$ROOT_PARTITION" ;;
     xfs) mkfs.xfs -q -f -L root "$ROOT_PARTITION" >/dev/null ;;
   esac
   ROOT_FS_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION")"
@@ -1211,8 +1326,9 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   trap cleanup_alongside EXIT
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
-    -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
-    "$LOCAL_IMG" bootc install to-filesystem \
+    -v "$ALONGSIDE_MNT:/target" --security-opt label=disable \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
+    "$LOCAL_IMG" "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete tilo.install --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize /target
@@ -1356,6 +1472,18 @@ fi
 # are atomic, so an interrupted alongside install never leaves an empty/partial
 # marker or boot-menu files which cannot be attributed to this exact root.
 install -d -m 0755 "$DEPLOY_ETC/tilo"
+# DEPLOY_ETC is mounted below /run while installing. New inodes otherwise
+# inherit var_run_t, which the installed first-boot units cannot read. Resolve
+# each final /etc path against the live image's matching SELinux policy before
+# atomically publishing it in the deployment.
+label_installed_tilo_path() {
+  local staged="$1" installed="$2" context
+  context="$(/usr/sbin/matchpathcon -n -- "$installed")" \
+    || die "could not resolve SELinux label for $installed"
+  chcon -- "$context" "$staged" \
+    || die "could not label installed $installed"
+}
+label_installed_tilo_path "$DEPLOY_ETC/tilo" /etc/tilo
 INSTALL_MARKER="$DEPLOY_ETC/tilo/install-marker"
 write_install_marker() {
   local marker_tmp install_mode=full-disk root_partition_uuid=""
@@ -1377,6 +1505,7 @@ write_install_marker() {
         | sed 's/^/efi_artifact=/'
     fi
   } > "$marker_tmp"
+  label_installed_tilo_path "$marker_tmp" /etc/tilo/install-marker
   mv -f -- "$marker_tmp" "$INSTALL_MARKER"
   sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
 }
@@ -1427,7 +1556,7 @@ AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
 AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
 chmod 0600 "$AUTOLOGIN_PENDING_TMP"
 printf 'version=1\n' > "$AUTOLOGIN_PENDING_TMP"
-chcon --reference="$INSTALL_MARKER" "$AUTOLOGIN_PENDING_TMP"
+label_installed_tilo_path "$AUTOLOGIN_PENDING_TMP" /etc/tilo/firstboot-autologin-pending
 mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"
 # Flush both the marker and its containing directory before publishing the
 # initial_session.  If interrupted after this point, the cleanup unit has an
@@ -1485,6 +1614,7 @@ CONF="$DEPLOY_ETC/tilo/install-user.conf"
 CONF_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user.XXXXXX")"
 chmod 0600 "$CONF_TMP"
 printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
+label_installed_tilo_path "$CONF_TMP" /etc/tilo/install-user.conf
 mv -f "$CONF_TMP" "$CONF"
 log "  wrote $CONF (consumed by tilo-firstboot-user.service on first boot)"
 if [ -n "$FULL_NAME" ]; then
@@ -1492,6 +1622,7 @@ if [ -n "$FULL_NAME" ]; then
   FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user-full-name.XXXXXX")"
   chmod 0600 "$FULL_NAME_TMP"
   printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
+  label_installed_tilo_path "$FULL_NAME_TMP" /etc/tilo/install-user-full-name
   mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
 fi
 
@@ -1590,18 +1721,64 @@ if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
     || die "VM installed image identity proof failed"
 fi
 
-# The owner's explicit opt-in to the additional codecs pack. Only the choice is
-# recorded; the installed system downloads the packages itself, directly from
-# RPM Fusion and Cisco, once it is online. tilo-codec-pack adopts this seed once
-# into /var/lib/tilo/codec-pack/enabled, so removing the pack later sticks.
-if [ "$WANT_CODECS" -eq 1 ]; then
-  step "Recording the choice to install additional media codecs"
-  CODECS_SEED="$DEPLOY_ETC/tilo/codec-pack-opt-in"
-  CODECS_TMP="$(mktemp "$DEPLOY_ETC/tilo/.codec-pack-opt-in.XXXXXX")"
-  printf 'owner opted in during installation\n' > "$CODECS_TMP"
-  chmod 0644 "$CODECS_TMP"
-  mv -f "$CODECS_TMP" "$CODECS_SEED"
-  log "  wrote $CODECS_SEED (installed on first boot once online)"
+# The owner's explicit opt-in to Tilo extensions (the media codecs, say). Only
+# the choice is recorded; the installed system downloads the extension itself,
+# from its publishers, once it is online. tilo-extension adopts each seed once
+# into /var/lib/tilo/extensions/<id>/enabled, so removing it later sticks.
+for EXTENSION_ID in $EXTENSIONS; do
+  step "Recording the choice to turn on $EXTENSION_ID"
+  SEED_DIR="$DEPLOY_ETC/tilo/extensions/opt-in"
+  mkdir -p "$SEED_DIR"
+  chmod 0755 "$DEPLOY_ETC/tilo/extensions" "$SEED_DIR"
+  SEED_TMP="$(mktemp "$SEED_DIR/.$EXTENSION_ID.XXXXXX")"
+  printf 'owner opted in during installation\n' > "$SEED_TMP"
+  chmod 0644 "$SEED_TMP"
+  mv -f "$SEED_TMP" "$SEED_DIR/$EXTENSION_ID"
+  log "  wrote $SEED_DIR/$EXTENSION_ID (installed on first boot once online)"
+done
+
+if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]; then
+  step "Copying Wi-Fi and identity from the setup machine"
+  HANDOFF_SRC="${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff"
+  [ -n "$DEPLOY_ETC" ] || die "setup handoff is present but the installed /etc was not found"
+  HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
+  [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
+  if [ -d "$HANDOFF_SRC/etc" ]; then
+    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
+  fi
+  if [ -d "$HANDOFF_SRC/var" ]; then
+    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/var" "$HANDOFF_VAR"
+  fi
+  key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
+  if [ -f "$key" ]; then
+    chgrp tilo-identity "$key" || die "tilo-identity group is missing; cannot install the device key"
+    chmod 0640 "$key"
+  fi
+  if [ -d "$DEPLOY_ETC/NetworkManager/system-connections" ]; then
+    find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +
+    # Label new request files with their installed policy paths so
+    # NetworkManager can read this profile before OOBE.
+    label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections" /etc/NetworkManager/system-connections
+    if [ -f "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" ]; then
+      label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" /etc/NetworkManager/system-connections/tilo-setup.nmconnection
+    fi
+  fi
+  log "  applied the setup handoff"
+  SSH_REQUEST="$HANDOFF_SRC/etc/tilo/bringup-ssh.pub"
+  if [ -e "$SSH_REQUEST" ] || [ -L "$SSH_REQUEST" ]; then
+    # A separately selected dev target was checked before disk mutation and
+    # again during import. A production target never admits this handoff.
+    { [ "$OFFLINE_TARGET" -eq 0 ] || [ "$OFFLINE_TARGET" -eq 2 ]; } \
+      && [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = dev ] \
+      && [ -x /usr/sbin/sshd ] \
+      && [ -f /usr/lib/systemd/system/sshd.service ] \
+      || die "bring-up SSH requires a verified development target with OpenSSH"
+    python3 /usr/libexec/tilo-install-dev-ssh.py --etc "$DEPLOY_ETC" \
+      --username "$USERNAME" --key "$SSH_REQUEST" \
+      || die "could not configure owner-key bring-up SSH"
+    rm -f "$DEPLOY_ETC/tilo/bringup-ssh.pub"
+    log "  enabled owner-key SSH independently of desktop onboarding"
+  fi
 fi
 
 sync
@@ -1628,7 +1805,13 @@ if [ -n "$VM_INSTALL_PROOF" ]; then
   # target was closed. The dedicated virtio port carries no installer logs
   # or secrets. The host must compare the image identity to its signed CI pin.
   proof_version=V1
-  [ "$OFFLINE_TARGET" -eq 0 ] || proof_version=V2
+  if [ "$OFFLINE_TARGET" -eq 2 ]; then
+    proof_version=V4
+  elif [ "$OFFLINE_TARGET" -ne 0 ]; then
+    proof_version=V2
+  elif python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1]))["schema"] != "tilo.vm-install-image-proof.v3")' "$VM_INSTALL_PROOF"; then
+    proof_version=V3
+  fi
   proof_line="TILO_VM_INSTALL_PROOF_${proof_version}=$(cat "$VM_INSTALL_PROOF")"
   [ -c "$VM_INSTALL_PROOF_PORT" ] \
     && printf '%s\n' "$proof_line" > "$VM_INSTALL_PROOF_PORT" \

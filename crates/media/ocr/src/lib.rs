@@ -327,7 +327,12 @@ pub fn recognize(image: &DynamicImage, language: &str) -> Result<Document, Error
 pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recognition, Error> {
     validate_language(language)?;
     let (prepared, deskew_degrees) = prepare(image)?;
-    let mut input = tempfile::Builder::new().suffix(".png").tempfile()?;
+    // The engine is a process reading a file; the page has neither, and
+    // `tempfile` would panic there looking for a temp dir.
+    let scratch = tilo_paths::temp_dir().ok_or(Error::Unavailable)?;
+    let mut input = tempfile::Builder::new()
+        .suffix(".png")
+        .tempfile_in(scratch)?;
     prepared.write_to(&mut input, ImageFormat::Png)?;
     recognize_path(input.path(), language).map(|document| Recognition {
         document,
@@ -541,10 +546,16 @@ fn parse_tsv_bounded(
 mod tests {
     use super::*;
     use std::fmt::Write as _;
-    use std::time::Instant;
+
+    /// Run `body` as the engine; its deadline only catches a hang, so every
+    /// bound the result reports comes from the output limits.
+    #[cfg(unix)]
+    fn fake_engine(body: &str) -> Result<Document, Error> {
+        fake_engine_with_deadline(body, tilo_test_env::hang_bound())
+    }
 
     #[cfg(unix)]
-    fn fake_engine(body: &str, timeout: Duration) -> Result<Document, Error> {
+    fn fake_engine_with_deadline(body: &str, timeout: Duration) -> Result<Document, Error> {
         recognize_path_with_program_args_timeout(
             Path::new("input with spaces.png"),
             "eng",
@@ -555,46 +566,254 @@ mod tests {
     }
 
     #[test]
-    fn parses_geometry_confidence_and_lines() {
-        let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t10\t20\t30\t12\t96.5\tHello\n5\t1\t1\t1\t2\t1\t10\t40\t40\t12\t80\tworld";
-        let document = parse_tsv(input, "eng").unwrap();
-        assert_eq!(document.plain_text(), "Hello\nworld");
-        assert_eq!(document.words[0].bounds.x, 10);
-        assert!((document.words[0].confidence - 0.965).abs() < 0.001);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn engine_output_parses_into_bounded_ordered_words() {
+        // Phase `parses_geometry_confidence_and_lines`.
+        {
+            let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t10\t20\t30\t12\t96.5\tHello\n5\t1\t1\t1\t2\t1\t10\t40\t40\t12\t80\tworld";
+            let document = parse_tsv(input, "eng").unwrap();
+            assert_eq!(document.plain_text(), "Hello\nworld");
+            assert_eq!(document.words[0].bounds.x, 10);
+            assert!((document.words[0].confidence - 0.965).abs() < 0.001);
+        }
+        // Phase `unicode_words_and_page_block_line_boundaries_are_preserved`.
+        {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+            let rows = "5\t1\t1\t1\t1\t1\t0\t0\t20\t10\t99\tGrüße\n5\t1\t2\t1\t1\t1\t0\t20\t20\t10\t91\t世界\n5\t2\t1\t1\t1\t1\t0\t0\t20\t10\t87\tمرحبا";
+            let document = parse_tsv(&format!("{header}{rows}"), "deu+jpn+ara").unwrap();
+            assert_eq!(document.plain_text(), "Grüße\n世界\nمرحبا");
+            assert_eq!(document.words.len(), 3);
+        }
+        // Phase `engine_rows_are_ordered_and_paragraphs_never_merge`.
+        {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+            let rows = "5\t1\t1\t2\t1\t2\t40\t40\t10\t10\t90\tparagraph\n\
+                        5\t1\t1\t1\t1\t2\t20\t10\t10\t10\t90\tworld\n\
+                        5\t1\t1\t2\t1\t1\t10\t40\t10\t10\t90\tNew\n\
+                        5\t1\t1\t1\t1\t1\t0\t10\t10\t10\t90\tHello";
+            let document = parse_tsv(&format!("{header}{rows}"), "eng").unwrap();
+            assert_eq!(document.plain_text(), "Hello world\nNew paragraph");
+            assert_eq!(document.words[2].paragraph, 2);
+            assert_eq!(document.words[3].position, 2);
+        }
+        // Phase `malformed_non_word_and_negative_confidence_rows_are_ignored`.
+        {
+            let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t100\t-1\tpage\n5\tbogus\t1\t1\t1\t1\t0\t0\t10\t10\t99\tbad-number\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t-1\trejected\n5\t1\t1\t1\t1\t2\t2\t3\t10\t11\t0\taccepted";
+            let document = parse_tsv(input, "eng").unwrap();
+            assert_eq!(document.plain_text(), "accepted");
+            assert!(document.words[0].confidence.abs() < f32::EPSILON);
+        }
+        // Phase `zero_sized_and_overflowing_geometry_is_rejected`.
+        {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+            let rows = "5\t1\t1\t1\t1\t1\t0\t0\t0\t10\t99\tzero-width\n\
+                        5\t1\t1\t1\t1\t2\t0\t0\t10\t0\t99\tzero-height\n\
+                        5\t1\t1\t1\t1\t3\t4294967295\t0\t1\t1\t99\tx-overflow\n\
+                        5\t1\t1\t1\t1\t4\t0\t4294967295\t1\t1\t99\ty-overflow\n\
+                        5\t1\t1\t1\t1\t5\t5\t6\t7\t8\t99\tvalid";
+            let document = parse_tsv(&format!("{header}{rows}"), "eng").unwrap();
+            assert_eq!(document.plain_text(), "valid");
+            assert_eq!(
+                document.words[0].bounds,
+                Bounds {
+                    x: 5,
+                    y: 6,
+                    width: 7,
+                    height: 8
+                }
+            );
+        }
+        // Phase `large_deterministic_malformed_corpus_never_panics_or_leaks_invalid_words`.
+        {
+            let mut input = String::from(
+                "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n",
+            );
+            let mut seed = 0x9e37_79b9_u32;
+            for index in 0..10_000_u32 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                match seed % 6 {
+                    0 => input.push_str("\t\t\t\n"),
+                    1 => input.push_str("5\t-1\tnope\t1\t1\t1\t0\t0\t1\t1\tNaN\tbad\n"),
+                    2 => input.push_str("5\t1\t1\t1\t1\t1\t4294967295\t0\t2\t1\t99\tbad\n"),
+                    3 => input.push_str("999999999999999999999999999999999999\n"),
+                    4 => input.push_str("5\t1\t1\t1\t1\t1\t0\t0\t1\t1\tinf\t世界\n"),
+                    _ => {
+                        let _ = writeln!(
+                            input,
+                            "5\t1\t1\t1\t{}\t{}\t0\t0\t1\t1\t80\tok-{index}",
+                            index % 17,
+                            index
+                        );
+                    }
+                }
+            }
+            let document = parse_tsv(&input, "eng").unwrap();
+            assert!(!document.words.is_empty());
+            assert!(document.words.iter().all(|word| {
+                !word.text.is_empty()
+                    && word.bounds.width > 0
+                    && word.bounds.height > 0
+                    && word.bounds.x.checked_add(word.bounds.width).is_some()
+                    && word.bounds.y.checked_add(word.bounds.height).is_some()
+                    && word.confidence.is_finite()
+                    && (0.0..=1.0).contains(&word.confidence)
+            }));
+        }
+        // Phase `confidence_from_an_untrusted_engine_is_bounded`.
+        {
+            let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t140\toverconfident";
+            let document = parse_tsv(input, "eng").unwrap();
+            assert!((document.words[0].confidence - 1.0).abs() < f32::EPSILON);
+        }
+        // Phase `adversarial_output_word_and_text_limits_fail_closed`.
+        {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+            let row = "5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t99\tok\n";
+            assert!(parse_tsv_bounded(&format!("{header}{row}{row}"), "eng", 4096, 1, 16).is_err());
+            assert!(parse_tsv_bounded(&format!("{header}{row}"), "eng", 8, 10, 16).is_err());
+            let long = format!("5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t99\t{}", "x".repeat(17));
+            assert!(
+                parse_tsv_bounded(&format!("{header}{long}"), "eng", 4096, 10, 16)
+                    .unwrap()
+                    .words
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
-    fn language_cannot_inject_options_or_paths() {
-        assert!(matches!(
-            parse_tsv("", "../eng"),
-            Err(Error::InvalidLanguage)
-        ));
-        assert!(matches!(
-            parse_tsv("", "eng --psm 1"),
-            Err(Error::InvalidLanguage)
-        ));
-        assert!(matches!(parse_tsv("", "-eng"), Err(Error::InvalidLanguage)));
-        assert!(matches!(parse_tsv("", "eng-"), Err(Error::InvalidLanguage)));
+    fn inputs_are_validated_and_errors_are_typed_and_actionable() {
+        // Phase `absent_engine_is_a_typed_error_when_not_installed`.
+        fn absent_engine_is_a_typed_error_when_not_installed() {
+            if Command::new("tesseract").arg("--version").output().is_ok() {
+                return;
+            }
+            let missing = recognize_path(Path::new("/definitely/not/an/image.png"), "eng");
+            assert!(matches!(missing, Err(Error::Unavailable)));
+        }
+        // Phase `language_cannot_inject_options_or_paths`.
+        {
+            assert!(matches!(
+                parse_tsv("", "../eng"),
+                Err(Error::InvalidLanguage)
+            ));
+            assert!(matches!(
+                parse_tsv("", "eng --psm 1"),
+                Err(Error::InvalidLanguage)
+            ));
+            assert!(matches!(parse_tsv("", "-eng"), Err(Error::InvalidLanguage)));
+            assert!(matches!(parse_tsv("", "eng-"), Err(Error::InvalidLanguage)));
+        }
+        // Phase `oversized_images_are_rejected_before_engine_work`.
+        {
+            let image = DynamicImage::new_luma8(MAX_EDGE + 1, 1);
+            assert!(matches!(preprocess(&image), Err(Error::TooLarge)));
+        }
+        // Phase `exact_pixel_limit_is_accepted_but_one_pixel_over_is_rejected`.
+        {
+            assert!(validate_dimensions(10_000, 6_000).is_ok());
+            assert!(matches!(
+                validate_dimensions(10_000, 6_001),
+                Err(Error::TooLarge)
+            ));
+        }
+        // Phase `absent_engine_is_a_typed_error_when_not_installed` (defined above).
+        absent_engine_is_a_typed_error_when_not_installed();
+        // Phase `people_facing_errors_are_actionable_and_never_expose_engine_diagnostics`.
+        {
+            let cases = [
+                (Error::TooLarge, "smaller scan"),
+                (Error::InvalidLanguage, "Choose another language"),
+                (Error::Unavailable, "still keep and export"),
+                (
+                    Error::Engine("/private/document/path: secret engine failure".into()),
+                    "clearer scan",
+                ),
+                (
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "/private/working/path",
+                    )),
+                    "Try again",
+                ),
+            ];
+            for (error, action) in cases {
+                let message = error.user_message();
+                assert!(message.contains(action), "{message:?} lacked {action:?}");
+                assert!(!message.contains("/private"));
+                assert!(!message.to_ascii_lowercase().contains("engine failure"));
+            }
+        }
     }
 
     #[test]
-    fn oversized_images_are_rejected_before_engine_work() {
-        let image = DynamicImage::new_luma8(MAX_EDGE + 1, 1);
-        assert!(matches!(preprocess(&image), Err(Error::TooLarge)));
-    }
+    fn preprocessing_and_deskew_are_deterministic_and_conservative() {
+        // Phase `preprocessing_is_deterministic_grayscale_and_contrast_enhancing`.
+        {
+            let mut source = image::GrayImage::new(3, 1);
+            source.put_pixel(0, 0, image::Luma([64]));
+            source.put_pixel(1, 0, image::Luma([128]));
+            source.put_pixel(2, 0, image::Luma([192]));
+            let source = DynamicImage::ImageLuma8(source);
+            let first = preprocess(&source).unwrap().to_luma8();
+            let second = preprocess(&source).unwrap().to_luma8();
+            assert_eq!(first, second);
+            assert!(first.get_pixel(0, 0)[0] < 64);
+            assert!(first.get_pixel(2, 0)[0] > 192);
+        }
+        // Phase `deskew_recovers_small_camera_rotation_without_changing_canvas`.
+        {
+            let clean = ruled_document();
+            for skew in [-4.5, -2.0, 1.5, 3.0, 4.5] {
+                let skewed = rotate_luma(&clean, skew);
+                let correction = estimate_skew_degrees(&skewed).expect("clear text baselines");
+                assert!(
+                    (correction + skew).abs() <= DESKEW_STEP_DEGREES,
+                    "skew {skew}° produced correction {correction}°"
+                );
 
-    #[test]
-    fn preprocessing_is_deterministic_grayscale_and_contrast_enhancing() {
-        let mut source = image::GrayImage::new(3, 1);
-        source.put_pixel(0, 0, image::Luma([64]));
-        source.put_pixel(1, 0, image::Luma([128]));
-        source.put_pixel(2, 0, image::Luma([192]));
-        let source = DynamicImage::ImageLuma8(source);
-        let first = preprocess(&source).unwrap().to_luma8();
-        let second = preprocess(&source).unwrap().to_luma8();
-        assert_eq!(first, second);
-        assert!(first.get_pixel(0, 0)[0] < 64);
-        assert!(first.get_pixel(2, 0)[0] > 192);
+                let before_threshold = otsu_threshold(&skewed);
+                let before_score = projection_score(&skewed, before_threshold, 0.0);
+                let corrected = preprocess(&DynamicImage::ImageLuma8(skewed))
+                    .unwrap()
+                    .to_luma8();
+                assert_eq!(corrected.dimensions(), clean.dimensions());
+                let threshold = otsu_threshold(&corrected);
+                assert!(projection_score(&corrected, threshold, 0.0) > before_score);
+            }
+        }
+        // Phase `deskew_declines_blank_tiny_and_photo_like_inputs`.
+        {
+            assert!(estimate_skew_degrees(&GrayImage::from_pixel(400, 300, Luma([255]))).is_none());
+            assert!(estimate_skew_degrees(&GrayImage::from_pixel(16, 16, Luma([0]))).is_none());
+            let checker = GrayImage::from_fn(320, 240, |x, y| {
+                if (x + y) % 2 == 0 {
+                    Luma([0])
+                } else {
+                    Luma([255])
+                }
+            });
+            assert!(estimate_skew_degrees(&checker).is_none());
+        }
+        // Phase `deskew_rotation_preserves_antialiased_glyph_edges`.
+        {
+            let source = GrayImage::from_fn(96, 96, |x, y| {
+                if (24..72).contains(&x) && (42..48).contains(&y) {
+                    Luma([0])
+                } else {
+                    Luma([255])
+                }
+            });
+            let rotated = rotate_luma(&source, 2.5);
+            assert!(
+                rotated.pixels().any(|pixel| pixel[0] > 0 && pixel[0] < 255),
+                "subpixel rotation should blend an edge instead of stair-stepping it"
+            );
+            assert_eq!(rotated.dimensions(), source.dimensions());
+        }
     }
 
     fn ruled_document() -> GrayImage {
@@ -610,253 +829,53 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     #[test]
-    fn deskew_recovers_small_camera_rotation_without_changing_canvas() {
-        let clean = ruled_document();
-        for skew in [-4.5, -2.0, 1.5, 3.0, 4.5] {
-            let skewed = rotate_luma(&clean, skew);
-            let correction = estimate_skew_degrees(&skewed).expect("clear text baselines");
-            assert!(
-                (correction + skew).abs() <= DESKEW_STEP_DEGREES,
-                "skew {skew}° produced correction {correction}°"
-            );
-
-            let before_threshold = otsu_threshold(&skewed);
-            let before_score = projection_score(&skewed, before_threshold, 0.0);
-            let corrected = preprocess(&DynamicImage::ImageLuma8(skewed))
-                .unwrap()
-                .to_luma8();
-            assert_eq!(corrected.dimensions(), clean.dimensions());
-            let threshold = otsu_threshold(&corrected);
-            assert!(projection_score(&corrected, threshold, 0.0) > before_score);
-        }
-    }
-
-    #[test]
-    fn deskew_declines_blank_tiny_and_photo_like_inputs() {
-        assert!(estimate_skew_degrees(&GrayImage::from_pixel(400, 300, Luma([255]))).is_none());
-        assert!(estimate_skew_degrees(&GrayImage::from_pixel(16, 16, Luma([0]))).is_none());
-        let checker = GrayImage::from_fn(320, 240, |x, y| {
-            if (x + y) % 2 == 0 {
-                Luma([0])
-            } else {
-                Luma([255])
-            }
-        });
-        assert!(estimate_skew_degrees(&checker).is_none());
-    }
-
-    #[test]
-    fn deskew_rotation_preserves_antialiased_glyph_edges() {
-        let source = GrayImage::from_fn(96, 96, |x, y| {
-            if (24..72).contains(&x) && (42..48).contains(&y) {
-                Luma([0])
-            } else {
-                Luma([255])
-            }
-        });
-        let rotated = rotate_luma(&source, 2.5);
-        assert!(
-            rotated.pixels().any(|pixel| pixel[0] > 0 && pixel[0] < 255),
-            "subpixel rotation should blend an edge instead of stair-stepping it"
-        );
-        assert_eq!(rotated.dimensions(), source.dimensions());
-    }
-
-    #[test]
-    fn exact_pixel_limit_is_accepted_but_one_pixel_over_is_rejected() {
-        assert!(validate_dimensions(10_000, 6_000).is_ok());
-        assert!(matches!(
-            validate_dimensions(10_000, 6_001),
-            Err(Error::TooLarge)
-        ));
-    }
-
-    #[test]
-    fn unicode_words_and_page_block_line_boundaries_are_preserved() {
-        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
-        let rows = "5\t1\t1\t1\t1\t1\t0\t0\t20\t10\t99\tGrüße\n5\t1\t2\t1\t1\t1\t0\t20\t20\t10\t91\t世界\n5\t2\t1\t1\t1\t1\t0\t0\t20\t10\t87\tمرحبا";
-        let document = parse_tsv(&format!("{header}{rows}"), "deu+jpn+ara").unwrap();
-        assert_eq!(document.plain_text(), "Grüße\n世界\nمرحبا");
-        assert_eq!(document.words.len(), 3);
-    }
-
-    #[test]
-    fn engine_rows_are_ordered_and_paragraphs_never_merge() {
-        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
-        let rows = "5\t1\t1\t2\t1\t2\t40\t40\t10\t10\t90\tparagraph\n\
-                    5\t1\t1\t1\t1\t2\t20\t10\t10\t10\t90\tworld\n\
-                    5\t1\t1\t2\t1\t1\t10\t40\t10\t10\t90\tNew\n\
-                    5\t1\t1\t1\t1\t1\t0\t10\t10\t10\t90\tHello";
-        let document = parse_tsv(&format!("{header}{rows}"), "eng").unwrap();
-        assert_eq!(document.plain_text(), "Hello world\nNew paragraph");
-        assert_eq!(document.words[2].paragraph, 2);
-        assert_eq!(document.words[3].position, 2);
-    }
-
-    #[test]
-    fn malformed_non_word_and_negative_confidence_rows_are_ignored() {
-        let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t100\t-1\tpage\n5\tbogus\t1\t1\t1\t1\t0\t0\t10\t10\t99\tbad-number\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t-1\trejected\n5\t1\t1\t1\t1\t2\t2\t3\t10\t11\t0\taccepted";
-        let document = parse_tsv(input, "eng").unwrap();
-        assert_eq!(document.plain_text(), "accepted");
-        assert!(document.words[0].confidence.abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn zero_sized_and_overflowing_geometry_is_rejected() {
-        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
-        let rows = "5\t1\t1\t1\t1\t1\t0\t0\t0\t10\t99\tzero-width\n\
-                    5\t1\t1\t1\t1\t2\t0\t0\t10\t0\t99\tzero-height\n\
-                    5\t1\t1\t1\t1\t3\t4294967295\t0\t1\t1\t99\tx-overflow\n\
-                    5\t1\t1\t1\t1\t4\t0\t4294967295\t1\t1\t99\ty-overflow\n\
-                    5\t1\t1\t1\t1\t5\t5\t6\t7\t8\t99\tvalid";
-        let document = parse_tsv(&format!("{header}{rows}"), "eng").unwrap();
-        assert_eq!(document.plain_text(), "valid");
-        assert_eq!(
-            document.words[0].bounds,
-            Bounds {
-                x: 5,
-                y: 6,
-                width: 7,
-                height: 8
-            }
-        );
-    }
-
-    #[test]
-    fn large_deterministic_malformed_corpus_never_panics_or_leaks_invalid_words() {
-        let mut input = String::from(
-            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n",
-        );
-        let mut seed = 0x9e37_79b9_u32;
-        for index in 0..10_000_u32 {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            match seed % 6 {
-                0 => input.push_str("\t\t\t\n"),
-                1 => input.push_str("5\t-1\tnope\t1\t1\t1\t0\t0\t1\t1\tNaN\tbad\n"),
-                2 => input.push_str("5\t1\t1\t1\t1\t1\t4294967295\t0\t2\t1\t99\tbad\n"),
-                3 => input.push_str("999999999999999999999999999999999999\n"),
-                4 => input.push_str("5\t1\t1\t1\t1\t1\t0\t0\t1\t1\tinf\t世界\n"),
-                _ => {
-                    let _ = writeln!(
-                        input,
-                        "5\t1\t1\t1\t{}\t{}\t0\t0\t1\t1\t80\tok-{index}",
-                        index % 17,
-                        index
-                    );
+    fn the_engine_process_boundary_is_bounded_and_fails_closed() {
+        // Phase `engine_process_boundary_parses_successful_tsv`.
+        {
+            let result = fake_engine(
+                "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t7\\t8\\t20\\t9\\t94\\tReceipt\\n'",
+            )
+            .unwrap();
+            assert_eq!(result.plain_text(), "Receipt");
+            assert_eq!(
+                result.words[0].bounds,
+                Bounds {
+                    x: 7,
+                    y: 8,
+                    width: 20,
+                    height: 9
                 }
+            );
+        }
+        // Phase `engine_failure_is_bounded_and_typed`.
+        {
+            let error = fake_engine("printf '%0600d' 0 >&2; exit 7").unwrap_err();
+            match error {
+                Error::Engine(message) => assert_eq!(message.chars().count(), 500),
+                other => panic!("expected engine error, got {other:?}"),
             }
         }
-        let document = parse_tsv(&input, "eng").unwrap();
-        assert!(!document.words.is_empty());
-        assert!(document.words.iter().all(|word| {
-            !word.text.is_empty()
-                && word.bounds.width > 0
-                && word.bounds.height > 0
-                && word.bounds.x.checked_add(word.bounds.width).is_some()
-                && word.bounds.y.checked_add(word.bounds.height).is_some()
-                && word.confidence.is_finite()
-                && (0.0..=1.0).contains(&word.confidence)
-        }));
-    }
-
-    #[test]
-    fn confidence_from_an_untrusted_engine_is_bounded() {
-        let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t140\toverconfident";
-        let document = parse_tsv(input, "eng").unwrap();
-        assert!((document.words[0].confidence - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn adversarial_output_word_and_text_limits_fail_closed() {
-        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
-        let row = "5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t99\tok\n";
-        assert!(parse_tsv_bounded(&format!("{header}{row}{row}"), "eng", 4096, 1, 16).is_err());
-        assert!(parse_tsv_bounded(&format!("{header}{row}"), "eng", 8, 10, 16).is_err());
-        let long = format!("5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t99\t{}", "x".repeat(17));
-        assert!(
-            parse_tsv_bounded(&format!("{header}{long}"), "eng", 4096, 10, 16)
-                .unwrap()
-                .words
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn absent_engine_is_a_typed_error_when_not_installed() {
-        if Command::new("tesseract").arg("--version").output().is_ok() {
-            return;
+        // Phase `noisy_successful_engine_fails_closed_without_deadlocking`.
+        {
+            let error = fake_engine(
+                "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Engine(message) if message.contains("diagnostics")));
         }
-        let missing = recognize_path(Path::new("/definitely/not/an/image.png"), "eng");
-        assert!(matches!(missing, Err(Error::Unavailable)));
-    }
-
-    #[test]
-    fn people_facing_errors_are_actionable_and_never_expose_engine_diagnostics() {
-        let cases = [
-            (Error::TooLarge, "smaller scan"),
-            (Error::InvalidLanguage, "Choose another language"),
-            (Error::Unavailable, "still keep and export"),
-            (
-                Error::Engine("/private/document/path: secret engine failure".into()),
-                "clearer scan",
-            ),
-            (
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "/private/working/path",
-                )),
-                "Try again",
-            ),
-        ];
-        for (error, action) in cases {
-            let message = error.user_message();
-            assert!(message.contains(action), "{message:?} lacked {action:?}");
-            assert!(!message.contains("/private"));
-            assert!(!message.to_ascii_lowercase().contains("engine failure"));
+        // Phase `runaway_engine_is_killed_at_the_output_limit`.
+        {
+            let error = fake_engine("yes x").unwrap_err();
+            assert!(matches!(error, Error::Engine(message) if message.contains("safety limit")));
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn engine_process_boundary_parses_successful_tsv() {
-        let result = fake_engine(
-            "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t7\\t8\\t20\\t9\\t94\\tReceipt\\n'",
-            Duration::from_secs(2),
-        )
-        .unwrap();
-        assert_eq!(result.plain_text(), "Receipt");
-        assert_eq!(
-            result.words[0].bounds,
-            Bounds {
-                x: 7,
-                y: 8,
-                width: 20,
-                height: 9
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn engine_failure_is_bounded_and_typed() {
-        let error =
-            fake_engine("printf '%0600d' 0 >&2; exit 7", Duration::from_secs(2)).unwrap_err();
-        match error {
-            Error::Engine(message) => assert_eq!(message.chars().count(), 500),
-            other => panic!("expected engine error, got {other:?}"),
+        // Phase `wedged_engine_is_killed_at_the_deadline`.
+        {
+            let error = fake_engine_with_deadline("while :; do :; done", Duration::from_millis(50))
+                .unwrap_err();
+            assert!(matches!(error, Error::Engine(message) if message.contains("timed out")));
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn noisy_successful_engine_fails_closed_without_deadlocking() {
-        let error = fake_engine(
-            "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
-            Duration::from_secs(2),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::Engine(message) if message.contains("diagnostics")));
     }
 
     #[cfg(unix)]
@@ -872,7 +891,7 @@ mod tests {
                     let body = format!(
                         "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t{index}\\t0\\t10\\t10\\t90\\tword-{index}\\n'"
                     );
-                    fake_engine(&body, Duration::from_secs(2)).unwrap()
+                    fake_engine(&body).unwrap()
                 })
             })
             .collect();
@@ -881,21 +900,5 @@ mod tests {
             assert_eq!(document.plain_text(), format!("word-{index}"));
             assert_eq!(document.words[0].bounds.x, index as u32);
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn runaway_engine_is_killed_at_the_output_limit() {
-        let error = fake_engine("yes x", Duration::from_secs(2)).unwrap_err();
-        assert!(matches!(error, Error::Engine(message) if message.contains("safety limit")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn wedged_engine_is_killed_at_the_deadline() {
-        let started = Instant::now();
-        let error = fake_engine("while :; do :; done", Duration::from_millis(50)).unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(matches!(error, Error::Engine(message) if message.contains("timed out")));
     }
 }

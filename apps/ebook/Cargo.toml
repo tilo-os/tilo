@@ -17,20 +17,28 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# `portal` pulls in the host XDG file-chooser so "Open a book…" goes through the
-# desktop's own picker (the HIG's file-access boundary) instead of a magic folder.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# "Open a book…" goes through `ui::portal`, the platform's own picker (the
+# HIG's file-access boundary), instead of a magic folder.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
 # so annotations + reading progress follow the file across paths, devices and
 # peers. Same hash family the Tilo filesystem uses.
 blake3.workspace = true
+# Where a host that has no files for it (the browser) keeps an opened book's
+# bytes, by content hash; the library row names the hash.
+tilo-content = { path = "../../crates/system/content", default-features = false }
 # The Tilo ACTION model: Books' `actions` module exports its annotation-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
+# Notes and comments are rich text, written in the SDK editor.
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -46,11 +54,8 @@ bounded-zip = { path = "../../crates/doc/bounded-zip", features = ["epub"] }
 roxmltree.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
-# Device-local file capabilities (opened book paths and watched roots) must
-# survive restart without entering the shared Automerge document.
-settings-store = { path = "../../crates/system/settings-store" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -66,3 +71,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

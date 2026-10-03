@@ -61,33 +61,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn weekday_of_known_dates() {
-        // 2026-06-30 is a Tuesday.
-        assert_eq!(weekday(days_from_civil(2026, 6, 30)), "Tue");
-        // 1970-01-01 is a Thursday.
-        assert_eq!(weekday(days_from_civil(1970, 1, 1)), "Thu");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn date_helpers_compute_weekdays_relative_and_absolute_labels() {
+        // Phase `weekday_of_known_dates`.
+        {
+            // 2026-06-30 is a Tuesday.
+            assert_eq!(weekday(days_from_civil(2026, 6, 30)), "Tue");
+            // 1970-01-01 is a Thursday.
+            assert_eq!(weekday(days_from_civil(1970, 1, 1)), "Thu");
+        }
 
-    #[test]
-    fn relative_labels() {
-        let now = minutes_of(2026, 6, 30, 14, 0);
-        assert_eq!(
-            format_relative(minutes_of(2026, 6, 30, 9, 30), now),
-            "09:30"
-        );
-        assert_eq!(
-            format_relative(minutes_of(2026, 6, 29, 9, 30), now),
-            "Yesterday"
-        );
-        assert_eq!(
-            format_relative(minutes_of(2026, 6, 20, 9, 30), now),
-            "Jun 20"
-        );
-    }
+        // Phase `relative_labels`.
+        {
+            let now = minutes_of(2026, 6, 30, 14, 0);
+            assert_eq!(
+                format_relative(minutes_of(2026, 6, 30, 9, 30), now),
+                "09:30"
+            );
+            assert_eq!(
+                format_relative(minutes_of(2026, 6, 29, 9, 30), now),
+                "Yesterday"
+            );
+            assert_eq!(
+                format_relative(minutes_of(2026, 6, 20, 9, 30), now),
+                "Jun 20"
+            );
+        }
 
-    #[test]
-    fn absolute_format() {
-        let s = format_absolute(minutes_of(2026, 6, 30, 13, 42));
-        assert_eq!(s, "Jun 30, 2026, 13:42");
+        // Phase `absolute_format`.
+        {
+            let s = format_absolute(minutes_of(2026, 6, 30, 13, 42));
+            assert_eq!(s, "Jun 30, 2026, 13:42");
+        }
     }
 }

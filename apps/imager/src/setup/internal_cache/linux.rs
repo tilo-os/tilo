@@ -36,7 +36,7 @@ pub(in crate::setup) use native::*;
 mod native {
     use super::super::{
         FreshProvider, MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete,
-        Provider, checkpoint::Record, initialize_fresh,
+        Provider, checkpoint::Record, initialize_fresh, working_leaf,
     };
     use super::{effective_mode_allowed, raw_components};
     use crate::setup::internal_download::SelectedManifest;
@@ -357,10 +357,10 @@ mod native {
     }
     /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
-        if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
-            Ok(std::path::PathBuf::from(raw))
+        if let Some(cache) = tilo_paths::env_dir("XDG_CACHE_HOME") {
+            Ok(cache)
         } else {
-            let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
+            let home = tilo_paths::home().ok_or("Current-user home directory unavailable")?;
             raw_components(home.as_os_str().as_bytes())?;
             Ok(home.join(".cache"))
         }
@@ -668,7 +668,7 @@ mod native {
             n == bytes.len() as isize,
             "Bounded cache name entropy unavailable",
         )?;
-        Ok(format!(".tilo-part-{:032x}", u128::from_le_bytes(bytes)))
+        Ok(working_leaf(u128::from_le_bytes(bytes)))
     }
     impl CacheRoot {
         pub(in crate::setup) fn bootstrap<'a>(

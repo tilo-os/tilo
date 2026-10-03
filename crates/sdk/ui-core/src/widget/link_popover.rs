@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -20,9 +19,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
@@ -399,12 +398,13 @@ impl LinkPopover {
             &crate::surface::edge_outline(filter_rect, 4.0),
         );
         self.filter_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.filter,
-            &self.filter_selection,
-            "Find a note…",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.filter,
+                selection: &self.filter_selection,
+                placeholder: "Find a note…",
+                show_caret: true,
+            },
             Rect::new(
                 filter_rect.x0 + 6.0,
                 filter_rect.y0,
@@ -412,11 +412,11 @@ impl LinkPopover {
                 filter_rect.y1,
             ),
             &TextStyle::new(tokens.typography.scale.sm),
-            tokens.colors.text_primary,
-            tokens.colors.text_dim,
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            true,
+            QueryInk::accented(
+                tokens.colors.text_primary,
+                tokens.colors.text_dim,
+                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            ),
         );
     }
 
@@ -507,7 +507,6 @@ fn count_f64(v: usize) -> f64 {
 
 // LinkPopover lives in overlay space so most methods no-op.
 impl Widget for LinkPopover {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -526,19 +525,6 @@ impl Widget for LinkPopover {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -649,173 +635,185 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_empty_and_hidden() {
-        let p = LinkPopover::new();
-        assert!(!p.is_visible());
-        assert!(p.items().is_empty());
-    }
-
-    #[test]
-    fn set_items_seeds_visible_list() {
-        let p = seed_three();
-        assert_eq!(p.visible_len(), 3);
-    }
-
-    #[test]
-    fn filter_narrows_results() {
-        let mut p = seed_three();
-        p.set_filter("wel");
-        assert_eq!(p.visible_len(), 1);
-        assert_eq!(p.highlighted().unwrap().title, "Welcome");
-    }
-
-    #[test]
-    fn arrow_keys_move_cursor() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        assert_eq!(p.highlighted().unwrap().title, "Welcome");
-        p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-        assert_eq!(p.highlighted().unwrap().title, "Roadmap");
-        p.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
-        assert_eq!(p.highlighted().unwrap().title, "Welcome");
-    }
-
-    #[test]
-    fn keyboard_highlight_keeps_scrolling_through_large_page_sets() {
-        let mut p = LinkPopover::new();
-        p.set_items(
-            (0..12)
-                .map(|index| PageEntry {
-                    id: Uuid::from_u128(index + 1),
-                    title: format!("Page {index}"),
-                })
-                .collect(),
-        );
-        p.set_visible(true);
-        for _ in 0..9 {
-            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+    fn link_popover_items_filter_and_empty_hint() {
+        fn new_starts_empty_and_hidden() {
+            let p = LinkPopover::new();
+            assert!(!p.is_visible());
+            assert!(p.items().is_empty());
         }
-        assert_eq!(p.cursor, 9);
-        assert_eq!(p.window_start(), 2);
-        assert_eq!(p.highlighted().unwrap().title, "Page 9");
+
+        fn set_items_seeds_visible_list() {
+            let p = seed_three();
+            assert_eq!(p.visible_len(), 3);
+        }
+
+        fn filter_narrows_results() {
+            let mut p = seed_three();
+            p.set_filter("wel");
+            assert_eq!(p.visible_len(), 1);
+            assert_eq!(p.highlighted().unwrap().title, "Welcome");
+        }
+
+        fn empty_results_renders_no_matches_hint() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.set_filter("zzz");
+            assert_eq!(p.visible_len(), 0);
+            assert!(p.highlighted().is_none());
+        }
+
+        new_starts_empty_and_hidden();
+        set_items_seeds_visible_list();
+        filter_narrows_results();
+        empty_results_renders_no_matches_hint();
     }
 
     #[test]
-    fn enter_commits_selection_and_hides() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
-        let chosen = p.take_selection().unwrap();
-        assert_eq!(chosen.title, "Welcome");
-        assert!(!p.is_visible());
+    fn link_popover_keyboard_and_pointer_select_commit_or_escape() {
+        fn arrow_keys_move_cursor() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            assert_eq!(p.highlighted().unwrap().title, "Welcome");
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+            assert_eq!(p.highlighted().unwrap().title, "Roadmap");
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
+            assert_eq!(p.highlighted().unwrap().title, "Welcome");
+        }
+
+        fn keyboard_highlight_keeps_scrolling_through_large_page_sets() {
+            let mut p = LinkPopover::new();
+            p.set_items(
+                (0..12)
+                    .map(|index| PageEntry {
+                        id: Uuid::from_u128(index + 1),
+                        title: format!("Page {index}"),
+                    })
+                    .collect(),
+            );
+            p.set_visible(true);
+            for _ in 0..9 {
+                p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+            }
+            assert_eq!(p.cursor, 9);
+            assert_eq!(p.window_start(), 2);
+            assert_eq!(p.highlighted().unwrap().title, "Page 9");
+        }
+
+        fn enter_commits_selection_and_hides() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+            let chosen = p.take_selection().unwrap();
+            assert_eq!(chosen.title, "Welcome");
+            assert!(!p.is_visible());
+        }
+
+        fn pointer_hover_and_click_select_the_visible_row() {
+            let mut p = seed_three();
+            p.set_anchor(Point::new(20.0, 30.0));
+            p.set_visible(true);
+            let row = p.row_rect(1).expect("second row is painted");
+            assert!(p.hover_at(row.center()));
+            assert_eq!(
+                p.highlighted().map(|entry| entry.title.as_str()),
+                Some("Roadmap")
+            );
+            let chosen = p.click_at(row.center()).expect("click selects row");
+            assert_eq!(chosen.title, "Roadmap");
+            assert_eq!(p.take_selection(), Some(chosen));
+            assert!(!p.is_visible());
+        }
+
+        fn escape_hides_without_committing() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.handle_key(&key_press(Key::Named(NamedKey::Escape), None));
+            assert!(!p.is_visible());
+            assert!(p.take_selection().is_none());
+        }
+
+        arrow_keys_move_cursor();
+        keyboard_highlight_keeps_scrolling_through_large_page_sets();
+        enter_commits_selection_and_hides();
+        pointer_hover_and_click_select_the_visible_row();
+        escape_hides_without_committing();
     }
 
     #[test]
-    fn pointer_hover_and_click_select_the_visible_row() {
-        let mut p = seed_three();
-        p.set_anchor(Point::new(20.0, 30.0));
-        p.set_visible(true);
-        let row = p.row_rect(1).expect("second row is painted");
-        assert!(p.hover_at(row.center()));
-        assert_eq!(
-            p.highlighted().map(|entry| entry.title.as_str()),
-            Some("Roadmap")
-        );
-        let chosen = p.click_at(row.center()).expect("click selects row");
-        assert_eq!(chosen.title, "Roadmap");
-        assert_eq!(p.take_selection(), Some(chosen));
-        assert!(!p.is_visible());
-    }
+    fn link_popover_filter_typing_ime_and_backspace() {
+        fn typing_pushes_filter() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.handle_key(&char_press("r"));
+            assert_eq!(p.filter(), "r");
+            assert_eq!(p.visible_len(), 1);
+            assert_eq!(p.highlighted().unwrap().title, "Roadmap");
+        }
 
-    #[test]
-    fn escape_hides_without_committing() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.handle_key(&key_press(Key::Named(NamedKey::Escape), None));
-        assert!(!p.is_visible());
-        assert!(p.take_selection().is_none());
-    }
+        fn ime_preedit_is_visible_but_filters_only_after_commit() {
+            let mut p = LinkPopover::new();
+            p.set_items(vec![
+                PageEntry {
+                    id: Uuid::from_u128(1),
+                    title: "東京".into(),
+                },
+                PageEntry {
+                    id: Uuid::from_u128(2),
+                    title: "London".into(),
+                },
+            ]);
+            p.set_visible(true);
+            assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            ))));
+            assert_eq!(p.filter(), "");
+            assert_eq!(p.visible_len(), 2);
+            assert_eq!(
+                Widget::accessibility(&p).unwrap().value,
+                None,
+                "preedit is not exposed as committed menu state"
+            );
 
-    #[test]
-    fn typing_pushes_filter() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.handle_key(&char_press("r"));
-        assert_eq!(p.filter(), "r");
-        assert_eq!(p.visible_len(), 1);
-        assert_eq!(p.highlighted().unwrap().title, "Roadmap");
-    }
+            let mut scene = Scene::new();
+            let mut renderer = TextRenderer::new();
+            p.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+            assert!(Widget::ime_cursor_rect(&p).is_some());
 
-    #[test]
-    fn ime_preedit_is_visible_but_filters_only_after_commit() {
-        let mut p = LinkPopover::new();
-        p.set_items(vec![
-            PageEntry {
-                id: Uuid::from_u128(1),
-                title: "東京".into(),
-            },
-            PageEntry {
-                id: Uuid::from_u128(2),
-                title: "London".into(),
-            },
-        ]);
-        p.set_visible(true);
-        assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
-            "東京".into(),
-            Some(("東".len(), "東".len())),
-        ))));
-        assert_eq!(p.filter(), "");
-        assert_eq!(p.visible_len(), 2);
-        assert_eq!(
-            Widget::accessibility(&p).unwrap().value,
-            None,
-            "preedit is not exposed as committed menu state"
-        );
+            assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("東京".into()))));
+            assert_eq!(p.filter(), "東京");
+            assert_eq!(p.visible_len(), 1);
+            assert_eq!(p.highlighted().unwrap().title, "東京");
+            let access = Widget::accessibility(&p).unwrap();
+            assert_eq!(access.name.as_deref(), Some("Link notes"));
+            assert_eq!(access.value.as_deref(), Some("東京"));
+            assert_eq!(access.children.len(), 1);
+        }
 
-        let mut scene = Scene::new();
-        let mut renderer = TextRenderer::new();
-        p.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
-        assert!(Widget::ime_cursor_rect(&p).is_some());
+        fn backspace_removes_one_extended_grapheme() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.set_filter("👩🏽‍💻");
+            assert!(p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
+            assert_eq!(p.filter(), "");
+            assert!(p.is_visible());
+        }
 
-        assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("東京".into()))));
-        assert_eq!(p.filter(), "東京");
-        assert_eq!(p.visible_len(), 1);
-        assert_eq!(p.highlighted().unwrap().title, "東京");
-        let access = Widget::accessibility(&p).unwrap();
-        assert_eq!(access.name.as_deref(), Some("Link notes"));
-        assert_eq!(access.value.as_deref(), Some("東京"));
-        assert_eq!(access.children.len(), 1);
-    }
+        fn backspace_pops_filter_then_closes() {
+            let mut p = seed_three();
+            p.set_visible(true);
+            p.set_filter("r");
+            let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
+            assert!(consumed);
+            assert_eq!(p.filter(), "");
+            let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
+            assert!(!consumed);
+            assert!(!p.is_visible());
+        }
 
-    #[test]
-    fn backspace_removes_one_extended_grapheme() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.set_filter("👩🏽‍💻");
-        assert!(p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
-        assert_eq!(p.filter(), "");
-        assert!(p.is_visible());
-    }
-
-    #[test]
-    fn backspace_pops_filter_then_closes() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.set_filter("r");
-        let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
-        assert!(consumed);
-        assert_eq!(p.filter(), "");
-        let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
-        assert!(!consumed);
-        assert!(!p.is_visible());
-    }
-
-    #[test]
-    fn empty_results_renders_no_matches_hint() {
-        let mut p = seed_three();
-        p.set_visible(true);
-        p.set_filter("zzz");
-        assert_eq!(p.visible_len(), 0);
-        assert!(p.highlighted().is_none());
+        typing_pushes_filter();
+        ime_preedit_is_visible_but_filters_only_after_commit();
+        backspace_removes_one_extended_grapheme();
+        backspace_pops_filter_then_closes();
     }
 }

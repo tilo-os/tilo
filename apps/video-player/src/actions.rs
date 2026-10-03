@@ -126,6 +126,64 @@ impl PlayerOperation {
     }
 }
 
+/// A publication context with no open media — used by
+/// [`crate::resource::VideoPlayer`] for `local_operations` / `children` when
+/// the live decoder state is not available.
+pub fn empty_resource_ctx() -> PlayerResourceCtx<'static> {
+    PlayerResourceCtx {
+        title: "Video Player",
+        media: MediaAvailability {
+            has_media: false,
+            source_id: None,
+            media_ref: None,
+            can_control_transport: true,
+        },
+        settings: PlaybackSettingsState {
+            autoplay: true,
+            loop_enabled: false,
+            rate: 1.0,
+        },
+        audio_tracks: &[],
+        subtitle_tracks: &[],
+        chapters: &[],
+        library: LocalLibraryState::default(),
+    }
+}
+
+/// Seed a document with `state` so [`resources`] can rebuild the shared
+/// playlist / annotation subtree for `Resource::children`.
+pub fn doc_from_library(state: &crate::shared::SharedLibrary) -> AutoCommit {
+    use tilo_actions::Action;
+    let mut doc = AutoCommit::new();
+    for playlist in &state.playlists {
+        let _ = SharedAction::CreatePlaylist {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+        }
+        .apply(&mut doc);
+    }
+    for item in &state.items {
+        let _ = SharedAction::AddPlaylistItem {
+            id: item.id.clone(),
+            playlist_id: item.playlist_id.clone(),
+            media_ref: item.media_ref.clone(),
+            title: item.title.clone(),
+            position: item.position,
+        }
+        .apply(&mut doc);
+    }
+    for annotation in &state.annotations {
+        let _ = SharedAction::CreateAnnotation {
+            id: annotation.id.clone(),
+            media_ref: annotation.media_ref.clone(),
+            time_ms: annotation.time_ms,
+            text: annotation.text.clone(),
+        }
+        .apply(&mut doc);
+    }
+    doc
+}
+
 /// State captured while publishing the player resource tree.
 ///
 pub struct PlayerResourceCtx<'a> {
@@ -282,7 +340,10 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
     clippy::too_many_lines,
     reason = "the small resource tree is kept together so labels, contracts, and hierarchy cannot drift"
 )]
-pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+/// The presentation tree: transport, tracks, local queue, and the shared library.
+/// [`resources`] publishes this through [`VideoPlayer`](crate::resource::VideoPlayer)
+/// and keeps these children, which depend on the live decoder and this device.
+pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
         // A portal-granted path and its decoder/cache state are meaningful
@@ -985,6 +1046,86 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
     vec![app]
 }
 
+fn is_shared_library(resource: &Resource) -> bool {
+    resource.id.as_str() == "video-player.shared-library" || resource.kind == "media.shared-library"
+}
+
+/// Standalone / `--shots` door. The shared library stays the child
+/// [`tilo_resource::publish`] built. Decoder, queue, and recent videos are
+/// this device's live children.
+pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let state = crate::shared::read(doc);
+    let mut published = ui::tilo_resource::publish::<crate::resource::VideoPlayer>(
+        "video-player.application",
+        "Video Player",
+        &state,
+    );
+    let Some(live) = application_tree(ctx, doc).into_iter().next() else {
+        return vec![published];
+    };
+    // The shared library stays the child publish built from the document.
+    // Decoder, queue, and recent videos replace that same id when the live
+    // player has one. Any other published child stays.
+    let mut live_children = live.children;
+    let mut children = Vec::new();
+    for published_child in std::mem::take(&mut published.children) {
+        if is_shared_library(&published_child) {
+            // Prefer the live shared library so jump/create availability
+            // reflects the open media; document publish alone uses
+            // `empty_resource_ctx` and would mark every jump unavailable.
+            if let Some(index) = live_children
+                .iter()
+                .position(|child| child.id == published_child.id || is_shared_library(child))
+            {
+                children.push(live_children.remove(index));
+            } else {
+                children.push(published_child);
+            }
+            continue;
+        }
+        if let Some(index) = live_children
+            .iter()
+            .position(|child| child.id == published_child.id)
+        {
+            children.push(live_children.remove(index));
+        } else {
+            children.push(published_child);
+        }
+    }
+    children.extend(
+        live_children
+            .into_iter()
+            .filter(|child| !is_shared_library(child)),
+    );
+    published.children = children;
+    vec![published]
+}
+
+/// Live decoder track/chapter projection for the palette — not CRDT.
+///
+/// Standalone [`resources`] nests these under `media.video`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep audio/subtitle/chapter rows without a second
+/// application or shared-library root beside [`crate::resource::VideoPlayer`].
+pub fn live_track_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let Some(root) = application_tree(ctx, doc).into_iter().next() else {
+        return Vec::new();
+    };
+    let Some(media) = root
+        .children
+        .into_iter()
+        .find(|child| child.kind == "media.video")
+    else {
+        return Vec::new();
+    };
+    media
+        .children
+        .into_iter()
+        .filter(|child| child.kind == "media.tracks" || child.kind == "media.chapters")
+        .filter(|child| !child.children.is_empty() || !child.actions.is_empty())
+        .collect()
+}
+
 fn encode_shared(action: &SharedAction) -> EncodedAction {
     EncodedAction::encode(crate::shared::ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
         type_id: crate::shared::ACTION_TYPE.into(),
@@ -1614,308 +1755,313 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one table-driven resource tree assertion keeps its hierarchy checks together"
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn resource_tree_is_stateful_hierarchical_and_strictly_typed() {
-        let idle_resources = resources(&ctx(false), &AutoCommit::new());
-        let actions = &idle_resources[0].actions;
-        let open = actions.iter().find(|a| a.id == "open").unwrap();
-        assert_eq!(
-            open.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: false }
-        );
-        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
-        assert_eq!(open.locus, tilo_actions::ExecutionLocus::ClientLocal);
-        assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
-        assert!(
-            open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
-            "direct local paths must stay explicitly device-local and sensitive"
-        );
-        let idle_media = &idle_resources[0].children[0];
-        assert_eq!(idle_media.label, "No media");
-        assert!(
-            !idle_media.children[0].actions[0]
-                .contract
-                .availability
-                .is_available()
-        );
-        let idle_loop = idle_media.children[5]
-            .actions
-            .iter()
-            .find(|action| action.id == "set-loop")
-            .expect("repeat preference action");
-        assert!(
-            idle_loop.contract.availability.is_available(),
-            "repeat is a persisted preference and is meaningful before a video opens"
-        );
-        assert!(
-            !PlayerOperation::SetLoop(true).requires_media(),
-            "out-of-band callers may configure repeat before opening media"
-        );
+    fn player_resource_tree_is_typed_bounded_and_lazily_addressed() {
+        // Case `resource_tree_is_stateful_hierarchical_and_strictly_typed`.
+        {
+            let idle_resources = resources(&ctx(false), &AutoCommit::new());
+            let actions = &idle_resources[0].actions;
+            let open = actions.iter().find(|a| a.id == "open").unwrap();
+            assert_eq!(
+                open.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: false }
+            );
+            assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
+            assert_eq!(open.locus, tilo_actions::ExecutionLocus::ClientLocal);
+            assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
+            assert!(
+                open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
+                "direct local paths must stay explicitly device-local and sensitive"
+            );
+            let idle_media = &idle_resources[0].children[0];
+            assert_eq!(idle_media.label, "No media");
+            assert!(
+                !idle_media.children[0].actions[0]
+                    .contract
+                    .availability
+                    .is_available()
+            );
+            let idle_loop = idle_media.children[5]
+                .actions
+                .iter()
+                .find(|action| action.id == "set-loop")
+                .expect("repeat preference action");
+            assert!(
+                idle_loop.contract.availability.is_available(),
+                "repeat is a persisted preference and is meaningful before a video opens"
+            );
+            assert!(
+                !PlayerOperation::SetLoop(true).requires_media(),
+                "out-of-band callers may configure repeat before opening media"
+            );
 
-        let loaded = resources(&ctx(true), &AutoCommit::new());
-        let media = &loaded[0].children[0];
-        let transport = &media.children[0];
-        let play = transport
-            .actions
-            .iter()
-            .find(|a| a.id == "play-pause")
-            .unwrap();
-        assert!(play.contract.availability.is_available());
-        let seek = transport.actions.iter().find(|a| a.id == "seek").unwrap();
-        assert_eq!(seek.params()[0].ty, ParamType::Number);
-        let mut args = serde_json::Map::new();
-        args.insert("seconds".into(), serde_json::json!(12.5));
-        let encoded = seek.build_json(&args).unwrap();
-        assert_eq!(
-            decode(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PlayerOperation::SeekSeconds(12.5))
-        );
-        assert_eq!(media.children[1].kind, "media.navigation");
-        assert_eq!(media.children[2].kind, "media.audio");
-        assert_eq!(media.children[3].kind, "media.tracks");
-        assert_eq!(media.children[4].kind, "media.chapters");
-        assert_eq!(media.children[5].kind, "media.player-settings");
-        assert_eq!(media.children[6].kind, "media.presentation");
-        let volume = media.children[2]
-            .actions
-            .iter()
-            .find(|action| action.id == "set-volume")
-            .unwrap();
-        let invalid = serde_json::json!({"volume": 2.0})
-            .as_object()
-            .unwrap()
-            .clone();
-        assert!(volume.build_json(&invalid).is_err());
+            let loaded = resources(&ctx(true), &AutoCommit::new());
+            let media = &loaded[0].children[0];
+            let transport = &media.children[0];
+            let play = transport
+                .actions
+                .iter()
+                .find(|a| a.id == "play-pause")
+                .unwrap();
+            assert!(play.contract.availability.is_available());
+            let seek = transport.actions.iter().find(|a| a.id == "seek").unwrap();
+            assert_eq!(seek.params()[0].ty, ParamType::Number);
+            let mut args = serde_json::Map::new();
+            args.insert("seconds".into(), serde_json::json!(12.5));
+            let encoded = seek.build_json(&args).unwrap();
+            assert_eq!(
+                decode(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(PlayerOperation::SeekSeconds(12.5))
+            );
+            assert_eq!(media.children[1].kind, "media.navigation");
+            assert_eq!(media.children[2].kind, "media.audio");
+            assert_eq!(media.children[3].kind, "media.tracks");
+            assert_eq!(media.children[4].kind, "media.chapters");
+            assert_eq!(media.children[5].kind, "media.player-settings");
+            assert_eq!(media.children[6].kind, "media.presentation");
+            let volume = media.children[2]
+                .actions
+                .iter()
+                .find(|action| action.id == "set-volume")
+                .unwrap();
+            let invalid = serde_json::json!({"volume": 2.0})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert!(volume.build_json(&invalid).is_err());
 
-        let seek_by = media.children[1]
-            .actions
-            .iter()
-            .find(|action| action.id == "seek-by")
-            .expect("relative seek action");
-        let encoded = seek_by
-            .build_json(
-                &serde_json::json!({"seconds": -10})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
-        assert_eq!(
-            decode(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PlayerOperation::SeekBySeconds(-10.0))
-        );
-        assert_eq!(seek_by.contract.retry, RetryPolicy::AtMostOnce);
-        assert_eq!(play.contract.retry, RetryPolicy::AtMostOnce);
-        let rate = media.children[5]
-            .actions
-            .iter()
-            .find(|action| action.id == "set-playback-rate")
-            .expect("playback speed is a real action");
-        assert!(rate.contract.availability.is_available());
-        let encoded = rate
-            .build_json(
-                &serde_json::json!({"rate": 1.5})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
-        assert_eq!(
-            decode(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PlayerOperation::SetPlaybackRate(1.5))
-        );
-    }
-
-    #[test]
-    fn local_queue_and_device_history_have_opaque_canonical_actions() {
-        let mut context = ctx(true);
-        context.library = LocalLibraryState {
-            queue: vec![LocalMediaItemState {
-                id: "local-queue-local-media-0a2b-open-0".into(),
-                title: "Private clip.mp4".into(),
-                current: true,
-            }],
-            recent: vec![LocalMediaItemState {
-                id: "local-queue-local-media-9f3c-open-0".into(),
-                title: "Earlier clip.webm".into(),
-                current: false,
-            }],
-        };
-        let root = resources(&context, &AutoCommit::new()).remove(0);
-        let queue = root
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "video-player.queue.local")
-            .expect("local queue resource");
-        let queue_item = &queue.children[0];
-        assert_eq!(
-            queue_item.id.0,
-            queue_item_resource_id("local-queue-local-media-0a2b-open-0")
-        );
-        let play = queue_item
-            .actions
-            .iter()
-            .find(|action| action.id == "play")
-            .unwrap();
-        assert_eq!(play.locus, tilo_actions::ExecutionLocus::ClientLocal);
-        assert_eq!(
-            play.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        );
-        assert!(play.contract.tags.iter().any(|tag| tag == "device-local"));
-        let recent = root
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "video-player.history.local")
-            .expect("recent resource");
-        assert!(recent.actions.iter().any(|action| action.id == "clear"));
-        assert_eq!(
-            recent.children[0].id.0,
-            recent_item_resource_id("local-queue-local-media-9f3c-open-0")
-        );
-    }
-
-    #[test]
-    fn matching_shared_marker_exposes_a_canonical_timeline_jump() {
-        let mut doc = AutoCommit::new();
-        SharedAction::CreateAnnotation {
-            id: "review-cut".into(),
-            media_ref: "fixture-media://clip".into(),
-            time_ms: 12_500,
-            text: "Check the edit".into(),
+            let seek_by = media.children[1]
+                .actions
+                .iter()
+                .find(|action| action.id == "seek-by")
+                .expect("relative seek action");
+            let encoded = seek_by
+                .build_json(
+                    &serde_json::json!({"seconds": -10})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                decode(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(PlayerOperation::SeekBySeconds(-10.0))
+            );
+            assert_eq!(seek_by.contract.retry, RetryPolicy::AtMostOnce);
+            assert_eq!(play.contract.retry, RetryPolicy::AtMostOnce);
+            let rate = media.children[5]
+                .actions
+                .iter()
+                .find(|action| action.id == "set-playback-rate")
+                .expect("playback speed is a real action");
+            assert!(rate.contract.availability.is_available());
+            let encoded = rate
+                .build_json(
+                    &serde_json::json!({"rate": 1.5})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                decode(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(PlayerOperation::SetPlaybackRate(1.5))
+            );
         }
-        .apply(&mut doc)
-        .expect("fixture marker writes");
-        let resource = resource(&ctx(true), &doc, &annotation_resource_id("review-cut"))
-            .expect("annotation resource resolves");
-        let jump = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "jump")
-            .expect("matching marker can jump");
-        assert!(jump.contract.availability.is_available());
-        let encoded = jump.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(
-            decode(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PlayerOperation::JumpToAnnotation {
+        // Case `omitted_decoder_metadata_resolves_lazily_by_its_stable_address`.
+        {
+            let audio: Vec<TrackState> = (0..CONTEXTUAL_CHILD_LIMIT as u32 + 2)
+                .map(|index| TrackState {
+                    stream_id: format!("audio-stream-{index}"),
+                    index,
+                    label: format!("Áudio {index}"),
+                    selected: index == 0,
+                })
+                .collect();
+            let chapters = vec![ChapterState {
+                id: "intro-夏".into(),
+                label: "Introduction 夏".into(),
+                seconds: 12.5,
+            }];
+            let mut context = ctx(true);
+            context.audio_tracks = &audio;
+            context.chapters = &chapters;
+            let snapshot = resources(&context, &AutoCommit::new());
+            let tracks = &snapshot[0].children[0].children[3];
+            assert_eq!(tracks.children.len(), CONTEXTUAL_CHILD_LIMIT);
+            let target = audio_resource_id(
+                "fixture://clip",
+                &format!("audio-stream-{}", CONTEXTUAL_CHILD_LIMIT + 1),
+            );
+            let doc = AutoCommit::new();
+            let resolved = resource(&context, &doc, &target).expect("lazy audio resource");
+            assert_eq!(resolved.id.0, target);
+            assert!(resource(&context, &doc, "video-player.tracks.audio.999").is_none());
+            let chapter = resource(
+                &context,
+                &doc,
+                &chapter_resource_id("fixture://clip", "intro-夏"),
+            )
+            .expect("chapter");
+            assert_eq!(chapter.label, "Introduction 夏 · 12.5s");
+        }
+        // Case `shared_entities_are_bounded_and_lazily_materialized_with_typed_actions`.
+        {
+            let mut doc = AutoCommit::new();
+            for index in 0..(CONTEXTUAL_CHILD_LIMIT + 2) {
+                SharedAction::CreatePlaylist {
+                    id: format!("p-{index}"),
+                    name: format!("Playlist {index}"),
+                }
+                .apply(&mut doc)
+                .unwrap();
+            }
+            let tree = resources(&ctx(false), &doc);
+            let shared = tree[0]
+                .children
+                .iter()
+                .find(|child| child.id.0 == "video-player.shared-library")
+                .unwrap();
+            let playlists = &shared.children[0];
+            assert_eq!(playlists.children.len(), CONTEXTUAL_CHILD_LIMIT);
+            assert!(
+                playlists.actions.iter().any(|action| {
+                    action.id == "create" && action.kind == OperationKind::Document
+                })
+            );
+            assert!(playlists.actions.iter().any(|action| {
+                action.id == "show"
+                    && action.kind == OperationKind::View
+                    && action.contract.retry == RetryPolicy::Idempotent
+            }));
+            let late_id = playlist_resource_id(&format!("p-{}", CONTEXTUAL_CHILD_LIMIT + 1));
+            let late = resource(&ctx(false), &doc, &late_id).expect("lazy shared playlist");
+            assert_eq!(late.id.0, late_id);
+            assert!(
+                late.actions
+                    .iter()
+                    .any(|action| action.id == "rename" && action.kind == OperationKind::Document)
+            );
+            assert!(
+                late.actions
+                    .iter()
+                    .any(|action| action.id == "show" && action.kind == OperationKind::View)
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn player_actions_encode_canonical_targets() {
+        // Case `local_queue_and_device_history_have_opaque_canonical_actions`.
+        {
+            let mut context = ctx(true);
+            context.library = LocalLibraryState {
+                queue: vec![LocalMediaItemState {
+                    id: "local-queue-local-media-0a2b-open-0".into(),
+                    title: "Private clip.mp4".into(),
+                    current: true,
+                }],
+                recent: vec![LocalMediaItemState {
+                    id: "local-queue-local-media-9f3c-open-0".into(),
+                    title: "Earlier clip.webm".into(),
+                    current: false,
+                }],
+            };
+            let root = resources(&context, &AutoCommit::new()).remove(0);
+            let queue = root
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "video-player.queue.local")
+                .expect("local queue resource");
+            let queue_item = &queue.children[0];
+            assert_eq!(
+                queue_item.id.0,
+                queue_item_resource_id("local-queue-local-media-0a2b-open-0")
+            );
+            let play = queue_item
+                .actions
+                .iter()
+                .find(|action| action.id == "play")
+                .unwrap();
+            assert_eq!(play.locus, tilo_actions::ExecutionLocus::ClientLocal);
+            assert_eq!(
+                play.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+            assert!(play.contract.tags.iter().any(|tag| tag == "device-local"));
+            let recent = root
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "video-player.history.local")
+                .expect("recent resource");
+            assert!(recent.actions.iter().any(|action| action.id == "clear"));
+            assert_eq!(
+                recent.children[0].id.0,
+                recent_item_resource_id("local-queue-local-media-9f3c-open-0")
+            );
+        }
+        // Case `matching_shared_marker_exposes_a_canonical_timeline_jump`.
+        {
+            let mut doc = AutoCommit::new();
+            SharedAction::CreateAnnotation {
                 id: "review-cut".into(),
                 media_ref: "fixture-media://clip".into(),
                 time_ms: 12_500,
-            })
-        );
-    }
-
-    #[test]
-    fn omitted_decoder_metadata_resolves_lazily_by_its_stable_address() {
-        let audio: Vec<TrackState> = (0..CONTEXTUAL_CHILD_LIMIT as u32 + 2)
-            .map(|index| TrackState {
-                stream_id: format!("audio-stream-{index}"),
-                index,
-                label: format!("Áudio {index}"),
-                selected: index == 0,
-            })
-            .collect();
-        let chapters = vec![ChapterState {
-            id: "intro-夏".into(),
-            label: "Introduction 夏".into(),
-            seconds: 12.5,
-        }];
-        let mut context = ctx(true);
-        context.audio_tracks = &audio;
-        context.chapters = &chapters;
-        let snapshot = resources(&context, &AutoCommit::new());
-        let tracks = &snapshot[0].children[0].children[3];
-        assert_eq!(tracks.children.len(), CONTEXTUAL_CHILD_LIMIT);
-        let target = audio_resource_id(
-            "fixture://clip",
-            &format!("audio-stream-{}", CONTEXTUAL_CHILD_LIMIT + 1),
-        );
-        let doc = AutoCommit::new();
-        let resolved = resource(&context, &doc, &target).expect("lazy audio resource");
-        assert_eq!(resolved.id.0, target);
-        assert!(resource(&context, &doc, "video-player.tracks.audio.999").is_none());
-        let chapter = resource(
-            &context,
-            &doc,
-            &chapter_resource_id("fixture://clip", "intro-夏"),
-        )
-        .expect("chapter");
-        assert_eq!(chapter.label, "Introduction 夏 · 12.5s");
-    }
-
-    #[test]
-    fn disable_subtitles_encodes_none_as_the_target_not_the_expected_track() {
-        let subtitles = [TrackState {
-            stream_id: "caption-en".into(),
-            index: 3,
-            label: "English captions".into(),
-            selected: true,
-        }];
-        let mut context = ctx(true);
-        context.subtitle_tracks = &subtitles;
-        let tree = resources(&context, &AutoCommit::new());
-        let tracks = &tree[0].children[0].children[3];
-        let off = tracks
-            .actions
-            .iter()
-            .find(|action| action.id == "disable-subtitles")
-            .unwrap();
-        let encoded = off.build_args([]).unwrap();
-        assert_eq!(
-            decode(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PlayerOperation::SelectSubtitleTrack {
-                source_id: "fixture://clip".into(),
-                target_stream_id: None,
-                target_index: None,
-                expected_stream_id: Some("caption-en".into()),
-                expected_index: Some(3),
-            })
-        );
-    }
-
-    #[test]
-    fn shared_entities_are_bounded_and_lazily_materialized_with_typed_actions() {
-        let mut doc = AutoCommit::new();
-        for index in 0..(CONTEXTUAL_CHILD_LIMIT + 2) {
-            SharedAction::CreatePlaylist {
-                id: format!("p-{index}"),
-                name: format!("Playlist {index}"),
+                text: "Check the edit".into(),
             }
             .apply(&mut doc)
-            .unwrap();
-        }
-        let tree = resources(&ctx(false), &doc);
-        let shared = tree[0]
-            .children
-            .iter()
-            .find(|child| child.id.0 == "video-player.shared-library")
-            .unwrap();
-        let playlists = &shared.children[0];
-        assert_eq!(playlists.children.len(), CONTEXTUAL_CHILD_LIMIT);
-        assert!(
-            playlists
+            .expect("fixture marker writes");
+            let resource = resource(&ctx(true), &doc, &annotation_resource_id("review-cut"))
+                .expect("annotation resource resolves");
+            let jump = resource
                 .actions
                 .iter()
-                .any(|action| { action.id == "create" && action.kind == OperationKind::Document })
-        );
-        assert!(playlists.actions.iter().any(|action| {
-            action.id == "show"
-                && action.kind == OperationKind::View
-                && action.contract.retry == RetryPolicy::Idempotent
-        }));
-        let late_id = playlist_resource_id(&format!("p-{}", CONTEXTUAL_CHILD_LIMIT + 1));
-        let late = resource(&ctx(false), &doc, &late_id).expect("lazy shared playlist");
-        assert_eq!(late.id.0, late_id);
-        assert!(
-            late.actions
+                .find(|action| action.id == "jump")
+                .expect("matching marker can jump");
+            assert!(jump.contract.availability.is_available());
+            let encoded = jump.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(
+                decode(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(PlayerOperation::JumpToAnnotation {
+                    id: "review-cut".into(),
+                    media_ref: "fixture-media://clip".into(),
+                    time_ms: 12_500,
+                })
+            );
+        }
+        // Case `disable_subtitles_encodes_none_as_the_target_not_the_expected_track`.
+        {
+            let subtitles = [TrackState {
+                stream_id: "caption-en".into(),
+                index: 3,
+                label: "English captions".into(),
+                selected: true,
+            }];
+            let mut context = ctx(true);
+            context.subtitle_tracks = &subtitles;
+            let tree = resources(&context, &AutoCommit::new());
+            let tracks = &tree[0].children[0].children[3];
+            let off = tracks
+                .actions
                 .iter()
-                .any(|action| action.id == "rename" && action.kind == OperationKind::Document)
-        );
-        assert!(
-            late.actions
-                .iter()
-                .any(|action| action.id == "show" && action.kind == OperationKind::View)
-        );
+                .find(|action| action.id == "disable-subtitles")
+                .unwrap();
+            let encoded = off.build_args([]).unwrap();
+            assert_eq!(
+                decode(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(PlayerOperation::SelectSubtitleTrack {
+                    source_id: "fixture://clip".into(),
+                    target_stream_id: None,
+                    target_index: None,
+                    expected_stream_id: Some("caption-en".into()),
+                    expected_index: Some(3),
+                })
+            );
+        }
     }
 }

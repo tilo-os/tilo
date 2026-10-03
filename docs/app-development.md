@@ -1,32 +1,46 @@
 # Build a Tilo app
 
-The shortest path from an idea to an app running in the live development loop
-is one command:
+Install the `tilo-app` CLI once. It needs rustup and nothing else: no Tilo
+checkout, no capnp, and no system development packages.
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new reading-list --dev
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+```
+
+From there, the shortest path from an idea to an app running in the live
+development loop is one command:
+
+```bash
+tilo-app new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
-opens it, and watches both app code and the local toolkit. A successful edit
-replaces the running process; a failed build leaves the last good app open and
-waits for the next save. Press Ctrl-C to stop.
+opens it, and watches both app code and the local toolkit. A successful Rust or
+asset edit replaces the running process. Before the old process exits it writes
+the open document, route, and caret, and the new process restores them. Another
+save while that compile is still running cancels it and builds the newest
+source. Edits to a graph screen's `ui/*.json` still update that screen in place.
+A failed build leaves the last good app open and waits for the next save. Press
+Ctrl-C to stop.
 
 The same stages remain available separately for automation and focused work:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- check apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- certify apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- test apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- dev apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- run apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- shot apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- inspect apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- package apps/reading-list
+tilo-app new reading-list
+cd reading-list
+tilo-app check
+tilo-app certify
+tilo-app test
+tilo-app dev
+tilo-app run
+tilo-app shot
+tilo-app inspect
+tilo-app package
 ```
 
-If `tilo-app` is installed, omit `cargo run -p tilo-app-cli --bin tilo-app --` from these commands.
+Inside a Tilo checkout, `new` places the app in `apps/`, and
+`cargo run -p tilo-app-cli --bin tilo-app --` runs the CLI you are changing
+in place of the installed one.
 The app-aware commands find the app root from any file or directory inside it,
 run the same structural checks as `doctor`, and invoke Cargo with the app's
 manifest explicitly. They therefore behave the same for an app in this
@@ -36,6 +50,113 @@ or test harness:
 ```bash
 tilo-app test -- --nocapture
 ```
+
+For scripts and agents, every command accepts `--json`. Stdout then carries
+exactly one JSON document: `{"ok": true, "command": …, "result": …}`, or
+`{"ok": false, "command": …, "error": …, "causes": […], "result": …}`. A
+command that ran but failed its verdict, such as `doctor`, `check` or
+`scenario run`, still reports what it found in `result`. Progress text and the
+output of Cargo, the app and other tools move to stderr, and nothing prompts:
+`new --json` needs a name and `add --json` needs an artifact subcommand. Usage
+errors are JSON too, with exit status 2.
+
+```bash
+tilo-app new reading-list --dry-run --json | jq -r '.result.files[]'
+tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
+```
+
+### Outside the Tilo repository
+
+An app does not have to live in this repository. With the CLI installed as
+above, create the app anywhere:
+
+```bash
+tilo-app new reading-list --id org.example.reading-list
+```
+
+Outside a checkout, the app depends on the SDK from
+`https://code.tilo.so/tilo/tilo.git`, pinned to the commit the CLI was built
+from. `--sdk-rev` selects another commit and `--sdk-git` another repository.
+If a checkout is nearby, such as the one the CLI was built in, `--ui-path`, or
+`TILO_UI_PATH`, the app builds against that checkout by relative path instead.
+
+A standalone app builds the code this repository tests:
+
+- `[patch.crates-io]` repeats each fork the SDK's dependency graph uses,
+  because Cargo does not apply the SDK workspace's patches to an app that
+  depends on it. The forks pinned in git come from their public repositories
+  at the revision the workspace pins.
+- `Cargo.lock` starts as this repository's lockfile, so the first build picks
+  the dependency versions CI tested rather than the newest ones. Cargo drops
+  the entries the app does not use.
+- `rust-toolchain.toml` pins Tilo's compiler. A thin app links the toolkit
+  library the OS ships, and Rust keeps that library's symbols stable only for
+  the compiler that built it.
+- `.cargo/config.toml` carries Tilo's target CPU floor and hardening flags,
+  and the profiles in `Cargo.toml` are Tilo's `dev`, `test`, `release` and
+  `thin-app` profiles.
+- A `.gitignore` for `target/`, and a git repository of its own when the app
+  is not created inside one already.
+
+`--sdk-version` builds the app on the published SDK instead:
+`ui = { package = "tilo-app", version = "0.1.0" }` from crates.io (or the
+registry Cargo's source replacement names), with no `[patch]` and no seeded
+lockfile. Without a value it requires the version the CLI was built with. The
+toolchain, target flags and profiles are the same. Such an app always links
+the toolkit statically (`--static`): the shared toolkit library comes from a
+Tilo tree, not from crates.io. Three optional features need the workspace's
+patched crates and do not build on the published SDK: `presentation-feedback`
+and `dx12-shader-cache` (both on wgpu-hal) and `tilo-media`'s `pipewire`
+feature on PipeWire headers newer than libspa-sys 0.10.1 handles (Fedora 44).
+None is on by default.
+
+Until the SDK is on crates.io, `tools/sdk/publish_check.py --verify` packages
+and builds every SDK crate, and `tools/sdk/local_registry.py <dir>` turns the
+result into a local registry an app builds against:
+
+```bash
+cargo build \
+  --config 'source.crates-io.replace-with="tilo-sdk"' \
+  --config 'source.tilo-sdk.local-registry="<dir>"'
+```
+
+Without `--id`, an app outside this repository is named `local.dev.<name>`.
+That name cannot be published. Choose an id in a namespace you control before
+you package the app.
+
+### System libraries
+
+`new`, `check`, `test`, `dev` and `package --platform linux` need no system
+development packages. Wayland, X11 and xkbcommon are loaded when the app
+starts, and fonts are found without fontconfig's C library. The first Cargo
+command inside the app installs the compiler its `rust-toolchain.toml` pins,
+through rustup. An app's tests lay out text, so `check` and `test` need one
+installed font; every desktop has several, and on a bare machine or container
+`check` names the package (`google-noto-sans-fonts` on Fedora,
+`fonts-noto-core` on Debian and Ubuntu).
+
+A thin Tilo OS package, which `tilo-app package` builds by default, links the
+toolkit library the OS ships. That library has to be built with the OS's
+feature set, which links GStreamer, so it needs GStreamer's development files.
+`package` checks for them first and names the packages when they are missing:
+
+```bash
+sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel                # Fedora
+sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev          # Debian, Ubuntu
+```
+
+Without them, `tilo-app package --platform linux` still builds a desktop
+package, which links its own toolkit, and `tilo-app dev` restarts the app
+after each build instead of reloading it in its windows. `--static` does not
+help here: a static Tilo OS package lands far over the application size
+limit. The CI that `tilo-app add ci` writes
+builds in Tilo's builder image, which has them.
+
+The CLI installs from git rather than crates.io. `cargo install --git` builds
+it inside this workspace, so it gets the workspace's `[patch]` forks and, with
+`--locked`, its tested lockfile. The CLI also embeds that lockfile and the
+toolchain file for the apps it creates. A crates.io install would have none of
+these, and the workspace crates it depends on are not published.
 
 ## The Tilo-native contract
 
@@ -193,9 +314,9 @@ diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
 With no name, `tilo-app new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents nine
-numbered templates with their intended use; numbers, full names, and shortcuts
-are accepted. Invalid package names, IDs, and template choices are explained
+name, window title, application ID, and template. It presents the numbered
+templates with their intended use; numbers and full names are accepted.
+Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
 default. Before writing, the wizard shows the resolved app title, package,
 application ID, template purpose, and destination for confirmation. Declining
@@ -205,29 +326,30 @@ With a name and flags the command is deterministic and suitable for scripts;
 omitted `--template` defaults to `starter` outside an interactive terminal:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new log-browser \
-  --id org.example.log-browser \
-  --title "Log Browser" \
-  --template data
-
-cargo run -p tilo-app-cli --bin tilo-app -- new activity-feed --template list
-cargo run -p tilo-app-cli --bin tilo-app -- new qr-code --template qr
-cargo run -p tilo-app-cli --bin tilo-app -- new repo-scan --template async
-cargo run -p tilo-app-cli --bin tilo-app -- new notes --template document
-cargo run -p tilo-app-cli --bin tilo-app -- new project-workspace --template workspace
+tilo-app new --list-templates
+tilo-app new errands \
+  --id org.example.errands \
+  --title "Errands" \
+  --template collection
 ```
 
-Use `--template workspace` for a composed professional starting point rather
-than an isolated widget example. It creates a responsive master-detail shell
-whose projects are a `Collection` in the resource. The selection is view state;
-`cx.switch` rebuilds only the detail pane when it changes, and the pane's fields
-bind to the selected project's actions. Wide windows show both panes; compact
-windows switch between full-width navigation and detail panes with an
-accessible Back action. Switching items preserves independent edits, and the
-framework supplies persistence, collaboration, history and undo without
-app-owned synchronization callbacks. The generated headless scenario exercises
-navigation and editing, and the generated tests cover wide and compact
-geometry, undo, and the native-contract audit.
+A template is a starting point you scaffold and then own, so there are only
+four, each the least code that is a correct app of one shape:
+
+| Template | Starts you with |
+| --- | --- |
+| `starter` | One resource, one action, one bound field and a derived label |
+| `document` | One collaborative document: bound fields, a live preview, a destructive `clear` |
+| `collection` | Items in a `Collection` the user adds, edits, checks off and removes, with item actions and an empty state |
+| `graph` | Serialized, live-editable screens under `ui/` above controls bound to the resource |
+
+Every template starts empty, reads every string from its own
+`locales/en-US.ftl`, uses only shared widgets and theme values, and exposes each
+capability as an action. Each ships with tests for its actions, its bound
+controls, undo, permissions, persistence and the native-contract audit, plus a
+saved headless scenario. Programs that teach one concept, such as virtualized
+lists, background work or a responsive master-detail shell, are examples
+rather than templates; see [Examples](examples.md).
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -503,16 +625,14 @@ Run a fast structural diagnosis without compiling the workspace when you want
 the checks without starting Cargo:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- doctor apps/reading-list
+tilo-app doctor reading-list
 ```
 
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
 resolves its `ui` dependency, validates `tilo-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
-lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
-generates its collaboration protocol while compiling; a missing compiler is
-reported with an install-or-development-container remedy before Cargo starts.
-It validates every serialized screen with the renderer's
+lifecycle seams. The SDK's Cap'n Proto bindings are checked in, so building an
+app never needs the `capnp` compiler. It validates every serialized screen with the renderer's
 lightweight graph schema, parses every Fluent catalog, reconciles the generated
 locale registry with files on disk, and checks saved headless scenarios with
 the exact wire grammar used by the runtime driver. It reports every problem in
@@ -543,7 +663,9 @@ and Ctrl-C terminate the
 complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
-`--debounce-ms` to adjust the default 150 ms quiet period.
+`--debounce-ms` to adjust the default 30 ms quiet period.
+`tilo-app dev --platform web` runs the same loop in the browser
+([The web](#the-web)).
 
 Every template starts on the app framework (`ui::framework`): the app's
 state is a `#[derive(Model)]` resource, every edit is an `#[action]` method in
@@ -612,19 +734,222 @@ tilo-app package --output dist/reading-list.tapp --force
 ```
 
 `package` runs the structural checks, builds every entrypoint declared in
-`tilo-app.toml` with Cargo's `release` profile, places the resulting binaries at
-their declared payload paths, and asks `tilo-app-package` to sign and verify the bundle.
+`tilo-app.toml` thin, places the resulting binaries at their declared payload
+paths, and signs and verifies the bundle itself; no separate packer is needed.
+A thin build uses the app's `thin` feature and the `thin-app` profile, and links
+against the toolkit and `libstd` that Tilo OS ships, so a typical app is well
+under a megabyte. `--static` links them in instead, which is useful for a local
+experiment but lands far over the application size limit.
 The verified result is published as `dist/<cargo-package>.tapp` by default.
 An existing output is never replaced unless `--force` is present, and even
 then replacement happens only after the new package verifies successfully.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
-not depend on files outside the app. Without `--identity`, `tilo-app-package` creates an
-ephemeral self-signing key, which is useful for local testing; use one
+not depend on files outside the app. Without `--identity`, `package` signs with an
+ephemeral key, which is useful for local testing; use one
 persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
-choices. Set `TILO_PKG` to the executable path when `tilo-app-package` is not on `PATH`.
+choices.
+
+Every package run prints where the bytes go: each payload file, largest first,
+with entrypoint binaries split into code, read-only data, dynamic-linking
+tables and the rest, then the signed package against the 8 MiB application
+limit. An app can hold itself to a tighter ceiling in `tilo-app.toml`:
+
+```toml
+[budget]
+package = "1 MiB"   # the signed .tapp
+binary = "900 KiB"  # each entrypoint binary
+```
+
+Sizes are byte counts or strings in B, KB, MB (powers of ten), KiB or MiB
+(powers of two); an unknown key is an error, so a misspelt ceiling cannot
+quietly stop applying. The budget is a build-time check, not package metadata.
+A package over budget fails with the amount it is over, and the previous output
+is left in place. `--json` carries the same breakdown under `size`.
+
+### Other platforms and architectures
+
+`--arch x86_64|aarch64` picks the CPU (the host's by default) and
+`--platform` the system:
+
+```bash
+tilo-app package --arch aarch64                      # Tilo OS, thin
+tilo-app package --platform linux --arch x86_64      # dist/<pkg>-linux-x86_64.tapp
+tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
+tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
+tilo-app package --platform android                  # dist/<pkg>-android-{aarch64,x86_64}.tapp, .apk, .aab
+```
+
+Other Linux desktops, Windows and macOS ship no Tilo toolkit, so a build for
+them is one static executable (`release` profile, `<arch>-unknown-linux-gnu`,
+`<arch>-pc-windows-msvc` or `<arch>-apple-darwin`) with the toolkit linked in,
+packed as `bin/<name>` (or
+`bin/<name>.exe`). Its signed `[target]` names the platform, the architecture
+and the toolkit release it links, which is `[package].runtime`, so the
+manifest must declare one (`tilo-app new` does). Only the GUI entrypoint ships.
+There, collaboration comes from the per-user `tilo-runtime` service when it is
+running, as for Tilo's own apps on those systems. `[budget]` applies to the
+thin Tilo OS build only; a desktop or Android build answers to the registry's
+64 MiB limit instead, and the size report measures it against that. A
+static build of a starter app is about 40 MB.
+
+Build on the system you target, or with a cross toolchain Cargo can drive;
+`--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
+
+`build`, `run`, `dev` and `check` take the same `--platform` and `--arch`:
+
+```bash
+tilo-app build --platform windows --arch aarch64 -o out  # compile, copy the .exe to out/
+tilo-app run --platform web                              # build once and serve the page
+tilo-app dev --platform linux                            # the reload loop, on this machine
+tilo-app check --platform all                            # lint every other target too
+```
+
+`build` compiles exactly what `package` would, without signing a package.
+`run` and `dev` refuse a platform or architecture this machine cannot execute
+and say where to build it instead; for `android` they install on a device
+instead ([Android](#android)). `check --platform` (repeatable, or `all`)
+adds, after the host's checks, Clippy for each other platform's target triple
+with warnings denied, and a full web build for `web`; the Rust target must be
+installed (`rustup target add`).
+
+A Tilo OS package declares only the architecture it was built for, at the
+level `[package.isa]` names for it (`tilo-app new` declares `v3` and
+`aarch64`).
+
+### The web
+
+In the browser the runtime is one WebAssembly module, and `wasm32` has no
+dynamic linking, so an app's web build is the runtime bundle with the app
+linked in and registered:
+
+```bash
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app dev --platform web        # serve it, rebuild and reload on save
+tilo-app package --target web      # the bundle in the immutable layout Cloud serves
+```
+
+Nothing in the app is web-specific: the build registers the `definition()`
+that `ui::dev_reload_entry!` defines, as component apps export theirs. A
+small generated crate under the target directory depends on the runtime from
+the SDK checkout the app builds against (`crates/browser/tilo-browser-runtime`,
+see its `WEB_RUNTIME.md`) and on the app, and builds into the app
+workspace's target directory, so the runtime compiles once and later builds
+relink only what changed. `build --target web --bundle app` is the same
+build; Tilo's own apps also build into the shared desktop bundle
+(`--bundle desktop`).
+
+The core the build links exports what the app imports. The core the registry
+serves is built for Tilo's own web apps, so a package that imports something
+only this app uses (a generic instantiation from `serde_json`, say) can fail
+to link in a page that runs that core; the page names the missing symbols.
+
+`dev --platform web` serves the page and rebuilds after every save. An edit to
+the app relinks only its module; the page notices the finished build and
+reloads into the same record. The record's state lives in the browser's
+storage, not in the module, so the document survives the new code. An edit
+to the SDK rebuilds the core too. `--bind` picks another address.
+
+The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
+Node.js and brotli, which the builder image `tilo-app add ci` uses has.
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
+example a wrapper that runs it on a remote machine and brings `target/web`
+back. A web package's `[budget]` applies to its module as it
+does to a thin binary.
+
+### Android
+
+The same app builds as a standalone Android app, with nothing Android-specific
+in its code or its `Cargo.toml`:
+
+```bash
+tilo-app doctor --platform android   # what the Android toolchain lacks
+tilo-app setup android               # install the SDK side of it
+tilo-app run --platform android      # install on the connected device, stream its log
+tilo-app dev --platform android      # rebuild, reinstall and restart on every save
+tilo-app package --platform android  # dist/<pkg>-android-<arch>.{tapp,apk,aab}, both arches
+```
+
+`--arch aarch64|x86_64` picks the ABI (`run` and `dev` default to the
+device's), and `--device` the `adb` serial. The application id, launcher
+label, `versionCode`, icon (`icon.png`) and permissions come from
+`tilo-app.toml`; debug builds use the per-user debug key and `package` a
+release key. [Android](android.md) has the mapping, signing, the toolchain and
+what the Android host does not provide.
+
+### Publishing
+
+`tilo-app keys new`, `tilo-app apply` and `tilo-app publish` take a package to
+the store; [Publish a Tilo app](publishing.md) walks through them.
+
+### Linux, macOS and the web from one source
+
+`run`, `build` and `package` take `--target linux|macos|web`. The app source
+does not change: `tilo-app` selects the runner and the platform crates select
+each backend. Linux and macOS artifacts build on their own OS; the web builds
+anywhere.
+
+```bash
+tilo-app run --target macos            # a signed development .app, launched
+tilo-app run --target web              # serve, rebuild on change, reload the page
+tilo-app build --target linux          # target/tilo-app/linux/<app>/<bin>
+tilo-app package --target linux        # a signed .tapp (thin against the shared runtime in this repository)
+tilo-app package --target macos        # a zipped .app; Developer ID + notarization with TILO_MAC_* / TILO_NOTARY_* set
+tilo-app package --target web          # dist/web/<app-id>/versions/<digest>/
+```
+
+`tilo-app.toml` narrows the targets with `platforms = ["linux", "macos"]` and a
+`platform-reason`; the default is all three. `tilo-app check --target <t>` runs
+the portability and capability checks for a target on any host. In an app that
+keeps all three targets, platform code (a target `cfg`, `std::os`, a platform
+path or OS tool, a thread or clock that panics in a page) is an error, not a
+baseline entry: move it into the platform crates under `crates/platform/`
+(`tilo-paths`, `tilo-files`, `tilo-process`, `tilo-net`, …), which select a
+backend per target, and call them. See
+[`app-model/cross-target.md`](app-model/cross-target.md) for the service table.
+For `package`, a `--target` value other than `linux`, `macos` or `web` is a
+Rust target triple.
+
+### Files, preferences and secrets
+
+Everything an app keeps outside its documents goes through `ui::storage`, the
+same API on every target. With a `HostContext` use its methods; they are scoped
+to the app the host prepared.
+
+| What | Call | Backed by |
+|---|---|---|
+| Documents (collaborative) | resources and records; `ui::persist` for a one-document app | Automerge records |
+| App files: imports, caches, databases | `cx.files().data()` / `.config()` / `.cache()` / `.state()` → `tilo_files::Dir` (`ui::storage::AppFiles::for_app(id)` without a context) | `tilo_paths::AppPaths`: per-user directories natively, the origin-private file system in a page |
+| Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
+| Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
+
+Apps do not depend on `settings-store`, `app-state` or `xdg-paths`: those
+are the SDK's internals (the last is a deprecated shim over `tilo-paths`). The exceptions are
+the Settings app, which owns the settings document, and Notes' capture
+fault-injection scenario, which locates its record on disk. Desktop-only code
+that must name a native path uses `tilo_paths` and `tilo_files::native`
+(`native::private` for owner-only files such as keys).
+
+### Capabilities
+
+`[capabilities]` in `tilo-app.toml` lists every capability the code uses, as
+`required` (the app cannot work without it; every declared target must provide
+it) or `optional` (the app degrades where it is missing):
+
+```toml
+[capabilities]
+required = ["network.http"]
+optional = ["files.open", "app-files", "clipboard"]
+```
+
+`tilo-app check`, `build`, `run` and `package` fail before compiling when the
+code uses one the manifest does not list, naming the site and the fix
+(`tilo-app add capability <name>`); the policy gate
+(`tools/policy/check_app_capabilities.py`) enforces the same table,
+`tools/policy/app_capability_usage.toml`. macOS packaging derives entitlements
+and usage strings from the list.
 
 ## The app shape
 
@@ -1166,7 +1491,7 @@ scope from the identity of the thing being changed:
 
 | State | Canonical home | Identity / permission scope | Replication |
 |---|---|---|---|
-| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
+| Package preference or account configuration shared with collaborators | package `state.automerge` through `ui::persist` (device-local preferences use `cx.settings()`) | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
 | Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
 | Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
 | Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |
@@ -1222,7 +1547,7 @@ command path.
 This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
-direct callback beside `invoke_resource_operation`; bind the control and let
+direct callback beside `Widget::start_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
 `tools/policy/check_app_resource_action_contract.py`, and the runtime independently
@@ -1321,10 +1646,15 @@ framework view, and imports action types through
 implementation and needs no direct internal actions dependency.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `Widget::invoke_resource_operation_v2`, return an
-`ActionOutput`, and declare the locally handled type in
-`Widget::local_resource_operation_handlers`; the legacy unit-returning hook is
-only a compatibility adapter.
+effect and view type in `Widget::start_operation`, the single entry: return
+`Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
+for a job `poll_resource_operation` finishes, and declare the locally handled
+type in `Widget::local_resource_operation_handlers`. Read the request through
+`op.unscoped()`, which hides a hosted invocation that carries its original
+caller's custody; a handler that honours that custody reads it through
+`op.with_custody()` instead and routes every effect and document write through
+the scope. Offer unhandled types to children with
+`ui::widget::start_in_children`.
 Publication refuses duplicate addresses, unsafe confirmation declarations,
 unregistered document actions, empty availability reasons, incoherent job
 contracts, and other contract violations.
@@ -1530,6 +1860,53 @@ mistaking a model refresh for user intent. Use `with_on_change_path` or
 `bind_text` instead when the value itself belongs in durable shared state;
 those paths preserve Automerge authorship, collaboration, persistence, and
 undo behavior.
+
+### Using other apps' actions
+
+An app that builds on what other apps publish — a shortcut editor, a
+launcher — reaches the same door the palette and agents use with
+`ui::RemoteActions`. The broker decides every request for the **app**, under
+its own identity, never under the ambient authority of the person using it:
+
+- the app always reaches what it owns: its own surface, and actions the
+  session publishes under its package id;
+- reading the catalogue (`catalogue`) needs the manifest to declare it;
+- invoking another app's action (`invoke`) needs the manifest to declare it
+  **and** the workspace to grant it to the app, like any collaborator grant.
+  Without a grant, the person who is using the app is asked on a sheet only
+  the compositor draws: "<App> wants to use <Other app>: <action>", with the
+  action's risk and whether it still confirms each use. They answer *Allow
+  once*, *Allow for this session*, *Always allow in this workspace* or
+  *Deny*; the invocation waits for the answer. An allowing answer is recorded
+  as an ordinary capability (the app as subject, `Scope::Action`, a matching
+  expiry) granted by that person, and appears in the workspace's history.
+  Nobody is asked when nobody can answer — the screen is locked, the
+  connection belongs to someone else, or they cannot administer the
+  workspace — and an action that governs the workspace is never offered:
+  such a request is refused.
+
+People review and revoke these grants in the workspace's Settings, under
+Permissions › App actions. Agents and scripts use the workspace's
+`app-action.grant` and `app-action.revoke` actions, which need the same
+authority and confirmation as any other permission change.
+
+```toml
+[actions]
+query = true    # read the catalogue of actions the person is offered
+invoke = false  # invoke other apps' actions as this app
+```
+
+```rust
+let remote = ui::RemoteActions::current();
+let page = remote.catalogue(CatalogueQuery::default()); // LocalState<CatalogueCall>
+let run = remote.invoke(row.target().unwrap(), InvokeArgument::None, None);
+```
+
+Answers arrive as `LocalState`s, so a bound view updates and an idle window
+wakes. The root that owns the client returns it from
+`Widget::collaborative_mut` (a `Decorator` can), which is how its requests
+reach the connection. Tests stand in for the session with
+`RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
 
 ### Localization
 
@@ -1947,8 +2324,9 @@ layout heights feed back into scrolling and hit testing. The built-in
 scrollbar, keyboard navigation, and key-based selection all use the same
 viewport.
 
-Use `tilo-app new activity-feed --template list` to start from the sparse-model
-form instead. The generated `ActivityModel` reports 100 million stable keys
+Start from the `virtual-list` example (`tilo-app new activity-feed
+--from-example virtual-list`) for the sparse-model form instead. Its
+`ActivityModel` reports 100 million stable keys
 without allocating their rows, mixes measured 44px and 72px delegates, embeds
 an independently actionable button in each mounted row, and ships with a
 headless contract for bounded mounting, selection, variable geometry, child
@@ -2196,6 +2574,12 @@ headless launch path used by generated projects. Prefer semantic assertions
 over pixel coordinates: inspect roles, names, selected/expanded state, and
 focus after dispatching keyboard or pointer input. Use deterministic rendering
 only for visual behavior that semantics cannot express.
+
+The toolkit's debug and capture switches are `TILO_UI_*` environment
+variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
+rendering ones are listed in [`performance-flags.md`](performance-flags.md).
+Read one from app or test code with `ui::env::var`. The old `QUICK_UI_*`
+names still work and warn once per variable; new scripts use the new names.
 
 For a post-layout inspection without opening a window, write the widget and
 accessibility tree directly. `inspect` writes `inspect.json` in the app root by

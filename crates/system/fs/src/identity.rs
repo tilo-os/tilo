@@ -314,28 +314,30 @@ mod tests {
         }
     }
 
-    /// The whole point of deriving the node key from the device key: one seed,
-    /// one public key. If this ever diverges, the node id stops naming the device and every grant against it silently means something else.
     #[test]
-    fn iroh_node_key_and_device_key_are_the_same_identity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let id = load_mount_identity(&paths).unwrap();
-        assert!(id.created);
-        assert_eq!(id.secret.public().as_bytes(), &id.public);
-    }
-
-    /// A restart must land on the same identity — the property an access-control grant depends on.
-    #[test]
-    fn identity_survives_a_restart() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let first = load_mount_identity(&paths).unwrap();
-        let second = load_mount_identity(&paths).unwrap();
-        assert!(first.created);
-        assert!(!second.created, "second load must not mint a key");
-        assert_eq!(first.public, second.public);
-        assert_eq!(first.secret.public(), second.secret.public());
+    fn the_device_identity_is_the_iroh_key_and_survives_restart() {
+        // Phase `iroh_node_key_and_device_key_are_the_same_identity`.
+        // The whole point of deriving the node key from the device key: one seed,
+        // one public key. If this ever diverges, the node id stops naming the device and every grant against it silently means something else.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let id = load_mount_identity(&paths).unwrap();
+            assert!(id.created);
+            assert_eq!(id.secret.public().as_bytes(), &id.public);
+        }
+        // Phase `identity_survives_a_restart`.
+        // A restart must land on the same identity — the property an access-control grant depends on.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let first = load_mount_identity(&paths).unwrap();
+            let second = load_mount_identity(&paths).unwrap();
+            assert!(first.created);
+            assert!(!second.created, "second load must not mint a key");
+            assert_eq!(first.public, second.public);
+            assert_eq!(first.secret.public(), second.secret.public());
+        }
     }
 
     /// The bound endpoint's node id is the device public key, verified through
@@ -384,164 +386,169 @@ mod tests {
     }
 
     #[test]
-    fn certified_identity_pairs_transport_key_with_human_certificate() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let device = install_fixed_device(&paths);
-        let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-        write_device_cert(&paths.device_cert, &cert).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn certified_loading_requires_a_valid_current_certificate_for_this_device() {
+        // Phase `certified_identity_pairs_transport_key_with_human_certificate`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let device = install_fixed_device(&paths);
+            let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+            write_device_cert(&paths.device_cert, &cert).unwrap();
 
-        let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
-        assert_eq!(certified.mount.public, cert.device_public_key);
-        assert_eq!(
-            certified.mount.signing_key().verifying_key().to_bytes(),
-            cert.device_public_key
-        );
-        assert_eq!(certified.credentials.cert(), &cert);
-        assert_eq!(
-            certified
-                .credentials
-                .signing_key()
-                .verifying_key()
-                .to_bytes(),
-            cert.device_public_key
-        );
-        assert_eq!(
-            certified.credentials.user_public_key(),
-            cert.user_public_key
-        );
-        assert_eq!(
-            certified.credentials.device_public_key(),
-            cert.device_public_key
-        );
+            let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
+            assert_eq!(certified.mount.public, cert.device_public_key);
+            assert_eq!(
+                certified.mount.signing_key().verifying_key().to_bytes(),
+                cert.device_public_key
+            );
+            assert_eq!(certified.credentials.cert(), &cert);
+            assert_eq!(
+                certified
+                    .credentials
+                    .signing_key()
+                    .verifying_key()
+                    .to_bytes(),
+                cert.device_public_key
+            );
+            assert_eq!(
+                certified.credentials.user_public_key(),
+                cert.user_public_key
+            );
+            assert_eq!(
+                certified.credentials.device_public_key(),
+                cert.device_public_key
+            );
+        }
+        // Phase `missing_certificate_fails_certified_loading`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            install_fixed_device(&paths);
+            let err = certified_error(&paths);
+            assert!(matches!(
+                err,
+                CertifiedIdentityError::CertificateFile(PersistError::Io(ref io_err))
+                    if io_err.kind() == std::io::ErrorKind::NotFound
+            ));
+        }
+        // Phase `malformed_certificate_fails_certified_loading`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            install_fixed_device(&paths);
+            std::fs::write(&paths.device_cert, b"not a canonical certificate").unwrap();
+            assert!(matches!(
+                certified_error(&paths),
+                CertifiedIdentityError::CertificateFile(PersistError::Canonical(_))
+            ));
+        }
+        // Phase `tampered_certificate_fails_certified_loading`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let device = install_fixed_device(&paths);
+            let mut cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+            cert.device_label.push_str(" (tampered)");
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert!(matches!(
+                certified_error(&paths),
+                CertifiedIdentityError::Certificate(DeviceCertError::BadSignature)
+            ));
+        }
+        // Phase `expired_or_future_certificate_fails_certified_loading`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let device = install_fixed_device(&paths);
+            let cert = signed_cert(
+                device.verifying_key().to_bytes(),
+                NOW_NS - 100,
+                Some(NOW_NS),
+            );
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert!(matches!(
+                certified_error(&paths),
+                CertifiedIdentityError::Certificate(DeviceCertError::Expired)
+            ));
+
+            let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS + 1, None);
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert!(matches!(
+                certified_error(&paths),
+                CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
+            ));
+        }
+        // Phase `certificate_for_another_device_fails_certified_loading`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            install_fixed_device(&paths);
+            let other_device = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
+            let cert = signed_cert(other_device.verifying_key().to_bytes(), NOW_NS - 1, None);
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert!(matches!(
+                certified_error(&paths),
+                CertifiedIdentityError::DeviceKeyMismatch
+            ));
+        }
     }
 
     #[test]
-    fn missing_certificate_fails_certified_loading() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        install_fixed_device(&paths);
-        let err = certified_error(&paths);
-        assert!(matches!(
-            err,
-            CertifiedIdentityError::CertificateFile(PersistError::Io(ref io_err))
-                if io_err.kind() == std::io::ErrorKind::NotFound
-        ));
-    }
+    fn workspace_share_issuers_load_only_for_the_certified_owner() {
+        // Phase `workspace_share_issuer_is_the_certified_human_root_or_absent`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let device = install_fixed_device(&paths);
+            let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
+            let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
 
-    #[test]
-    fn malformed_certificate_fails_certified_loading() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        install_fixed_device(&paths);
-        std::fs::write(&paths.device_cert, b"not a canonical certificate").unwrap();
-        assert!(matches!(
-            certified_error(&paths),
-            CertifiedIdentityError::CertificateFile(PersistError::Canonical(_))
-        ));
-    }
-
-    #[test]
-    fn tampered_certificate_fails_certified_loading() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let device = install_fixed_device(&paths);
-        let mut cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-        cert.device_label.push_str(" (tampered)");
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert!(matches!(
-            certified_error(&paths),
-            CertifiedIdentityError::Certificate(DeviceCertError::BadSignature)
-        ));
-    }
-
-    #[test]
-    fn expired_or_future_certificate_fails_certified_loading() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let device = install_fixed_device(&paths);
-        let cert = signed_cert(
-            device.verifying_key().to_bytes(),
-            NOW_NS - 100,
-            Some(NOW_NS),
-        );
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert!(matches!(
-            certified_error(&paths),
-            CertifiedIdentityError::Certificate(DeviceCertError::Expired)
-        ));
-
-        let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS + 1, None);
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert!(matches!(
-            certified_error(&paths),
-            CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
-        ));
-    }
-
-    #[test]
-    fn certificate_for_another_device_fails_certified_loading() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        install_fixed_device(&paths);
-        let other_device = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
-        let cert = signed_cert(other_device.verifying_key().to_bytes(), NOW_NS - 1, None);
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert!(matches!(
-            certified_error(&paths),
-            CertifiedIdentityError::DeviceKeyMismatch
-        ));
-    }
-
-    #[test]
-    fn workspace_share_issuer_is_the_certified_human_root_or_absent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let device = install_fixed_device(&paths);
-        let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
-        let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
-
-        assert!(
-            load_workspace_share_issuer(&paths, &certified.credentials)
+            assert!(
+                load_workspace_share_issuer(&paths, &certified.credentials)
+                    .unwrap()
+                    .is_none(),
+                "a secondary device must not fall back to its device key"
+            );
+            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+            let issuer = load_workspace_share_issuer(&paths, &certified.credentials)
                 .unwrap()
-                .is_none(),
-            "a secondary device must not fall back to its device key"
-        );
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-        let issuer = load_workspace_share_issuer(&paths, &certified.credentials)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            issuer.verifying_key().to_bytes(),
-            certified.credentials.user_public_key()
-        );
+                .unwrap();
+            assert_eq!(
+                issuer.verifying_key().to_bytes(),
+                certified.credentials.user_public_key()
+            );
 
-        let unrelated = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &unrelated).unwrap();
-        assert!(matches!(
-            load_workspace_share_issuer(&paths, &certified.credentials),
-            Err(WorkspaceShareIssuerError::RootKeyMismatch)
-        ));
-    }
-
-    #[test]
-    fn non_owner_device_never_loads_a_workspace_share_issuer() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let device = install_fixed_device(&paths);
-        let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
-        let mut cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-        cert.capabilities.can_own_workspaces = false;
-        sign_device_cert(&mut cert, &root).unwrap();
-        write_device_cert(&paths.device_cert, &cert).unwrap();
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-        let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
-        assert!(
-            load_workspace_share_issuer(&paths, &certified.credentials)
-                .unwrap()
-                .is_none()
-        );
+            let unrelated = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &unrelated)
+                .unwrap();
+            assert!(matches!(
+                load_workspace_share_issuer(&paths, &certified.credentials),
+                Err(WorkspaceShareIssuerError::RootKeyMismatch)
+            ));
+        }
+        // Phase `non_owner_device_never_loads_a_workspace_share_issuer`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(tmp.path());
+            let device = install_fixed_device(&paths);
+            let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
+            let mut cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+            cert.capabilities.can_own_workspaces = false;
+            sign_device_cert(&mut cert, &root).unwrap();
+            write_device_cert(&paths.device_cert, &cert).unwrap();
+            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+            let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
+            assert!(
+                load_workspace_share_issuer(&paths, &certified.credentials)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 }

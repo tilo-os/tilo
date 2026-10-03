@@ -9,7 +9,7 @@
 //! unsupported binary types remain explicitly labelled rather than being
 //! confused with a database NULL.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use postgres::fallible_iterator::FallibleIterator as PgFallibleIterator;
@@ -654,7 +654,7 @@ impl PostgresEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         match self.client.prepare(trimmed) {
             Ok(stmt) if stmt.columns().is_empty() => {
@@ -736,62 +736,126 @@ mod tests {
         out
     }
 
+    /// Binary numerics preserve exponents, scale and specials and binary arrays preserve values, nulls and dimensions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn binary_numeric_preserves_exponents_scale_and_specials() {
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 2, &[1, 2300]))
-                .unwrap()
-                .0,
-            "1.23"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(-1, 0, 4, &[12]))
-                .unwrap()
-                .0,
-            "0.0012"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(2, 0, 0, &[1, 2345]))
-                .unwrap()
-                .0,
-            "123450000"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x4000, 4, &[42, 5000]))
-                .unwrap()
-                .0,
-            "-42.5000"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 3, &[0]))
-                .unwrap()
-                .0,
-            "0.000"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xC000, 0, &[]))
-                .unwrap()
-                .0,
-            "NaN"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xD000, 0, &[]))
-                .unwrap()
-                .0,
-            "Infinity"
-        );
-        assert_eq!(
-            PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xF000, 0, &[]))
-                .unwrap()
-                .0,
-            "-Infinity"
-        );
-        assert!(PgNumeric::from_sql(&Type::NUMERIC, &[0; 7]).is_err());
-        let mut short_numeric = numeric(0, 0, 0, &[]);
-        short_numeric[..2].copy_from_slice(&1i16.to_be_bytes());
-        assert!(PgNumeric::from_sql(&Type::NUMERIC, &short_numeric).is_err());
-        assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 0, &[10_000])).is_err());
-        assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x1234, 0, &[])).is_err());
+    fn pg_binary_values_preserve_numeric_and_array_semantics() {
+        // --- phase: binary_numeric_preserves_exponents_scale_and_specials ---
+        {
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 2, &[1, 2300]))
+                    .unwrap()
+                    .0,
+                "1.23"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(-1, 0, 4, &[12]))
+                    .unwrap()
+                    .0,
+                "0.0012"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(2, 0, 0, &[1, 2345]))
+                    .unwrap()
+                    .0,
+                "123450000"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x4000, 4, &[42, 5000]))
+                    .unwrap()
+                    .0,
+                "-42.5000"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 3, &[0]))
+                    .unwrap()
+                    .0,
+                "0.000"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xC000, 0, &[]))
+                    .unwrap()
+                    .0,
+                "NaN"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xD000, 0, &[]))
+                    .unwrap()
+                    .0,
+                "Infinity"
+            );
+            assert_eq!(
+                PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xF000, 0, &[]))
+                    .unwrap()
+                    .0,
+                "-Infinity"
+            );
+            assert!(PgNumeric::from_sql(&Type::NUMERIC, &[0; 7]).is_err());
+            let mut short_numeric = numeric(0, 0, 0, &[]);
+            short_numeric[..2].copy_from_slice(&1i16.to_be_bytes());
+            assert!(PgNumeric::from_sql(&Type::NUMERIC, &short_numeric).is_err());
+            assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 0, &[10_000])).is_err());
+            assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x1234, 0, &[])).is_err());
+        }
+
+        // --- phase: binary_arrays_preserve_values_nulls_and_dimension_honesty ---
+        {
+            let ints = array_1d(
+                23,
+                &[
+                    Some(&1i32.to_be_bytes()),
+                    None,
+                    Some(&(-2i32).to_be_bytes()),
+                ],
+            );
+            assert_eq!(
+                PgArray::from_sql(&Type::INT4_ARRAY, &ints).unwrap().0,
+                "[1, NULL, -2]"
+            );
+            let text = array_1d(25, &[Some(b"alpha"), None, Some(b"two words")]);
+            assert_eq!(
+                PgArray::from_sql(&Type::TEXT_ARRAY, &text).unwrap().0,
+                r#"["alpha", NULL, "two words"]"#
+            );
+            let mut empty = Vec::new();
+            empty.extend_from_slice(&0i32.to_be_bytes());
+            empty.extend_from_slice(&0i32.to_be_bytes());
+            empty.extend_from_slice(&23u32.to_be_bytes());
+            assert_eq!(
+                PgArray::from_sql(&Type::INT4_ARRAY, &empty).unwrap().0,
+                "[]"
+            );
+            let mut multidimensional = Vec::new();
+            multidimensional.extend_from_slice(&2i32.to_be_bytes());
+            multidimensional.extend_from_slice(&0i32.to_be_bytes());
+            multidimensional.extend_from_slice(&23u32.to_be_bytes());
+            multidimensional.extend_from_slice(&1i32.to_be_bytes());
+            multidimensional.extend_from_slice(&1i32.to_be_bytes());
+            multidimensional.extend_from_slice(&1i32.to_be_bytes());
+            multidimensional.extend_from_slice(&1i32.to_be_bytes());
+            assert_eq!(
+                PgArray::from_sql(&Type::INT4_ARRAY, &multidimensional)
+                    .unwrap()
+                    .0,
+                "<int4[]: 2-dimensional array unsupported>"
+            );
+            let mut huge = Vec::new();
+            huge.extend_from_slice(&1i32.to_be_bytes());
+            huge.extend_from_slice(&0i32.to_be_bytes());
+            huge.extend_from_slice(&23u32.to_be_bytes());
+            huge.extend_from_slice(&100_001i32.to_be_bytes());
+            huge.extend_from_slice(&1i32.to_be_bytes());
+            assert_eq!(
+                PgArray::from_sql(&Type::INT4_ARRAY, &huge).unwrap().0,
+                "<int4[]: 100001 elements exceeds display limit of 100000>"
+            );
+            assert!(PgArray::from_sql(&Type::INT4_ARRAY, &[0; 11]).is_err());
+            let wrong_oid = array_1d(25, &[Some(&1i32.to_be_bytes())]);
+            assert!(PgArray::from_sql(&Type::INT4_ARRAY, &wrong_oid).is_err());
+        }
     }
 
     fn array_1d(element_oid: u32, values: &[Option<&[u8]>]) -> Vec<u8> {
@@ -813,89 +877,37 @@ mod tests {
         raw
     }
 
+    /// The config carries profile fields and defaults an empty port to 5432.
     #[test]
-    fn binary_arrays_preserve_values_nulls_and_dimension_honesty() {
-        let ints = array_1d(
-            23,
-            &[
-                Some(&1i32.to_be_bytes()),
-                None,
-                Some(&(-2i32).to_be_bytes()),
-            ],
-        );
-        assert_eq!(
-            PgArray::from_sql(&Type::INT4_ARRAY, &ints).unwrap().0,
-            "[1, NULL, -2]"
-        );
-        let text = array_1d(25, &[Some(b"alpha"), None, Some(b"two words")]);
-        assert_eq!(
-            PgArray::from_sql(&Type::TEXT_ARRAY, &text).unwrap().0,
-            r#"["alpha", NULL, "two words"]"#
-        );
-        let mut empty = Vec::new();
-        empty.extend_from_slice(&0i32.to_be_bytes());
-        empty.extend_from_slice(&0i32.to_be_bytes());
-        empty.extend_from_slice(&23u32.to_be_bytes());
-        assert_eq!(
-            PgArray::from_sql(&Type::INT4_ARRAY, &empty).unwrap().0,
-            "[]"
-        );
-        let mut multidimensional = Vec::new();
-        multidimensional.extend_from_slice(&2i32.to_be_bytes());
-        multidimensional.extend_from_slice(&0i32.to_be_bytes());
-        multidimensional.extend_from_slice(&23u32.to_be_bytes());
-        multidimensional.extend_from_slice(&1i32.to_be_bytes());
-        multidimensional.extend_from_slice(&1i32.to_be_bytes());
-        multidimensional.extend_from_slice(&1i32.to_be_bytes());
-        multidimensional.extend_from_slice(&1i32.to_be_bytes());
-        assert_eq!(
-            PgArray::from_sql(&Type::INT4_ARRAY, &multidimensional)
-                .unwrap()
-                .0,
-            "<int4[]: 2-dimensional array unsupported>"
-        );
-        let mut huge = Vec::new();
-        huge.extend_from_slice(&1i32.to_be_bytes());
-        huge.extend_from_slice(&0i32.to_be_bytes());
-        huge.extend_from_slice(&23u32.to_be_bytes());
-        huge.extend_from_slice(&100_001i32.to_be_bytes());
-        huge.extend_from_slice(&1i32.to_be_bytes());
-        assert_eq!(
-            PgArray::from_sql(&Type::INT4_ARRAY, &huge).unwrap().0,
-            "<int4[]: 100001 elements exceeds display limit of 100000>"
-        );
-        assert!(PgArray::from_sql(&Type::INT4_ARRAY, &[0; 11]).is_err());
-        let wrong_oid = array_1d(25, &[Some(&1i32.to_be_bytes())]);
-        assert!(PgArray::from_sql(&Type::INT4_ARRAY, &wrong_oid).is_err());
-    }
+    fn pg_config_carries_profile_fields_and_default_port() {
+        // --- phase: config_carries_profile_fields ---
+        {
+            let mut p = ConnectionProfile::new("prod", Engine::Postgres);
+            p.host = "db.example".into();
+            p.port = 6543;
+            p.database = "analytics".into();
+            p.user = "reader".into();
+            p.password = "secret".into();
+            let cfg = pg_config(&p);
+            assert_eq!(cfg.get_ports(), &[6543]);
+            assert_eq!(cfg.get_user(), Some("reader"));
+            assert_eq!(cfg.get_dbname(), Some("analytics"));
+            // Host list carries the TCP host.
+            assert!(
+                cfg.get_hosts()
+                    .iter()
+                    .any(|h| matches!(h, postgres::config::Host::Tcp(t) if t == "db.example")),
+                "host not set on config"
+            );
+        }
 
-    #[test]
-    fn config_carries_profile_fields() {
-        let mut p = ConnectionProfile::new("prod", Engine::Postgres);
-        p.host = "db.example".into();
-        p.port = 6543;
-        p.database = "analytics".into();
-        p.user = "reader".into();
-        p.password = "secret".into();
-        let cfg = pg_config(&p);
-        assert_eq!(cfg.get_ports(), &[6543]);
-        assert_eq!(cfg.get_user(), Some("reader"));
-        assert_eq!(cfg.get_dbname(), Some("analytics"));
-        // Host list carries the TCP host.
-        assert!(
-            cfg.get_hosts()
-                .iter()
-                .any(|h| matches!(h, postgres::config::Host::Tcp(t) if t == "db.example")),
-            "host not set on config"
-        );
-    }
-
-    #[test]
-    fn config_defaults_empty_port_to_5432() {
-        let mut p = ConnectionProfile::new("x", Engine::Postgres);
-        p.port = 0;
-        p.host = String::new();
-        let cfg = pg_config(&p);
-        assert_eq!(cfg.get_ports(), &[5432]);
+        // --- phase: config_defaults_empty_port_to_5432 ---
+        {
+            let mut p = ConnectionProfile::new("x", Engine::Postgres);
+            p.port = 0;
+            p.host = String::new();
+            let cfg = pg_config(&p);
+            assert_eq!(cfg.get_ports(), &[5432]);
+        }
     }
 }

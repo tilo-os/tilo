@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -281,10 +281,6 @@ impl CandlestickChart {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "inspector uses the active plot paint context"
-    )]
     fn draw_inspector(
         &self,
         scene: &mut Scene,
@@ -374,8 +370,6 @@ impl CandlestickChart {
 }
 
 impl Widget for CandlestickChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -541,19 +535,8 @@ impl Widget for CandlestickChart {
         self.draw_inspector(scene, transform, tr, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -565,8 +548,8 @@ impl Widget for CandlestickChart {
                     self.update_hover();
                     if let Some(candle) = self.hovered.and_then(|index| self.candles.get(index)) {
                         self.activated = Some(candle.id.clone());
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -575,7 +558,8 @@ impl Widget for CandlestickChart {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -587,8 +571,8 @@ impl Widget for CandlestickChart {
             } => {
                 if let Some(candle) = self.hovered.and_then(|index| self.candles.get(index)) {
                     self.activated = Some(candle.id.clone());
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -615,8 +599,8 @@ impl Widget for CandlestickChart {
                         self.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
                     }
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -656,8 +640,8 @@ impl Widget for CandlestickChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -695,14 +679,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn impossible_ohlc_is_rejected() {
-        assert!(!Candle::new("x", "X", 2.0, 1.0, 3.0, 2.0).valid());
-    }
+    fn candlestick_rejects_impossible_ohlc_and_ranges_flat_data() {
+        fn impossible_ohlc_is_rejected() {
+            assert!(!Candle::new("x", "X", 2.0, 1.0, 3.0, 2.0).valid());
+        }
 
-    #[test]
-    fn flat_data_gets_a_safe_price_range() {
-        let chart = CandlestickChart::new(vec![Candle::new("x", "X", 2.0, 2.0, 2.0, 2.0)]);
-        let (min, max) = chart.price_range();
-        assert!(max > min);
+        fn flat_data_gets_a_safe_price_range() {
+            let chart = CandlestickChart::new(vec![Candle::new("x", "X", 2.0, 2.0, 2.0, 2.0)]);
+            let (min, max) = chart.price_range();
+            assert!(max > min);
+        }
+
+        impossible_ohlc_is_rejected();
+        flat_data_gets_a_safe_price_range();
     }
 }

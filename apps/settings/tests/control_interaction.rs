@@ -26,7 +26,7 @@ use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
-use ui::widget::Widget;
+use ui::widget::{ResourceOperation, Widget};
 use vello::kurbo::{Point, Rect};
 
 const W: f32 = 1200.0;
@@ -130,19 +130,21 @@ fn click_at(
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy,
+            },
         );
         // The live host resolves action-bound control intents immediately
         // after event delivery. Mirror that boundary here so AppShell's Back
         // `View` action reaches its retained button handler.
-        while let Some(intent) = app.take_control_invocation() {
+        while let Some(intent) = ui::widget::controls::take_control_invocation(app) {
             let control = intent
                 .address
                 .resource
@@ -150,11 +152,13 @@ fn click_at(
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    "tilo.ui.control.invoke",
-                    &payload,
+                .start_operation(
+                    &ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.control.invoke",
+                        &payload,
+                    ),
                     doc,
                     &root,
                 )
@@ -172,7 +176,7 @@ fn navigate(
     target: Category,
 ) -> (TaffyTree<()>, NodeId) {
     let (taffy, node) = lay_out(app);
-    let row = find_rect(app, "SidebarRow", Some(target.label()))
+    let row = find_rect(app, "SidebarRow", Some(&target.label()))
         .unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
         row.y0 >= 0.0 && row.y1 <= f64::from(H),
@@ -186,67 +190,71 @@ fn navigate(
     lay_out(app)
 }
 
-/// The narrow content screen's back-arrow button, clicked through the
-/// production event path, navigates back to the standalone list screen (the
-/// only way back — there is no overlay or floating sidebar).
+/// The back button returns to the list and the Wi-Fi toggle stays pane-local.
 #[test]
-fn clicking_back_button_returns_to_list() {
-    const NW: f32 = 440.0;
-    const NH: f32 = 820.0;
-    let config = crate::support::ScratchConfig::new();
-    // Start drilled into a category's content screen (narrow layout).
-    let mut app = config
-        .app()
-        .with_category(Category::Network)
-        .with_width_hint(NW)
-        .with_narrow_content_shot();
-    let mut doc = AutoCommit::new();
-    let (taffy, node) = lay_out_at(&mut app, NW, NH);
-    app.sync(&mut doc, &automerge::ROOT);
-    assert!(app.is_narrow(), "440px resolves to the narrow layout");
-    assert!(
-        !app.sidebar_open(),
-        "starts on the content screen (list hidden)"
-    );
+fn back_button_and_wifi_toggle_drive_pane_state() {
+    // Case `clicking_back_button_returns_to_list`.
+    // The narrow content screen's back-arrow button, clicked through the
+    // production event path, navigates back to the standalone list screen (the
+    // only way back — there is no overlay or floating sidebar).
+    {
+        const NW: f32 = 440.0;
+        const NH: f32 = 820.0;
+        let config = crate::support::ScratchConfig::new();
+        // Start drilled into a category's content screen (narrow layout).
+        let mut app = config
+            .app()
+            .with_category(Category::Network)
+            .with_width_hint(NW)
+            .with_narrow_content_shot();
+        let mut doc = AutoCommit::new();
+        let (taffy, node) = lay_out_at(&mut app, NW, NH);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.is_narrow(), "440px resolves to the narrow layout");
+        assert!(
+            !app.sidebar_open(),
+            "starts on the content screen (list hidden)"
+        );
 
-    // The back arrow is drawn by the app-shell (not a child widget), so
-    // hit-test it by its resolved rect and click it through the real path.
-    let back = app.back_button_rect();
-    assert!(back.width() > 0.0, "the back arrow has a resolved rect");
-    click_at(&mut app, &taffy, node, &mut doc, back.center());
-    app.sync(&mut doc, &automerge::ROOT);
-    let _ = app.take_structure_dirty();
-    let _ = lay_out_at(&mut app, NW, NH);
-    assert!(
-        app.sidebar_open(),
-        "back navigates to the standalone list screen"
-    );
-    assert!(
-        app.back_button_rect().width() <= 0.0,
-        "the list screen has no back button"
-    );
-}
+        // The back arrow is drawn by the app-shell (not a child widget), so
+        // hit-test it by its resolved rect and click it through the real path.
+        let back = app.back_button_rect();
+        assert!(back.width() > 0.0, "the back arrow has a resolved rect");
+        click_at(&mut app, &taffy, node, &mut doc, back.center());
+        app.sync(&mut doc, &automerge::ROOT);
+        let _ = app.take_structure_dirty();
+        let _ = lay_out_at(&mut app, NW, NH);
+        assert!(
+            app.sidebar_open(),
+            "back navigates to the standalone list screen"
+        );
+        assert!(
+            app.back_button_rect().width() <= 0.0,
+            "the list screen has no back button"
+        );
+    }
 
-/// Network hardware state is pane-local. Neither initialisation nor a hostile
-/// remote scalar may turn the collaborative document into a radio command.
-#[test]
-fn network_wifi_toggle_drives_state() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = config.app();
-    let mut doc = AutoCommit::new();
-    let _ = navigate(&mut app, &mut doc, Category::Network);
-    let root = automerge::ROOT;
-    let heads = doc.get_heads();
-    app.sync(&mut doc, &root);
-    assert_eq!(doc.get_heads(), heads);
-    assert!(
-        read_bool(
-            &doc,
-            &automerge::ROOT,
-            settings::panes::network::WIFI_ENABLED_KEY
-        )
-        .is_none()
-    );
+    // Case `network_wifi_toggle_drives_state`.
+    // Network hardware state is pane-local. Neither initialisation nor a hostile
+    // remote scalar may turn the collaborative document into a radio command.
+    {
+        let config = crate::support::ScratchConfig::new();
+        let mut app = config.app();
+        let mut doc = AutoCommit::new();
+        let _ = navigate(&mut app, &mut doc, Category::Network);
+        let root = automerge::ROOT;
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &root);
+        assert_eq!(doc.get_heads(), heads);
+        assert!(
+            read_bool(
+                &doc,
+                &automerge::ROOT,
+                settings::panes::network::WIFI_ENABLED_KEY
+            )
+            .is_none()
+        );
+    }
 }
 
 /// Every category is reachable by a real click and renders a non-empty

@@ -225,130 +225,131 @@ fn save_rgba(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), 
 mod tests {
     use super::*;
 
-    /// Pin the threshold semantics: deltas at-or-below the threshold do
-    /// not count as a diff; above counts.
     #[test]
-    fn count_diff_pixels_respects_threshold() {
-        // Two 1×2 buffers, second pixel differs by 5 in the green channel.
-        let a = [10, 20, 30, 255, 10, 20, 30, 255];
-        let b = [10, 25, 30, 255, 10, 26, 30, 255];
-        // threshold=5 → first pixel's |Δg|=5 is NOT > 5; second's =6 is.
-        assert_eq!(count_diff_pixels(&a, &b, 5), 1);
-        // threshold=4 → both pixels exceed.
-        assert_eq!(count_diff_pixels(&a, &b, 4), 2);
-        // threshold=255 → nothing exceeds.
-        assert_eq!(count_diff_pixels(&a, &b, 255), 0);
-    }
-
-    /// Verify the `count_diff_pixels` reports the exact number we wrote
-    /// into the second buffer, validating the per-pixel walk.
-    #[test]
-    fn baseline_diff_reports_pixel_count() {
-        // 4×4 buffer, mutate 7 specific pixels by a +30 delta in R.
-        let width = 4u32;
-        let height = 4u32;
-        let pixel_count = (width * height) as usize;
-        let mut baseline = vec![0u8; pixel_count * 4];
-        for i in 0..pixel_count {
-            baseline[i * 4] = 50;
-            baseline[i * 4 + 1] = 80;
-            baseline[i * 4 + 2] = 120;
-            baseline[i * 4 + 3] = 255;
+    fn baseline_diff_counts_classifies_and_skips_overlays() {
+        // Phase `count_diff_pixels_respects_threshold`.
+        // Pin the threshold semantics: deltas at-or-below the threshold do
+        // not count as a diff; above counts.
+        {
+            // Two 1×2 buffers, second pixel differs by 5 in the green channel.
+            let a = [10, 20, 30, 255, 10, 20, 30, 255];
+            let b = [10, 25, 30, 255, 10, 26, 30, 255];
+            // threshold=5 → first pixel's |Δg|=5 is NOT > 5; second's =6 is.
+            assert_eq!(count_diff_pixels(&a, &b, 5), 1);
+            // threshold=4 → both pixels exceed.
+            assert_eq!(count_diff_pixels(&a, &b, 4), 2);
+            // threshold=255 → nothing exceeds.
+            assert_eq!(count_diff_pixels(&a, &b, 255), 0);
         }
-        let mut current = baseline.clone();
-        for &idx in &[0usize, 3, 5, 6, 9, 12, 15] {
-            current[idx * 4] = current[idx * 4].saturating_add(30);
+        // Phase `baseline_diff_reports_pixel_count`.
+        // Verify the `count_diff_pixels` reports the exact number we wrote
+        // into the second buffer, validating the per-pixel walk.
+        {
+            // 4×4 buffer, mutate 7 specific pixels by a +30 delta in R.
+            let width = 4u32;
+            let height = 4u32;
+            let pixel_count = (width * height) as usize;
+            let mut baseline = vec![0u8; pixel_count * 4];
+            for i in 0..pixel_count {
+                baseline[i * 4] = 50;
+                baseline[i * 4 + 1] = 80;
+                baseline[i * 4 + 2] = 120;
+                baseline[i * 4 + 3] = 255;
+            }
+            let mut current = baseline.clone();
+            for &idx in &[0usize, 3, 5, 6, 9, 12, 15] {
+                current[idx * 4] = current[idx * 4].saturating_add(30);
+            }
+            assert_eq!(count_diff_pixels(&baseline, &current, 4), 7);
+            // Identical buffers → zero diff.
+            assert_eq!(count_diff_pixels(&baseline, &baseline, 4), 0);
         }
-        assert_eq!(count_diff_pixels(&baseline, &current, 4), 7);
-        // Identical buffers → zero diff.
-        assert_eq!(count_diff_pixels(&baseline, &baseline, 4), 0);
-    }
+        // Phase `baseline_diff_tree_walker_classifies_each_file`.
+        // End-to-end roundtrip: write two PNGs to a tempdir, run the diff
+        // tree walker, and assert the report kinds line up.
+        {
+            let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let baseline = tmp.join("baseline");
+            let current = tmp.join("current");
+            std::fs::create_dir_all(&baseline).unwrap();
+            std::fs::create_dir_all(&current).unwrap();
 
-    /// End-to-end roundtrip: write two PNGs to a tempdir, run the diff
-    /// tree walker, and assert the report kinds line up.
-    #[test]
-    fn baseline_diff_tree_walker_classifies_each_file() {
-        let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let baseline = tmp.join("baseline");
-        let current = tmp.join("current");
-        std::fs::create_dir_all(&baseline).unwrap();
-        std::fs::create_dir_all(&current).unwrap();
+            // Match: identical 2x2 frames.
+            let pixels = vec![
+                10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+            ];
+            save_rgba(&baseline.join("ok.png"), &pixels, 2, 2).unwrap();
+            save_rgba(&current.join("ok.png"), &pixels, 2, 2).unwrap();
 
-        // Match: identical 2x2 frames.
-        let pixels = vec![
-            10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
-        ];
-        save_rgba(&baseline.join("ok.png"), &pixels, 2, 2).unwrap();
-        save_rgba(&current.join("ok.png"), &pixels, 2, 2).unwrap();
+            // Diff: same dims, different pixels.
+            let mut altered = pixels.clone();
+            altered[0] = altered[0].saturating_add(50);
+            altered[4] = altered[4].saturating_add(50);
+            save_rgba(&baseline.join("diff.png"), &pixels, 2, 2).unwrap();
+            save_rgba(&current.join("diff.png"), &altered, 2, 2).unwrap();
 
-        // Diff: same dims, different pixels.
-        let mut altered = pixels.clone();
-        altered[0] = altered[0].saturating_add(50);
-        altered[4] = altered[4].saturating_add(50);
-        save_rgba(&baseline.join("diff.png"), &pixels, 2, 2).unwrap();
-        save_rgba(&current.join("diff.png"), &altered, 2, 2).unwrap();
+            // Missing: baseline exists, current does not.
+            save_rgba(&baseline.join("missing.png"), &pixels, 2, 2).unwrap();
 
-        // Missing: baseline exists, current does not.
-        save_rgba(&baseline.join("missing.png"), &pixels, 2, 2).unwrap();
+            // SizeMismatch: same name, different dimensions.
+            let small = vec![1u8; 4];
+            save_rgba(&baseline.join("size.png"), &pixels, 2, 2).unwrap();
+            save_rgba(&current.join("size.png"), &small, 1, 1).unwrap();
 
-        // SizeMismatch: same name, different dimensions.
-        let small = vec![1u8; 4];
-        save_rgba(&baseline.join("size.png"), &pixels, 2, 2).unwrap();
-        save_rgba(&current.join("size.png"), &small, 1, 1).unwrap();
+            let report = compare_tree(&baseline, &current, 4).unwrap();
+            let by_name: std::collections::HashMap<_, _> = report
+                .entries
+                .iter()
+                .map(|e| {
+                    (
+                        e.path.file_name().unwrap().to_str().unwrap().to_string(),
+                        &e.kind,
+                    )
+                })
+                .collect();
+            assert!(matches!(by_name["ok.png"], DiffKind::Ok));
+            match by_name["diff.png"] {
+                DiffKind::Diff(n) => assert_eq!(*n, 2, "two pixels mutated"),
+                other => panic!("expected Diff, got {other:?}"),
+            }
+            assert!(matches!(by_name["missing.png"], DiffKind::Missing));
+            assert!(matches!(by_name["size.png"], DiffKind::SizeMismatch { .. }));
 
-        let report = compare_tree(&baseline, &current, 4).unwrap();
-        let by_name: std::collections::HashMap<_, _> = report
-            .entries
-            .iter()
-            .map(|e| {
-                (
-                    e.path.file_name().unwrap().to_str().unwrap().to_string(),
-                    &e.kind,
-                )
-            })
-            .collect();
-        assert!(matches!(by_name["ok.png"], DiffKind::Ok));
-        match by_name["diff.png"] {
-            DiffKind::Diff(n) => assert_eq!(*n, 2, "two pixels mutated"),
-            other => panic!("expected Diff, got {other:?}"),
+            // The walker should have written a diff overlay PNG for diff.png.
+            let overlay = current.join("diff.diff.png");
+            assert!(
+                overlay.exists(),
+                "diff overlay must be written to {}",
+                overlay.display()
+            );
+
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        assert!(matches!(by_name["missing.png"], DiffKind::Missing));
-        assert!(matches!(by_name["size.png"], DiffKind::SizeMismatch { .. }));
-
-        // The walker should have written a diff overlay PNG for diff.png.
-        let overlay = current.join("diff.diff.png");
-        assert!(
-            overlay.exists(),
-            "diff overlay must be written to {}",
-            overlay.display()
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// `*.diff.png` artefacts from a previous check must not be
-    /// re-processed on the next run (they're diff overlays of a
-    /// previous diff, not real baselines).
-    #[test]
-    fn diff_overlay_files_are_skipped() {
-        let tmp = std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let baseline = tmp.join("baseline");
-        let current = tmp.join("current");
-        std::fs::create_dir_all(&baseline).unwrap();
-        std::fs::create_dir_all(&current).unwrap();
-        let pixels = vec![0u8, 0, 0, 255, 0, 0, 0, 255];
-        save_rgba(&baseline.join("a.png"), &pixels, 2, 1).unwrap();
-        save_rgba(&baseline.join("a.diff.png"), &pixels, 2, 1).unwrap();
-        save_rgba(&current.join("a.png"), &pixels, 2, 1).unwrap();
-        let report = compare_tree(&baseline, &current, 4).unwrap();
-        let names: Vec<_> = report
-            .entries
-            .iter()
-            .map(|e| e.path.file_name().unwrap().to_str().unwrap().to_string())
-            .collect();
-        assert_eq!(names, vec!["a.png".to_string()]);
-        let _ = std::fs::remove_dir_all(&tmp);
+        // Phase `diff_overlay_files_are_skipped`.
+        // `*.diff.png` artefacts from a previous check must not be
+        // re-processed on the next run (they're diff overlays of a
+        // previous diff, not real baselines).
+        {
+            let tmp =
+                std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let baseline = tmp.join("baseline");
+            let current = tmp.join("current");
+            std::fs::create_dir_all(&baseline).unwrap();
+            std::fs::create_dir_all(&current).unwrap();
+            let pixels = vec![0u8, 0, 0, 255, 0, 0, 0, 255];
+            save_rgba(&baseline.join("a.png"), &pixels, 2, 1).unwrap();
+            save_rgba(&baseline.join("a.diff.png"), &pixels, 2, 1).unwrap();
+            save_rgba(&current.join("a.png"), &pixels, 2, 1).unwrap();
+            let report = compare_tree(&baseline, &current, 4).unwrap();
+            let names: Vec<_> = report
+                .entries
+                .iter()
+                .map(|e| e.path.file_name().unwrap().to_str().unwrap().to_string())
+                .collect();
+            assert_eq!(names, vec!["a.png".to_string()]);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 }

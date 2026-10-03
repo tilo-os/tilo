@@ -16,7 +16,7 @@
 //! it needs no motion estimation or bitstream state, so the encoder is small
 //! and fully deterministic, while remaining a widely-supported video codec.
 
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 
 use image::{ExtendedColorType, ImageEncoder};
@@ -295,13 +295,15 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 /// duration_ms)`. Best-effort: `None` if the file is not a readable AVI.
 /// Lets the recent handoff show real duration/resolution for recorded clips
 /// without decoding the whole stream.
+/// The largest clip [`probe_avi`] reads (whole; the header is its first
+/// 512 bytes).
+const PROBE_READ_LIMIT: usize = 256 * 1024 * 1024;
+
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is
     // enough. Read up to 512 bytes.
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut head = [0u8; 512];
-    let read = f.read(&mut head).ok()?;
-    let head = head.get(..read)?;
+    let file = crate::files::read_bounded(path, PROBE_READ_LIMIT)?;
+    let head = file.get(..file.len().min(512))?;
     if head.len() < 12
         || head.get(0..4) != Some(&b"RIFF"[..])
         || head.get(8..12) != Some(&b"AVI "[..])
@@ -345,9 +347,8 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// Returns an error if `dir` cannot be created or the clip cannot be
 /// written to it.
 pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
-    std::fs::create_dir_all(dir)?;
     let name = format!("VID_{stamp}.avi");
-    std::fs::write(dir.join(&name), bytes)?;
+    crate::files::write(&dir.join(&name), bytes)?;
     Ok(name)
 }
 
@@ -371,89 +372,88 @@ mod tests {
     }
 
     #[test]
-    fn recorder_encodes_real_jpeg_frames() {
-        let mut rec = Recorder::new(FPS);
-        assert!(rec.is_empty());
-        for i in 0..5u8 {
-            assert!(rec.push(&solid_frame(64, 48, i * 40, 100, 200)));
+    fn recorder_writes_probeable_avi_of_real_jpeg_frames_and_rejects_bad_input() {
+        // Phase `recorder_encodes_real_jpeg_frames`.
+        {
+            let mut rec = Recorder::new(FPS);
+            assert!(rec.is_empty());
+            for i in 0..5u8 {
+                assert!(rec.push(&solid_frame(64, 48, i * 40, 100, 200)));
+            }
+            assert_eq!(rec.frame_count(), 5);
+            // 5 frames at 30fps ≈ 166 ms.
+            assert_eq!(rec.duration_ms(), 166);
+            let avi = rec.finish().expect("non-empty clip encodes");
+
+            // Real RIFF/AVI container framing.
+            assert_eq!(&avi[0..4], b"RIFF");
+            assert_eq!(&avi[8..12], b"AVI ");
+            // RIFF size field matches the actual byte count.
+            let riff_size = u32::from_le_bytes([avi[4], avi[5], avi[6], avi[7]]) as usize;
+            assert_eq!(riff_size, avi.len() - 8);
+            // The movi list and a per-frame index are present.
+            assert!(find(&avi, b"movi").is_some());
+            assert!(find(&avi, b"idx1").is_some());
+            // Exactly five "00dc" frame chunks were written into movi.
+            let dc = avi.windows(4).filter(|w| *w == b"00dc").count();
+            // Each frame appears once in movi and once in idx1.
+            assert_eq!(dc, 5 * 2);
         }
-        assert_eq!(rec.frame_count(), 5);
-        // 5 frames at 30fps ≈ 166 ms.
-        assert_eq!(rec.duration_ms(), 166);
-        let avi = rec.finish().expect("non-empty clip encodes");
+        // Phase `recorded_frame_is_a_decodable_jpeg`.
+        {
+            // Prove the embedded frames are genuine JPEGs by decoding one back.
+            let mut rec = Recorder::new(FPS);
+            rec.push(&solid_frame(80, 60, 10, 220, 30));
+            let avi = rec.finish().unwrap();
 
-        // Real RIFF/AVI container framing.
-        assert_eq!(&avi[0..4], b"RIFF");
-        assert_eq!(&avi[8..12], b"AVI ");
-        // RIFF size field matches the actual byte count.
-        let riff_size = u32::from_le_bytes([avi[4], avi[5], avi[6], avi[7]]) as usize;
-        assert_eq!(riff_size, avi.len() - 8);
-        // The movi list and a per-frame index are present.
-        assert!(find(&avi, b"movi").is_some());
-        assert!(find(&avi, b"idx1").is_some());
-        // Exactly five "00dc" frame chunks were written into movi.
-        let dc = avi.windows(4).filter(|w| *w == b"00dc").count();
-        // Each frame appears once in movi and once in idx1.
-        assert_eq!(dc, 5 * 2);
-    }
+            // Locate the first "00dc" chunk and pull its payload.
+            let movi = find(&avi, b"movi").unwrap();
+            let dc = find(&avi[movi..], b"00dc").unwrap() + movi;
+            let size =
+                u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
+            let payload = &avi[dc + 8..dc + 8 + size];
+            assert_eq!(&payload[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
 
-    #[test]
-    fn recorded_frame_is_a_decodable_jpeg() {
-        // Prove the embedded frames are genuine JPEGs by decoding one back.
-        let mut rec = Recorder::new(FPS);
-        rec.push(&solid_frame(80, 60, 10, 220, 30));
-        let avi = rec.finish().unwrap();
-
-        // Locate the first "00dc" chunk and pull its payload.
-        let movi = find(&avi, b"movi").unwrap();
-        let dc = find(&avi[movi..], b"00dc").unwrap() + movi;
-        let size =
-            u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
-        let payload = &avi[dc + 8..dc + 8 + size];
-        assert_eq!(&payload[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
-
-        let decoded = image::load_from_memory_with_format(payload, image::ImageFormat::Jpeg)
-            .expect("embedded frame decodes as JPEG");
-        assert_eq!((decoded.width(), decoded.height()), (80, 60));
-    }
-
-    #[test]
-    fn empty_recorder_finishes_none() {
-        assert!(Recorder::new(FPS).finish().is_none());
-    }
-
-    #[test]
-    fn write_and_probe_round_trips() {
-        let mut rec = Recorder::new(FPS);
-        for _ in 0..12 {
-            rec.push(&solid_frame(48, 32, 90, 90, 90));
+            let decoded = image::load_from_memory_with_format(payload, image::ImageFormat::Jpeg)
+                .expect("embedded frame decodes as JPEG");
+            assert_eq!((decoded.width(), decoded.height()), (80, 60));
         }
-        let bytes = rec.finish().unwrap();
+        // Phase `write_and_probe_round_trips`.
+        {
+            let mut rec = Recorder::new(FPS);
+            for _ in 0..12 {
+                rec.push(&solid_frame(48, 32, 90, 90, 90));
+            }
+            let bytes = rec.finish().unwrap();
 
-        let dir = std::env::temp_dir().join(format!("camera-vid-test-{}", std::process::id()));
-        let name = write_clip(&dir, &bytes, "20260101_000000_000").unwrap();
-        assert!(
-            name.starts_with("VID_")
-                && Path::new(&name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("avi"))
-        );
+            let dir = std::env::temp_dir().join(format!("camera-vid-test-{}", std::process::id()));
+            let name = write_clip(&dir, &bytes, "20260101_000000_000").unwrap();
+            assert!(
+                name.starts_with("VID_")
+                    && Path::new(&name)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("avi"))
+            );
 
-        let (w, h, dur) = probe_avi(&dir.join(&name)).expect("probe the written clip");
-        assert_eq!((w, h), (48, 32));
-        // 12 frames at 30 fps ≈ 400 ms.
-        assert_eq!(dur, 400);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn frames_of_a_different_size_are_skipped() {
-        let mut rec = Recorder::new(FPS);
-        assert!(rec.push(&solid_frame(32, 32, 1, 2, 3)));
-        assert!(
-            !rec.push(&solid_frame(64, 64, 4, 5, 6)),
-            "size change rejected"
-        );
-        assert_eq!(rec.frame_count(), 1);
+            let (w, h, dur) = probe_avi(&dir.join(&name)).expect("probe the written clip");
+            assert_eq!((w, h), (48, 32));
+            // 12 frames at 30 fps ≈ 400 ms.
+            assert_eq!(dur, 400);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `empty_recorder_finishes_none`.
+        {
+            assert!(Recorder::new(FPS).finish().is_none());
+        }
+        // Phase `frames_of_a_different_size_are_skipped`.
+        {
+            let mut rec = Recorder::new(FPS);
+            assert!(rec.push(&solid_frame(32, 32, 1, 2, 3)));
+            assert!(
+                !rec.push(&solid_frame(64, 64, 4, 5, 6)),
+                "size change rejected"
+            );
+            assert_eq!(rec.frame_count(), 1);
+        }
     }
 }

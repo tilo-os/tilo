@@ -2,8 +2,11 @@
 name = "tilo-automation"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shortcuts: typed pipelines over Tilo's action door."
 
 [lib]
 name = "tilo_automation"
@@ -14,8 +17,8 @@ path = "src/lib.rs"
 # Pure data and logic with no I/O, no runtime and no UI dependency.
 
 [dependencies]
-tilo-actions = { path = "../actions" }
-collab-types = { path = "../collab-types" }
+tilo-actions = { version = "0.1.0", path = "../actions" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

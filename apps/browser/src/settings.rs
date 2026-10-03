@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `xdg_paths::config_dir()/tilo-browser/settings.json`. It holds the
+//!    `tilo_paths::config_dir()/tilo-browser/settings.json`. It holds the
 //!    durable preferences (ad-blocking, clear-on-exit, search engine,
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
@@ -22,7 +22,6 @@
 
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -34,6 +33,8 @@ use ui::widget::{
     Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
     Toggle, Widget,
 };
+
+use crate::actions::BrowserAction;
 
 /// Resource bindings injected by Browser when this pane is hosted. They keep
 /// pointer, keyboard and assistive-tech changes on the exact same action path
@@ -50,6 +51,10 @@ pub struct SettingsActionBindings {
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
     pub close: Option<tilo_actions::ActionBinding<()>>,
+    /// Hosted bookmark and preference edits. Used when the matching binding
+    /// is absent, so the surface submits a [`BrowserAction`] instead of
+    /// writing the document itself.
+    pub document_edits: Option<ui::LocalState<Vec<BrowserAction>>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -152,7 +157,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Absolute path of the on-disk settings file:
-    /// `xdg_paths::config_dir()/tilo-browser/settings.json`. `None` when the
+    /// `tilo_paths::config_dir()/tilo-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
         crate::storage::config_dir().map(|d| d.join("settings.json"))
@@ -340,6 +345,7 @@ impl SettingsPane {
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.homepage.clone(),
+                    hosted_text(self.actions.document_edits.clone(), homepage_action),
                 ),
                 field_block(
                     "Search engine",
@@ -347,6 +353,7 @@ impl SettingsPane {
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.search_engine.clone(),
+                    hosted_text(self.actions.document_edits.clone(), search_engine_action),
                 ),
             ]),
         );
@@ -356,22 +363,26 @@ impl SettingsPane {
             setting_row_described(
                 "Block ads & trackers",
                 "Blocks ads, trackers, and YouTube video ads.",
-                Box::new(toggle_with_action(
+                Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.adblock.clone(),
+                    self.actions.document_edits.as_ref(),
+                    adblock_action,
                 )),
                 large_text,
             ),
             setting_row_described(
                 "Clear data when the browser closes",
                 "Wipe history and cookies on exit.",
-                Box::new(toggle_with_action(
+                Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.clear_on_exit.clone(),
+                    self.actions.document_edits.as_ref(),
+                    clear_on_exit_action,
                 )),
                 large_text,
             ),
@@ -528,19 +539,33 @@ fn browsing_data_controls(
 
 /// A labelled full-width text field: a caption above a [`TextInput`]
 /// bound to the CRDT `Text` object at `path`.
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     action: Option<tilo_actions::ActionBinding<String>>,
+    hosted: Option<(
+        ui::LocalState<Vec<BrowserAction>>,
+        fn(String) -> BrowserAction,
+    )>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
-    let input = match action {
-        Some(binding) => input.on_action(binding),
-        None => input,
+    let input = if let Some(binding) = action {
+        input.on_action(binding)
+    } else if let Some((edits, build)) = hosted {
+        input.on_change(move |value| {
+            let next = build(value.to_string());
+            edits.update(|queue| queue.push(next));
+        })
+    } else {
+        input
     };
     Box::new(
         Column::new()
@@ -552,11 +577,52 @@ fn field_block(
     )
 }
 
-fn toggle_with_action(toggle: Toggle, action: Option<tilo_actions::ActionBinding<bool>>) -> Toggle {
-    match action {
-        Some(binding) => toggle.on_action(binding),
-        None => toggle,
+fn preference_toggle(
+    toggle: Toggle,
+    action: Option<tilo_actions::ActionBinding<bool>>,
+    edits: Option<&ui::LocalState<Vec<BrowserAction>>>,
+    build: fn(bool) -> BrowserAction,
+) -> Toggle {
+    if let Some(binding) = action {
+        return toggle.on_action(binding);
     }
+    let Some(edits) = edits.cloned() else {
+        return toggle;
+    };
+    toggle.on_change(move |enabled| {
+        let next = build(enabled);
+        edits.update(|queue| queue.push(next));
+    })
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
+fn hosted_text(
+    edits: Option<ui::LocalState<Vec<BrowserAction>>>,
+    build: fn(String) -> BrowserAction,
+) -> Option<(
+    ui::LocalState<Vec<BrowserAction>>,
+    fn(String) -> BrowserAction,
+)> {
+    edits.map(|queue| (queue, build))
+}
+
+fn adblock_action(enabled: bool) -> BrowserAction {
+    BrowserAction::SetAdblock { enabled }
+}
+
+fn clear_on_exit_action(enabled: bool) -> BrowserAction {
+    BrowserAction::SetClearOnExit { enabled }
+}
+
+fn homepage_action(url: String) -> BrowserAction {
+    BrowserAction::SetHomepage { url }
+}
+
+fn search_engine_action(template: String) -> BrowserAction {
+    BrowserAction::SetSearchEngine { template }
 }
 
 fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
@@ -567,12 +633,6 @@ fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding
 }
 
 impl Widget for SettingsPane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(c) = &mut self.composed {
-            c.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -637,30 +697,13 @@ impl Widget for SettingsPane {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -696,199 +739,214 @@ impl Widget for SettingsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
 
+    /// Defaults, JSON and disk persistence.
     #[test]
-    fn defaults_are_sensible() {
-        let s = Settings::default();
-        assert!(s.adblock_enabled, "ad-block defaults on");
-        assert!(!s.clear_on_exit, "clear-on-exit defaults off");
-        assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
-        assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
-    }
-
-    #[test]
-    fn json_round_trip_is_lossless() {
-        let s = Settings {
-            adblock_enabled: false,
-            clear_on_exit: true,
-            search_engine: "https://example.com/search?q=".to_string(),
-            homepage: "https://start.example".to_string(),
-        };
-        // Round-trip through the exact on-disk JSON shape.
-        let json = serde_json::to_string(&s.to_json()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let back = Settings::from_json(&parsed);
-        assert_eq!(s, back);
-    }
-
-    #[test]
-    fn save_to_then_load_from_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let s = Settings {
-            adblock_enabled: false,
-            clear_on_exit: true,
-            search_engine: "https://s.example/?q=".to_string(),
-            homepage: "https://home.example".to_string(),
-        };
-        s.save_to(&path).expect("save_to writes the file");
-        let loaded = Settings::load_from(&path);
-        assert_eq!(s, loaded, "loaded settings must equal what was saved");
-    }
-
-    #[test]
-    fn load_from_missing_path_is_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("does-not-exist.json");
-        // Never created — load must fall back to the default.
-        assert_eq!(Settings::load_from(&path), Settings::default());
-    }
-
-    #[test]
-    fn presentation_seeds_local_values_without_document_writes() {
-        let settings = Settings {
-            adblock_enabled: true,
-            clear_on_exit: true,
-            search_engine: "https://s.example/?q=".to_string(),
-            homepage: "https://home.example".to_string(),
-        };
-        let mut pane = SettingsPane::with_settings(&settings);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
-        assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
-        let presentation = SettingsPresentation::from_settings(&settings);
-        assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
-        assert_eq!(
-            presentation.search_engine.with(Clone::clone),
-            settings.search_engine
-        );
-    }
-
-    #[test]
-    fn presentation_reflects_action_applied_values() {
-        let presentation = SettingsPresentation::from_settings(&Settings::default());
-        let settings = Settings {
-            adblock_enabled: false,
-            ..Settings::default()
-        };
-        presentation.reflect(&settings);
-        assert!(!presentation.adblock.with(|value| *value));
-    }
-
-    #[test]
-    fn destructive_controls_have_no_document_fallback_paths() {
-        let mut pane = SettingsPane::new();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            pane.control_action_bindings()
-                .iter()
-                .all(|binding| !matches!(
-                    binding.kind,
-                    ui::widget::ControlBindingKind::CollaborativeDocument(_)
-                ))
-        );
-    }
-
-    #[test]
-    fn presentation_is_per_instance() {
-        let first = SettingsPresentation::from_settings(&Settings::default());
-        let second = SettingsPresentation::from_settings(&Settings::default());
-        first.adblock.set(false);
-        assert!(!first.adblock.with(|value| *value));
-        assert!(second.adblock.with(|value| *value));
-    }
-
-    #[test]
-    fn pane_lays_out_and_toggle_has_a_canonical_action_binding() {
-        // Drive the real five-pass path: build_layout → compute_layout →
-        // apply_layout, then flip the ad-block toggle through the live
-        // widget tree and assert the CRDT bool changed.
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-        // Locate the ad-block toggle's rect by walking the live tree.
-        fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            for c in w.children() {
-                if let Some(r) = find_toggle_rect(c, id) {
-                    return Some(r);
-                }
-            }
-            None
+    fn settings_defaults_and_persistence_round_trip() {
+        // Phase `defaults_are_sensible`.
+        {
+            let s = Settings::default();
+            assert!(s.adblock_enabled, "ad-block defaults on");
+            assert!(!s.clear_on_exit, "clear-on-exit defaults off");
+            assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
+            assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
         }
 
-        let mut pane = SettingsPane::new();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+        // Phase `json_round_trip_is_lossless`.
+        {
+            let s = Settings {
+                adblock_enabled: false,
+                clear_on_exit: true,
+                search_engine: "https://example.com/search?q=".to_string(),
+                homepage: "https://start.example".to_string(),
+            };
+            // Round-trip through the exact on-disk JSON shape.
+            let json = serde_json::to_string(&s.to_json()).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let back = Settings::from_json(&parsed);
+            assert_eq!(s, back);
+        }
 
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = pane.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(600.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .unwrap();
-        pane.apply_layout(&taffy, node, Point::ZERO);
-        // Re-sync so the toggle adopts its retained presentation state.
-        pane.sync(&mut doc, &root);
+        // Phase `save_to_then_load_from_round_trips`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            let s = Settings {
+                adblock_enabled: false,
+                clear_on_exit: true,
+                search_engine: "https://s.example/?q=".to_string(),
+                homepage: "https://home.example".to_string(),
+            };
+            s.save_to(&path).expect("save_to writes the file");
+            let loaded = Settings::load_from(&path);
+            assert_eq!(s, loaded, "loaded settings must equal what was saved");
+        }
 
-        let rect = find_toggle_rect(&pane, "settings.adblock")
-            .expect("ad-block toggle is addressable in the tree");
-        let center = rect.center();
+        // Phase `load_from_missing_path_is_default`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("does-not-exist.json");
+            // Never created — load must fall back to the default.
+            assert_eq!(Settings::load_from(&path), Settings::default());
+        }
+    }
 
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mods = winit::event::Modifiers::default();
-        let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
-            let mut handled = false;
-            let mut focus = None;
-            pane.handle_event(
-                &ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+    /// Presentation values, destructive controls and pane layout.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn settings_presentation_is_local_per_instance_and_action_bound() {
+        // Phase `presentation_seeds_local_values_without_document_writes`.
+        {
+            let settings = Settings {
+                adblock_enabled: true,
+                clear_on_exit: true,
+                search_engine: "https://s.example/?q=".to_string(),
+                homepage: "https://home.example".to_string(),
+            };
+            let mut pane = SettingsPane::with_settings(&settings);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
+            assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
+            let presentation = SettingsPresentation::from_settings(&settings);
+            assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
+            assert_eq!(
+                presentation.search_engine.with(Clone::clone),
+                settings.search_engine
             );
-        };
-        dispatch(
-            &mut pane,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (center.x, center.y).into(),
-            },
-        );
-        dispatch(
-            &mut pane,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
+        }
 
-        assert!(
-            pane.control_action_bindings()
-                .iter()
-                .all(|binding| !matches!(
-                    binding.kind,
-                    ui::widget::ControlBindingKind::CollaborativeDocument(_)
-                ))
-        );
+        // Phase `presentation_reflects_action_applied_values`.
+        {
+            let presentation = SettingsPresentation::from_settings(&Settings::default());
+            let settings = Settings {
+                adblock_enabled: false,
+                ..Settings::default()
+            };
+            presentation.reflect(&settings);
+            assert!(!presentation.adblock.with(|value| *value));
+        }
+
+        // Phase `destructive_controls_have_no_document_fallback_paths`.
+        {
+            let mut pane = SettingsPane::new();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                ui::widget::controls::control_action_bindings(&pane)
+                    .iter()
+                    .all(|binding| !matches!(
+                        binding.kind,
+                        ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                    ))
+            );
+        }
+
+        // Phase `presentation_is_per_instance`.
+        {
+            let first = SettingsPresentation::from_settings(&Settings::default());
+            let second = SettingsPresentation::from_settings(&Settings::default());
+            first.adblock.set(false);
+            assert!(!first.adblock.with(|value| *value));
+            assert!(second.adblock.with(|value| *value));
+        }
+
+        // Phase `pane_lays_out_and_toggle_has_a_canonical_action_binding`.
+        {
+            // Drive the real five-pass path: build_layout → compute_layout →
+            // apply_layout, then flip the ad-block toggle through the live
+            // widget tree and assert the CRDT bool changed.
+            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+            // Locate the ad-block toggle's rect by walking the live tree.
+            fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
+                if w.test_id() == Some(id) {
+                    return Some(w.get_rect());
+                }
+                for c in w.children() {
+                    if let Some(r) = find_toggle_rect(c, id) {
+                        return Some(r);
+                    }
+                }
+                None
+            }
+
+            let mut pane = SettingsPane::new();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = pane.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(600.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                )
+                .unwrap();
+            pane.apply_layout(&taffy, node, Point::ZERO);
+            // Re-sync so the toggle adopts its retained presentation state.
+            pane.sync(&mut doc, &root);
+
+            let rect = find_toggle_rect(&pane, "settings.adblock")
+                .expect("ad-block toggle is addressable in the tree");
+            let center = rect.center();
+
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let mods = winit::event::Modifiers::default();
+            let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
+                let mut handled = false;
+                let mut focus = None;
+                pane.handle_event(
+                    &ev,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+            };
+            dispatch(
+                &mut pane,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (center.x, center.y).into(),
+                },
+            );
+            dispatch(
+                &mut pane,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+
+            assert!(
+                ui::widget::controls::control_action_bindings(&pane)
+                    .iter()
+                    .all(|binding| !matches!(
+                        binding.kind,
+                        ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                    ))
+            );
+        }
     }
 }

@@ -22,9 +22,93 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
+    BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
+    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_chooser_bind,
     resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
 };
+
+struct SeccompFds {
+    clone3_compat: OwnedFd,
+    baseline: OwnedFd,
+}
+
+impl SeccompFds {
+    fn prepend_bwrap_args(argv: &mut Vec<String>) {
+        let mut prefix = vec![
+            "--add-seccomp-fd".to_string(),
+            CLONE3_COMPAT_SECCOMP_CHILD_FD.to_string(),
+            "--add-seccomp-fd".to_string(),
+            BASELINE_SECCOMP_CHILD_FD.to_string(),
+        ];
+        prefix.append(argv);
+        *argv = prefix;
+    }
+
+    fn host_fds(&self) -> (RawFd, RawFd) {
+        (self.clone3_compat.as_raw_fd(), self.baseline.as_raw_fd())
+    }
+}
+
+#[cfg(test)]
+mod seccomp_fd_tests {
+    use super::*;
+
+    #[test]
+    fn both_seccomp_filters_precede_the_sandbox_arguments() {
+        let compat = stage_seccomp_blob(&[1, 2, 3]).expect("compat filter fd");
+        let baseline = stage_seccomp_blob(&[4, 5, 6]).expect("baseline filter fd");
+        let _fds = SeccompFds {
+            clone3_compat: compat,
+            baseline,
+        };
+        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+
+        SeccompFds::prepend_bwrap_args(&mut argv);
+
+        assert_eq!(
+            argv,
+            [
+                "--add-seccomp-fd",
+                "40",
+                "--add-seccomp-fd",
+                "41",
+                "--unshare-all",
+                "/app/bin",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_handed_over_descriptor_can_replace_a_seccomp_program() {
+        use crate::services::RESERVED_CHILD_FDS;
+        // Declared services are numbered from 17 upwards around the reserved
+        // slots; a filter sharing a slot with one would make bwrap read its
+        // program from that service's socket and never start the app.
+        for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
+            assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
+            assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");
+        }
+        let mut unique = RESERVED_CHILD_FDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            RESERVED_CHILD_FDS.len(),
+            "reserved slots overlap"
+        );
+    }
+}
+
+unsafe fn place_fd(host: RawFd, child: RawFd) -> std::io::Result<()> {
+    if unsafe { libc::dup2(host, child) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let flags = unsafe { libc::fcntl(child, libc::F_GETFD) };
+    if flags != -1 {
+        let _ = unsafe { libc::fcntl(child, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -98,6 +182,11 @@ pub enum RunError {
     InvalidOpenUri(String),
     #[error("refusing managed-service launch: {0}")]
     InvalidServiceLaunch(String),
+    #[error(
+        "refusing to launch `{package}` as `{app_id}`: an app has exactly one id, the package id \
+         of its signed manifest"
+    )]
+    AppIdMismatch { app_id: String, package: String },
     #[error("refusing authored launch: identity signing broker could not start ({0})")]
     IdentityBroker(String),
     #[error(
@@ -175,6 +264,10 @@ pub struct RunOptions {
     /// inside bwrap's mount namespace. Requires this binary bind-mounted at
     /// [`SHIM_MOUNT_PATH`]. Default on; off is a logged debug escape hatch.
     pub landlock_enforce: bool,
+    /// Accept Landlock not, or only partially, enforced by the kernel. Set
+    /// only for a system-store app on a provider-sandboxed machine
+    /// ([`crate::provider_sandbox`]).
+    pub landlock_best_effort: bool,
     /// Launch mode — GUI (default), an interactive CLI command, or a managed
     /// service. CLI and service modes pick `cli_bin()` (falling back to
     /// `bin`) and forward argv without requiring a Wayland surface.
@@ -214,8 +307,8 @@ pub struct RunOptions {
     /// Host path of the compositor-written `Vec<CapOverride>` JSON. `None`,
     /// missing, unreadable or malformed all mean the manifest's sandbox as-is.
     pub capabilities_path: Option<PathBuf>,
-    /// The app id capabilities are addressed to (defaults to the manifest's
-    /// package id); re-checked per capability rather than trusted.
+    /// The app id the caller launched. An app has exactly one id, so a value
+    /// other than the manifest's package id refuses the launch.
     pub app_id: Option<String>,
     /// A document to open, forwarded as `argv[1]`. Only an argument — binds
     /// and unlocks nothing on its own. `None` launches with no arguments.
@@ -237,6 +330,7 @@ impl Default for RunOptions {
             // convenience constructor must not accidentally remove one of the
             // kernel-enforced confinement layers.
             landlock_enforce: true,
+            landlock_best_effort: false,
             mode: LaunchMode::default(),
             allow_missing_runtime: false,
             allow_unsigned_runtime: false,
@@ -296,6 +390,16 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
             desktop_id: desktop_id.clone(),
         });
     }
+    if let Some(app_id) = opts
+        .app_id
+        .as_deref()
+        .filter(|app_id| *app_id != manifest.package_id)
+    {
+        return Err(RunError::AppIdMismatch {
+            app_id: app_id.to_owned(),
+            package: manifest.package_id.clone(),
+        });
+    }
     if !matches!(&opts.mode, LaunchMode::Service { .. }) {
         return Ok(());
     }
@@ -314,15 +418,6 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
     if opts.wayland_socket.is_some() || opts.open_document.is_some() || opts.open_uri.is_some() {
         return Err(RunError::InvalidServiceLaunch(
             "managed services cannot receive a display, document, or URI".into(),
-        ));
-    }
-    if opts
-        .app_id
-        .as_deref()
-        .is_some_and(|app_id| app_id != manifest.package_id)
-    {
-        return Err(RunError::InvalidServiceLaunch(
-            "managed service app id must match its signed manifest".into(),
         ));
     }
     Ok(())
@@ -349,64 +444,65 @@ mod resource_claim_tests {
     }
 
     #[test]
-    fn uri_is_revalidated_against_the_launch_manifest() {
-        let manifest = browser_manifest();
-        let accepted = RunOptions {
-            open_uri: Some("https://example.test/a --not-an-argument".into()),
-            ..Default::default()
-        };
-        validate_open_uri(&manifest, &accepted).unwrap();
-
-        for uri in [
-            "http://example.test",
-            "file:///etc/passwd",
-            "https://x\n--flag",
-        ] {
-            let opts = RunOptions {
-                open_uri: Some(uri.into()),
+    fn launch_claims_and_device_hints_follow_the_manifest() {
+        // Phase `uri_is_revalidated_against_the_launch_manifest`.
+        {
+            let manifest = browser_manifest();
+            let accepted = RunOptions {
+                open_uri: Some("https://example.test/a --not-an-argument".into()),
                 ..Default::default()
             };
-            assert!(
-                validate_open_uri(&manifest, &opts).is_err(),
-                "accepted {uri:?}"
-            );
+            validate_open_uri(&manifest, &accepted).unwrap();
+
+            for uri in [
+                "http://example.test",
+                "file:///etc/passwd",
+                "https://x\n--flag",
+            ] {
+                let opts = RunOptions {
+                    open_uri: Some(uri.into()),
+                    ..Default::default()
+                };
+                assert!(
+                    validate_open_uri(&manifest, &opts).is_err(),
+                    "accepted {uri:?}"
+                );
+            }
         }
-    }
+        // Phase `only_gui_game_packages_receive_the_scheduler_hint`.
+        {
+            let game: MinimalManifest = toml::from_str(
+                "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+                 [entrypoint]\nbin = \"bin/game\"\n",
+            )
+            .unwrap();
+            assert!(is_native_game_launch(&game, &RunOptions::default()));
+            let service = RunOptions {
+                mode: LaunchMode::Service {
+                    passthrough_argv: Vec::new(),
+                },
+                ..RunOptions::default()
+            };
+            assert!(!is_native_game_launch(&game, &service));
+            assert!(!is_native_game_launch(
+                &browser_manifest(),
+                &RunOptions::default()
+            ));
+        }
+        // Phase `only_game_launches_receive_the_ntsync_device`.
+        {
+            let mut game = vec!["/app/game".to_string()];
+            splice_game_ntsync(&mut game, true).unwrap();
+            assert!(
+                game.windows(3)
+                    .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
+            assert_eq!(game.last().map(String::as_str), Some("/app/game"));
 
-    #[test]
-    fn only_gui_game_packages_receive_the_scheduler_hint() {
-        let game: MinimalManifest = toml::from_str(
-            "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
-             [entrypoint]\nbin = \"bin/game\"\n",
-        )
-        .unwrap();
-        assert!(is_native_game_launch(&game, &RunOptions::default()));
-        let service = RunOptions {
-            mode: LaunchMode::Service {
-                passthrough_argv: Vec::new(),
-            },
-            ..RunOptions::default()
-        };
-        assert!(!is_native_game_launch(&game, &service));
-        assert!(!is_native_game_launch(
-            &browser_manifest(),
-            &RunOptions::default()
-        ));
-    }
-
-    #[test]
-    fn only_game_launches_receive_the_ntsync_device() {
-        let mut game = vec!["/app/game".to_string()];
-        splice_game_ntsync(&mut game, true).unwrap();
-        assert!(
-            game.windows(3)
-                .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
-        );
-        assert_eq!(game.last().map(String::as_str), Some("/app/game"));
-
-        let mut ordinary = vec!["/app/browser".to_string()];
-        splice_game_ntsync(&mut ordinary, false).unwrap();
-        assert_eq!(ordinary, ["/app/browser"]);
+            let mut ordinary = vec!["/app/browser".to_string()];
+            splice_game_ntsync(&mut ordinary, false).unwrap();
+            assert_eq!(ordinary, ["/app/browser"]);
+        }
     }
 }
 
@@ -432,54 +528,65 @@ mod managed_service_tests {
     }
 
     #[test]
-    fn managed_service_requires_service_kind_and_headless_entrypoint() {
-        let service = manifest("service", "cli");
-        assert!(validate_launch_mode(&service, &service_options()).is_ok());
-        assert!(matches!(
-            validate_launch_mode(&manifest("app", "cli"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "gui"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-    }
-
-    #[test]
-    fn managed_service_cannot_receive_a_display_or_open_resource() {
-        let manifest = manifest("service", "cli");
-        let display = RunOptions {
-            wayland_socket: Some("/run/user/1000/wayland-0".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &display).is_err());
-        let document = RunOptions {
-            open_document: Some("/tmp/document".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &document).is_err());
-    }
-
-    #[test]
-    fn managed_service_cannot_readdress_its_authenticated_identity() {
-        let opts = RunOptions {
-            app_id: Some("so.tilo.other".into()),
-            ..service_options()
-        };
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "cli"), &opts),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
+    fn managed_service_launches_are_confined_to_headless_service_packages() {
+        // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
+        {
+            let service = manifest("service", "cli");
+            assert!(validate_launch_mode(&service, &service_options()).is_ok());
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "cli"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "gui"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+        }
+        // Phase `managed_service_cannot_receive_a_display_or_open_resource`.
+        {
+            let manifest = manifest("service", "cli");
+            let display = RunOptions {
+                wayland_socket: Some("/run/user/1000/wayland-0".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &display).is_err());
+            let document = RunOptions {
+                open_document: Some("/tmp/document".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &document).is_err());
+        }
+        // Phase `no_launch_can_readdress_its_signed_package_id`.
+        {
+            let service = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..service_options()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "cli"), &service),
+                Err(RunError::AppIdMismatch { .. })
+            ));
+            let gui = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..RunOptions::default()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "gui"), &gui),
+                Err(RunError::AppIdMismatch { .. })
+            ));
+            let exact = RunOptions {
+                app_id: Some("so.tilo.worker".into()),
+                ..RunOptions::default()
+            };
+            assert!(validate_launch_mode(&manifest("app", "gui"), &exact).is_ok());
+        }
     }
 }
 
 /// Resolve the capability plan: read the compositor's file, evaluate it
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
 pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
-    let app_id = opts
-        .app_id
-        .clone()
-        .unwrap_or_else(|| manifest.package_id.clone());
+    let app_id = manifest.package_id.clone();
     let records = opts
         .capabilities_path
         .as_deref()
@@ -949,46 +1056,47 @@ mod dev_override_tests {
     use crate::dev_env::{TRUSTED_PUBLISHERS_FILE_ENV, dev_override_from};
 
     #[test]
-    fn a_release_build_reads_the_images_trusted_publisher_list() {
-        let path = trusted_publishers_path_from(dev_override_from(
-            false,
-            TRUSTED_PUBLISHERS_FILE_ENV,
-            Some("/tmp/attacker-publishers.txt".into()),
-        ));
-        assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
-    }
-
-    #[test]
-    fn a_developer_build_honours_the_trusted_publisher_override() {
-        let path = trusted_publishers_path_from(dev_override_from(
-            true,
-            TRUSTED_PUBLISHERS_FILE_ENV,
-            Some("/dev/runtime/trusted-publishers.txt".into()),
-        ));
-        assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
-    }
-
-    #[test]
-    fn a_release_build_ignores_the_runtime_bundle_root_override() {
-        let gated = dev_override_from(
-            false,
-            runtime_bundle::RUNTIME_DIR_ENV,
-            Some("/tmp/attacker-runtime".into()),
-        );
-        // Resolution may fail on a machine with no data dir; what matters is
-        // that it never lands under the override.
-        if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
-            assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+    fn trust_roots_follow_the_build_profile() {
+        // Phase `a_release_build_reads_the_images_trusted_publisher_list`.
+        {
+            let path = trusted_publishers_path_from(dev_override_from(
+                false,
+                TRUSTED_PUBLISHERS_FILE_ENV,
+                Some("/tmp/attacker-publishers.txt".into()),
+            ));
+            assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
         }
-        let honoured = dev_override_from(
-            true,
-            runtime_bundle::RUNTIME_DIR_ENV,
-            Some("/dev/runtime".into()),
-        );
-        assert_eq!(
-            runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
-            Some(PathBuf::from("/dev/runtime/1"))
-        );
+        // Phase `a_developer_build_honours_the_trusted_publisher_override`.
+        {
+            let path = trusted_publishers_path_from(dev_override_from(
+                true,
+                TRUSTED_PUBLISHERS_FILE_ENV,
+                Some("/dev/runtime/trusted-publishers.txt".into()),
+            ));
+            assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
+        }
+        // Phase `a_release_build_ignores_the_runtime_bundle_root_override`.
+        {
+            let gated = dev_override_from(
+                false,
+                runtime_bundle::RUNTIME_DIR_ENV,
+                Some("/tmp/attacker-runtime".into()),
+            );
+            // Resolution may fail on a machine with no data dir; what matters is
+            // that it never lands under the override.
+            if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
+                assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+            }
+            let honoured = dev_override_from(
+                true,
+                runtime_bundle::RUNTIME_DIR_ENV,
+                Some("/dev/runtime".into()),
+            );
+            assert_eq!(
+                runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
+                Some(PathBuf::from("/dev/runtime/1"))
+            );
+        }
     }
 }
 
@@ -1348,6 +1456,24 @@ fn splice_app_dir(
     Ok(())
 }
 
+/// Settings remaps XDG into the app dir. Bind the session store over that
+/// path so a write to `~/.config/tilo/settings.json` is the document the
+/// open Settings window watches and paints.
+fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
+    if package_id != "so.tilo.settings" {
+        return Ok(());
+    }
+    let Some(host) = xdg_paths::xdg::config_home() else {
+        return Ok(());
+    };
+    let host = host.join("tilo");
+    std::fs::create_dir_all(&host)?;
+    let entry = pop_entry(argv)?;
+    crate::appdir::push_session_settings_bind(argv, &host);
+    argv.push(entry);
+    Ok(())
+}
+
 /// Mount Files' live room-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
@@ -1464,6 +1590,8 @@ fn splice_sandbox_shim(
     argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
     if !opts.landlock_enforce {
         argv.push("--no-landlock".to_string());
+    } else if opts.landlock_best_effort {
+        argv.push("--landlock-best-effort".to_string());
     }
     for fd in ctx.keep_fds {
         argv.push("--keep-fd".to_string());
@@ -1550,12 +1678,7 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
     }
-    // Standard tmpfs mounts the app expects writable; --rw grants full FS
-    // access, and both vanish with the process (scratch, not hidden state).
-    for p in ["/tmp", "/dev"] {
-        argv.push("--rw".to_string());
-        argv.push(p.to_string());
-    }
+    push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
     // descriptors dup2'd in, never mounted or opened by path.
     //
@@ -1576,38 +1699,80 @@ fn splice_sandbox_shim(
     Ok(())
 }
 
-/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
-/// with the seccomp fd and service sockets wired into the child via
-/// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
-/// the parent for observability (the shim enforces Landlock; this only
-/// records intent).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
-)]
-fn spawn_and_wait(
-    mut argv: Vec<String>,
-    cli_passthrough: Vec<String>,
-    opts: &RunOptions,
-    latency_sensitive: bool,
-    seccomp_fd: OwnedFd,
-    resolved: Vec<crate::services::ResolvedService>,
-    egress: &crate::netgate::EgressDecision,
-    net_gate: Option<&crate::sandbox::NetGateBind>,
+fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
+    // Standard tmpfs mounts the app expects writable; --rw grants full FS
+    // access, and both vanish with the process (scratch, not hidden state).
+    for p in ["/tmp", "/dev"] {
+        argv.push("--rw".to_string());
+        argv.push(p.to_string());
+    }
+    let profile = manifest.sandbox.seccomp_profile(&manifest.package_id);
+    for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
+}
+
+/// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
+/// seccomp filters, the resolved service sockets, the identity broker (app end,
+/// control end, serving thread) and whether to apply game scheduling hints.
+/// The launcher's copies are released at fixed points around `spawn`.
+struct ChildSetup {
+    seccomp_fds: SeccompFds,
+    services: Vec<crate::services::ResolvedService>,
     identity_broker: (
         Option<UnixStream>,
         Option<UnixStream>,
         Option<std::thread::JoinHandle<()>>,
     ),
-) -> Result<ExitStatus, RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
-    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
+    latency_sensitive: bool,
+}
 
-    // Insert --seccomp <child_fd> at the front so bwrap installs it
-    // before any other action (matches the compositor pattern).
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
+/// with the seccomp fd and service sockets wired into the child via
+/// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
+/// the parent for observability (the shim enforces Landlock; this only
+/// records intent).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
+)]
+fn spawn_and_wait(
+    mut argv: Vec<String>,
+    cli_passthrough: Vec<String>,
+    opts: &RunOptions,
+    child_setup: ChildSetup,
+    egress: &crate::netgate::EgressDecision,
+    net_gate: Option<&crate::sandbox::NetGateBind>,
+    observer: Option<(
+        &dyn crate::managed::EnrolledProcessObserver,
+        Option<PathBuf>,
+    )>,
+) -> Result<ExitStatus, RunError> {
+    let ChildSetup {
+        seccomp_fds,
+        services: resolved,
+        identity_broker,
+        latency_sensitive,
+    } = child_setup;
+    let (observer, debug_output) = match observer {
+        Some((observer, debug_output)) => (Some(observer), debug_output),
+        None => (None, None),
+    };
+    let debug_output = debug_output.and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|error| {
+                tracing::warn!(path = %path.display(), %error, "debug output log unavailable");
+            })
+            .ok()
+            .map(|file| (path, file))
+    });
+    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
+    SeccompFds::prepend_bwrap_args(&mut argv);
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
     // forwarded as the sandboxed program's argv[1..].
@@ -1621,10 +1786,23 @@ fn spawn_and_wait(
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
     clear_bwrap_environment(&mut cmd);
+    if observer.is_some() {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some((path, _)) = &debug_output {
+            tracing::warn!(
+                path = %path.display(),
+                "{DEBUG_STDERR_ENV}=1: capturing the managed child's output (debug only)",
+            );
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+        }
+    }
 
-    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
+    // pre_exec: place both seccomp blobs on fixed child fds, and put
     // each service socket on the fd number the app was told to read.
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -1671,14 +1849,8 @@ fn spawn_and_wait(
     // landlock crate's syscall wrappers. No allocator calls, no locks.
     unsafe {
         cmd.pre_exec(move || {
-            // Plumb seccomp blob fd → fixed child fd, strip CLOEXEC.
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             if latency_sensitive {
@@ -1690,16 +1862,39 @@ fn spawn_and_wait(
         });
     }
 
+    // Last parent-side policy/custody check after preparation, immediately before spawn.
+    if let Some(observer) = observer {
+        observer.before_spawn().map_err(RunError::Spawn)?;
+    }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
-    // Important: keep `seccomp_fd` alive until after `spawn` returns,
-    // so its dup2'd copy in the child remains valid. Drop here.
-    drop(seccomp_fd);
+    if let Some((_, file)) = debug_output {
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
+        if let Some(out) = child.stdout.take() {
+            let (sink, budget) = (sink.clone(), budget.clone());
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stdout".into())
+                .spawn(move || copy_bounded_output(out, &sink, &budget));
+        }
+        if let Some(err) = child.stderr.take() {
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stderr".into())
+                .spawn(move || copy_bounded_output(err, &sink, &budget));
+        }
+    }
+    // Keep both filter fds alive until spawn has duplicated them in the child.
+    drop(seccomp_fds);
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
     drop(identity_broker_app);
-    let status = child.wait()?;
+    let status = if let Some(observer) = observer {
+        observer.child_created();
+        observer.supervise(child)?
+    } else {
+        child.wait()?
+    };
     stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(status)
 }
@@ -1708,7 +1903,7 @@ fn spawn_and_wait(
 /// image decides whether this package may have it. An unrecognised name is a
 /// packaging mistake; a recognised-but-unentitled one is an app trying to
 /// lift a protection off itself — logged distinctly.
-fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
+fn stage_seccomp(manifest: &MinimalManifest) -> Result<SeccompFds, RunError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -1729,8 +1924,10 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
             profile.as_str()
         );
     }
-    let seccomp_blob = compile_baseline(profile)?;
-    Ok(stage_seccomp_blob(&seccomp_blob)?)
+    Ok(SeccompFds {
+        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
+        baseline: stage_seccomp_blob(&compile_baseline(profile)?)?,
+    })
 }
 
 /// Resolve the selected identity record on the host, migrate legacy storage,
@@ -1776,13 +1973,6 @@ type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
 /// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every argument is an independently-resolved piece of the sandbox \
-              (runtime, service binds, dbus plan, identity, capabilities); bundling \
-              them would only move the same list behind a struct built at the one \
-              call site"
-)]
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1877,6 +2067,32 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, None)
+}
+
+pub(crate) fn run_enrolled(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    services: &mut crate::services::EnrolledServiceContext,
+    observer: &dyn crate::managed::EnrolledProcessObserver,
+) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, Some((services, observer)))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
+)]
+fn run_with_context(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    mut enrolled: Option<(
+        &mut crate::services::EnrolledServiceContext,
+        &dyn crate::managed::EnrolledProcessObserver,
+    )>,
+) -> Result<ExitStatus, RunError> {
     validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
@@ -1890,60 +2106,92 @@ pub fn run_with(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
-    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
-    let mut resolved = resolve_service_binds_for_launch(
-        &manifest.sandbox.services,
-        opts.no_services,
-        ServiceLaunchContext {
-            app_id: launch_app_id,
-            workspace_id: opts.workspace_id.as_deref(),
-        },
-    )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
-    if let Some(identity) = resolve_identity_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
-        resolved.push(identity);
-    }
-    if let Some(blobs) = resolve_blob_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
-        resolved.push(blobs);
-    }
+    let package_id = manifest.package_id.as_str();
+    let resolved = if let Some((services, _)) = enrolled.as_mut() {
+        let binding = services.binding().clone();
+        services
+            .take_for_launch(&binding, &manifest.sandbox.services)
+            .map_err(RunError::InvalidServiceLaunch)?
+    } else {
+        let mut resolved = resolve_service_binds_for_launch(
+            &manifest.sandbox.services,
+            opts.no_services,
+            ServiceLaunchContext {
+                app_id: package_id,
+                workspace_id: opts.workspace_id.as_deref(),
+            },
+        )?;
+        crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+        if let Some(identity) =
+            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(identity);
+        }
+        if let Some(blobs) =
+            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(blobs);
+        }
+        if let Some(chooser) =
+            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(chooser);
+        }
+        resolved
+    };
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
-    let seccomp_fd: OwnedFd = stage_seccomp(manifest)?;
+    let seccomp_fds = stage_seccomp(manifest)?;
 
     // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
-    // no raw-session-bus fallback. `_dbus_guard` stays alive until bwrap is
-    // waited on so Drop can SIGTERM the proxy.
-    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+    // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
+    // waited on so Drop can SIGTERM the proxies.
+    let (dbus_plan, _dbus_guards) =
+        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
-    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let resolved_runtime = if enrolled.is_some() {
+        Some(
+            crate::managed::verify_runtime(manifest, opts)
+                .map_err(RunError::InvalidServiceLaunch)?,
+        )
+    } else {
+        resolve_runtime(manifest, opts)?
+    };
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
-    let app_dir = resolve_app_dir(manifest, opts)?;
+    let app_dir = if let Some((services, _)) = enrolled.as_ref() {
+        crate::appdir::prepare_host_app_dir(
+            services.data_home(),
+            Some(&services.binding().room),
+            &services.binding().app,
+        )?
+    } else {
+        resolve_app_dir(manifest, opts)?
+    };
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
-    let capabilities = resolve_capabilities(manifest, opts);
+    let mut capabilities = resolve_capabilities(manifest, opts);
+    if enrolled.is_some() {
+        capabilities.participation = crate::capabilities::Participation::Author;
+    }
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
     // marker for the argv builder; it is never mounted.
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
-        resolve_identity_broker(&capabilities, opts)?;
+        if enrolled.is_some() {
+            (None, None, None, None)
+        } else {
+            resolve_identity_broker(&capabilities, opts)?
+        };
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     if identity_broker_app.is_some() {
@@ -1969,11 +2217,25 @@ pub fn run_with(
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if let Some((services, _)) = enrolled.as_ref() {
+        splice_cli_setenv(
+            &mut argv,
+            Some((
+                "TILO_MANAGED_AGENT_CONTEXT".into(),
+                services
+                    .agent_context_json()
+                    .map_err(RunError::InvalidServiceLaunch)?,
+            )),
+        )?;
+    }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
-    splice_tool_context(&mut argv)?;
+    if enrolled.is_none() {
+        splice_tool_context(&mut argv)?;
+    }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_session_settings(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -1999,17 +2261,63 @@ pub fn run_with(
         argv,
         cli_passthrough,
         opts,
-        latency_sensitive,
-        seccomp_fd,
-        resolved,
+        ChildSetup {
+            seccomp_fds,
+            services: resolved,
+            identity_broker: (
+                identity_broker_app,
+                identity_broker_control,
+                identity_broker_thread,
+            ),
+            latency_sensitive,
+        },
         &egress,
         net_gate.as_ref(),
-        (
-            identity_broker_app,
-            identity_broker_control,
-            identity_broker_thread,
-        ),
+        enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home()))),
     )
+}
+
+/// Debug-only, off by default: when the launching host sets
+/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed (enrolled) child's stdout and
+/// stderr go to a bounded log file in its data home instead of `/dev/null`.
+/// This changes no sandbox, policy or custody decision; it only keeps the
+/// diagnostic output a supervised app would otherwise lose.
+pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
+/// Upper bound of one launch's captured output.
+const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
+    (std::env::var_os(DEBUG_STDERR_ENV).as_deref() == Some(std::ffi::OsStr::new("1")))
+        .then(|| data_home.join("launcher-debug-output.log"))
+}
+
+/// Copy `source` into `sink` until EOF or until `budget` bytes were written
+/// in total across all copiers sharing it; the rest is drained and dropped so
+/// the child never blocks on a full pipe.
+fn copy_bounded_output(
+    mut source: impl std::io::Read,
+    sink: &std::sync::Mutex<std::fs::File>,
+    budget: &AtomicUsize,
+) {
+    use std::io::Write as _;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match source.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let granted = budget
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |left| {
+                Some(left.saturating_sub(n))
+            })
+            .unwrap_or(0)
+            .min(n);
+        if granted > 0
+            && let Ok(mut file) = sink.lock()
+        {
+            let _ = file.write_all(buf.get(..granted).unwrap_or_default());
+        }
+    }
 }
 
 fn validated_tool_context_from_env() -> Option<String> {
@@ -2033,7 +2341,7 @@ fn spawn_and_capture(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
     opts: &RunOptions,
-    seccomp_fd: OwnedFd,
+    seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     identity_broker: (
         Option<UnixStream>,
@@ -2041,12 +2349,8 @@ fn spawn_and_capture(
         Option<std::thread::JoinHandle<()>>,
     ),
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
-
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+    SeccompFds::prepend_bwrap_args(&mut argv);
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
     argv.extend(passthrough);
@@ -2060,7 +2364,7 @@ fn spawn_and_capture(
     clear_bwrap_environment(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
 
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2073,13 +2377,8 @@ fn spawn_and_capture(
     }
     unsafe {
         cmd.pre_exec(move || {
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             Ok(())
@@ -2087,7 +2386,7 @@ fn spawn_and_capture(
     }
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
-    drop(seccomp_fd);
+    drop(seccomp_fds);
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
@@ -2158,69 +2457,69 @@ mod captured_resource_tests {
     }
 
     #[test]
-    fn limits_are_nonzero_and_launcher_bounded() {
-        assert!(plan().validate().is_ok());
-        for invalid in [
-            CapturedResourcePlan {
-                cpu_seconds: 0,
-                ..plan()
-            },
-            CapturedResourcePlan {
-                memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
-                ..plan()
-            },
-            CapturedResourcePlan {
-                output_bytes: 0,
-                ..plan()
-            },
-            CapturedResourcePlan {
-                wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
-                ..plan()
-            },
-        ] {
-            assert!(matches!(
-                invalid.validate(),
-                Err(crate::capture::InvalidCapturePlan)
-            ));
+    fn captured_output_is_bounded_and_cancellable() {
+        // Phase `limits_are_nonzero_and_launcher_bounded`.
+        {
+            assert!(plan().validate().is_ok());
+            for invalid in [
+                CapturedResourcePlan {
+                    cpu_seconds: 0,
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    output_bytes: 0,
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
+                    ..plan()
+                },
+            ] {
+                assert!(matches!(
+                    invalid.validate(),
+                    Err(crate::capture::InvalidCapturePlan)
+                ));
+            }
         }
-    }
-
-    #[test]
-    fn stdout_and_stderr_share_one_hard_memory_budget() {
-        let used = Arc::new(AtomicUsize::new(0));
-        let exceeded = Arc::new(AtomicBool::new(false));
-        let first = drain_bounded(
-            std::io::Cursor::new(b"123456"),
-            used.as_ref(),
-            exceeded.as_ref(),
-            8,
-        )
-        .unwrap();
-        let second = drain_bounded(
-            std::io::Cursor::new(b"abcdef"),
-            used.as_ref(),
-            exceeded.as_ref(),
-            8,
-        )
-        .unwrap();
-        assert_eq!(first, b"123456");
-        assert_eq!(second, b"ab");
-        assert_eq!(used.load(AtomicOrdering::Acquire), 8);
-        assert!(exceeded.load(AtomicOrdering::Acquire));
-    }
-
-    #[test]
-    fn cancellation_is_target_local_and_sticky() {
-        let cancellation = CaptureCancellation::default();
-        let observer = cancellation.clone();
-        assert!(!observer.is_cancelled());
-        cancellation.cancel();
-        assert!(observer.is_cancelled());
+        // Phase `stdout_and_stderr_share_one_hard_memory_budget`.
+        {
+            let used = Arc::new(AtomicUsize::new(0));
+            let exceeded = Arc::new(AtomicBool::new(false));
+            let first = drain_bounded(
+                std::io::Cursor::new(b"123456"),
+                used.as_ref(),
+                exceeded.as_ref(),
+                8,
+            )
+            .unwrap();
+            let second = drain_bounded(
+                std::io::Cursor::new(b"abcdef"),
+                used.as_ref(),
+                exceeded.as_ref(),
+                8,
+            )
+            .unwrap();
+            assert_eq!(first, b"123456");
+            assert_eq!(second, b"ab");
+            assert_eq!(used.load(AtomicOrdering::Acquire), 8);
+            assert!(exceeded.load(AtomicOrdering::Acquire));
+        }
+        // Phase `cancellation_is_target_local_and_sticky`.
+        {
+            let cancellation = CaptureCancellation::default();
+            let observer = cancellation.clone();
+            assert!(!observer.is_cancelled());
+            cancellation.cancel();
+            assert!(observer.is_cancelled());
+        }
     }
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "the bounded supervisor keeps pipe ownership, process-group teardown, and every terminal reason in one auditable transaction"
 )]
@@ -2228,7 +2527,7 @@ fn spawn_and_capture_bounded(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
     opts: &RunOptions,
-    seccomp_fd: OwnedFd,
+    seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     identity_broker: (
         Option<UnixStream>,
@@ -2238,12 +2537,9 @@ fn spawn_and_capture_bounded(
     plan: CapturedResourcePlan,
     cancellation: &CaptureCancellation,
 ) -> Result<CapturedRunOutput, RunError> {
-    const SECCOMP_CHILD_FD: i32 = 16;
     let plan = plan.validate()?;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
-    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
-    prefix.append(&mut argv);
-    argv = prefix;
+    SeccompFds::prepend_bwrap_args(&mut argv);
     argv.extend(passthrough);
 
     let bwrap = opts
@@ -2257,7 +2553,7 @@ fn spawn_and_capture_bounded(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
 
-    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|service| (service.host_fd(), service.child_fd as RawFd))
@@ -2270,13 +2566,8 @@ fn spawn_and_capture_bounded(
     }
     unsafe {
         cmd.pre_exec(move || {
-            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
+            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
+            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             set_captured_resource_limits(plan)?;
@@ -2288,7 +2579,7 @@ fn spawn_and_capture_bounded(
     }
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
-    drop(seccomp_fd);
+    drop(seccomp_fds);
     drop(resolved);
     drop(identity_broker_app);
     let used = Arc::new(AtomicUsize::new(0));
@@ -2441,7 +2732,7 @@ fn run_with_capture_spawn<T>(
         Vec<String>,
         Vec<String>,
         &RunOptions,
-        OwnedFd,
+        SeccompFds,
         Vec<crate::services::ResolvedService>,
         IdentityBrokerHandles,
     ) -> Result<T, RunError>,
@@ -2453,36 +2744,41 @@ fn run_with_capture_spawn<T>(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
-    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
         opts.no_services,
         ServiceLaunchContext {
-            app_id: launch_app_id,
+            app_id: package_id,
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
-    if let Some(identity) = resolve_identity_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
+    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+    if let Some(identity) =
+        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
         resolved.push(identity);
     }
-    if let Some(blobs) = resolve_blob_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
+    if let Some(blobs) =
+        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
         resolved.push(blobs);
+    }
+    if let Some(chooser) =
+        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(chooser);
     }
     let binds = to_service_binds(&resolved);
 
     // Seccomp baseline resolved identically to `run_with` — two paths
     // reaching different conclusions would make capture a way around the filter.
-    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile(&manifest.package_id))?;
-    let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
+    let seccomp_fds = SeccompFds {
+        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
+        baseline: stage_seccomp_blob(&compile_baseline(
+            manifest.sandbox.seccomp_profile(&manifest.package_id),
+        )?)?,
+    };
 
     // Build the exact production sandbox shape. Capture changes stdout only.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
@@ -2490,7 +2786,8 @@ fn run_with_capture_spawn<T>(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
     // D-Bus plan (same decision path as `run_with`).
-    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+    let (dbus_plan, _dbus_guards) =
+        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let capabilities = resolve_capabilities(manifest, opts);
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         resolve_identity_broker(&capabilities, opts)?;
@@ -2523,6 +2820,7 @@ fn run_with_capture_spawn<T>(
     splice_workspace_id_bind(&mut argv, opts)?;
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_session_settings(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -2547,7 +2845,7 @@ fn run_with_capture_spawn<T>(
         argv,
         passthrough,
         opts,
-        seccomp_fd,
+        seccomp_fds,
         resolved,
         (
             identity_broker_app,
@@ -2694,63 +2992,112 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 /// to be exec'd as the Landlock shim. Kept out of `/usr` and `/tmp`.
 pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 
-/// Decide how to expose D-Bus per the manifest's portal declaration.
-/// Spawn `xdg-dbus-proxy` filtered to portals/notifications/MPRIS.
+/// Decide how to expose D-Bus: the manifest's portal declaration, and for
+/// every graphical app the accessibility buses.
 ///
-/// There is deliberately no raw-session-bus fallback. Giving an untrusted
-/// sandbox the complete user bus because a filtering helper is missing turns
-/// an availability problem into a privilege-escalation path (and lets the app
-/// call portal *implementation* services directly). A failed proxy therefore
-/// means portals are unavailable for that launch.
+/// Each bus reaches the app only through its own filtered `xdg-dbus-proxy`
+/// ([`dbus_proxy`]). There is deliberately no raw-bus fallback. Giving an
+/// untrusted sandbox the complete user bus because a filtering helper is
+/// missing turns an availability problem into a privilege-escalation path
+/// (and lets the app call portal *implementation* services directly). A failed
+/// proxy therefore means that bus is unavailable for that launch.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> (Option<DBusBindPlan>, Option<DBusProxyGuard>) {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return (None, None);
+    graphical: bool,
+) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
+    let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
+    if !wants_portals && !graphical {
+        return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
         tracing::warn!(
-            "manifest declares a via-host portal but DBUS_SESSION_BUS_ADDRESS is unset; \
-             portals will be unavailable to the sandboxed app"
+            "DBUS_SESSION_BUS_ADDRESS is unset; portals and accessibility will be \
+             unavailable to the sandboxed app"
         );
-        return (None, None);
+        return (None, Vec::new());
     };
     if bus_addr.is_empty() {
-        return (None, None);
+        return (None, Vec::new());
     }
     let uid = current_uid();
-
-    // The only path: xdg-dbus-proxy filtered to portal-adjacent names.
-    if let Some(binary) = dbus_proxy::find_proxy_binary() {
-        let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
-        match dbus_proxy::spawn_dbus_proxy(&binary, &bus_addr, &sock) {
-            Ok(guard) => {
-                let plan = DBusBindPlan {
-                    host_socket: guard.socket_path().to_path_buf(),
-                    sandbox_path: dbus_proxy::sandbox_bus_path(uid),
-                };
-                tracing::info!(
-                    proxy_binary = %binary.display(),
-                    socket = %guard.socket_path().display(),
-                    "xdg-dbus-proxy spawned for portal access"
-                );
-                return (Some(plan), Some(guard));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "xdg-dbus-proxy failed to spawn; portal access stays unavailable"
-                );
-            }
-        }
-    } else {
+    let Some(binary) = dbus_proxy::find_proxy_binary() else {
         tracing::warn!(
-            "xdg-dbus-proxy not found on PATH; portal access stays unavailable. \
-             Install `flatpak-xdg-utils` to enable filtered portal traffic."
+            "xdg-dbus-proxy unavailable; portals and accessibility stay unavailable. \
+             Check TILO_LAUNCHER_DBUS_PROXY_BIN or install `xdg-dbus-proxy` \
+             to enable filtered bus traffic."
         );
+        return (None, Vec::new());
+    };
+
+    let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
+    let session = match dbus_proxy::spawn_filtered_proxy(
+        &binary,
+        &bus_addr,
+        &sock,
+        &dbus_proxy::session_filter_args(wants_portals, graphical),
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "xdg-dbus-proxy failed to spawn; the session bus stays unavailable"
+            );
+            return (None, Vec::new());
+        }
+    };
+    let mut plan = DBusBindPlan {
+        host_socket: session.socket_path().to_path_buf(),
+        sandbox_path: dbus_proxy::sandbox_bus_path(uid),
+        atspi: None,
+    };
+    let mut guards = vec![session];
+    if graphical && let Some((atspi, guard)) = spawn_atspi_proxy(&binary, &bus_addr, uid) {
+        plan.atspi = Some(atspi);
+        guards.push(guard);
     }
-    (None, None)
+    tracing::info!(
+        proxy_binary = %binary.display(),
+        socket = %plan.host_socket.display(),
+        accessibility = plan.atspi.is_some(),
+        "filtered D-Bus proxies spawned"
+    );
+    (Some(plan), guards)
+}
+
+/// The filtered AT-SPI bus proxy for a graphical app, or `None` when the
+/// session runs no accessibility bus or the proxy cannot start; the app then
+/// stays invisible to assistive technology, never on the raw bus.
+fn spawn_atspi_proxy(
+    binary: &std::path::Path,
+    session_bus: &str,
+    uid: u32,
+) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
+    let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
+        tracing::info!("the session runs no accessibility bus");
+        return None;
+    };
+    let socket = dbus_proxy::atspi_proxy_socket_path(uid, std::process::id());
+    match dbus_proxy::spawn_filtered_proxy(
+        binary,
+        &atspi_addr,
+        &socket,
+        dbus_proxy::ATSPI_FILTER_ARGS,
+    ) {
+        Ok(guard) => Some((
+            crate::sandbox::AtspiBindPlan {
+                host_socket: guard.socket_path().to_path_buf(),
+                sandbox_path: dbus_proxy::sandbox_atspi_path(uid),
+            },
+            guard,
+        )),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "AT-SPI proxy failed to spawn; the app stays invisible to assistive technology"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2770,10 +3117,10 @@ mod dbus_resolution_tests {
             PortalPolicy::ViaHost,
         )]);
 
-        let (plan, guard) = resolve_dbus_bind(&portals);
+        let (plan, guards) = resolve_dbus_bind(&portals, true);
 
         assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
-        assert!(guard.is_none(), "no proxy process should have started");
+        assert!(guards.is_empty(), "no proxy process should have started");
     }
 }
 
@@ -2798,132 +3145,131 @@ mod identity_resolution_tests {
     }
 
     #[test]
-    fn explicit_record_wins_and_skips_existence_check() {
-        let opts = RunOptions {
-            identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
-            ..RunOptions::default()
-        };
-        assert_eq!(
-            resolve_identity_host_path(&opts),
-            Some(PathBuf::from("/nowhere/does/not/exist.json")),
-            "explicit path is used verbatim, no exists() check"
-        );
-    }
+    fn identity_record_resolution_honours_the_requested_source() {
+        // Phase `explicit_record_wins_and_skips_existence_check`.
+        {
+            let opts = RunOptions {
+                identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
+                ..RunOptions::default()
+            };
+            assert_eq!(
+                resolve_identity_host_path(&opts),
+                Some(PathBuf::from("/nowhere/does/not/exist.json")),
+                "explicit path is used verbatim, no exists() check"
+            );
+        }
+        // Phase `a_named_store_resolves_its_active_identity`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = store_with_primary(tmp.path());
+            let opts = RunOptions {
+                identity: IdentitySource::Store(store.clone()),
+                ..RunOptions::default()
+            };
+            assert_eq!(
+                resolve_identity_host_path(&opts),
+                Some(store.join("primary.json"))
+            );
+        }
+        // Phase `an_empty_store_resolves_nothing`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let opts = RunOptions {
+                identity: IdentitySource::Store(tmp.path().to_path_buf()),
+                ..RunOptions::default()
+            };
+            assert_eq!(resolve_identity_host_path(&opts), None);
+        }
+        // Phase `no_identity_ignores_the_users_store`.
+        // `None` means no identity even when the user's store holds one.
+        {
+            let home = tilo_test_env::TestHome::new().unwrap();
+            store_with_primary(home.config());
+            let opts = RunOptions {
+                identity: IdentitySource::None,
+                ..RunOptions::default()
+            };
+            assert_eq!(resolve_identity_host_path(&opts), None);
+        }
+        // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn a_named_store_resolves_its_active_identity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = store_with_primary(tmp.path());
-        let opts = RunOptions {
-            identity: IdentitySource::Store(store.clone()),
-            ..RunOptions::default()
-        };
-        assert_eq!(
-            resolve_identity_host_path(&opts),
-            Some(store.join("primary.json"))
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let store = tempfile::tempdir().unwrap();
+            let path = dir.path().join("custom.json");
+            let secret = [31u8; 32];
+            let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+            let original = serde_json::to_vec(&serde_json::json!({
+                "display_name": "Explicit debug identity",
+                "avatar_color": [1, 2, 3],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": key.verifying_key().to_bytes(),
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 1,
+                    "secret_bytes": secret,
+                },
+                "created_at": "2026-08-30T00:00:00Z",
+                "schema_version": 1,
+            }))
+            .unwrap();
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    #[test]
-    fn an_empty_store_resolves_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let opts = RunOptions {
-            identity: IdentitySource::Store(tmp.path().to_path_buf()),
-            ..RunOptions::default()
-        };
-        assert_eq!(resolve_identity_host_path(&opts), None);
-    }
+            let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
+            drop(app);
+            drop(control);
+            thread.join().unwrap();
 
-    /// `None` means no identity even when the user's store holds one.
-    #[test]
-    fn no_identity_ignores_the_users_store() {
-        let home = tilo_test_env::TestHome::new().unwrap();
-        store_with_primary(home.config());
-        let opts = RunOptions {
-            identity: IdentitySource::None,
-            ..RunOptions::default()
-        };
-        assert_eq!(resolve_identity_host_path(&opts), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_identity_outside_the_managed_store_is_never_rewritten() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let store = tempfile::tempdir().unwrap();
-        let path = dir.path().join("custom.json");
-        let secret = [31u8; 32];
-        let key = ed25519_dalek::SigningKey::from_bytes(&secret);
-        let original = serde_json::to_vec(&serde_json::json!({
-            "display_name": "Explicit debug identity",
-            "avatar_color": [1, 2, 3],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": key.verifying_key().to_bytes(),
-                "threshold": 1,
-                "total_shares": 1,
-                "share_index": 1,
-                "secret_bytes": secret,
-            },
-            "created_at": "2026-08-30T00:00:00Z",
-            "schema_version": 1,
-        }))
-        .unwrap();
-        std::fs::write(&path, &original).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
-        drop(app);
-        drop(control);
-        thread.join().unwrap();
-
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(
-            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-            0o755,
-            "an explicit path must never chmod its parent"
-        );
-        assert!(!dir.path().join("secrets").exists());
-        assert!(!dir.path().join(".identity.lock").exists());
-        assert!(!store.path().join("secrets").exists());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(
+                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "an explicit path must never chmod its parent"
+            );
+            assert!(!dir.path().join("secrets").exists());
+            assert!(!dir.path().join(".identity.lock").exists());
+            assert!(!store.path().join("secrets").exists());
+        }
     }
 
     // The user's store is located through the environment; these pin that
     // resolution itself.
 
     #[test]
-    fn the_user_store_prefers_xdg_config_home() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
-        store_with_primary(&home.home().join(".config"));
-        let xdg = home.root().join("xdg-config");
-        let ident = store_with_primary(&xdg).join("primary.json");
-        home.env().set("XDG_CONFIG_HOME", &xdg);
-        assert_eq!(
-            resolve_identity_host_path(&RunOptions::default()),
-            Some(ident)
-        );
-    }
-
-    #[test]
-    fn the_user_store_falls_back_to_home_without_xdg() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
-        home.env().remove("XDG_CONFIG_HOME");
-        assert_eq!(
-            resolve_identity_host_path(&RunOptions::default()),
-            Some(ident)
-        );
-    }
-
-    #[test]
-    fn the_user_store_resolves_nothing_without_a_home() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("XDG_CONFIG_HOME").remove("HOME");
-        assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+    fn the_user_identity_store_is_located_via_xdg_then_home() {
+        // Phase `the_user_store_prefers_xdg_config_home`.
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
+            store_with_primary(&home.home().join(".config"));
+            let xdg = home.root().join("xdg-config");
+            let ident = store_with_primary(&xdg).join("primary.json");
+            home.env().set("XDG_CONFIG_HOME", &xdg);
+            assert_eq!(
+                resolve_identity_host_path(&RunOptions::default()),
+                Some(ident)
+            );
+        }
+        // Phase `the_user_store_falls_back_to_home_without_xdg`.
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
+            home.env().remove("XDG_CONFIG_HOME");
+            assert_eq!(
+                resolve_identity_host_path(&RunOptions::default()),
+                Some(ident)
+            );
+        }
+        // Phase `the_user_store_resolves_nothing_without_a_home`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("XDG_CONFIG_HOME").remove("HOME");
+            assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+        }
     }
 }
 
@@ -2954,66 +3300,201 @@ mod app_dir_tests {
     }
 
     #[test]
-    fn workspace_launch_without_an_author_grant_is_read_only() {
-        let m = manifest("so.tilo.fixture");
-        let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
-        assert_eq!(
-            workspace.participation,
-            crate::capabilities::Participation::ReadOnly
-        );
+    fn the_app_directory_is_resolved_per_room_and_never_from_the_manifest() {
+        // Phase `workspace_launch_without_an_author_grant_is_read_only`.
+        {
+            let m = manifest("so.tilo.fixture");
+            let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
+            assert_eq!(
+                workspace.participation,
+                crate::capabilities::Participation::ReadOnly
+            );
 
-        let personal = resolve_capabilities(&m, &opts_in(None));
-        assert_eq!(
-            personal.participation,
-            crate::capabilities::Participation::Unscoped
-        );
-    }
+            let personal = resolve_capabilities(&m, &opts_in(None));
+            assert_eq!(
+                personal.participation,
+                crate::capabilities::Participation::Unscoped
+            );
+        }
+        // Phase `the_launch_resolves_one_directory_per_room`.
+        // The launch path resolves the directory rather than the manifest
+        // naming it — the room launched into decides which one.
+        {
+            let data = tempfile::tempdir().expect("tempdir");
 
-    /// The launch path resolves the directory rather than the manifest
-    /// naming it — the room launched into decides which one.
-    #[test]
-    fn the_launch_resolves_one_directory_per_room() {
-        let data = tempfile::tempdir().expect("tempdir");
+            let m = manifest("so.tilo.fixture");
+            let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
+            let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
+            let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
 
-        let m = manifest("so.tilo.fixture");
-        let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
-        let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
-        let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
-
-        assert!(a.is_dir() && b.is_dir() && personal.is_dir());
-        assert_ne!(a, b);
-        assert_ne!(a, personal);
-        assert!(
-            !a.starts_with(&b) && !b.starts_with(&a),
-            "neither room may contain the other: {a:?} {b:?}"
-        );
-        for dir in [&a, &b, &personal] {
+            assert!(a.is_dir() && b.is_dir() && personal.is_dir());
+            assert_ne!(a, b);
+            assert_ne!(a, personal);
             assert!(
-                dir.starts_with(data.path().join("tilo-rooms")),
-                "{dir:?} is outside the rooms tree"
+                !a.starts_with(&b) && !b.starts_with(&a),
+                "neither room may contain the other: {a:?} {b:?}"
+            );
+            for dir in [&a, &b, &personal] {
+                assert!(
+                    dir.starts_with(data.path().join("tilo-rooms")),
+                    "{dir:?} is outside the rooms tree"
+                );
+            }
+        }
+        // Phase `a_declared_write_path_is_never_created`.
+        // A package cannot make the launcher create a directory it named: the
+        // retired `sandbox.fs.write` block is refused before the directory step.
+        {
+            let data = tempfile::tempdir().expect("tempdir");
+
+            let mut m = manifest("so.tilo.fixture");
+            let victim = data.path().join("so.tilo.totp");
+            m.sandbox.fs.write.push(victim.display().to_string());
+            let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+
+            let err = refused.expect_err("a manifest naming a write path must be refused");
+            assert!(
+                matches!(err, RunError::FsPolicy(_)),
+                "expected a policy refusal, got: {err}"
+            );
+            assert!(
+                !victim.exists(),
+                "the launcher must not create a path a package named"
             );
         }
     }
 
-    /// A package cannot make the launcher create a directory it named: the
-    /// retired `sandbox.fs.write` block is refused before the directory step.
     #[test]
-    fn a_declared_write_path_is_never_created() {
-        let data = tempfile::tempdir().expect("tempdir");
+    fn settings_binds_the_session_store_and_other_apps_do_not() {
+        let config = tempfile::tempdir().expect("session config");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
 
-        let mut m = manifest("so.tilo.fixture");
-        let victim = data.path().join("so.tilo.totp");
-        m.sandbox.fs.write.push(victim.display().to_string());
-        let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+        let mut argv = vec!["/entry".to_string()];
+        splice_session_settings(&mut argv, "so.tilo.notes").expect("notes");
+        assert_eq!(argv, vec!["/entry".to_string()]);
 
-        let err = refused.expect_err("a manifest naming a write path must be refused");
+        splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
+        let host = config.path().join("tilo");
+        assert!(host.is_dir(), "session store directory must exist to bind");
         assert!(
-            matches!(err, RunError::FsPolicy(_)),
-            "expected a policy refusal, got: {err}"
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == host.to_string_lossy()
+                && w[2] == "/run/tilo/app/.config/tilo"),
+            "Settings must bind the session store over remapped XDG: {argv:?}"
         );
         assert!(
-            !victim.exists(),
-            "the launcher must not create a path a package named"
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "TILO_SESSION_SETTINGS"
+                && w[2] == crate::appdir::SANDBOX_SESSION_SETTINGS),
+            "Settings must name the session document: {argv:?}"
         );
+        assert_eq!(argv.last().map(String::as_str), Some("/entry"));
+    }
+}
+
+#[cfg(test)]
+mod managed_spawn_policy_tests {
+    use super::*;
+    struct CurrentPolicy {
+        allowed: bool,
+        checked: AtomicUsize,
+        spawned: AtomicUsize,
+    }
+    impl crate::managed::EnrolledProcessObserver for CurrentPolicy {
+        fn before_spawn(&self) -> std::io::Result<()> {
+            self.checked.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.allowed {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "revoked current policy",
+                ))
+            }
+        }
+        fn child_created(&self) {
+            self.spawned.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
+            child.wait()
+        }
+    }
+    #[test]
+    fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
+        // This exercises the real prepared-command spawn boundary, not a package,
+        // sandbox or live managed process proof. The permit's policy check is
+        // covered separately by the consuming-authority unit test.
+        for allowed in [false, true] {
+            let policy = CurrentPolicy {
+                allowed,
+                checked: AtomicUsize::new(0),
+                spawned: AtomicUsize::new(0),
+            };
+            let options = RunOptions {
+                bwrap_bin: Some("/usr/bin/true".into()),
+                ..Default::default()
+            };
+            let result = spawn_and_wait(
+                vec![],
+                vec![],
+                &options,
+                ChildSetup {
+                    seccomp_fds: SeccompFds {
+                        clone3_compat: tempfile::tempfile().unwrap().into(),
+                        baseline: tempfile::tempfile().unwrap().into(),
+                    },
+                    services: vec![],
+                    identity_broker: (None, None, None),
+                    latency_sensitive: false,
+                },
+                &crate::netgate::EgressDecision::Blocked,
+                None,
+                Some((&policy, None)),
+            );
+            assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(
+                policy.spawned.load(AtomicOrdering::SeqCst),
+                usize::from(allowed)
+            );
+            if allowed {
+                assert!(
+                    result
+                        .expect("real Linux prepared-command spawn required")
+                        .success()
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod debug_output_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_copy_is_bounded_and_drains() {
+        let path = tempfile::NamedTempFile::new().unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path.path())
+            .unwrap();
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(10));
+        copy_bounded_output(&b"0123456"[..], &sink, &budget);
+        copy_bounded_output(&b"789abcdef"[..], &sink, &budget);
+        assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
+        assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn debug_output_is_off_by_default() {
+        if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
+            assert!(debug_output_log(Path::new("/nonexistent")).is_none());
+        }
     }
 }

@@ -6,7 +6,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::app::plural;
@@ -208,16 +208,13 @@ impl DiagnosticsPanel {
                 (Some(l), None) => format!("{l}"),
                 _ => "—".to_string(),
             };
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &loc,
-                12.0,
                 c.text_dim,
                 transform * Affine::translate((list.x0 + 30.0, y + 6.0)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(12.0).with_family(FontChoice::Monospace),
             );
 
             // Message (+ first hint, dimmed).

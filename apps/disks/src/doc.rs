@@ -56,6 +56,10 @@ impl DisksDoc {
 
     pub fn write_topology(doc: &mut AutoCommit, topo: &Topology) {
         let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
+        Self::write_topology_json(doc, &json);
+    }
+
+    pub fn write_topology_json(doc: &mut AutoCommit, json: &str) {
         let _ = doc.put(&ROOT, "topology", json);
     }
 
@@ -121,39 +125,43 @@ impl DisksDoc {
 mod tests {
     use super::*;
 
+    /// The disks document seeds the topology once, round-trips it, and persists UI fields without re-seeding clobbering them.
     #[test]
-    fn seed_then_read_round_trips() {
-        let mut doc = AutoCommit::new();
-        assert!(DisksDoc::is_empty(&doc));
-        let topo = Topology::sample();
-        DisksDoc::seed(&mut doc, &topo);
-        assert!(!DisksDoc::is_empty(&doc));
-        assert_eq!(DisksDoc::selected(&doc), 0);
-        assert_eq!(DisksDoc::tab(&doc), "overview");
-        let json = DisksDoc::topology_json(&doc).unwrap();
-        let back: Topology = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.drives.len(), 4);
-    }
+    fn disks_doc_seeds_once_and_persists_ui_state() {
+        // --- phase: seed_then_read_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            assert!(DisksDoc::is_empty(&doc));
+            let topo = Topology::sample();
+            DisksDoc::seed(&mut doc, &topo);
+            assert!(!DisksDoc::is_empty(&doc));
+            assert_eq!(DisksDoc::selected(&doc), 0);
+            assert_eq!(DisksDoc::tab(&doc), "overview");
+            let json = DisksDoc::topology_json(&doc).unwrap();
+            let back: Topology = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.drives.len(), 4);
+        }
 
-    #[test]
-    fn ui_mutations_persist() {
-        let mut doc = AutoCommit::new();
-        DisksDoc::seed(&mut doc, &Topology::sample());
-        DisksDoc::set_selected(&mut doc, 2);
-        DisksDoc::set_tab(&mut doc, "smart");
-        DisksDoc::set_pending(&mut doc, "format:sdb");
-        assert_eq!(DisksDoc::selected(&doc), 2);
-        assert_eq!(DisksDoc::tab(&doc), "smart");
-        assert_eq!(DisksDoc::pending(&doc), "format:sdb");
-    }
+        // --- phase: ui_mutations_persist ---
+        {
+            let mut doc = AutoCommit::new();
+            DisksDoc::seed(&mut doc, &Topology::sample());
+            DisksDoc::set_selected(&mut doc, 2);
+            DisksDoc::set_tab(&mut doc, "smart");
+            DisksDoc::set_pending(&mut doc, "format:sdb");
+            assert_eq!(DisksDoc::selected(&doc), 2);
+            assert_eq!(DisksDoc::tab(&doc), "smart");
+            assert_eq!(DisksDoc::pending(&doc), "format:sdb");
+        }
 
-    #[test]
-    fn seed_is_idempotent_for_ui_fields() {
-        let mut doc = AutoCommit::new();
-        DisksDoc::seed(&mut doc, &Topology::sample());
-        DisksDoc::set_selected(&mut doc, 3);
-        // Re-seeding must not clobber an existing selection.
-        DisksDoc::seed(&mut doc, &Topology::sample());
-        assert_eq!(DisksDoc::selected(&doc), 3);
+        // --- phase: seed_is_idempotent_for_ui_fields ---
+        {
+            let mut doc = AutoCommit::new();
+            DisksDoc::seed(&mut doc, &Topology::sample());
+            DisksDoc::set_selected(&mut doc, 3);
+            // Re-seeding must not clobber an existing selection.
+            DisksDoc::seed(&mut doc, &Topology::sample());
+            assert_eq!(DisksDoc::selected(&doc), 3);
+        }
     }
 }

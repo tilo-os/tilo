@@ -40,6 +40,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod component;
 pub mod doc;
 pub mod draw;
 pub mod engine;
@@ -48,9 +49,11 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod resource;
 pub mod zoom;
 
 pub use app::CalculatorApp;
+pub use component::definition;
 
 use ui::widget::Widget;
 
@@ -66,7 +69,12 @@ pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(CalculatorApp::seeded())
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Calculator, CalculatorShell};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod component_tests;
+
+#[cfg(test)]
+mod framework_history_tests;

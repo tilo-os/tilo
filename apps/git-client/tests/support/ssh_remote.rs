@@ -11,7 +11,13 @@ use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{self, Session};
 use russh::{Channel, ChannelId};
 
-const CHILD_ROOT: &str = "TILO_GIT_SSH_FIXTURE_ROOT";
+pub(super) const CHILD_ROOT: &str = "TILO_GIT_SSH_FIXTURE_ROOT";
+/// The `#[test]` the child re-runs, as the `it` harness names it (module path included).
+/// With `--exact`, a stale name selects nothing and the child "passes" without ever
+/// fetching, so the parent also requires `CHILD_VERIFIED` on the child's stdout.
+const CHILD_TEST: &str =
+    "remote_transport::production_backend_supports_https_and_ssh_and_rejects_untrusted_tls";
+const CHILD_VERIFIED: &str = "ssh-child-verified-fetch";
 
 fn fixture_key(seed: u8) -> PrivateKey {
     // Deliberately public test-only material; never used outside this fixture.
@@ -207,15 +213,11 @@ pub(super) fn verify_transport() {
         });
     });
     let agent = ready_rx
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("SSH fixture startup");
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args([
-            "--exact",
-            "production_backend_supports_ssh_remotes",
-            "--nocapture",
-        ])
+        .args(["--exact", CHILD_TEST, "--nocapture"])
         .env(CHILD_ROOT, root.path())
         .env("HOME", root.path())
         .env("USERPROFILE", root.path())
@@ -236,6 +238,12 @@ pub(super) fn verify_transport() {
     assert!(
         result.status.success(),
         "SSH transfer child failed: {}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains(CHILD_VERIFIED),
+        "SSH transfer child never ran the verification (is {CHILD_TEST} still the test name?): {}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
@@ -294,4 +302,5 @@ fn verify_child(root: &Path) {
             .target(),
         Some(pushed)
     );
+    println!("{CHILD_VERIFIED}");
 }

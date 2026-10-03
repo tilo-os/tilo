@@ -643,9 +643,9 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     // A wedged pipeline must not hang the caller forever. Long enough that a
     // slow decode of a long source still finishes, short enough that a stall
     // surfaces as missing audio rather than a frozen export.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(120);
     loop {
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             tracing::warn!("audio: decoding {uri} timed out; mixing it as silence");
             break;
         }
@@ -951,15 +951,10 @@ impl MixMeters {
 /// recolouring a clip must not throw away a clipping report, and moving an
 /// audible clip must.
 pub fn mix_signature(project: &Project) -> u64 {
-    // FNV-1a: no dependency, stable across runs and machines, and this is a
-    // change detector rather than a security boundary.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x1000_0000_01b3);
-        }
-    };
+    // FNV-1a: stable across runs and machines, and this is a change detector
+    // rather than a security boundary.
+    let mut hasher = fnv::FnvHasher::default();
+    let mut eat = |bytes: &[u8]| std::hash::Hasher::write(&mut hasher, bytes);
     for t in &project.tracks {
         eat(t.id.as_bytes());
         eat(&t.gain_db.to_bits().to_le_bytes());
@@ -989,7 +984,7 @@ pub fn mix_signature(project: &Project) -> u64 {
             }
         }
     }
-    h
+    std::hash::Hasher::finish(&hasher)
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,45 +1086,43 @@ impl AudioMonitor {
             stop: AtomicBool::new(false),
         });
         let state = shared.clone();
-        let handle = std::thread::Builder::new()
-            .name("video-editor-monitor".into())
-            .spawn(move || {
-                let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
-                while !state.stop.load(AtomicOrdering::Relaxed) {
-                    if !state.playing.load(AtomicOrdering::Relaxed) {
-                        // Idle cheaply. Nothing is pushed while paused, so a
-                        // paused editor makes no sound at all.
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        continue;
-                    }
-                    let at = *state
-                        .position
+        let handle = ui::rt::spawn_thread("video-editor-monitor", move || {
+            let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
+            while !state.stop.load(AtomicOrdering::Relaxed) {
+                if !state.playing.load(AtomicOrdering::Relaxed) {
+                    // Idle cheaply. Nothing is pushed while paused, so a
+                    // paused editor makes no sound at all.
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let at = *state
+                    .position
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (block, report) = {
+                    let project = state
+                        .project
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let (block, report) = {
-                        let project = state
-                            .project
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
-                    };
-                    // Recorded before the push, so a device that goes away
-                    // mid-block still leaves behind what the last one measured
-                    // rather than swallowing the overload that killed it.
-                    meters.record(at, &report);
-                    if !sink.push(&block) {
-                        break;
-                    }
-                    // Advance by exactly what was mixed, so the audio clock
-                    // is the sample count rather than wall time and cannot
-                    // drift away from the picture.
-                    *state
-                        .position
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+                    mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
+                };
+                // Recorded before the push, so a device that goes away
+                // mid-block still leaves behind what the last one measured
+                // rather than swallowing the overload that killed it.
+                meters.record(at, &report);
+                if !sink.push(&block) {
+                    break;
                 }
-            })
-            .ok();
+                // Advance by exactly what was mixed, so the audio clock
+                // is the sample count rather than wall time and cannot
+                // drift away from the picture.
+                *state
+                    .position
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+            }
+        })
+        .ok();
         Self { shared, handle }
     }
 
@@ -1282,26 +1275,78 @@ mod tests {
         ));
     }
 
-    /// A pull that came back empty used to be read as proof that the file had
-    /// no audio stream. It is not, and stating the rule here pins the exact
-    /// distinction the loop turns on.
-    #[cfg(any(feature = "gst", feature = "decode"))]
     #[test]
-    fn quiet_before_the_demuxer_has_settled_is_not_proof_of_no_audio() {
-        use super::no_audio_concluded;
-        // Nothing pulled, nothing linked, pads still arriving: an empty pull
-        // here is a statement about the clock, not about the file. This is
-        // the case that was getting it wrong -- and it is the one a loaded
-        // machine produces, which is why it failed under a full test run and
-        // passed on its own.
-        assert!(!no_audio_concluded(false, false));
-        // The demuxer has now said that is every pad there is, and none was
-        // audio. Only now is the silence about the file.
-        assert!(no_audio_concluded(true, false));
-        // An audio pad IS linked, so quiet means the pipeline has not got
-        // going yet -- never a reason to stop waiting for it.
-        assert!(!no_audio_concluded(true, true));
-        assert!(!no_audio_concluded(false, true));
+    #[expect(
+        clippy::float_cmp,
+        reason = "silence is written as literal zeros, not computed"
+    )]
+    fn mixer_fills_missing_or_short_sources_with_silence() {
+        // Case `a_source_that_yields_nothing_contributes_silence`.
+        {
+            // An un-hydrated reference must not fail the mix — the rest of the
+            // timeline is still audible.
+            let (p, _, _, _) = project_with_audio();
+            let m2 = p.media[1].id;
+            let mut src = constant(&[(m2, 0.4)]); // media 1 absent
+            let block = mix_block(&p, 1.0, 16, &mut src);
+            assert!(
+                (block[0] - 0.4).abs() < 1e-6,
+                "the readable clip still plays: {}",
+                block[0]
+            );
+        }
+        // Case `a_short_read_leaves_the_rest_of_the_block_silent`.
+        {
+            struct Short;
+            impl PcmSource for Short {
+                fn samples(&mut self, _m: MediaId, _f: f64, _frames: usize) -> Option<Vec<f32>> {
+                    // Two frames' worth, however many were asked for.
+                    Some(vec![0.5; 2 * CHANNELS])
+                }
+            }
+            let (p, _, _, _) = project_with_audio();
+            let block = mix_block(&p, 1.0, 16, &mut Short);
+            assert_eq!(block.len(), 16 * CHANNELS, "the block is still full length");
+            assert!(block[0] > 0.0, "what the source gave is mixed");
+            assert_eq!(
+                block[15 * CHANNELS],
+                0.0,
+                "past the end of the source is silence"
+            );
+        }
+        // Case `nothing_under_the_playhead_mixes_to_silence`.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, 1.0), (m2, 1.0)]);
+            let block = mix_block(&p, 500.0, 32, &mut src);
+            assert!(
+                block.iter().all(|s| *s == 0.0),
+                "past every clip the mix is silent"
+            );
+            assert_eq!(peak(&block), 0.0);
+        }
+        // Case `quiet_before_the_demuxer_has_settled_is_not_proof_of_no_audio`:
+        // A pull that came back empty used to be read as proof that the file had
+        // no audio stream. It is not, and stating the rule here pins the exact
+        // distinction the loop turns on.
+        #[cfg(any(feature = "gst", feature = "decode"))]
+        {
+            use super::no_audio_concluded;
+            // Nothing pulled, nothing linked, pads still arriving: an empty pull
+            // here is a statement about the clock, not about the file. This is
+            // the case that was getting it wrong -- and it is the one a loaded
+            // machine produces, which is why it failed under a full test run and
+            // passed on its own.
+            assert!(!no_audio_concluded(false, false));
+            // The demuxer has now said that is every pad there is, and none was
+            // audio. Only now is the silence about the file.
+            assert!(no_audio_concluded(true, false));
+            // An audio pad IS linked, so quiet means the pipeline has not got
+            // going yet -- never a reason to stop waiting for it.
+            assert!(!no_audio_concluded(true, true));
+            assert!(!no_audio_concluded(false, true));
+        }
     }
 
     /// A file in the repository, so this test cannot pass by looking at
@@ -1315,56 +1360,57 @@ mod tests {
         p
     }
 
-    /// The positive half of the rule: a source that really does carry audio
-    /// has to come back with it. A decoder that returned `None` here would
-    /// make every "the export is silent" assertion in this crate vacuous.
-    #[cfg(feature = "decode")]
     #[test]
+    #[cfg(feature = "decode")]
     #[serial_test::serial(video_editor_gst)]
-    fn a_source_that_carries_audio_decodes_to_real_samples() {
-        if !generated_clip::media_stack() {
-            return;
+    fn real_source_decode_settles_or_gives_up() {
+        // Case `a_source_that_carries_audio_decodes_to_real_samples`:
+        // The positive half of the rule: a source that really does carry audio
+        // has to come back with it. A decoder that returned `None` here would
+        // make every "the export is silent" assertion in this crate vacuous.
+        'case: {
+            if !generated_clip::media_stack() {
+                break 'case;
+            }
+            let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
+                .to_uri()
+                .expect("fixture file URL");
+            let pcm = super::decode_pcm_for_test(&uri).expect("the fixture has an audio stream");
+            assert!(
+                pcm.len() > super::SAMPLE_RATE as usize / 4,
+                "a real read, not a handful of frames: {} samples",
+                pcm.len(),
+            );
+            assert!(super::peak(&pcm) > 0.01, "and it is not silence");
         }
-        let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
-            .to_uri()
-            .expect("fixture file URL");
-        let pcm = super::decode_pcm_for_test(&uri).expect("the fixture has an audio stream");
-        assert!(
-            pcm.len() > super::SAMPLE_RATE as usize / 4,
-            "a real read, not a handful of frames: {} samples",
-            pcm.len(),
-        );
-        assert!(super::peak(&pcm) > 0.01, "and it is not silence");
-    }
+        // Case `an_unreadable_source_gives_up_long_before_the_deadline`:
+        // The negative half: a source the decoder cannot make sense of must be
+        // given up on promptly. The loop waits two minutes before calling a
+        // stalled decode silence, and two minutes is indistinguishable from a
+        // hang to whoever is waiting -- so the bound is asserted, not assumed.
+        {
+            let junk =
+                std::env::temp_dir().join(format!("tilo-ve-junk-{}.mp4", std::process::id()));
+            std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
+            let uri = crate::media::engine_source(&junk)
+                .to_uri()
+                .expect("fixture file URL");
 
-    /// The negative half: a source the decoder cannot make sense of must be
-    /// given up on promptly. The loop waits two minutes before calling a
-    /// stalled decode silence, and two minutes is indistinguishable from a
-    /// hang to whoever is waiting -- so the bound is asserted, not assumed.
-    #[cfg(feature = "decode")]
-    #[test]
-    #[serial_test::serial(video_editor_gst)]
-    fn an_unreadable_source_gives_up_long_before_the_deadline() {
-        let junk = std::env::temp_dir().join(format!("tilo-ve-junk-{}.mp4", std::process::id()));
-        std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
-        let uri = crate::media::engine_source(&junk)
-            .to_uri()
-            .expect("fixture file URL");
+            let began = ui::time::now();
+            let got = super::decode_pcm_for_test(&uri);
+            let took = began.elapsed();
+            std::fs::remove_file(&junk).ok();
 
-        let began = std::time::Instant::now();
-        let got = super::decode_pcm_for_test(&uri);
-        let took = began.elapsed();
-        std::fs::remove_file(&junk).ok();
-
-        assert!(
-            got.is_none(),
-            "there is no audio to be had in {} bytes of junk",
-            31
-        );
-        assert!(
-            took < std::time::Duration::from_secs(30),
-            "gave up after {took:?}; the pipeline's failure has to end the wait",
-        );
+            assert!(
+                got.is_none(),
+                "there is no audio to be had in {} bytes of junk",
+                31
+            );
+            assert!(
+                took < std::time::Duration::from_secs(30),
+                "gave up after {took:?}; the pipeline's failure has to end the wait",
+            );
+        }
     }
 
     /// A source whose samples encode *where they came from*: frame `n` of a
@@ -1463,229 +1509,228 @@ mod tests {
         p
     }
 
-    /// A block must read the span of source it *covers*, not one displaced
-    /// from it.
-    ///
-    /// `mix_block` evaluates gain at the middle of the block, so that a fade
-    /// ramp is centred on it rather than lagging a whole block behind. The
-    /// read position was taken from that same midpoint, which is a different
-    /// thing entirely: every block then began half a block into the source it
-    /// was supposed to cover. Constant, so nothing sounded stretched — the
-    /// sound simply sat a fixed distance from the picture, which at 30fps is
-    /// 800 samples, about 17 ms.
-    ///
-    /// The clip is placed away from the timeline origin and sources from a
-    /// non-zero in-point, so the assertion is on the real timeline → source
-    /// mapping rather than on an identity.
     #[test]
-    fn a_block_reads_the_span_it_covers_not_one_offset_from_it() {
-        let (start, in_point, len) = (1.0, 3.0, 5.0);
-        let p = placed_project(start, in_point, len);
-        let n = (in_point + len) as usize * SAMPLE_RATE as usize;
-        let mut src = RampSource { len: n };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn audio_blocks_read_their_span_at_the_clip_rate() {
+        // Case `a_block_reads_the_span_it_covers_not_one_offset_from_it`:
+        // A block must read the span of source it *covers*, not one displaced
+        // from it.
+        //
+        // `mix_block` evaluates gain at the middle of the block, so that a fade
+        // ramp is centred on it rather than lagging a whole block behind. The
+        // read position was taken from that same midpoint, which is a different
+        // thing entirely: every block then began half a block into the source it
+        // was supposed to cover. Constant, so nothing sounded stretched — the
+        // sound simply sat a fixed distance from the picture, which at 30fps is
+        // 800 samples, about 17 ms.
+        //
+        // The clip is placed away from the timeline origin and sources from a
+        // non-zero in-point, so the assertion is on the real timeline → source
+        // mapping rather than on an identity.
+        {
+            let (start, in_point, len) = (1.0, 3.0, 5.0);
+            let p = placed_project(start, in_point, len);
+            let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+            let mut src = RampSource { len: n };
 
-        // One video frame's worth at 30fps — the block size an export pushes.
-        let frames = SAMPLE_RATE as usize / 30;
-        // A block one second into the clip, which is source second 4.0.
-        let at = start + 1.0;
-        let block = mix_block(&p, at, frames, &mut src);
-        let (a, b) = span_of(&block, n);
+            // One video frame's worth at 30fps — the block size an export pushes.
+            let frames = SAMPLE_RATE as usize / 30;
+            // A block one second into the clip, which is source second 4.0.
+            let at = start + 1.0;
+            let block = mix_block(&p, at, frames, &mut src);
+            let (a, b) = span_of(&block, n);
 
-        let want = (in_point + 1.0) * f64::from(SAMPLE_RATE);
-        let off = a - want;
-        assert!(
-            off.abs() < 2.0,
-            "a block at timeline {at}s of a clip placed at {start}s from in-point \
+            let want = (in_point + 1.0) * f64::from(SAMPLE_RATE);
+            let off = a - want;
+            assert!(
+                off.abs() < 2.0,
+                "a block at timeline {at}s of a clip placed at {start}s from in-point \
              {in_point}s must start at source frame {want}, got {a} — {off:+.0} frames \
              out. Half a block is {:+.0}, which is the read-at-the-midpoint bug.",
-            frames as f64 / 2.0,
-        );
-        // And it covers a block's worth from there, rather than reading the
-        // right span at the wrong rate.
-        assert!(
-            (b - (want + frames as f64 - 1.0)).abs() < 2.0,
-            "and ends at source frame {}, got {b}",
-            want + frames as f64 - 1.0,
-        );
-    }
+                frames as f64 / 2.0,
+            );
+            // And it covers a block's worth from there, rather than reading the
+            // right span at the wrong rate.
+            assert!(
+                (b - (want + frames as f64 - 1.0)).abs() < 2.0,
+                "and ends at source frame {}, got {b}",
+                want + frames as f64 - 1.0,
+            );
+        }
+        // Case `consecutive_blocks_abut_with_no_gap_and_no_overlap`:
+        // Consecutive blocks have to abut, or the export's audio gains or loses
+        // samples every frame and drifts away from the picture over a long
+        // timeline.
+        {
+            let (start, in_point, len) = (1.0, 3.0, 5.0);
+            let p = placed_project(start, in_point, len);
+            let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+            let mut src = RampSource { len: n };
 
-    /// Consecutive blocks have to abut, or the export's audio gains or loses
-    /// samples every frame and drifts away from the picture over a long
-    /// timeline.
-    #[test]
-    fn consecutive_blocks_abut_with_no_gap_and_no_overlap() {
-        let (start, in_point, len) = (1.0, 3.0, 5.0);
-        let p = placed_project(start, in_point, len);
-        let n = (in_point + len) as usize * SAMPLE_RATE as usize;
-        let mut src = RampSource { len: n };
-
-        let frames = SAMPLE_RATE as usize / 30;
-        let step = frames as f64 / f64::from(SAMPLE_RATE);
-        let mut previous_end: Option<f64> = None;
-        for i in 0..30 {
-            let at = start + 0.5 + f64::from(i) * step;
-            let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
-            if let Some(end) = previous_end {
-                assert!(
-                    (a - end - 1.0).abs() < 2.0,
-                    "block {i} starts at source frame {a}; the one before it ended at \
+            let frames = SAMPLE_RATE as usize / 30;
+            let step = frames as f64 / f64::from(SAMPLE_RATE);
+            let mut previous_end: Option<f64> = None;
+            for i in 0..30 {
+                let at = start + 0.5 + f64::from(i) * step;
+                let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
+                if let Some(end) = previous_end {
+                    assert!(
+                        (a - end - 1.0).abs() < 2.0,
+                        "block {i} starts at source frame {a}; the one before it ended at \
                      {end}, so the two are {:+.0} frames apart instead of adjacent",
-                    a - end - 1.0,
+                        a - end - 1.0,
+                    );
+                }
+                previous_end = Some(b);
+            }
+        }
+        // Case `at_normal_speed_a_block_covers_exactly_its_own_frames`.
+        {
+            let (p, _) = speed_project(1.0, false, 10.0);
+            let mut src = RampSource {
+                len: 10 * SAMPLE_RATE as usize,
+            };
+            let block = mix_block(&p, 0.0, 1000, &mut src);
+            let (a, b) = span_of(&block, src.len);
+            assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
+            assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
+        }
+        // Case `doubling_the_rate_covers_twice_as_much_source_in_a_block`.
+        {
+            let (p, _) = speed_project(2.0, false, 10.0);
+            let mut src = RampSource {
+                len: 10 * SAMPLE_RATE as usize,
+            };
+            let block = mix_block(&p, 0.0, 1000, &mut src);
+            let (a, b) = span_of(&block, src.len);
+            assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
+            assert!(
+                (b - 1998.0).abs() < 4.0,
+                "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
+            );
+        }
+        // Case `halving_the_rate_covers_half_as_much`.
+        {
+            let (p, _) = speed_project(0.5, false, 10.0);
+            let mut src = RampSource {
+                len: 10 * SAMPLE_RATE as usize,
+            };
+            let block = mix_block(&p, 0.0, 1000, &mut src);
+            let (a, b) = span_of(&block, src.len);
+            assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
+            assert!(
+                (b - 499.5).abs() < 4.0,
+                "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
+            );
+        }
+        // Case `reversing_walks_the_source_backwards`.
+        {
+            let (p, _) = speed_project(1.0, true, 10.0);
+            let mut src = RampSource {
+                len: 10 * SAMPLE_RATE as usize,
+            };
+            // A block partway in, so there is source on both sides of it.
+            let block = mix_block(&p, 2.0, 1000, &mut src);
+            let (a, b) = span_of(&block, src.len);
+            assert!(
+                a > b,
+                "a reversed clip's block runs from later source to earlier: {a} → {b}"
+            );
+            assert!(
+                (a - b - 999.0).abs() < 6.0,
+                "and covers a block's worth of it: {a} → {b}",
+            );
+            // A reversed clip starts on the source's *out* point.
+            let head = mix_block(&p, 0.0, 64, &mut src);
+            let (h, _) = span_of(&head, src.len);
+            let end = 10.0 * f64::from(SAMPLE_RATE);
+            assert!(
+                (h - end).abs() < 200.0,
+                "the first timeline frame of a reversed clip is the source's last, got {h}",
+            );
+        }
+        // Case `resampling_interpolates_rather_than_dropping_to_silence`.
+        {
+            // A slow clip has to invent samples between source frames. Those
+            // must lie between their neighbours — a resampler that returned
+            // zeroes would show up as a block full of holes.
+            let (p, _) = speed_project(0.25, false, 10.0);
+            let mut src = RampSource {
+                len: 10 * SAMPLE_RATE as usize,
+            };
+            let block = mix_block(&p, 0.0, 400, &mut src);
+            assert!(
+                block.iter().all(|s| s.is_finite()),
+                "no NaNs or infinities out of the resampler",
+            );
+            // The ramp must be monotonic: every sample at least as large as the
+            // one before it.
+            let mono = block
+                .chunks(CHANNELS)
+                .zip(block.chunks(CHANNELS).skip(1))
+                .all(|(a, b)| b[0] >= a[0] - 1e-6);
+            assert!(
+                mono,
+                "a slowed ramp is still a ramp, not a staircase with gaps"
+            );
+            let zeros = block.iter().filter(|s| **s == 0.0).count();
+            assert!(
+                zeros < 8,
+                "a slowed block is not mostly silence, got {zeros} zero samples"
+            );
+        }
+        // Case `a_speed_change_moves_where_a_later_block_reads_from`.
+        {
+            // The whole point: the same timeline instant reads different source
+            // depending on the rate.
+            let mut src = RampSource {
+                len: 60 * SAMPLE_RATE as usize,
+            };
+            let (slow, _) = speed_project(1.0, false, 30.0);
+            let (fast, _) = speed_project(3.0, false, 30.0);
+            let n = src.len;
+            let (a, _) = span_of(&mix_block(&slow, 4.0, 256, &mut src), n);
+            let (b, _) = span_of(&mix_block(&fast, 4.0, 256, &mut src), n);
+            assert!(
+                (b - a * 3.0).abs() < a * 0.02,
+                "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
+            );
+        }
+        // Case `a_keyframed_volume_is_heard_as_a_ramp`.
+        {
+            let (mut p, _) = speed_project(1.0, false, 10.0);
+            let cid = p.clips[0].id;
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.set_key_at(
+                    crate::param::Param::Volume,
+                    0.0,
+                    0.0,
+                    crate::param::Interp::Linear,
+                );
+                c.set_key_at(
+                    crate::param::Param::Volume,
+                    8.0,
+                    1.0,
+                    crate::param::Interp::Linear,
                 );
             }
-            previous_end = Some(b);
-        }
-    }
-
-    #[test]
-    fn at_normal_speed_a_block_covers_exactly_its_own_frames() {
-        let (p, _) = speed_project(1.0, false, 10.0);
-        let mut src = RampSource {
-            len: 10 * SAMPLE_RATE as usize,
-        };
-        let block = mix_block(&p, 0.0, 1000, &mut src);
-        let (a, b) = span_of(&block, src.len);
-        assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
-        assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
-    }
-
-    #[test]
-    fn doubling_the_rate_covers_twice_as_much_source_in_a_block() {
-        let (p, _) = speed_project(2.0, false, 10.0);
-        let mut src = RampSource {
-            len: 10 * SAMPLE_RATE as usize,
-        };
-        let block = mix_block(&p, 0.0, 1000, &mut src);
-        let (a, b) = span_of(&block, src.len);
-        assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
-        assert!(
-            (b - 1998.0).abs() < 4.0,
-            "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
-        );
-    }
-
-    #[test]
-    fn halving_the_rate_covers_half_as_much() {
-        let (p, _) = speed_project(0.5, false, 10.0);
-        let mut src = RampSource {
-            len: 10 * SAMPLE_RATE as usize,
-        };
-        let block = mix_block(&p, 0.0, 1000, &mut src);
-        let (a, b) = span_of(&block, src.len);
-        assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
-        assert!(
-            (b - 499.5).abs() < 4.0,
-            "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
-        );
-    }
-
-    #[test]
-    fn reversing_walks_the_source_backwards() {
-        let (p, _) = speed_project(1.0, true, 10.0);
-        let mut src = RampSource {
-            len: 10 * SAMPLE_RATE as usize,
-        };
-        // A block partway in, so there is source on both sides of it.
-        let block = mix_block(&p, 2.0, 1000, &mut src);
-        let (a, b) = span_of(&block, src.len);
-        assert!(
-            a > b,
-            "a reversed clip's block runs from later source to earlier: {a} → {b}"
-        );
-        assert!(
-            (a - b - 999.0).abs() < 6.0,
-            "and covers a block's worth of it: {a} → {b}",
-        );
-        // A reversed clip starts on the source's *out* point.
-        let head = mix_block(&p, 0.0, 64, &mut src);
-        let (h, _) = span_of(&head, src.len);
-        let end = 10.0 * f64::from(SAMPLE_RATE);
-        assert!(
-            (h - end).abs() < 200.0,
-            "the first timeline frame of a reversed clip is the source's last, got {h}",
-        );
-    }
-
-    #[test]
-    fn resampling_interpolates_rather_than_dropping_to_silence() {
-        // A slow clip has to invent samples between source frames. Those
-        // must lie between their neighbours — a resampler that returned
-        // zeroes would show up as a block full of holes.
-        let (p, _) = speed_project(0.25, false, 10.0);
-        let mut src = RampSource {
-            len: 10 * SAMPLE_RATE as usize,
-        };
-        let block = mix_block(&p, 0.0, 400, &mut src);
-        assert!(
-            block.iter().all(|s| s.is_finite()),
-            "no NaNs or infinities out of the resampler",
-        );
-        // The ramp must be monotonic: every sample at least as large as the
-        // one before it.
-        let mono = block
-            .chunks(CHANNELS)
-            .zip(block.chunks(CHANNELS).skip(1))
-            .all(|(a, b)| b[0] >= a[0] - 1e-6);
-        assert!(
-            mono,
-            "a slowed ramp is still a ramp, not a staircase with gaps"
-        );
-        let zeros = block.iter().filter(|s| **s == 0.0).count();
-        assert!(
-            zeros < 8,
-            "a slowed block is not mostly silence, got {zeros} zero samples"
-        );
-    }
-
-    #[test]
-    fn a_speed_change_moves_where_a_later_block_reads_from() {
-        // The whole point: the same timeline instant reads different source
-        // depending on the rate.
-        let mut src = RampSource {
-            len: 60 * SAMPLE_RATE as usize,
-        };
-        let (slow, _) = speed_project(1.0, false, 30.0);
-        let (fast, _) = speed_project(3.0, false, 30.0);
-        let n = src.len;
-        let (a, _) = span_of(&mix_block(&slow, 4.0, 256, &mut src), n);
-        let (b, _) = span_of(&mix_block(&fast, 4.0, 256, &mut src), n);
-        assert!(
-            (b - a * 3.0).abs() < a * 0.02,
-            "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
-        );
-    }
-
-    #[test]
-    fn a_keyframed_volume_is_heard_as_a_ramp() {
-        let (mut p, _) = speed_project(1.0, false, 10.0);
-        let cid = p.clips[0].id;
-        {
-            let c = p.clip_mut(cid).unwrap();
-            c.set_key_at(
-                crate::param::Param::Volume,
-                0.0,
-                0.0,
-                crate::param::Interp::Linear,
+            let plan = |t: f64| plan_audio(&p, t)[0].gain;
+            let early = plan(1.0);
+            let mid = plan(4.0);
+            let late = plan(7.0);
+            assert!(
+                early < mid && mid < late,
+                "the curve rises: {early} {mid} {late}"
             );
-            c.set_key_at(
-                crate::param::Param::Volume,
-                8.0,
-                1.0,
-                crate::param::Interp::Linear,
+            assert!(
+                (mid - 0.5).abs() < 0.02,
+                "and is linear through the middle: {mid}"
             );
         }
-        let plan = |t: f64| plan_audio(&p, t)[0].gain;
-        let early = plan(1.0);
-        let mid = plan(4.0);
-        let late = plan(7.0);
-        assert!(
-            early < mid && mid < late,
-            "the curve rises: {early} {mid} {late}"
-        );
-        assert!(
-            (mid - 0.5).abs() < 0.02,
-            "and is linear through the middle: {mid}"
-        );
     }
 
     use super::*;
@@ -1769,8 +1814,8 @@ mod tests {
     /// Waits for `cond`, or gives up. Polling beats a fixed sleep: the
     /// monitor runs on its own thread and the box is shared.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        while ui::time::now() < deadline {
             if cond() {
                 return true;
             }
@@ -1780,192 +1825,310 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_monitor_makes_no_sound_and_playing_starts_it() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let rec = Recorder::default();
-        let tap = rec.0.clone();
-        let monitor = AudioMonitor::new(
-            &p,
-            Box::new(rec),
-            Box::new(constant(&[(m1, 0.3), (m2, 0.0)])),
-            Arc::new(MixMeters::new()),
-        );
-
-        assert!(!monitor.is_playing());
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        assert!(
-            tap.lock().unwrap().is_empty(),
-            "a paused editor pushes nothing at all — this is the stutter that comes \
-             from firing the sink when the transport is not running",
-        );
-
-        monitor.play(1.0);
-        assert!(
-            eventually(|| !tap.lock().unwrap().is_empty()),
-            "playing starts feeding the sink",
-        );
-        assert!(
-            eventually(|| tap.lock().unwrap().iter().any(|s| (*s - 0.3).abs() < 1e-6)),
-            "and what it feeds is the mixed timeline",
-        );
-
-        monitor.pause();
-        // Let any block already in flight land, then prove it has stopped.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let settled = tap.lock().unwrap().len();
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        assert_eq!(
-            tap.lock().unwrap().len(),
-            settled,
-            "pausing stops the monitor rather than letting it run on",
-        );
-    }
-
-    #[test]
-    fn the_monitor_advances_by_what_it_mixed() {
-        // The audio clock is the sample count, not wall time, so it cannot
-        // drift away from the picture.
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let monitor = AudioMonitor::new(
-            &p,
-            Box::new(Recorder::default()),
-            Box::new(constant(&[(m1, 0.1), (m2, 0.1)])),
-            Arc::new(MixMeters::new()),
-        );
-        monitor.play(2.0);
-        let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
-        assert!(
-            eventually(|| monitor.position() >= 2.0 + block_secs * 3.0),
-            "the position advances as blocks are mixed, got {}",
-            monitor.position(),
-        );
-        monitor.pause();
-        std::thread::sleep(std::time::Duration::from_millis(40));
-        let held = monitor.position();
-        // A whole number of blocks past where it started.
-        let blocks = (held - 2.0) / block_secs;
-        assert!(
-            (blocks - blocks.round()).abs() < 1e-6,
-            "the position is an exact number of mixed blocks past the start: {blocks}",
-        );
-    }
-
-    #[test]
-    fn seeking_moves_what_is_heard_next() {
-        let (mut p, _, _, _) = project_with_audio();
-        // A clip only in the second half of the timeline, so where the
-        // monitor is reading from is audible in what it pushes.
-        let c2 = p.clips[1].id;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn audio_monitor_plays_seeks_follows_edits_and_stops() {
+        // Case `a_paused_monitor_makes_no_sound_and_playing_starts_it`.
         {
-            let c = p.clip_mut(c2).unwrap();
-            c.start = 20.0;
-            c.out_point = 10.0;
-        }
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let rec = Recorder::default();
-        let tap = rec.0.clone();
-        let monitor = AudioMonitor::new(
-            &p,
-            Box::new(rec),
-            Box::new(constant(&[(m1, 0.2), (m2, 0.9)])),
-            Arc::new(MixMeters::new()),
-        );
-
-        monitor.play(1.0);
-        assert!(eventually(|| !tap.lock().unwrap().is_empty()));
-        assert!(
-            tap.lock().unwrap().iter().all(|s| *s < 0.5),
-            "before the second clip, only the first is heard",
-        );
-
-        tap.lock().unwrap().clear();
-        monitor.seek(21.0);
-        assert!(
-            eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.5)),
-            "after seeking into the second clip, it is what plays",
-        );
-        monitor.pause();
-    }
-
-    #[test]
-    fn an_edit_is_heard_without_restarting_playback() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let rec = Recorder::default();
-        let tap = rec.0.clone();
-        let monitor = AudioMonitor::new(
-            &p,
-            Box::new(rec),
-            Box::new(constant(&[(m1, 0.4), (m2, 0.0)])),
-            Arc::new(MixMeters::new()),
-        );
-        monitor.play(1.0);
-        assert!(eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.3)));
-
-        // Mute the track mid-playback: the very setting that reached no
-        // audio path before.
-        let mut muted = p;
-        muted.tracks[0].muted = true;
-        muted.tracks[1].muted = true;
-        monitor.set_project(&muted);
-        assert!(
-            eventually(|| {
-                // Clear, then look at what arrives *after* the clear. A
-                // single clear before looking would race a block that was
-                // already mixed when the mute landed: one pre-mute sample
-                // in the tap and no later silence could ever clear it,
-                // which is a flake rather than a finding.
-                tap.lock().unwrap().clear();
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                let got = tap.lock().unwrap();
-                !got.is_empty() && got.iter().all(|s| *s == 0.0)
-            }),
-            "muting is heard on the next block, without stopping playback",
-        );
-        assert!(monitor.is_playing(), "and playback is still running");
-        monitor.pause();
-    }
-
-    #[test]
-    fn dropping_the_monitor_stops_its_thread() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let rec = Recorder::default();
-        let tap = rec.0.clone();
-        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let rec = Recorder::default();
+            let tap = rec.0.clone();
             let monitor = AudioMonitor::new(
                 &p,
                 Box::new(rec),
-                Box::new(constant(&[(m1, 0.5), (m2, 0.0)])),
+                Box::new(constant(&[(m1, 0.3), (m2, 0.0)])),
+                Arc::new(MixMeters::new()),
+            );
+
+            assert!(!monitor.is_playing());
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            assert!(
+                tap.lock().unwrap().is_empty(),
+                "a paused editor pushes nothing at all — this is the stutter that comes \
+             from firing the sink when the transport is not running",
+            );
+
+            monitor.play(1.0);
+            assert!(
+                eventually(|| !tap.lock().unwrap().is_empty()),
+                "playing starts feeding the sink",
+            );
+            assert!(
+                eventually(|| tap.lock().unwrap().iter().any(|s| (*s - 0.3).abs() < 1e-6)),
+                "and what it feeds is the mixed timeline",
+            );
+
+            monitor.pause();
+            // Let any block already in flight land, then prove it has stopped.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let settled = tap.lock().unwrap().len();
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            assert_eq!(
+                tap.lock().unwrap().len(),
+                settled,
+                "pausing stops the monitor rather than letting it run on",
+            );
+        }
+        // Case `the_monitor_advances_by_what_it_mixed`.
+        {
+            // The audio clock is the sample count, not wall time, so it cannot
+            // drift away from the picture.
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let monitor = AudioMonitor::new(
+                &p,
+                Box::new(Recorder::default()),
+                Box::new(constant(&[(m1, 0.1), (m2, 0.1)])),
+                Arc::new(MixMeters::new()),
+            );
+            monitor.play(2.0);
+            let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
+            assert!(
+                eventually(|| monitor.position() >= 2.0 + block_secs * 3.0),
+                "the position advances as blocks are mixed, got {}",
+                monitor.position(),
+            );
+            monitor.pause();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let held = monitor.position();
+            // A whole number of blocks past where it started.
+            let blocks = (held - 2.0) / block_secs;
+            assert!(
+                (blocks - blocks.round()).abs() < 1e-6,
+                "the position is an exact number of mixed blocks past the start: {blocks}",
+            );
+        }
+        // Case `seeking_moves_what_is_heard_next`.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            // A clip only in the second half of the timeline, so where the
+            // monitor is reading from is audible in what it pushes.
+            let c2 = p.clips[1].id;
+            {
+                let c = p.clip_mut(c2).unwrap();
+                c.start = 20.0;
+                c.out_point = 10.0;
+            }
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let rec = Recorder::default();
+            let tap = rec.0.clone();
+            let monitor = AudioMonitor::new(
+                &p,
+                Box::new(rec),
+                Box::new(constant(&[(m1, 0.2), (m2, 0.9)])),
+                Arc::new(MixMeters::new()),
+            );
+
+            monitor.play(1.0);
+            assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+            assert!(
+                tap.lock().unwrap().iter().all(|s| *s < 0.5),
+                "before the second clip, only the first is heard",
+            );
+
+            tap.lock().unwrap().clear();
+            monitor.seek(21.0);
+            assert!(
+                eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.5)),
+                "after seeking into the second clip, it is what plays",
+            );
+            monitor.pause();
+        }
+        // Case `an_edit_is_heard_without_restarting_playback`.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let rec = Recorder::default();
+            let tap = rec.0.clone();
+            let monitor = AudioMonitor::new(
+                &p,
+                Box::new(rec),
+                Box::new(constant(&[(m1, 0.4), (m2, 0.0)])),
                 Arc::new(MixMeters::new()),
             );
             monitor.play(1.0);
-            assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+            assert!(eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.3)));
+
+            // Mute the track mid-playback: the very setting that reached no
+            // audio path before.
+            let mut muted = p;
+            muted.tracks[0].muted = true;
+            muted.tracks[1].muted = true;
+            monitor.set_project(&muted);
+            assert!(
+                eventually(|| {
+                    // Clear, then look at what arrives *after* the clear. A
+                    // single clear before looking would race a block that was
+                    // already mixed when the mute landed: one pre-mute sample
+                    // in the tap and no later silence could ever clear it,
+                    // which is a flake rather than a finding.
+                    tap.lock().unwrap().clear();
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    let got = tap.lock().unwrap();
+                    !got.is_empty() && got.iter().all(|s| *s == 0.0)
+                }),
+                "muting is heard on the next block, without stopping playback",
+            );
+            assert!(monitor.is_playing(), "and playback is still running");
+            monitor.pause();
         }
-        // The drop joins the thread, so nothing can arrive after it returns.
-        let after = tap.lock().unwrap().len();
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        assert_eq!(
-            tap.lock().unwrap().len(),
-            after,
-            "a dropped monitor leaves no thread still feeding a sink",
-        );
+        // Case `dropping_the_monitor_stops_its_thread`.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let rec = Recorder::default();
+            let tap = rec.0.clone();
+            {
+                let monitor = AudioMonitor::new(
+                    &p,
+                    Box::new(rec),
+                    Box::new(constant(&[(m1, 0.5), (m2, 0.0)])),
+                    Arc::new(MixMeters::new()),
+                );
+                monitor.play(1.0);
+                assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+            }
+            // The drop joins the thread, so nothing can arrive after it returns.
+            let after = tap.lock().unwrap().len();
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            assert_eq!(
+                tap.lock().unwrap().len(),
+                after,
+                "a dropped monitor leaves no thread still feeding a sink",
+            );
+        }
     }
 
     #[test]
-    fn overlapping_clips_sum() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, 0.2), (m2, 0.3)]);
-        let block = mix_block(&p, 1.0, 64, &mut src);
-        assert_eq!(block.len(), 64 * CHANNELS);
-        assert!(
-            (block[0] - 0.5).abs() < 1e-6,
-            "two clips playing at once are heard at once: {}",
-            block[0],
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn mixer_sums_scales_and_silences_by_track_state() {
+        // Case `overlapping_clips_sum`.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, 0.2), (m2, 0.3)]);
+            let block = mix_block(&p, 1.0, 64, &mut src);
+            assert_eq!(block.len(), 64 * CHANNELS);
+            assert!(
+                (block[0] - 0.5).abs() < 1e-6,
+                "two clips playing at once are heard at once: {}",
+                block[0],
+            );
+        }
+        // Case `clip_volume_scales_what_it_contributes`.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let c1 = p.clips[0].id;
+            p.clip_mut(c1).unwrap().volume = 0.5;
+            let mut src = constant(&[(m1, 0.4), (m2, 0.0)]);
+            let block = mix_block(&p, 1.0, 16, &mut src);
+            assert!(
+                (block[0] - 0.2).abs() < 1e-6,
+                "half volume halves it: {}",
+                block[0]
+            );
+        }
+        // Case `the_fade_envelope_reaches_the_mix`.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            p.clip_mut(p.clips[0].id).unwrap().fade_in = 4.0;
+            let mut src = constant(&[(m1, 1.0), (m2, 0.0)]);
+            let head = mix_block(&p, 0.0, 16, &mut src)[0];
+            let mid = mix_block(&p, 2.0, 16, &mut src)[0];
+            let after = mix_block(&p, 6.0, 16, &mut src)[0];
+            assert!(
+                head < mid && mid < after,
+                "the ramp climbs: {head} {mid} {after}"
+            );
+            assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
+        }
+        // Case `a_muted_track_is_silent_and_solo_silences_the_others`.
+        {
+            let (mut p, a1, a2, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
+            assert!((mix_block(&p, 1.0, 16, &mut src)[0] - 0.75).abs() < 1e-6);
+
+            let i1 = p.tracks.iter().position(|t| t.id == a1).unwrap();
+            let i2 = p.tracks.iter().position(|t| t.id == a2).unwrap();
+            p.tracks[i1].muted = true;
+            assert!(
+                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
+                "a muted track contributes nothing",
+            );
+
+            p.tracks[i1].muted = false;
+            p.tracks[i1].solo = true;
+            assert!(
+                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
+                "soloing one track silences the other",
+            );
+
+            // Mute still wins over solo, matching the picture.
+            p.tracks[i2].solo = true;
+            p.tracks[i2].muted = true;
+            assert!(
+                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
+                "a muted track stays silent even when soloed",
+            );
+        }
+        // Case `a_video_track_never_contributes_to_the_mix`.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let idx = p
+                .tracks
+                .iter()
+                .position(|t| t.kind == TrackKind::Audio)
+                .unwrap();
+            p.tracks[idx].kind = TrackKind::Video;
+            let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
+            assert!(
+                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
+                "only audio lanes are mixed",
+            );
+        }
+        // Case `a_loud_overlap_clamps_instead_of_wrapping`.
+        {
+            // Summed peaks above full scale must saturate. A plain cast would
+            // wrap +1.2 round to a large negative sample — an audible crack at
+            // exactly the loudest moment.
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, 0.8), (m2, 0.8)]);
+            let block = mix_block(&p, 1.0, 8, &mut src);
+            assert!(
+                block.iter().all(|s| (-1.0..=1.0).contains(s)),
+                "the mix stays in range: {block:?}",
+            );
+            assert!((block[0] - 1.0).abs() < 1e-6, "and saturates at full scale");
+            let pcm = to_s16le(&block);
+            let first = i16::from_le_bytes([pcm[0], pcm[1]]);
+            assert!(
+                first > 32_000,
+                "full scale encodes as a large positive: {first}"
+            );
+        }
+        // Case `full_scale_negative_does_not_overflow`.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, -1.0), (m2, 0.0)]);
+            let pcm = to_s16le(&mix_block(&p, 1.0, 4, &mut src));
+            let v = i16::from_le_bytes([pcm[0], pcm[1]]);
+            assert_eq!(
+                v, -32767,
+                "the negative limit is representable, not wrapped"
+            );
+        }
     }
 
     /// Apply a trim to `p` in place, as the `trim-mix` action's document
@@ -1978,682 +2141,516 @@ mod tests {
         }
     }
 
-    /// The whole loop, through the production mixer at both ends: a mix goes
-    /// over, the meter measures how far, the trim comes down by that much and
-    /// the *same* mixer now fits.
-    ///
-    /// Asserted on the peak the mixer really produces rather than on the
-    /// gains that were written, because "the numbers went down" is not the
-    /// claim — the claim is that the sum fits.
     #[test]
-    fn trimming_by_what_the_meter_measured_brings_the_real_mix_back_under() {
-        let (mut p, a1, _a2, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        // Two lanes that fit on their own and do not fit together, one of them
-        // pushed up on its fader.
-        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
-        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
-
-        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
-        assert!(
-            before.master.over(),
-            "the fixture has to clip or this proves nothing: {:?}",
-            before.master,
-        );
-        let meters = MixMeters::new();
-        meters.record(1.0, &before);
-        let snap = meters.snapshot();
-        assert!(snap.clipped());
-
-        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-        apply_lanes(&mut p, trimmed);
-
-        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
-        assert!(
-            !after.master.over(),
-            "the mix the trim was measured from now fits: {:?}",
-            after.master,
-        );
-        // …and it fits by landing *on* full scale, not by being thrown away.
-        // A trim that took twenty decibels off would also pass the line above
-        // and would have ruined the mix to do it.
-        assert!(
-            (after.master.loudest() - 1.0).abs() < 0.02,
-            "and it lands at full scale rather than somewhere quiet: {}",
-            after.master.loudest(),
-        );
-    }
-
-    /// The balance survives. Every lane moves by the same number of decibels,
-    /// so what the person mixing decided about the *relationship* between the
-    /// lanes is exactly where they left it.
-    #[test]
-    fn a_trim_moves_the_whole_mix_and_not_the_balance() {
-        let (mut p, a1, a2, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
-        p.tracks.iter_mut().find(|t| t.id == a2).unwrap().gain_db = -2.0;
-        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
-
-        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
-        let meters = MixMeters::new();
-        meters.record(1.0, &before);
-        let snap = meters.snapshot();
-        let gap = |p: &Project| p.track(a1).unwrap().gain_db - p.track(a2).unwrap().gain_db;
-        let was = gap(&p);
-        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-        apply_lanes(&mut p, trimmed);
-        assert!(
-            (gap(&p) - was).abs() < 1e-9,
-            "the lanes are still {was} dB apart, not {}",
-            gap(&p),
-        );
-        // And both really did move, so the line above is not passing on a
-        // trim that did nothing at all.
-        assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
-        assert!(p.track(a2).unwrap().gain_db < -2.0 - 1e-9);
-    }
-
-    /// Headroom is a real request, not a rounding: asking for three decibels
-    /// under lands three decibels under.
-    #[test]
-    fn asking_for_headroom_leaves_headroom() {
-        let (mut p, a1, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
-        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
-        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
-        let meters = MixMeters::new();
-        meters.record(1.0, &before);
-        let snap = meters.snapshot();
-
-        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db() + 3.0);
-        apply_lanes(&mut p, trimmed);
-        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
-        let want = crate::model::db_to_linear(-3.0) as f32;
-        assert!(
-            (after.master.loudest() - want).abs() < 0.02,
-            "asked for 3 dB of headroom and got {} rather than {want}",
-            after.master.loudest(),
-        );
-    }
-
-    /// The case that decides *which* lanes a trim moves.
-    ///
-    /// Two lanes each comfortably under full scale on their own add up to a
-    /// mix that is over. Nothing is in `clipped_tracks` — there is no lane to
-    /// blame — so a trim that moved only the lanes caught over would have had
-    /// nothing to move and would have left the mix clipping.
-    #[test]
-    fn a_mix_can_clip_with_no_single_lane_over_and_the_trim_still_fixes_it() {
-        let (mut p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, 0.7), (m2, 0.6)]);
-
-        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
-        assert!(before.master.over(), "1.3 is over: {:?}", before.master);
-        let meters = MixMeters::new();
-        meters.record(1.0, &before);
-        let snap = meters.snapshot();
-        assert!(
-            snap.clipped_tracks().is_empty(),
-            "neither lane is over on its own, so neither is to blame",
-        );
-        assert_eq!(
-            snap.measured_tracks().len(),
-            2,
-            "but both were in the sum, so both are what a trim moves",
-        );
-
-        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-        apply_lanes(&mut p, trimmed);
-        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
-        assert!(
-            !after.master.over(),
-            "and it fits afterwards: {:?}",
-            after.master,
-        );
-    }
-
-    /// Nothing to trim writes nothing. A mix that is already under full scale
-    /// must not be quietened by an action that reports success.
-    #[test]
-    fn a_trim_of_nothing_writes_nothing() {
-        let (p, _, _, _) = project_with_audio();
-        let lanes: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
-        assert!(p.lanes_trimmed_by(&lanes, 0.0).is_empty());
-        assert!(p.lanes_trimmed_by(&lanes, -3.0).is_empty());
-        assert!(p.lanes_trimmed_by(&lanes, f64::NAN).is_empty());
-    }
-
-    /// Which lanes have a level to show. A meter that can never move is not
-    /// a quiet meter, it is a broken one.
-    #[test]
-    fn only_a_lane_that_can_carry_sound_has_a_level() {
-        let (mut p, a1, _, _) = project_with_audio();
-        assert!(
-            track_carries_sound(&p, a1),
-            "an audio lane is an audio lane whatever is on it",
-        );
-        // An empty one too: the lane is what it is before anything is dropped
-        // on it, and a meter that appeared on the first drop would read as the
-        // output coming back to life.
-        let empty = Uuid::new_v4();
-        p.tracks.push(Track {
-            id: empty,
-            name: "A3".into(),
-            kind: TrackKind::Audio,
-            index: 3,
-            ..Default::default()
-        });
-        assert!(track_carries_sound(&p, empty));
-
-        // A picture lane with silent footage on it has nothing to meter…
-        let vid = Uuid::new_v4();
-        p.tracks.push(Track {
-            id: vid,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
-        let mid = Uuid::new_v4();
-        p.media.push(crate::model::MediaItem {
-            id: mid,
-            name: "shot.mp4".into(),
-            kind: crate::model::MediaKind::Video,
-            duration: 10.0,
-            has_audio: false,
-            ..Default::default()
-        });
-        p.add_clip(vid, mid, 0.0).expect("media exists");
-        assert!(
-            !track_carries_sound(&p, vid),
-            "silent footage gives its lane no level to show",
-        );
-
-        // …and the same lane does the moment the footage carries sound, which
-        // is a fact about the file rather than about the track.
-        p.media.iter_mut().find(|m| m.id == mid).unwrap().has_audio = true;
-        assert!(
-            track_carries_sound(&p, vid),
-            "a talking head on a video lane is heard, so it is metered",
-        );
-
-        // A lane that is not in the project at all has no level either.
-        assert!(!track_carries_sound(&p, Uuid::new_v4()));
-    }
-
-    #[test]
-    fn clip_volume_scales_what_it_contributes() {
-        let (mut p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let c1 = p.clips[0].id;
-        p.clip_mut(c1).unwrap().volume = 0.5;
-        let mut src = constant(&[(m1, 0.4), (m2, 0.0)]);
-        let block = mix_block(&p, 1.0, 16, &mut src);
-        assert!(
-            (block[0] - 0.2).abs() < 1e-6,
-            "half volume halves it: {}",
-            block[0]
-        );
-    }
-
-    #[test]
-    fn the_fade_envelope_reaches_the_mix() {
-        let (mut p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        p.clip_mut(p.clips[0].id).unwrap().fade_in = 4.0;
-        let mut src = constant(&[(m1, 1.0), (m2, 0.0)]);
-        let head = mix_block(&p, 0.0, 16, &mut src)[0];
-        let mid = mix_block(&p, 2.0, 16, &mut src)[0];
-        let after = mix_block(&p, 6.0, 16, &mut src)[0];
-        assert!(
-            head < mid && mid < after,
-            "the ramp climbs: {head} {mid} {after}"
-        );
-        assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
-    }
-
-    #[test]
-    fn a_muted_track_is_silent_and_solo_silences_the_others() {
-        let (mut p, a1, a2, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
-        assert!((mix_block(&p, 1.0, 16, &mut src)[0] - 0.75).abs() < 1e-6);
-
-        let i1 = p.tracks.iter().position(|t| t.id == a1).unwrap();
-        let i2 = p.tracks.iter().position(|t| t.id == a2).unwrap();
-        p.tracks[i1].muted = true;
-        assert!(
-            (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
-            "a muted track contributes nothing",
-        );
-
-        p.tracks[i1].muted = false;
-        p.tracks[i1].solo = true;
-        assert!(
-            (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
-            "soloing one track silences the other",
-        );
-
-        // Mute still wins over solo, matching the picture.
-        p.tracks[i2].solo = true;
-        p.tracks[i2].muted = true;
-        assert!(
-            (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
-            "a muted track stays silent even when soloed",
-        );
-    }
-
-    #[test]
-    fn a_video_track_never_contributes_to_the_mix() {
-        let (mut p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let idx = p
-            .tracks
-            .iter()
-            .position(|t| t.kind == TrackKind::Audio)
-            .unwrap();
-        p.tracks[idx].kind = TrackKind::Video;
-        let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
-        assert!(
-            (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
-            "only audio lanes are mixed",
-        );
-    }
-
-    #[test]
-    fn a_loud_overlap_clamps_instead_of_wrapping() {
-        // Summed peaks above full scale must saturate. A plain cast would
-        // wrap +1.2 round to a large negative sample — an audible crack at
-        // exactly the loudest moment.
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, 0.8), (m2, 0.8)]);
-        let block = mix_block(&p, 1.0, 8, &mut src);
-        assert!(
-            block.iter().all(|s| (-1.0..=1.0).contains(s)),
-            "the mix stays in range: {block:?}",
-        );
-        assert!((block[0] - 1.0).abs() < 1e-6, "and saturates at full scale");
-        let pcm = to_s16le(&block);
-        let first = i16::from_le_bytes([pcm[0], pcm[1]]);
-        assert!(
-            first > 32_000,
-            "full scale encodes as a large positive: {first}"
-        );
-    }
-
-    #[test]
-    fn full_scale_negative_does_not_overflow() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, -1.0), (m2, 0.0)]);
-        let pcm = to_s16le(&mix_block(&p, 1.0, 4, &mut src));
-        let v = i16::from_le_bytes([pcm[0], pcm[1]]);
-        assert_eq!(
-            v, -32767,
-            "the negative limit is representable, not wrapped"
-        );
-    }
-
-    #[test]
-    fn a_source_that_yields_nothing_contributes_silence() {
-        // An un-hydrated reference must not fail the mix — the rest of the
-        // timeline is still audible.
-        let (p, _, _, _) = project_with_audio();
-        let m2 = p.media[1].id;
-        let mut src = constant(&[(m2, 0.4)]); // media 1 absent
-        let block = mix_block(&p, 1.0, 16, &mut src);
-        assert!(
-            (block[0] - 0.4).abs() < 1e-6,
-            "the readable clip still plays: {}",
-            block[0]
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "silence is written as literal zeros, not computed"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn a_short_read_leaves_the_rest_of_the_block_silent() {
-        struct Short;
-        impl PcmSource for Short {
-            fn samples(&mut self, _m: MediaId, _f: f64, _frames: usize) -> Option<Vec<f32>> {
-                // Two frames' worth, however many were asked for.
-                Some(vec![0.5; 2 * CHANNELS])
-            }
-        }
-        let (p, _, _, _) = project_with_audio();
-        let block = mix_block(&p, 1.0, 16, &mut Short);
-        assert_eq!(block.len(), 16 * CHANNELS, "the block is still full length");
-        assert!(block[0] > 0.0, "what the source gave is mixed");
-        assert_eq!(
-            block[15 * CHANNELS],
-            0.0,
-            "past the end of the source is silence"
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "silence is written as literal zeros, not computed"
-    )]
-    fn nothing_under_the_playhead_mixes_to_silence() {
-        let (p, _, _, _) = project_with_audio();
-        let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let mut src = constant(&[(m1, 1.0), (m2, 1.0)]);
-        let block = mix_block(&p, 500.0, 32, &mut src);
-        assert!(
-            block.iter().all(|s| *s == 0.0),
-            "past every clip the mix is silent"
-        );
-        assert_eq!(peak(&block), 0.0);
-    }
-
-    /// A video file's own sound reaches the mix.
-    ///
-    /// The timeline puts a video file on a video track, and the mixer used to
-    /// read only from audio tracks. So importing a talking-head clip, cutting
-    /// it and exporting gave back a silent file — with nothing in the preview,
-    /// the bin or the export dialog admitting it. This is the regression that
-    /// must never come back.
-    #[test]
-    fn a_video_clips_own_sound_is_mixed() {
-        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
-
-        let mut p = Project::new("interview");
-        let media = uuid::Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: media,
-            name: "interview.mp4".into(),
-            kind: MediaKind::Video,
-            duration: 30.0,
-            // What the container said: a picture that also carries sound.
-            has_audio: true,
-            ..Default::default()
-        });
-        let track = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: track,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
-        let clip = p.add_clip(track, media, 0.0).expect("place the clip");
-        p.clip_mut(clip).unwrap().out_point = 30.0;
-
-        assert!(
-            has_audio(&p),
-            "the export asks this before it builds an audio branch at all; \
-             answering false is how the sound was dropped from the file",
-        );
-        let layers = plan_audio(&p, 2.0);
-        assert!(
-            layers.iter().any(|l| l.clip == clip),
-            "the video clip's own sound is not in the mix: {layers:?}",
-        );
-
-        // Muting the track the footage sits on silences its sound too — which
-        // is what a person means by muting that track.
-        p.tracks[0].muted = true;
-        assert!(
-            plan_audio(&p, 2.0).iter().all(|l| l.clip != clip),
-            "muting the video track left its sound playing",
-        );
-        p.tracks[0].muted = false;
-
-        // A picture whose file carries no sound contributes none, so a silent
-        // project does not grow an empty audio branch.
-        p.media[0].has_audio = false;
-        assert!(
-            !has_audio(&p),
-            "a video file with no sound track must not claim to carry audio",
-        );
-        assert!(plan_audio(&p, 2.0).is_empty());
-    }
-
-    #[test]
-    fn a_clip_is_read_at_its_own_source_time() {
-        let (mut p, _, _, _) = project_with_audio();
-        let c1 = p.clips[0].id;
+    fn mix_trim_uses_the_measured_overshoot() {
+        // Case `trimming_by_what_the_meter_measured_brings_the_real_mix_back_under`:
+        // The whole loop, through the production mixer at both ends: a mix goes
+        // over, the meter measures how far, the trim comes down by that much and
+        // the *same* mixer now fits.
+        //
+        // Asserted on the peak the mixer really produces rather than on the
+        // gains that were written, because "the numbers went down" is not the
+        // claim — the claim is that the sum fits.
         {
-            let c = p.clip_mut(c1).unwrap();
-            c.in_point = 5.0;
-            c.out_point = 15.0;
+            let (mut p, a1, _a2, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            // Two lanes that fit on their own and do not fit together, one of them
+            // pushed up on its fader.
+            p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+            let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
+
+            let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+            assert!(
+                before.master.over(),
+                "the fixture has to clip or this proves nothing: {:?}",
+                before.master,
+            );
+            let meters = MixMeters::new();
+            meters.record(1.0, &before);
+            let snap = meters.snapshot();
+            assert!(snap.clipped());
+
+            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_lanes(&mut p, trimmed);
+
+            let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+            assert!(
+                !after.master.over(),
+                "the mix the trim was measured from now fits: {:?}",
+                after.master,
+            );
+            // …and it fits by landing *on* full scale, not by being thrown away.
+            // A trim that took twenty decibels off would also pass the line above
+            // and would have ruined the mix to do it.
+            assert!(
+                (after.master.loudest() - 1.0).abs() < 0.02,
+                "and it lands at full scale rather than somewhere quiet: {}",
+                after.master.loudest(),
+            );
         }
-        let layers = plan_audio(&p, 2.0);
-        let l = layers
-            .iter()
-            .find(|l| l.clip == c1)
-            .expect("clip is audible");
-        assert!(
-            (l.source_time - 7.0).abs() < 1e-9,
-            "2s into a clip cut at 5s reads 7s of source: {l:?}",
-        );
-    }
+        // Case `a_trim_moves_the_whole_mix_and_not_the_balance`:
+        // The balance survives. Every lane moves by the same number of decibels,
+        // so what the person mixing decided about the *relationship* between the
+        // lanes is exactly where they left it.
+        {
+            let (mut p, a1, a2, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+            p.tracks.iter_mut().find(|t| t.id == a2).unwrap().gain_db = -2.0;
+            let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
 
-    /// Once a shot's sound has a clip of its own, exactly one of the two
-    /// halves may be mixed. This is the correctness trap of the whole feature:
-    /// mix both and the shot is heard twice, at double level, and — the moment
-    /// the two are slid apart — as an echo of itself.
-    #[test]
-    fn a_shot_whose_sound_was_split_off_is_heard_once_not_twice() {
-        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+            let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+            let meters = MixMeters::new();
+            meters.record(1.0, &before);
+            let snap = meters.snapshot();
+            let gap = |p: &Project| p.track(a1).unwrap().gain_db - p.track(a2).unwrap().gain_db;
+            let was = gap(&p);
+            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_lanes(&mut p, trimmed);
+            assert!(
+                (gap(&p) - was).abs() < 1e-9,
+                "the lanes are still {was} dB apart, not {}",
+                gap(&p),
+            );
+            // And both really did move, so the line above is not passing on a
+            // trim that did nothing at all.
+            assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
+            assert!(p.track(a2).unwrap().gain_db < -2.0 - 1e-9);
+        }
+        // Case `asking_for_headroom_leaves_headroom`:
+        // Headroom is a real request, not a rounding: asking for three decibels
+        // under lands three decibels under.
+        {
+            let (mut p, a1, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+            let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
+            let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+            let meters = MixMeters::new();
+            meters.record(1.0, &before);
+            let snap = meters.snapshot();
 
-        let mut p = Project::new("interview");
-        let media = uuid::Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: media,
-            name: "interview.mp4".into(),
-            kind: MediaKind::Video,
-            duration: 30.0,
-            has_audio: true,
-            ..Default::default()
-        });
-        let v1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: v1,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
-        let a1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: a1,
-            name: "A1".into(),
-            kind: TrackKind::Audio,
-            index: 1,
-            ..Default::default()
-        });
-        let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
-        p.clip_mut(picture).expect("picture").out_point = 30.0;
+            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db() + 3.0);
+            apply_lanes(&mut p, trimmed);
+            let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+            let want = crate::model::db_to_linear(-3.0) as f32;
+            assert!(
+                (after.master.loudest() - want).abs() < 0.02,
+                "asked for 3 dB of headroom and got {} rather than {want}",
+                after.master.loudest(),
+            );
+        }
+        // Case `a_mix_can_clip_with_no_single_lane_over_and_the_trim_still_fixes_it`:
+        // The case that decides *which* lanes a trim moves.
+        //
+        // Two lanes each comfortably under full scale on their own add up to a
+        // mix that is over. Nothing is in `clipped_tracks` — there is no lane to
+        // blame — so a trim that moved only the lanes caught over would have had
+        // nothing to move and would have left the mix clipping.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            let (m1, m2) = (p.media[0].id, p.media[1].id);
+            let mut src = constant(&[(m1, 0.7), (m2, 0.6)]);
 
-        // Before the split: the picture carries the sound, and is mixed at
-        // full level. This is what every project saved before links existed
-        // still does, and it must not change.
-        let mut src = constant(&[(media, 0.5)]);
-        let before = mix_block(&p, 2.0, 8, &mut src);
-        assert!(
-            (before[0] - 0.5).abs() < 1e-6,
-            "a picture that carries sound is mixed: {}",
-            before[0],
-        );
+            let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+            assert!(before.master.over(), "1.3 is over: {:?}", before.master);
+            let meters = MixMeters::new();
+            meters.record(1.0, &before);
+            let snap = meters.snapshot();
+            assert!(
+                snap.clipped_tracks().is_empty(),
+                "neither lane is over on its own, so neither is to blame",
+            );
+            assert_eq!(
+                snap.measured_tracks().len(),
+                2,
+                "but both were in the sum, so both are what a trim moves",
+            );
 
-        let sound = p
-            .add_linked_audio(picture, a1)
-            .expect("split the sound off");
-        let layers = plan_audio(&p, 2.0);
-        assert_eq!(
-            layers.len(),
-            1,
-            "exactly one half of a split shot may be mixed: {layers:?}",
-        );
-        assert_eq!(
-            layers[0].clip, sound,
-            "and it is the audio clip, which is the one a person can slide,              level and fade",
-        );
-        let mut src = constant(&[(media, 0.5)]);
-        let after = mix_block(&p, 2.0, 8, &mut src);
-        assert!(
-            (after[0] - 0.5).abs() < 1e-6,
-            "splitting the sound off must not change how loud the shot is;              mixing both halves would give 1.0 here, and 0.5 is one of them: {}",
-            after[0],
-        );
-        assert!(has_audio(&p), "the export still finds sound to mux");
-
-        // Levelling the sound half alone is the whole point of it existing.
-        p.clip_mut(sound).expect("sound").volume = 0.25;
-        let mut src = constant(&[(media, 0.5)]);
-        let quiet = mix_block(&p, 2.0, 8, &mut src);
-        assert!(
-            (quiet[0] - 0.125).abs() < 1e-6,
-            "the sound half's own level has to reach the mix: {}",
-            quiet[0],
-        );
-    }
-
-    /// Unlinking is explicit and reversible, and it must not make the shot
-    /// louder. The picture stopped carrying its own sound when the sound was
-    /// split off, not when the two happened to be linked.
-    #[test]
-    fn unlinking_a_split_shot_does_not_double_it() {
-        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
-
-        let mut p = Project::new("interview");
-        let media = uuid::Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: media,
-            name: "interview.mp4".into(),
-            kind: MediaKind::Video,
-            duration: 30.0,
-            has_audio: true,
-            ..Default::default()
-        });
-        let v1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: v1,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
-        let a1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: a1,
-            name: "A1".into(),
-            kind: TrackKind::Audio,
-            index: 1,
-            ..Default::default()
-        });
-        let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
-        p.clip_mut(picture).expect("picture").out_point = 30.0;
-        let sound = p
-            .add_linked_audio(picture, a1)
-            .expect("split the sound off");
-
-        p.unlink_clips(&[picture, sound]);
-        let layers = plan_audio(&p, 2.0);
-        assert_eq!(
-            layers.len(),
-            1,
-            "the picture must not start carrying sound the audio clip already              has just because the two were separated: {layers:?}",
-        );
-        assert_eq!(layers[0].clip, sound);
-        let mut src = constant(&[(media, 0.5)]);
-        let after = mix_block(&p, 2.0, 8, &mut src);
-        assert!(
-            (after[0] - 0.5).abs() < 1e-6,
-            "still one shot: {}",
-            after[0]
-        );
-    }
-
-    /// A link is a general "these move together". Tying a music bed to a shot
-    /// must not silence the shot.
-    #[test]
-    fn linking_a_bed_to_a_shot_leaves_the_shots_own_sound_alone() {
-        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
-
-        let mut p = Project::new("interview");
-        let footage = uuid::Uuid::new_v4();
-        let music = uuid::Uuid::new_v4();
-        for (id, name, kind) in [
-            (footage, "interview.mp4", MediaKind::Video),
-            (music, "bed.wav", MediaKind::Audio),
-        ] {
-            p.media.push(MediaItem {
-                id,
-                name: name.into(),
-                kind,
-                duration: 30.0,
-                // The picture's container carries sound; so, obviously, does
-                // the music.
-                has_audio: kind == MediaKind::Video,
+            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_lanes(&mut p, trimmed);
+            let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+            assert!(
+                !after.master.over(),
+                "and it fits afterwards: {:?}",
+                after.master,
+            );
+        }
+        // Case `a_trim_of_nothing_writes_nothing`:
+        // Nothing to trim writes nothing. A mix that is already under full scale
+        // must not be quietened by an action that reports success.
+        {
+            let (p, _, _, _) = project_with_audio();
+            let lanes: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
+            assert!(p.lanes_trimmed_by(&lanes, 0.0).is_empty());
+            assert!(p.lanes_trimmed_by(&lanes, -3.0).is_empty());
+            assert!(p.lanes_trimmed_by(&lanes, f64::NAN).is_empty());
+        }
+        // Case `only_a_lane_that_can_carry_sound_has_a_level`:
+        // Which lanes have a level to show. A meter that can never move is not
+        // a quiet meter, it is a broken one.
+        {
+            let (mut p, a1, _, _) = project_with_audio();
+            assert!(
+                track_carries_sound(&p, a1),
+                "an audio lane is an audio lane whatever is on it",
+            );
+            // An empty one too: the lane is what it is before anything is dropped
+            // on it, and a meter that appeared on the first drop would read as the
+            // output coming back to life.
+            let empty = Uuid::new_v4();
+            p.tracks.push(Track {
+                id: empty,
+                name: "A3".into(),
+                kind: TrackKind::Audio,
+                index: 3,
                 ..Default::default()
             });
-        }
-        let v1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: v1,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
-        let a1 = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: a1,
-            name: "A1".into(),
-            kind: TrackKind::Audio,
-            index: 1,
-            ..Default::default()
-        });
-        let picture = p.add_clip(v1, footage, 0.0).expect("place the picture");
-        p.clip_mut(picture).expect("picture").out_point = 30.0;
-        let bed = p.add_clip(a1, music, 0.0).expect("place the bed");
-        p.clip_mut(bed).expect("bed").out_point = 30.0;
+            assert!(track_carries_sound(&p, empty));
 
-        // Tie them together so the bed travels with the shot.
-        p.link_clips(&[picture, bed]);
-        let layers = plan_audio(&p, 1.0);
-        assert!(
-            layers.iter().any(|l| l.clip == picture),
-            "a link is 'these move together'; only splitting the sound off              moves where the sound comes from: {layers:?}",
-        );
-        assert!(layers.iter().any(|l| l.clip == bed));
-        let mut src = constant(&[(footage, 0.25), (music, 0.5)]);
-        let block = mix_block(&p, 1.0, 8, &mut src);
-        assert!(
-            (block[0] - 0.75).abs() < 1e-6,
-            "both are heard: {}",
-            block[0],
-        );
+            // A picture lane with silent footage on it has nothing to meter…
+            let vid = Uuid::new_v4();
+            p.tracks.push(Track {
+                id: vid,
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                ..Default::default()
+            });
+            let mid = Uuid::new_v4();
+            p.media.push(crate::model::MediaItem {
+                id: mid,
+                name: "shot.mp4".into(),
+                kind: crate::model::MediaKind::Video,
+                duration: 10.0,
+                has_audio: false,
+                ..Default::default()
+            });
+            p.add_clip(vid, mid, 0.0).expect("media exists");
+            assert!(
+                !track_carries_sound(&p, vid),
+                "silent footage gives its lane no level to show",
+            );
+
+            // …and the same lane does the moment the footage carries sound, which
+            // is a fact about the file rather than about the track.
+            p.media.iter_mut().find(|m| m.id == mid).unwrap().has_audio = true;
+            assert!(
+                track_carries_sound(&p, vid),
+                "a talking head on a video lane is heard, so it is metered",
+            );
+
+            // A lane that is not in the project at all has no level either.
+            assert!(!track_carries_sound(&p, Uuid::new_v4()));
+        }
     }
 
     #[test]
-    fn a_video_only_project_reports_no_audio() {
-        let mut p = Project::new("v");
-        assert!(!has_audio(&p), "an empty project has nothing to mix");
-        let (with_audio, _, _, _) = project_with_audio();
-        assert!(has_audio(&with_audio));
-        // A project with only video lanes is video-only.
-        p.tracks.push(Track {
-            id: Uuid::new_v4(),
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            muted: false,
-            locked: false,
-            solo: false,
-            gain_db: 0.0,
-            pan: 0.0,
-        });
-        assert!(!has_audio(&p));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn linked_video_sound_is_mixed_exactly_once() {
+        // Case `a_video_clips_own_sound_is_mixed`:
+        // A video file's own sound reaches the mix.
+        //
+        // The timeline puts a video file on a video track, and the mixer used to
+        // read only from audio tracks. So importing a talking-head clip, cutting
+        // it and exporting gave back a silent file — with nothing in the preview,
+        // the bin or the export dialog admitting it. This is the regression that
+        // must never come back.
+        {
+            use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+            let mut p = Project::new("interview");
+            let media = uuid::Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: media,
+                name: "interview.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                // What the container said: a picture that also carries sound.
+                has_audio: true,
+                ..Default::default()
+            });
+            let track = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: track,
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                ..Default::default()
+            });
+            let clip = p.add_clip(track, media, 0.0).expect("place the clip");
+            p.clip_mut(clip).unwrap().out_point = 30.0;
+
+            assert!(
+                has_audio(&p),
+                "the export asks this before it builds an audio branch at all; \
+             answering false is how the sound was dropped from the file",
+            );
+            let layers = plan_audio(&p, 2.0);
+            assert!(
+                layers.iter().any(|l| l.clip == clip),
+                "the video clip's own sound is not in the mix: {layers:?}",
+            );
+
+            // Muting the track the footage sits on silences its sound too — which
+            // is what a person means by muting that track.
+            p.tracks[0].muted = true;
+            assert!(
+                plan_audio(&p, 2.0).iter().all(|l| l.clip != clip),
+                "muting the video track left its sound playing",
+            );
+            p.tracks[0].muted = false;
+
+            // A picture whose file carries no sound contributes none, so a silent
+            // project does not grow an empty audio branch.
+            p.media[0].has_audio = false;
+            assert!(
+                !has_audio(&p),
+                "a video file with no sound track must not claim to carry audio",
+            );
+            assert!(plan_audio(&p, 2.0).is_empty());
+        }
+        // Case `a_clip_is_read_at_its_own_source_time`.
+        {
+            let (mut p, _, _, _) = project_with_audio();
+            let c1 = p.clips[0].id;
+            {
+                let c = p.clip_mut(c1).unwrap();
+                c.in_point = 5.0;
+                c.out_point = 15.0;
+            }
+            let layers = plan_audio(&p, 2.0);
+            let l = layers
+                .iter()
+                .find(|l| l.clip == c1)
+                .expect("clip is audible");
+            assert!(
+                (l.source_time - 7.0).abs() < 1e-9,
+                "2s into a clip cut at 5s reads 7s of source: {l:?}",
+            );
+        }
+        // Case `a_shot_whose_sound_was_split_off_is_heard_once_not_twice`:
+        // Once a shot's sound has a clip of its own, exactly one of the two
+        // halves may be mixed. This is the correctness trap of the whole feature:
+        // mix both and the shot is heard twice, at double level, and — the moment
+        // the two are slid apart — as an echo of itself.
+        {
+            use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+            let mut p = Project::new("interview");
+            let media = uuid::Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: media,
+                name: "interview.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                has_audio: true,
+                ..Default::default()
+            });
+            let v1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: v1,
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                ..Default::default()
+            });
+            let a1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: a1,
+                name: "A1".into(),
+                kind: TrackKind::Audio,
+                index: 1,
+                ..Default::default()
+            });
+            let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
+            p.clip_mut(picture).expect("picture").out_point = 30.0;
+
+            // Before the split: the picture carries the sound, and is mixed at
+            // full level. This is what every project saved before links existed
+            // still does, and it must not change.
+            let mut src = constant(&[(media, 0.5)]);
+            let before = mix_block(&p, 2.0, 8, &mut src);
+            assert!(
+                (before[0] - 0.5).abs() < 1e-6,
+                "a picture that carries sound is mixed: {}",
+                before[0],
+            );
+
+            let sound = p
+                .add_linked_audio(picture, a1)
+                .expect("split the sound off");
+            let layers = plan_audio(&p, 2.0);
+            assert_eq!(
+                layers.len(),
+                1,
+                "exactly one half of a split shot may be mixed: {layers:?}",
+            );
+            assert_eq!(
+                layers[0].clip, sound,
+                "and it is the audio clip, which is the one a person can slide,              level and fade",
+            );
+            let mut src = constant(&[(media, 0.5)]);
+            let after = mix_block(&p, 2.0, 8, &mut src);
+            assert!(
+                (after[0] - 0.5).abs() < 1e-6,
+                "splitting the sound off must not change how loud the shot is;              mixing both halves would give 1.0 here, and 0.5 is one of them: {}",
+                after[0],
+            );
+            assert!(has_audio(&p), "the export still finds sound to mux");
+
+            // Levelling the sound half alone is the whole point of it existing.
+            p.clip_mut(sound).expect("sound").volume = 0.25;
+            let mut src = constant(&[(media, 0.5)]);
+            let quiet = mix_block(&p, 2.0, 8, &mut src);
+            assert!(
+                (quiet[0] - 0.125).abs() < 1e-6,
+                "the sound half's own level has to reach the mix: {}",
+                quiet[0],
+            );
+        }
+        // Case `unlinking_a_split_shot_does_not_double_it`:
+        // Unlinking is explicit and reversible, and it must not make the shot
+        // louder. The picture stopped carrying its own sound when the sound was
+        // split off, not when the two happened to be linked.
+        {
+            use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+            let mut p = Project::new("interview");
+            let media = uuid::Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: media,
+                name: "interview.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                has_audio: true,
+                ..Default::default()
+            });
+            let v1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: v1,
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                ..Default::default()
+            });
+            let a1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: a1,
+                name: "A1".into(),
+                kind: TrackKind::Audio,
+                index: 1,
+                ..Default::default()
+            });
+            let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
+            p.clip_mut(picture).expect("picture").out_point = 30.0;
+            let sound = p
+                .add_linked_audio(picture, a1)
+                .expect("split the sound off");
+
+            p.unlink_clips(&[picture, sound]);
+            let layers = plan_audio(&p, 2.0);
+            assert_eq!(
+                layers.len(),
+                1,
+                "the picture must not start carrying sound the audio clip already              has just because the two were separated: {layers:?}",
+            );
+            assert_eq!(layers[0].clip, sound);
+            let mut src = constant(&[(media, 0.5)]);
+            let after = mix_block(&p, 2.0, 8, &mut src);
+            assert!(
+                (after[0] - 0.5).abs() < 1e-6,
+                "still one shot: {}",
+                after[0]
+            );
+        }
+        // Case `linking_a_bed_to_a_shot_leaves_the_shots_own_sound_alone`:
+        // A link is a general "these move together". Tying a music bed to a shot
+        // must not silence the shot.
+        {
+            use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+            let mut p = Project::new("interview");
+            let footage = uuid::Uuid::new_v4();
+            let music = uuid::Uuid::new_v4();
+            for (id, name, kind) in [
+                (footage, "interview.mp4", MediaKind::Video),
+                (music, "bed.wav", MediaKind::Audio),
+            ] {
+                p.media.push(MediaItem {
+                    id,
+                    name: name.into(),
+                    kind,
+                    duration: 30.0,
+                    // The picture's container carries sound; so, obviously, does
+                    // the music.
+                    has_audio: kind == MediaKind::Video,
+                    ..Default::default()
+                });
+            }
+            let v1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: v1,
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                ..Default::default()
+            });
+            let a1 = uuid::Uuid::new_v4();
+            p.tracks.push(Track {
+                id: a1,
+                name: "A1".into(),
+                kind: TrackKind::Audio,
+                index: 1,
+                ..Default::default()
+            });
+            let picture = p.add_clip(v1, footage, 0.0).expect("place the picture");
+            p.clip_mut(picture).expect("picture").out_point = 30.0;
+            let bed = p.add_clip(a1, music, 0.0).expect("place the bed");
+            p.clip_mut(bed).expect("bed").out_point = 30.0;
+
+            // Tie them together so the bed travels with the shot.
+            p.link_clips(&[picture, bed]);
+            let layers = plan_audio(&p, 1.0);
+            assert!(
+                layers.iter().any(|l| l.clip == picture),
+                "a link is 'these move together'; only splitting the sound off              moves where the sound comes from: {layers:?}",
+            );
+            assert!(layers.iter().any(|l| l.clip == bed));
+            let mut src = constant(&[(footage, 0.25), (music, 0.5)]);
+            let block = mix_block(&p, 1.0, 8, &mut src);
+            assert!(
+                (block[0] - 0.75).abs() < 1e-6,
+                "both are heard: {}",
+                block[0],
+            );
+        }
+        // Case `a_video_only_project_reports_no_audio`.
+        {
+            let mut p = Project::new("v");
+            assert!(!has_audio(&p), "an empty project has nothing to mix");
+            let (with_audio, _, _, _) = project_with_audio();
+            assert!(has_audio(&with_audio));
+            // A project with only video lanes is video-only.
+            p.tracks.push(Track {
+                id: Uuid::new_v4(),
+                name: "V1".into(),
+                kind: TrackKind::Video,
+                index: 1,
+                muted: false,
+                locked: false,
+                solo: false,
+                gain_db: 0.0,
+                pan: 0.0,
+            });
+            assert!(!has_audio(&p));
+        }
     }
 }

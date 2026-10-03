@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -425,7 +424,6 @@ fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme, com
 /// `(inner_x0, groups_top)`, row-major: `[0, 1]` in row 0, `[2, 3]` in
 /// row 1.
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one linear renderer keeps the compact and two-column geometry paired with the same canonical shortcut rows"
 )]
@@ -558,8 +556,6 @@ fn draw_groups(
 }
 
 impl Widget for ShortcutsOverlay {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -600,21 +596,6 @@ impl Widget for ShortcutsOverlay {
     ) {
         // Use `draw_overlay` from the host so the overlay paints on
         // top of everything else. A no-op here keeps the trait happy.
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Use `handle_key` from the host.
     }
 
     fn name(&self) -> &'static str {
@@ -712,118 +693,124 @@ mod tests {
     }
 
     #[test]
-    fn set_visible_flips_and_marks_dirty() {
-        let mut o = ShortcutsOverlay::new();
-        assert!(!o.is_visible());
-        o.mark_drawn();
-        assert!(!o.needs_redraw());
-        o.set_visible(true);
-        assert!(o.is_visible());
-        assert!(o.needs_redraw());
+    fn shortcuts_overlay_opens_closes_and_consumes_only_while_visible() {
+        eprintln!("phase set_visible_flips_and_marks_dirty");
+        {
+            let mut o = ShortcutsOverlay::new();
+            assert!(!o.is_visible());
+            o.mark_drawn();
+            assert!(!o.needs_redraw());
+            o.set_visible(true);
+            assert!(o.is_visible());
+            assert!(o.needs_redraw());
+        }
+
+        eprintln!("phase escape_closes_overlay");
+        {
+            let mut o = ShortcutsOverlay::new();
+            o.set_visible(true);
+            let consumed = o.handle_key(&esc_event(), 1.0);
+            assert!(consumed);
+            assert!(!o.is_visible());
+        }
+
+        eprintln!("phase invisible_overlay_does_not_consume_events");
+        {
+            let mut o = ShortcutsOverlay::new();
+            assert!(!o.handle_key(&esc_event(), 1.0));
+        }
+
+        eprintln!("phase shared_modal_hit_testing_preserves_inside_and_dismiss_paths");
+        {
+            let mut o = ShortcutsOverlay::new();
+            o.set_viewport(Rect::new(0.0, 0.0, 1024.0, 768.0));
+            o.set_visible(true);
+            paint(&mut o);
+
+            let centre = o.get_rect().center();
+            o.handle_key(&cursor_at(centre), 1.0);
+            o.handle_key(&left_press(), 1.0);
+            assert!(o.is_visible(), "click inside the card must not dismiss");
+
+            let close = o
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.close)
+                .expect("shared modal frame supplies a close control");
+            o.mark_drawn();
+            o.handle_key(&cursor_at(close.center()), 1.0);
+            assert!(
+                o.needs_redraw(),
+                "close hover must schedule its shared face"
+            );
+            assert!(o.handle_key(&left_press(), 1.0));
+            assert!(!o.is_visible());
+
+            o.set_visible(true);
+            paint(&mut o);
+            o.handle_key(&cursor_at(Point::new(10.0, 10.0)), 1.0);
+            assert!(o.handle_key(&left_press(), 1.0));
+            assert!(!o.is_visible());
+        }
     }
 
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "End and Home assign max_scroll_y and 0.0 exactly; exact equality is the property under test"
     )]
-    fn keyboard_scrolling_reaches_both_ends_without_closing_help() {
-        let mut overlay = ShortcutsOverlay::new();
-        overlay.set_viewport(Rect::new(0.0, 0.0, 390.0, 844.0));
-        overlay.set_visible(true);
-        paint(&mut overlay);
-        assert!(overlay.max_scroll_y > 0.0);
-        for key in [NamedKey::PageDown, NamedKey::End, NamedKey::Home] {
-            let mut event = esc_event();
-            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                event.logical_key = Key::Named(key);
-            }
-            assert!(overlay.handle_key(&event, 1.0));
-            assert!(overlay.is_visible());
-            match key {
-                NamedKey::End => assert_eq!(overlay.scroll_y, overlay.max_scroll_y),
-                NamedKey::Home => assert_eq!(overlay.scroll_y, 0.0),
-                _ => assert!(overlay.scroll_y > 0.0),
+    #[test]
+    fn shortcuts_overlay_is_an_accessible_scrollable_dialog_at_high_text() {
+        eprintln!("phase visible_overlay_is_an_accessible_focus_trapping_dialog");
+        {
+            let mut o = ShortcutsOverlay::new();
+            o.set_visible(true);
+            assert!(o.traps_focus());
+            let node = o.accessibility().expect("dialog semantics");
+            assert_eq!(node.role, ui::a11y::Role::Dialog);
+            assert!(node.state.modal);
+            assert!(!node.state.hidden);
+        }
+
+        eprintln!("phase keyboard_scrolling_reaches_both_ends_without_closing_help");
+        {
+            let mut overlay = ShortcutsOverlay::new();
+            overlay.set_viewport(Rect::new(0.0, 0.0, 390.0, 844.0));
+            overlay.set_visible(true);
+            paint(&mut overlay);
+            assert!(overlay.max_scroll_y > 0.0);
+            for key in [NamedKey::PageDown, NamedKey::End, NamedKey::Home] {
+                let mut event = esc_event();
+                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                    event.logical_key = Key::Named(key);
+                }
+                assert!(overlay.handle_key(&event, 1.0));
+                assert!(overlay.is_visible());
+                match key {
+                    NamedKey::End => assert_eq!(overlay.scroll_y, overlay.max_scroll_y),
+                    NamedKey::Home => assert_eq!(overlay.scroll_y, 0.0),
+                    _ => assert!(overlay.scroll_y > 0.0),
+                }
             }
         }
-    }
 
-    #[test]
-    fn escape_closes_overlay() {
-        let mut o = ShortcutsOverlay::new();
-        o.set_visible(true);
-        let consumed = o.handle_key(&esc_event(), 1.0);
-        assert!(consumed);
-        assert!(!o.is_visible());
-    }
+        eprintln!("phase high_text_shortcuts_are_bounded_and_scrollable_without_partial_rows");
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let groups_top = 180.0;
+            let groups_bottom = 560.0;
+            let limit = shortcut_scroll_limit(groups_top, groups_bottom, &theme, true);
+            assert!(limit > 0.0, "2× shortcut reference needs a scroll range");
+            assert!(groups_bottom - groups_top >= ROW_HEIGHT * 2.0);
 
-    #[test]
-    fn shared_modal_hit_testing_preserves_inside_and_dismiss_paths() {
-        let mut o = ShortcutsOverlay::new();
-        o.set_viewport(Rect::new(0.0, 0.0, 1024.0, 768.0));
-        o.set_visible(true);
-        paint(&mut o);
-
-        let centre = o.get_rect().center();
-        o.handle_key(&cursor_at(centre), 1.0);
-        o.handle_key(&left_press(), 1.0);
-        assert!(o.is_visible(), "click inside the card must not dismiss");
-
-        let close = o
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.close)
-            .expect("shared modal frame supplies a close control");
-        o.mark_drawn();
-        o.handle_key(&cursor_at(close.center()), 1.0);
-        assert!(
-            o.needs_redraw(),
-            "close hover must schedule its shared face"
-        );
-        assert!(o.handle_key(&left_press(), 1.0));
-        assert!(!o.is_visible());
-
-        o.set_visible(true);
-        paint(&mut o);
-        o.handle_key(&cursor_at(Point::new(10.0, 10.0)), 1.0);
-        assert!(o.handle_key(&left_press(), 1.0));
-        assert!(!o.is_visible());
-    }
-
-    #[test]
-    fn visible_overlay_is_an_accessible_focus_trapping_dialog() {
-        let mut o = ShortcutsOverlay::new();
-        o.set_visible(true);
-        assert!(o.traps_focus());
-        let node = o.accessibility().expect("dialog semantics");
-        assert_eq!(node.role, ui::a11y::Role::Dialog);
-        assert!(node.state.modal);
-        assert!(!node.state.hidden);
-    }
-
-    #[test]
-    fn invisible_overlay_does_not_consume_events() {
-        let mut o = ShortcutsOverlay::new();
-        assert!(!o.handle_key(&esc_event(), 1.0));
-    }
-
-    #[test]
-    fn high_text_shortcuts_are_bounded_and_scrollable_without_partial_rows() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let groups_top = 180.0;
-        let groups_bottom = 560.0;
-        let limit = shortcut_scroll_limit(groups_top, groups_bottom, &theme, true);
-        assert!(limit > 0.0, "2× shortcut reference needs a scroll range");
-        assert!(groups_bottom - groups_top >= ROW_HEIGHT * 2.0);
-
-        let mut overlay = ShortcutsOverlay::new();
-        overlay.visible = true;
-        overlay.max_scroll_y = limit;
-        overlay.text_scale = 2.0;
-        overlay.scroll_y = 0.0;
-        let next =
-            (overlay.scroll_y + ROW_HEIGHT * overlay.text_scale).clamp(0.0, overlay.max_scroll_y);
-        assert!(next > 0.0);
-        assert!(next <= overlay.max_scroll_y);
+            let mut overlay = ShortcutsOverlay::new();
+            overlay.visible = true;
+            overlay.max_scroll_y = limit;
+            overlay.text_scale = 2.0;
+            overlay.scroll_y = 0.0;
+            let next = (overlay.scroll_y + ROW_HEIGHT * overlay.text_scale)
+                .clamp(0.0, overlay.max_scroll_y);
+            assert!(next > 0.0);
+            assert!(next <= overlay.max_scroll_y);
+        }
     }
 }

@@ -42,6 +42,24 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derive `JsonSchema`: the JSON Schema of the type's serde JSON form.
+///
+/// Reads the serde attributes that change the form — `rename`,
+/// `rename_all`, `tag`, `content`, `transparent`, `default`, `skip` — and
+/// refuses those it cannot describe (`flatten`, `untagged`, `with`), so the
+/// schema never differs from what serde reads. Doc comments become
+/// descriptions. Every field's type must implement `JsonSchema` too.
+#[proc_macro_derive(JsonSchema, attributes(serde))]
+pub fn derive_json_schema(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match schema::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+mod schema;
+
 #[derive(Default)]
 struct FieldOptions {
     rename: Option<String>,
@@ -434,6 +452,7 @@ struct ActionOptions {
     label: Option<String>,
     permission: Option<String>,
     destructive: bool,
+    housekeeping: bool,
     item: Option<String>,
 }
 
@@ -442,6 +461,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         label: None,
         permission: None,
         destructive: false,
+        housekeeping: false,
         item: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
@@ -454,10 +474,13 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("destructive") {
             options.destructive = true;
+        } else if meta.path.is_ident("housekeeping") {
+            options.housekeeping = true;
         } else if meta.path.is_ident("item") {
             options.item = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
-            return Err(meta.error("expected `label`, `permission`, `destructive` or `item`"));
+            return Err(meta
+                .error("expected `label`, `permission`, `destructive`, `housekeeping` or `item`"));
         }
         Ok(())
     })?;
@@ -546,7 +569,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Options: `#[action(label = "...", permission = "comment", destructive)]`
 /// (`destructive` applies both to the named declaration and to the same
 /// operation reached through the generic `apply` action, so either path asks
-/// for the same confirmation);
+/// for the same confirmation; `housekeeping` declares a change about the
+/// record rather than to it, such as a read marker, which workspace activity
+/// leaves out);
 /// `#[resource(search = path, children = path)]` override search entries and
 /// nested resources.
 #[proc_macro_attribute]
@@ -578,6 +603,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut variants = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
+    let mut housekeeping = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
@@ -727,6 +753,11 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 Self::#variant { .. } => #krate::__private::RiskLevel::Destructive,
             });
         }
+        if action.housekeeping {
+            housekeeping.push(quote! {
+                Self::#variant { .. } => #krate::__private::ChangeKind::Housekeeping,
+            });
+        }
         let const_ident = format_ident!("{}", method_name.to_uppercase());
         let param_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
         let tys: Vec<&Type> = fields.iter().map(|(_, ty, _, _)| ty).collect();
@@ -838,6 +869,19 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
         }
     };
+    let change_kind = if housekeeping.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn change_kind(&self) -> #krate::__private::ChangeKind {
+                #[allow(unreachable_patterns, reason = "every other operation changes content")]
+                match self {
+                    #(#housekeeping)*
+                    _ => #krate::__private::ChangeKind::Content,
+                }
+            }
+        }
+    };
     let body = if arms.is_empty() {
         quote!(match *self {})
     } else {
@@ -865,6 +909,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 #body
             }
             #risk
+            #change_kind
         }
 
         impl #self_ty {
@@ -912,6 +957,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn shape() -> ::core::option::Option<#krate::Shape> {
                 ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
+            }
+
+            fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
+                ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
             }
         }
     })

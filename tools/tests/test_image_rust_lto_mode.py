@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".forgejo/workflows/build-image.yml"
 CONTAINERFILE = REPO / "os/Containerfile"
 BUILD_IMAGE = REPO / "os/dev/build-image.sh"
+COMMON = REPO / "os/dev/_common.sh"
 
 
 def build_arg_blocks(text: str) -> list[str]:
@@ -59,7 +60,7 @@ class RustLtoModeTests(unittest.TestCase):
         block = script[start:end]
         with tempfile.TemporaryDirectory() as temporary:
             probe = Path(temporary) / "probe.sh"
-            probe.write_text("set -euo pipefail\ndie() { echo \"die: $*\"; exit 3; }\n" + block
+            probe.write_text(f"source {COMMON}\nset -euo pipefail\ndie() {{ echo \"die: $*\"; exit 3; }}\n" + block
                              + 'echo "$TILO_RUST_LTO ${TILO_CARGO_BUILD_JOBS:-}"\n')
             clean = {k: v for k, v in os.environ.items() if not k.startswith("TILO_")}
             result = subprocess.run(["bash", str(probe)], env=clean | env, capture_output=True, text=True)
@@ -71,7 +72,8 @@ class RustLtoModeTests(unittest.TestCase):
         self.assertTrue(self.mode(TILO_RUST_LTO="off", TILO_REQUIRE_PCR_PREDICTION="1").startswith("die:"))
         self.assertTrue(self.mode(TILO_RUST_LTO="fat").startswith("die:"))
         jobs = int(self.mode().split()[1])
-        self.assertTrue(1 <= jobs <= 8, jobs)
+        # A CPU per job, as far as memory holds out (os/dev/_common.sh cargo_build_jobs).
+        self.assertTrue(1 <= jobs <= (os.cpu_count() or 1), jobs)
         self.assertEqual(self.mode(TILO_REQUIRE_PCR_PREDICTION="1"), "thin")
 
     def test_a_publication_checks_the_label(self) -> None:

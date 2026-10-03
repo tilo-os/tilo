@@ -389,8 +389,12 @@ mod tests {
     use ui::search::SearchProvider;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
+    /// The catalog indexes requests and variables by stable address, never by
+    /// variable value, and a refresh replaces it atomically.
     #[test]
-    fn late_request_is_found_with_bounded_cursor_work_and_no_variable_values() {
+    fn catalog_refresh_indexes_records_by_address_without_values() {
+        // Case "late request": found with bounded cursor work and no variable
+        // values; a later refresh invalidates the old cursor.
         let (mut provider, hit) = assert_late_hit_reachable(
             |corpus| {
                 let mut collection = Collection::new("Load test");
@@ -428,9 +432,13 @@ mod tests {
         let cursor = first.next.expect("broad result is paged");
         provider.refresh(&[], &[], &[]).expect("empty catalog");
         assert!(!provider.action_directory_cursor_is_current(&cursor));
+
+        same_key_variables_keep_distinct_resolvable_addresses_without_values();
+        failed_refresh_keeps_the_previous_catalog_and_exact_resolver_coherent();
     }
 
-    #[test]
+    /// Case "same-key variables" of
+    /// `catalog_refresh_indexes_records_by_address_without_values`.
     fn same_key_variables_keep_distinct_resolvable_addresses_without_values() {
         let mut environment = Environment::new("Shared");
         environment.variables = vec![
@@ -469,7 +477,8 @@ mod tests {
         assert!(provider.search("second-secret").is_empty());
     }
 
-    #[test]
+    /// Case "failed refresh" of
+    /// `catalog_refresh_indexes_records_by_address_without_values`.
     fn failed_refresh_keeps_the_previous_catalog_and_exact_resolver_coherent() {
         let collection = Collection::new("Stable collection");
         let id = format!("api_tester.collection:{}", collection.id);
@@ -492,7 +501,8 @@ mod tests {
     }
 
     #[test]
-    fn history_is_searchable_and_materializes_its_replay_operation() {
+    fn history_is_searchable_redacted_and_materializes_its_replay_operation() {
+        // Case "replay": a history hit resolves to its replay operation.
         let entry = HistoryEntry {
             id: uuid::Uuid::new_v4(),
             method: crate::model::HttpMethod::Get,
@@ -514,10 +524,9 @@ mod tests {
             .resolve_action_resource(&address)
             .expect("replay resource");
         assert!(resource.actions.iter().any(|action| action.id == "replay"));
-    }
 
-    #[test]
-    fn history_catalog_redacts_userinfo_query_and_fragment_secrets() {
+        // Case "redaction": the catalog drops userinfo, query and fragment
+        // secrets while keeping the route searchable.
         let entry = HistoryEntry {
             id: uuid::Uuid::new_v4(),
             method: crate::model::HttpMethod::Get,

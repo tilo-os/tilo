@@ -35,6 +35,21 @@ use serde::{Deserialize, Serialize};
 /// Peer identifier — opaque numeric handle assigned per session.
 pub type PeerId = u64;
 
+/// The [`PeerId`] a device's messages carry as their publisher: FNV-1a over
+/// its Ed25519 device key. A receiving shell drops a message whose publisher
+/// is not the handle of the device it authenticated the message from, so
+/// every sender (shell, browser, a host signing a compaction) derives it here.
+pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for b in device_public_key {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
 /// Continuation is portable metadata, never an application backup. Keep this
 /// limit at the wire boundary so every transport (direct or store-forward)
 /// applies the same bound before decoding or retaining it.
@@ -375,6 +390,13 @@ mod tests {
         ))
     }
 
+    /// Shells in the field check publishers against this exact fold, so it
+    /// is pinned like the encodings.
+    #[test]
+    fn peer_handle_is_fnv1a_of_the_device_key() {
+        assert_eq!(peer_handle(&[7; 32]), 0xf160_fd08_b6d9_aac5);
+    }
+
     /// Room id shared by every fixture that names one.
     const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
@@ -690,7 +712,15 @@ mod tests {
         ]
     }
 
+    /// Every message round-trips over the production codec and every variant encodes to its
+    /// pinned bytes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn every_message_round_trips_and_encodes_to_its_pinned_bytes() {
+        every_message_round_trips_over_the_production_codec();
+        every_variant_encodes_to_its_pinned_bytes();
+    }
+
     fn every_message_round_trips_over_the_production_codec() {
         for (case, message) in fixtures() {
             let bytes = postcard::to_allocvec(&message)
@@ -919,7 +949,6 @@ mod tests {
         ),
     ];
 
-    #[test]
     fn every_variant_encodes_to_its_pinned_bytes() {
         let fixtures = fixtures();
         let covered: std::collections::BTreeSet<_> = fixtures

@@ -99,6 +99,11 @@ SELinux is enabled.
 
 ## VM confirmation
 
+For an automated enforcing proof on a disposable `--dev-login` medium, see
+`os/dev/README.md` (`--selinux-audit-ssh` on `test-installer-cycle.sh`). That
+path fails closed on AVC/USER_AVC and lost audit records; it does not replace
+the release medium's SSH-disabled graphical cycle.
+
 Build the installer and run an install on a VM (`./os/dev/vm.sh
 boot-installer`), then:
 

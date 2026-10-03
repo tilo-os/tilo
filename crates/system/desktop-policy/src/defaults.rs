@@ -415,7 +415,7 @@ impl PersonalDefaults {
         let mut body =
             serde_json::to_vec_pretty(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(path, &body)
+        tilo_files::native::atomic::write_creating_parent(path, &body)
             .map_err(|e| DefaultAppError::Persist(e.to_string()))
     }
 }
@@ -463,106 +463,111 @@ mod tests {
     }
 
     #[test]
-    fn exact_precedence_and_escape_hatches() {
-        let pdf = r("pdf");
-        let apps = [
-            app("so.tilo.a", "A", "pdf"),
-            app("so.tilo.b", "B", "pdf"),
-            app("so.tilo.c", "C", "pdf"),
-        ];
-        let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults {
-            handlers: [(pdf.clone(), "so.tilo.a".into())].into(),
-        };
-        let mut ws = WorkspaceDefaults::default();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn default_selection_follows_exact_precedence_and_falls_through_safely() {
+        // Phase `exact_precedence_and_escape_hatches`.
+        {
+            let pdf = r("pdf");
+            let apps = [
+                app("so.tilo.a", "A", "pdf"),
+                app("so.tilo.b", "B", "pdf"),
+                app("so.tilo.c", "C", "pdf"),
+            ];
+            let resolver = DefaultAppResolver::new(&apps);
+            let personal = PersonalDefaults {
+                handlers: [(pdf.clone(), "so.tilo.a".into())].into(),
+            };
+            let mut ws = WorkspaceDefaults::default();
 
-        assert_eq!(
-            resolver
-                .resolve(&pdf, "ada", &personal, Some(&ws))
+            assert_eq!(
+                resolver
+                    .resolve(&pdf, "ada", &personal, Some(&ws))
+                    .unwrap()
+                    .package_id,
+                "so.tilo.a"
+            );
+            ws.policy
+                .insert(pdf.clone(), WorkspaceDefaultPolicy::App("so.tilo.b".into()));
+            assert_eq!(
+                resolver
+                    .resolve(&pdf, "ada", &personal, Some(&ws))
+                    .unwrap()
+                    .package_id,
+                "so.tilo.b"
+            );
+            ws.user_choices
+                .entry("ada".into())
+                .or_default()
+                .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
+            assert_eq!(
+                resolver
+                    .resolve(&pdf, "ada", &personal, Some(&ws))
+                    .unwrap()
+                    .package_id,
+                "so.tilo.a"
+            );
+            ws.user_choices
+                .get_mut("ada")
                 .unwrap()
-                .package_id,
-            "so.tilo.a"
-        );
-        ws.policy
-            .insert(pdf.clone(), WorkspaceDefaultPolicy::App("so.tilo.b".into()));
-        assert_eq!(
-            resolver
-                .resolve(&pdf, "ada", &personal, Some(&ws))
+                .insert(pdf.clone(), UserWorkspaceChoice::App("so.tilo.c".into()));
+            assert_eq!(
+                resolver
+                    .resolve(&pdf, "ada", &personal, Some(&ws))
+                    .unwrap()
+                    .package_id,
+                "so.tilo.c"
+            );
+            ws.policy
+                .insert(pdf.clone(), WorkspaceDefaultPolicy::FollowPersonal);
+            ws.user_choices
+                .get_mut("ada")
                 .unwrap()
-                .package_id,
-            "so.tilo.b"
-        );
-        ws.user_choices
-            .entry("ada".into())
-            .or_default()
-            .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
-        assert_eq!(
-            resolver
-                .resolve(&pdf, "ada", &personal, Some(&ws))
-                .unwrap()
-                .package_id,
-            "so.tilo.a"
-        );
-        ws.user_choices
-            .get_mut("ada")
-            .unwrap()
-            .insert(pdf.clone(), UserWorkspaceChoice::App("so.tilo.c".into()));
-        assert_eq!(
-            resolver
-                .resolve(&pdf, "ada", &personal, Some(&ws))
-                .unwrap()
-                .package_id,
-            "so.tilo.c"
-        );
-        ws.policy
-            .insert(pdf.clone(), WorkspaceDefaultPolicy::FollowPersonal);
-        ws.user_choices
-            .get_mut("ada")
-            .unwrap()
-            .insert(pdf.clone(), UserWorkspaceChoice::FollowWorkspace);
-        assert_eq!(
-            resolver
-                .resolve(&pdf, "ada", &personal, Some(&ws))
-                .unwrap()
-                .package_id,
-            "so.tilo.a"
-        );
-    }
-
-    #[test]
-    fn invalid_or_uninstalled_selection_falls_through_safely() {
-        let pdf = r("pdf");
-        let apps = [app("so.tilo.viewer", "Viewer", "pdf")];
-        let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults {
-            handlers: [(pdf.clone(), "so.tilo.removed".into())].into(),
-        };
-        let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
-        assert_eq!(selected.package_id, "so.tilo.viewer");
-        assert_eq!(selected.source, SelectionSource::DeterministicFallback);
-    }
-
-    #[test]
-    fn explicit_personal_escape_never_falls_back_to_workspace_policy() {
-        let pdf = r("pdf");
-        let apps = [
-            app("so.tilo.a", "A", "pdf"),
-            app("so.tilo.workspace", "Workspace", "pdf"),
-        ];
-        let resolver = DefaultAppResolver::new(&apps);
-        let personal = PersonalDefaults::default();
-        let mut ws = WorkspaceDefaults::default();
-        ws.policy.insert(
-            pdf.clone(),
-            WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
-        );
-        ws.user_choices
-            .entry("ada".into())
-            .or_default()
-            .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
-        let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
-        assert_eq!(selected.package_id, "so.tilo.a");
-        assert_eq!(selected.source, SelectionSource::DeterministicFallback);
+                .insert(pdf.clone(), UserWorkspaceChoice::FollowWorkspace);
+            assert_eq!(
+                resolver
+                    .resolve(&pdf, "ada", &personal, Some(&ws))
+                    .unwrap()
+                    .package_id,
+                "so.tilo.a"
+            );
+        }
+        // Phase `invalid_or_uninstalled_selection_falls_through_safely`.
+        {
+            let pdf = r("pdf");
+            let apps = [app("so.tilo.viewer", "Viewer", "pdf")];
+            let resolver = DefaultAppResolver::new(&apps);
+            let personal = PersonalDefaults {
+                handlers: [(pdf.clone(), "so.tilo.removed".into())].into(),
+            };
+            let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
+            assert_eq!(selected.package_id, "so.tilo.viewer");
+            assert_eq!(selected.source, SelectionSource::DeterministicFallback);
+        }
+        // Phase `explicit_personal_escape_never_falls_back_to_workspace_policy`.
+        {
+            let pdf = r("pdf");
+            let apps = [
+                app("so.tilo.a", "A", "pdf"),
+                app("so.tilo.workspace", "Workspace", "pdf"),
+            ];
+            let resolver = DefaultAppResolver::new(&apps);
+            let personal = PersonalDefaults::default();
+            let mut ws = WorkspaceDefaults::default();
+            ws.policy.insert(
+                pdf.clone(),
+                WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
+            );
+            ws.user_choices
+                .entry("ada".into())
+                .or_default()
+                .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
+            let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
+            assert_eq!(selected.package_id, "so.tilo.a");
+            assert_eq!(selected.source, SelectionSource::DeterministicFallback);
+        }
     }
 
     fn host(desktop_id: &str, name: &str, resource: &ResourceKind) -> AppCandidate {
@@ -635,36 +640,38 @@ mod tests {
     }
 
     #[test]
-    fn persistence_round_trip_is_atomic_shape() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("nested/default-apps.json");
-        let defaults = PersonalDefaults {
-            handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
-        };
-        defaults.save_at(&path).unwrap();
-        assert_eq!(PersonalDefaults::load_at(&path), defaults);
-    }
-
-    #[test]
-    fn resource_identifiers_are_normalized_and_active_schemes_rejected() {
-        assert_eq!(
-            ResourceKind::mime(" Text/HTML ").unwrap().as_str(),
-            "mime:text/html"
-        );
-        assert_eq!(
-            ResourceKind::scheme("HTTPS:").unwrap().as_str(),
-            "scheme:https"
-        );
-        for mime in [
-            "text",
-            "text/*",
-            "text/html; charset=utf-8",
-            "text/html/extra",
-        ] {
-            assert!(ResourceKind::mime(mime).is_err(), "accepted {mime:?}");
+    fn defaults_persist_atomically_and_normalize_resource_identifiers() {
+        // Phase `persistence_round_trip_is_atomic_shape`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("nested/default-apps.json");
+            let defaults = PersonalDefaults {
+                handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
+            };
+            defaults.save_at(&path).unwrap();
+            assert_eq!(PersonalDefaults::load_at(&path), defaults);
         }
-        for scheme in ["file", "data", "javascript", "1https", "bad scheme"] {
-            assert!(ResourceKind::scheme(scheme).is_err(), "accepted {scheme:?}");
+        // Phase `resource_identifiers_are_normalized_and_active_schemes_rejected`.
+        {
+            assert_eq!(
+                ResourceKind::mime(" Text/HTML ").unwrap().as_str(),
+                "mime:text/html"
+            );
+            assert_eq!(
+                ResourceKind::scheme("HTTPS:").unwrap().as_str(),
+                "scheme:https"
+            );
+            for mime in [
+                "text",
+                "text/*",
+                "text/html; charset=utf-8",
+                "text/html/extra",
+            ] {
+                assert!(ResourceKind::mime(mime).is_err(), "accepted {mime:?}");
+            }
+            for scheme in ["file", "data", "javascript", "1https", "bad scheme"] {
+                assert!(ResourceKind::scheme(scheme).is_err(), "accepted {scheme:?}");
+            }
         }
     }
 }

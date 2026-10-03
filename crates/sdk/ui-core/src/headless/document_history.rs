@@ -19,13 +19,16 @@ impl FrameHarness {
     /// app) keeps that one: wrapping it in the standalone adapter as well
     /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+            || crate::history_mode::capability::provides_document_history(self.root.as_ref())
         {
             return;
         }
         if !self.history_chrome_enabled {
             self.history_chrome_enabled = true;
             self.remember_history_content();
+            self.invalidate_layout_tree();
             self.relayout();
         }
     }
@@ -111,8 +114,9 @@ impl FrameHarness {
         let Some(layout) = self.history_layout else {
             return false;
         };
-        let mut pending = vec![layout.toolbar];
+        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
         pending.extend(layout.pane);
+        pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
             if next == node {
                 return true;
@@ -165,6 +169,12 @@ impl FrameHarness {
         self.drain_component_wakes();
         self.try_presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
+            keyboard_focus_owner: self.focused.and_then(|focused| {
+                self.named_target_nodes()
+                    .into_iter()
+                    .filter_map(|(path, node)| (node == focused).then_some(path))
+                    .min()
+            }),
             root: collect_inspection(root, "", &mut HashMap::new()),
             presentation: None,
         })
@@ -179,6 +189,12 @@ impl FrameHarness {
     pub fn presentation_inspection(&self) -> InspectionSnapshot {
         self.presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
+            keyboard_focus_owner: self.focused.and_then(|focused| {
+                self.named_target_nodes()
+                    .into_iter()
+                    .filter_map(|(path, node)| (node == focused).then_some(path))
+                    .min()
+            }),
             root: collect_inspection(root, "", &mut HashMap::new()),
             presentation: None,
         })
@@ -277,12 +293,15 @@ impl FrameHarness {
                 .document_history
                 .pane_mut()
                 .ok_or("History is not open")?;
-            pane.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &self.state.doc,
+            crate::widget::start_without_document_writes(
+                pane,
+                &crate::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut self.state.doc,
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;
@@ -292,21 +311,62 @@ impl FrameHarness {
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"))
         };
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
     }
 
+    /// Let History preview a selected version with a fresh read-only instance
+    /// of the app's root, as the native App does.
+    pub fn set_history_preview_root(
+        &mut self,
+        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
+    ) {
+        self.document_history
+            .set_preview_root(std::rc::Rc::new(factory));
+    }
+
+    fn fulfil_history_preview(&mut self) {
+        if !self.document_history.has_preview_request() {
+            return;
+        }
+        let root = self
+            .document_history
+            .preview_root()
+            .and_then(|factory| factory().ok());
+        self.with_history(|host, context| host.install_preview(root, context));
+        self.invalidate_layout_tree();
+    }
+
+    /// The headless counterpart of the App's restore door: the same checked
+    /// write through the same undo log, attributed to this harness's author.
+    fn apply_confirmed_history_restore(&mut self) {
+        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
+            return;
+        };
+        let result = crate::standalone_history::apply_restore(
+            &mut self.state,
+            &confirmed,
+            Some(self.author.clone()),
+        );
+        if matches!(result, Ok(true)) {
+            self.invalidate_layout_tree();
+        }
+        let _ = self
+            .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
+        self.document_history.report_restore(&result);
+    }
+
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
         let mut pending = Vec::new();
-        while let Some(intent) = self
-            .document_history
-            .toolbar_mut()
-            .take_control_invocation()
-        {
-            pending.push(intent);
+        for button in self.document_history.in_window_controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
+                pending.push(intent);
+            }
         }
         if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = pane.take_control_invocation() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
                 pending.push(intent);
             }
         }
@@ -327,11 +387,19 @@ impl FrameHarness {
                     tilo_actions::ActionOutput::default(),
                 ))
             })();
-            self.document_history
-                .toolbar_mut()
-                .on_control_invocation_result(&intent.address, &result);
+            for button in self.document_history.in_window_controls_mut() {
+                crate::widget::controls::on_control_invocation_result(
+                    button,
+                    &intent.address,
+                    &result,
+                );
+            }
             if let Some(pane) = self.document_history.pane_mut() {
-                pane.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    pane,
+                    &intent.address,
+                    &result,
+                );
             }
             result.map_err(|error| error.to_string())?;
         }
@@ -341,16 +409,20 @@ impl FrameHarness {
             )
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
         // boundary records completed actions but does not commit unrelated typing.
         self.idle_control_tick();
         result
     }
 
-    pub(super) fn prepare_history_frame(&mut self) {
+    pub(super) fn prepare_history_frame(&mut self) -> (bool, bool) {
         if !self.history_chrome_enabled {
-            return;
+            return (false, false);
         }
+        let revision = self.document_history.revision();
+        let presented_open = self.history_layout.and_then(|layout| layout.pane).is_some();
         self.remember_history_content();
         // A revoked session is purged by the shared controller before rebuilding.
         let _ = self
@@ -364,17 +436,22 @@ impl FrameHarness {
                 })
             })
             .collect();
-        self.document_history
-            .toolbar_mut()
-            .refresh_control_action_availability(&allowed);
+        for button in self.document_history.in_window_controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(button, &allowed);
+        }
         if let Some(pane) = self.document_history.pane_mut() {
-            pane.refresh_control_action_availability(&allowed);
+            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        let reshaped = self.document_history.take_structure_dirty();
+        (
+            revision != self.document_history.revision(),
+            presented_open != self.document_history.is_open() || reshaped,
+        )
     }
 
-    pub(super) fn build_history_frame(&mut self) -> NodeId {
+    pub(super) fn build_history_frame(&mut self, palette_node: Option<NodeId>) -> NodeId {
         if !self.history_chrome_enabled {
             self.history_layout = None;
             // SAFETY: the original retained root and freshly built arena are exclusive.
@@ -395,6 +472,14 @@ impl FrameHarness {
             &mut self.node_map,
             f64::from(self.viewport.0),
         );
+        let palette_node = palette_node.filter(|&node| {
+            self.taffy
+                .add_child(layout.root, node)
+                .inspect_err(|error| {
+                    tracing::error!(%error, "headless: palette could not join the history frame");
+                })
+                .is_ok()
+        });
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
@@ -414,10 +499,18 @@ impl FrameHarness {
             self.child_node,
         )];
         roots.extend(
-            chrome
-                .into_iter()
-                .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
+            chrome.into_iter().zip(
+                layout
+                    .toolbar
+                    .into_iter()
+                    .chain(layout.search)
+                    .chain(layout.pane)
+                    .chain(layout.preview),
+            ),
         );
+        if let (Some(node), Some(palette)) = (palette_node, self.action_palette.as_deref()) {
+            roots.push((palette, node));
+        }
         // SAFETY: all retained roots use the same fresh arena, admitted independently
         // so app callback authority never propagates into host chrome.
         unsafe {
@@ -531,9 +624,8 @@ impl FrameHarness {
             let point = Point::new(position.x / self.input_scale, position.y / self.input_scale);
             self.history_pointer_owned = self
                 .document_history
-                .toolbar_mut()
-                .get_rect()
-                .contains(point)
+                .in_window_controls_mut()
+                .any(|button| button.get_rect().contains(point))
                 || self
                     .document_history
                     .pane_mut()
@@ -563,45 +655,71 @@ impl FrameHarness {
                     |widget, doc, path| {
                         widget.handle_event(
                             event,
-                            self.input_scale,
-                            &self.modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus,
-                            node,
-                            &self.taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: self.input_scale,
+                                modifiers: &self.modifiers,
+                                state: doc,
+                                path,
+                                handled,
+                                focus_target: focus,
+                                node_id: node,
+                                taffy: &self.taffy,
+                            },
                         );
                     },
                 )
             };
             return true;
         }
-        self.document_history.toolbar_mut().handle_event(
-            event,
-            self.input_scale,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            handled,
-            focus,
-            layout.toolbar,
-            &self.taffy,
-        );
+        if let (Some(toolbar), Some(node)) = (self.document_history.toolbar_mut(), layout.toolbar) {
+            toolbar.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
+            );
+        }
         if !*handled
             && let Some(node) = layout.pane
             && let Some(pane) = self.document_history.pane_mut()
         {
             pane.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
+            );
+        }
+        if !*handled
+            && let Some(node) = layout.preview
+            && let Some(preview) = self.document_history.preview_mut()
+        {
+            preview.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if !layout.app_visible {
@@ -742,352 +860,362 @@ mod tests {
     }
 
     #[test]
-    fn headless_history_cli_inspect_preserves_operational_root_contract() {
-        let (mut driver, _, _) = fixture();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        driver.resize((640, 700)).unwrap();
-        let expected = serde_json::to_value(driver.inspection()).unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let output = directory.path().join("inspect.json");
-        let spec = Spec {
-            inspect: Some(output.clone()),
-            ..Spec::default()
-        };
-        write_spec_outputs(&spec, &mut driver).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
-        assert_eq!(
-            json["root"], expected["root"],
-            "CLI consumers retain the complete operational root shape"
-        );
-        assert_eq!(json["viewport"], expected["viewport"]);
-        assert_eq!(json["root"]["widget"], "Button");
-        assert_eq!(json["root"]["test_id"], "app-operation");
-        assert!(json["root"]["children"].as_array().unwrap().is_empty());
-        let visible = serde_json::to_string(&json["presentation"]).unwrap();
-        assert!(visible.contains("standalone-history-open"));
-        assert!(visible.contains("standalone-history-close"));
-        assert!(
-            !visible.contains("app-operation"),
-            "narrow presentation excludes app content without changing root inspection"
-        );
-        assert!(
-            !serde_json::to_string(&json["root"])
-                .unwrap()
-                .contains("standalone-history")
-        );
-    }
-
-    #[test]
-    fn headless_history_browsing_polls_accepted_jobs_without_committing_typing() {
-        use crate::widget::control_result_probe::Probe;
-        for succeeds in [true, false] {
-            let (mut probe, observed) = Probe::new(true);
-            probe.terminal_after = Some((3, succeeds));
-            probe.dirty_typing = true;
-            let mut driver = FrameHarness::new_with_controlled_inputs(
-                State::new(),
-                Box::new(probe),
-                (1200, 700),
-                Theme::dark(),
-                crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("reader".into()),
-            );
-            driver.enable_document_history_chrome();
-            observed.enqueue("run");
-            driver.click_named("standalone-history-open").unwrap();
-            assert!(driver.document_history.is_open());
-            assert!(
-                driver.wait_until(crate::time::Duration::from_secs(1), |driver| driver
-                    .pending_control_invocations
-                    .is_empty())
-            );
-            assert_eq!(observed.calls.get(), 1);
-            assert_eq!(observed.polls.get(), 3);
-            assert_eq!(observed.commits.get(), 0);
-            assert_eq!(driver.control_failures.is_empty(), succeeds);
-        }
-    }
-
-    #[test]
-    fn headless_history_bound_lifetime_closure_invalidates_private_frame() {
-        use crate::application_test_support::{ProbeHost, runner_inputs};
-        let owner = ProbeHost::new();
-        let (component, _) = crate::widget::control_result_probe::component(&owner, 11, false);
-        let mut driver =
-            FrameHarness::from_component(component, (1200, 700), runner_inputs()).unwrap();
-        driver.enable_document_history_chrome();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        let close = session_address(&mut driver, "close");
-        driver.close_components();
-        assert!(driver.try_presentation_inspection().is_err());
-        assert!(driver.invoke_local_history_action(&close, None).is_err());
-        assert!(!driver.document_history.is_open());
-    }
-
-    #[test]
-    fn headless_history_retained_nodes_survive_host_move() {
-        let (driver, _, _) = fixture();
-        let original = driver.node_map[&driver.history_layout.unwrap().toolbar];
-        let mut moved = Box::new(driver);
-        let actual = std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
-        assert!(
-            std::ptr::addr_eq(original, actual),
-            "admission still names the actually retained widget"
-        );
-        moved
-            .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(moved.document_history.is_open());
-        moved
-            .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(!moved.document_history.is_open());
-    }
-
-    #[test]
-    fn headless_history_uses_visible_canonical_door_and_keeps_app_publication_private() {
-        let (mut driver, _, calls) = fixture();
-        let root = std::ptr::from_ref(driver.root.as_ref());
-        let published_before: Vec<_> = driver
-            .resources()
-            .into_iter()
-            .map(|resource| resource.id)
-            .collect();
-        assert!(driver.targets()["standalone-history-open"].width() > 0.0);
-        assert!(driver.targets()["standalone-history-open"].height() > 0.0);
-        assert!(driver.a11y_node_named("History").is_some());
-        let open = open_address();
-        let accesskit_open =
-            crate::accesskit_bridge::resource_action_node_id(&open.resource, &open.action);
-        driver
-            .perform_a11y_action(accesskit_open, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.targets().contains_key("standalone-history"));
-        assert!(driver.a11y_node_named("Close history").is_some());
-        let published_after: Vec<_> = driver
-            .resources()
-            .into_iter()
-            .map(|resource| resource.id)
-            .collect();
-        assert_eq!(
-            published_before, published_after,
-            "private host controls never join app publication"
-        );
-        assert!(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn headless_history_keeps_the_canonical_door_nodes_and_focus_contract() {
+        // phase: headless_history_cli_inspect_preserves_operational_root_contract
+        {
+            let (mut driver, _, _) = fixture();
             driver
-                .resources()
-                .iter()
-                .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
-        );
-        let local = driver.local_history_resources().unwrap();
-        let session = local
-            .iter()
-            .find(|resource| resource.kind == "tilo.host.history.session")
-            .unwrap();
-        for action in ["select", "compare", "close"] {
-            assert!(session.actions.iter().any(|spec| spec.id == action));
-        }
-        let close = session_address(&mut driver, "close");
-        driver.invoke_local_history_action(&close, None).unwrap();
-        assert!(std::ptr::eq(root, std::ptr::from_ref(driver.root.as_ref())));
-        driver
-            .perform_named("app-operation", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert_eq!(
-            calls.get(),
-            1,
-            "operational app root still receives its own action"
-        );
-    }
-
-    #[test]
-    fn headless_history_pointer_semantic_and_keyboard_do_not_commit_pending_typing() {
-        let (mut driver, _, _) = fixture();
-        driver
-            .state_mut()
-            .doc
-            .put(ROOT, "value", "pending typing")
-            .unwrap();
-        let pending = driver.state.doc.pending_ops();
-        assert!(pending > 0);
-        driver.click_named("standalone-history-open").unwrap();
-        assert!(driver.document_history.is_open());
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-        driver.key("Tab");
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-        driver
-            .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(!driver.document_history.is_open());
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-        driver
-            .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.document_history.is_open());
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-        let close = driver.a11y_node_named("Close history").unwrap();
-        driver
-            .perform_a11y_action(close, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(!driver.document_history.is_open());
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-    }
-
-    #[test]
-    fn headless_history_exact_three_change_comparison_and_old_session_refusal() {
-        let (mut driver, ids, _) = fixture();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        let select = session_address(&mut driver, "select");
-        let args = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({"entries": ids.iter().map(crate::widget::history_group::hex16).collect::<Vec<_>>()})
-        );
-        driver
-            .state_mut()
-            .doc
-            .put(ROOT, "value", "pending")
-            .unwrap();
-        let pending = driver.state.doc.pending_ops();
-        driver
-            .invoke_local_history_action(&select, Some(&args))
-            .unwrap();
-        let compare = session_address(&mut driver, "compare");
-        driver.invoke_local_history_action(&compare, None).unwrap();
-        let comparison = driver.with_history(|host, context| {
-            host.session(context)
-                .unwrap()
-                .unwrap()
-                .comparison()
-                .unwrap()
-                .clone()
-        });
-        assert_eq!(comparison.entries.len(), 3);
-        assert!(ids.iter().all(|id| comparison.entries.contains(id)));
-        let before = AutoCommit::load(&comparison.before_document).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            before.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-            Some("before")
-        );
-        assert_eq!(
-            after.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-            Some("last")
-        );
-        assert_eq!(driver.state.doc.pending_ops(), pending);
-        let close = session_address(&mut driver, "close");
-        driver.invoke_local_history_action(&close, None).unwrap();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        assert!(
-            driver
-                .invoke_local_history_action(&select, Some(&args))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn headless_history_narrow_frame_pairs_nodes_and_restores_original_focus() {
-        fn paired(widget: &dyn Widget, node: NodeId, taffy: &TaffyTree<()>) {
-            let nodes = taffy.children(node).unwrap();
-            let children = widget.children();
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            driver.resize((640, 700)).unwrap();
+            let expected = serde_json::to_value(driver.inspection()).unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("inspect.json");
+            let spec = Spec {
+                inspect: Some(output.clone()),
+                ..Spec::default()
+            };
+            write_spec_outputs(&spec, &mut driver).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
             assert_eq!(
-                children.len(),
-                nodes.len(),
-                "{} presentation topology",
-                widget.name()
+                json["root"], expected["root"],
+                "CLI consumers retain the complete operational root shape"
             );
-            for (child, node) in children.into_iter().zip(nodes) {
-                paired(child, node, taffy);
-            }
+            assert_eq!(json["viewport"], expected["viewport"]);
+            assert_eq!(json["root"]["widget"], "Button");
+            assert_eq!(json["root"]["test_id"], "app-operation");
+            assert!(json["root"]["children"].as_array().unwrap().is_empty());
+            let visible = serde_json::to_string(&json["presentation"]).unwrap();
+            assert!(visible.contains("standalone-history-open"));
+            assert!(visible.contains("standalone-history-close"));
+            assert!(
+                !visible.contains("app-operation"),
+                "narrow presentation excludes app content without changing root inspection"
+            );
+            assert!(
+                !serde_json::to_string(&json["root"])
+                    .unwrap()
+                    .contains("standalone-history")
+            );
         }
-        let (mut driver, _, _) = fixture();
-        driver
-            .perform_named("app-operation", &crate::a11y::Action::Focus)
-            .unwrap();
-        driver.click_named("standalone-history-open").unwrap();
-        assert!(driver.targets().contains_key("app-operation"));
-        driver.resize((640, 700)).unwrap();
-        driver.presentation(|root, node| paired(root, node, &driver.taffy));
-        assert!(!driver.targets().contains_key("app-operation"));
-        assert!(driver.a11y_node_named("App operation").is_none());
-        assert!(
+        // phase: headless_history_uses_visible_canonical_door_and_keeps_app_publication_private
+        {
+            let (mut driver, _, calls) = fixture();
+            let root = std::ptr::from_ref(driver.root.as_ref());
+            let published_before: Vec<_> = driver
+                .resources()
+                .into_iter()
+                .map(|resource| resource.id)
+                .collect();
+            assert!(driver.targets()["standalone-history-open"].width() > 0.0);
+            assert!(driver.targets()["standalone-history-open"].height() > 0.0);
+            assert!(driver.a11y_node_named("History").is_some());
+            let open = open_address();
+            let accesskit_open =
+                crate::accesskit_bridge::resource_action_node_id(&open.resource, &open.action);
             driver
-                .focus_order()
+                .perform_a11y_action(accesskit_open, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(driver.targets().contains_key("standalone-history"));
+            assert!(driver.a11y_node_named("Close history").is_some());
+            let published_after: Vec<_> = driver
+                .resources()
+                .into_iter()
+                .map(|resource| resource.id)
+                .collect();
+            assert_eq!(
+                published_before, published_after,
+                "private host controls never join app publication"
+            );
+            assert!(
+                driver
+                    .resources()
+                    .iter()
+                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
+            );
+            let local = driver.local_history_resources().unwrap();
+            let session = local
                 .iter()
-                .all(|node| driver.is_history_node(*node))
-        );
-        assert!(
+                .find(|resource| resource.kind == "tilo.host.history.session")
+                .unwrap();
+            for action in ["select", "compare", "close"] {
+                assert!(session.actions.iter().any(|spec| spec.id == action));
+            }
+            let close = session_address(&mut driver, "close");
+            driver.invoke_local_history_action(&close, None).unwrap();
+            assert!(std::ptr::eq(root, std::ptr::from_ref(driver.root.as_ref())));
             driver
-                .focused()
-                .is_some_and(|node| driver.is_history_node(node))
-        );
-        assert!(
-            !serde_json::to_string(&driver.presentation_inspection())
-                .unwrap()
-                .contains("App operation")
-        );
-        assert_eq!(
-            driver.inspection().root.test_id.as_deref(),
-            Some("app-operation")
-        );
-        driver
-            .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.targets().contains_key("app-operation"));
-        assert_eq!(
-            driver.focused_access_node().unwrap().name.as_deref(),
-            Some("App operation")
-        );
-    }
-
-    #[test]
-    fn headless_history_revocation_refuses_cached_observation_and_old_actions() {
-        let (mut driver, _, _) = fixture();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        driver.resize((640, 700)).unwrap();
-        let close = session_address(&mut driver, "close");
-        driver.set_permission_ctx(PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("denied"),
-            vec![],
-        ));
-        assert!(
-            driver.try_presentation_inspection().is_err(),
-            "immutable inspection rechecks current authority"
-        );
-        assert!(driver.invoke_local_history_action(&close, None).is_err());
-        driver.relayout();
-        assert!(!driver.document_history.is_open());
-        assert!(driver.history_layout.unwrap().app_visible);
-        assert!(!driver.targets().contains_key("standalone-history"));
-    }
-
-    #[test]
-    fn headless_history_document_replacement_refuses_old_frame_and_recovers_layout() {
-        let (mut driver, _, _) = fixture();
-        driver
-            .invoke_local_history_action(&open_address(), None)
-            .unwrap();
-        driver.resize((640, 700)).unwrap();
-        assert!(driver.state_mut().adopt_doc(AutoCommit::new()));
-        assert!(driver.try_presentation_inspection().is_err());
-        assert!(
+                .perform_named("app-operation", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert_eq!(
+                calls.get(),
+                1,
+                "operational app root still receives its own action"
+            );
+        }
+        // phase: headless_history_retained_nodes_survive_host_move
+        {
+            let (driver, _, _) = fixture();
+            let original = driver.node_map[&driver.history_layout.unwrap().toolbar.unwrap()];
+            let mut moved = Box::new(driver);
+            let actual = std::ptr::from_mut(
+                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
+            );
+            assert!(
+                std::ptr::addr_eq(original, actual),
+                "admission still names the actually retained widget"
+            );
+            moved
+                .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(moved.document_history.is_open());
+            moved
+                .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(!moved.document_history.is_open());
+        }
+        // phase: headless_history_narrow_frame_pairs_nodes_and_restores_original_focus
+        {
+            fn paired(widget: &dyn Widget, node: NodeId, taffy: &TaffyTree<()>) {
+                let nodes = taffy.children(node).unwrap();
+                let children = widget.children();
+                assert_eq!(
+                    children.len(),
+                    nodes.len(),
+                    "{} presentation topology",
+                    widget.name()
+                );
+                for (child, node) in children.into_iter().zip(nodes) {
+                    paired(child, node, taffy);
+                }
+            }
+            let (mut driver, _, _) = fixture();
+            driver
+                .perform_named("app-operation", &crate::a11y::Action::Focus)
+                .unwrap();
+            driver.click_named("standalone-history-open").unwrap();
+            assert!(driver.targets().contains_key("app-operation"));
+            driver.resize((640, 700)).unwrap();
+            driver.presentation(|root, node| paired(root, node, &driver.taffy));
+            assert!(!driver.targets().contains_key("app-operation"));
+            assert!(driver.a11y_node_named("App operation").is_none());
+            assert!(
+                driver
+                    .focus_order()
+                    .iter()
+                    .all(|node| driver.is_history_node(*node))
+            );
+            assert!(
+                driver
+                    .focused()
+                    .is_some_and(|node| driver.is_history_node(node))
+            );
+            assert!(
+                !serde_json::to_string(&driver.presentation_inspection())
+                    .unwrap()
+                    .contains("App operation")
+            );
+            assert_eq!(
+                driver.inspection().root.test_id.as_deref(),
+                Some("app-operation")
+            );
             driver
                 .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
-                .is_err()
-        );
-        driver.relayout();
-        assert!(!driver.document_history.is_open());
-        assert!(driver.targets().contains_key("app-operation"));
+                .unwrap();
+            assert!(driver.targets().contains_key("app-operation"));
+            assert_eq!(
+                driver.focused_access_node().unwrap().name.as_deref(),
+                Some("App operation")
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn headless_history_input_never_commits_pending_typing() {
+        // phase: headless_history_browsing_polls_accepted_jobs_without_committing_typing
+        {
+            use crate::widget::control_result_probe::Probe;
+            for succeeds in [true, false] {
+                let (mut probe, observed) = Probe::new(true);
+                probe.terminal_after = Some((3, succeeds));
+                probe.dirty_typing = true;
+                let mut driver = FrameHarness::new_with_controlled_inputs(
+                    State::new(),
+                    Box::new(probe),
+                    (1200, 700),
+                    Theme::dark(),
+                    crate::font_catalog::fixture_renderer(),
+                    crate::permissions::UserId("reader".into()),
+                );
+                driver.enable_document_history_chrome();
+                observed.enqueue("run");
+                driver.click_named("standalone-history-open").unwrap();
+                assert!(driver.document_history.is_open());
+                assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
+                    driver.pending_control_invocations.is_empty()
+                }));
+                assert_eq!(observed.calls.get(), 1);
+                assert_eq!(observed.polls.get(), 3);
+                assert_eq!(observed.commits.get(), 0);
+                assert_eq!(driver.control_failures.is_empty(), succeeds);
+            }
+        }
+        // phase: headless_history_pointer_semantic_and_keyboard_do_not_commit_pending_typing
+        {
+            let (mut driver, _, _) = fixture();
+            driver
+                .state_mut()
+                .doc
+                .put(ROOT, "value", "pending typing")
+                .unwrap();
+            let pending = driver.state.doc.pending_ops();
+            assert!(pending > 0);
+            driver.click_named("standalone-history-open").unwrap();
+            assert!(driver.document_history.is_open());
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            driver.key("Tab");
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            driver
+                .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(!driver.document_history.is_open());
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            driver
+                .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(driver.document_history.is_open());
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            let close = driver.a11y_node_named("Close history").unwrap();
+            driver
+                .perform_a11y_action(close, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(!driver.document_history.is_open());
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+        }
+        // phase: headless_history_exact_three_change_comparison_and_old_session_refusal
+        {
+            let (mut driver, ids, _) = fixture();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            let select = session_address(&mut driver, "select");
+            let args = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({"entries": ids.iter().map(crate::widget::history_group::hex16).collect::<Vec<_>>()})
+            );
+            driver
+                .state_mut()
+                .doc
+                .put(ROOT, "value", "pending")
+                .unwrap();
+            let pending = driver.state.doc.pending_ops();
+            driver
+                .invoke_local_history_action(&select, Some(&args))
+                .unwrap();
+            let compare = session_address(&mut driver, "compare");
+            driver.invoke_local_history_action(&compare, None).unwrap();
+            let comparison = driver.with_history(|host, context| {
+                host.session(context)
+                    .unwrap()
+                    .unwrap()
+                    .comparison()
+                    .unwrap()
+                    .clone()
+            });
+            assert_eq!(comparison.entries.len(), 3);
+            assert!(ids.iter().all(|id| comparison.entries.contains(id)));
+            let before = AutoCommit::load(&comparison.before_document).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                before.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+                Some("before")
+            );
+            assert_eq!(
+                after.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+                Some("last")
+            );
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            let close = session_address(&mut driver, "close");
+            driver.invoke_local_history_action(&close, None).unwrap();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            assert!(
+                driver
+                    .invoke_local_history_action(&select, Some(&args))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn headless_history_invalidates_closed_revoked_or_replaced_frames() {
+        // phase: headless_history_bound_lifetime_closure_invalidates_private_frame
+        {
+            use crate::application_test_support::{ProbeHost, runner_inputs};
+            let owner = ProbeHost::new();
+            let (component, _) = crate::widget::control_result_probe::component(&owner, 11, false);
+            let mut driver =
+                FrameHarness::from_component(component, (1200, 700), runner_inputs()).unwrap();
+            driver.enable_document_history_chrome();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            let close = session_address(&mut driver, "close");
+            driver.close_components();
+            assert!(driver.try_presentation_inspection().is_err());
+            assert!(driver.invoke_local_history_action(&close, None).is_err());
+            assert!(!driver.document_history.is_open());
+        }
+        // phase: headless_history_revocation_refuses_cached_observation_and_old_actions
+        {
+            let (mut driver, _, _) = fixture();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            driver.resize((640, 700)).unwrap();
+            let close = session_address(&mut driver, "close");
+            driver.set_permission_ctx(PermissionContext::from_capabilities(
+                crate::permissions::Actor::agent("denied"),
+                vec![],
+            ));
+            assert!(
+                driver.try_presentation_inspection().is_err(),
+                "immutable inspection rechecks current authority"
+            );
+            assert!(driver.invoke_local_history_action(&close, None).is_err());
+            driver.relayout();
+            assert!(!driver.document_history.is_open());
+            assert!(driver.history_layout.unwrap().app_visible);
+            assert!(!driver.targets().contains_key("standalone-history"));
+        }
+        // phase: headless_history_document_replacement_refuses_old_frame_and_recovers_layout
+        {
+            let (mut driver, _, _) = fixture();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            driver.resize((640, 700)).unwrap();
+            assert!(driver.state_mut().adopt_doc(AutoCommit::new()));
+            assert!(driver.try_presentation_inspection().is_err());
+            assert!(
+                driver
+                    .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
+                    .is_err()
+            );
+            driver.relayout();
+            assert!(!driver.document_history.is_open());
+            assert!(driver.targets().contains_key("app-operation"));
+        }
     }
 }

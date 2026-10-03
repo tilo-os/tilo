@@ -328,38 +328,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hashing_a_reader_matches_hashing_the_bytes() {
-        let bytes = b"hello payload".to_vec();
-        let (hash, len) = BlobHash::of_reader(&mut bytes.as_slice()).unwrap();
-        assert_eq!(hash, BlobHash::of(&bytes));
-        assert_eq!(len, bytes.len() as u64);
-        assert_eq!(BlobHash::from_hex(&hash.to_hex()), Some(hash));
-        assert_eq!(BlobHash::from_hex("zz"), None);
-    }
-
-    #[test]
-    fn a_map_is_both_a_source_and_a_sink() {
-        let mut map = BTreeMap::new();
-        let hash = BlobHash::of(b"abc");
-        map.accept(&hash, 3, &mut &b"abc"[..]).unwrap();
-        let mut out = Vec::new();
-        let blob = map.open_blob(&hash).unwrap().unwrap();
-        assert_eq!(blob.len, 3);
-        blob.reader.take(3).read_to_end(&mut out).unwrap();
-        assert_eq!(out, b"abc");
-        assert!(map.open_blob(&BlobHash([0; 32])).unwrap().is_none());
-    }
-
-    #[test]
-    fn collection_encoding_is_deterministic() {
-        let c = Collection::from_entries([
-            ("b.txt".into(), BlobHash([2u8; 32])),
-            ("a.txt".into(), BlobHash([1u8; 32])),
-        ]);
-        let bytes = c.encode();
-        let again = c.encode();
-        assert_eq!(bytes, again);
-        let back = Collection::decode(&bytes).unwrap();
-        assert_eq!(back, c);
+    fn blob_maps_hash_store_and_encode_deterministically() {
+        // phase: hashing_a_reader_matches_hashing_the_bytes
+        {
+            let bytes = b"hello payload".to_vec();
+            let (hash, len) = BlobHash::of_reader(&mut bytes.as_slice()).unwrap();
+            assert_eq!(hash, BlobHash::of(&bytes));
+            assert_eq!(len, bytes.len() as u64);
+            assert_eq!(BlobHash::from_hex(&hash.to_hex()), Some(hash));
+            assert_eq!(BlobHash::from_hex("zz"), None);
+        }
+        // phase: a_map_is_both_a_source_and_a_sink
+        {
+            let mut map = BTreeMap::new();
+            let hash = BlobHash::of(b"abc");
+            map.accept(&hash, 3, &mut &b"abc"[..]).unwrap();
+            let mut out = Vec::new();
+            let blob = map.open_blob(&hash).unwrap().unwrap();
+            assert_eq!(blob.len, 3);
+            blob.reader.take(3).read_to_end(&mut out).unwrap();
+            assert_eq!(out, b"abc");
+            assert!(map.open_blob(&BlobHash([0; 32])).unwrap().is_none());
+        }
+        // phase: collection_encoding_is_deterministic
+        {
+            let c = Collection::from_entries([
+                ("b.txt".into(), BlobHash([2u8; 32])),
+                ("a.txt".into(), BlobHash([1u8; 32])),
+            ]);
+            let bytes = c.encode();
+            let again = c.encode();
+            assert_eq!(bytes, again);
+            let back = Collection::decode(&bytes).unwrap();
+            assert_eq!(back, c);
+        }
     }
 }

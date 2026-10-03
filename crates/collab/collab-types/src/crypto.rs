@@ -240,90 +240,100 @@ pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
 mod tests {
     use super::*;
 
-    /// Every signed op on the wire and on disk is an Ed25519 signature over
-    /// `canonical_bytes`; pin one signature and its postcard encoding.
+    /// Signing matches the known answer, a minimal value signs and verifies, and a wrong key or a
+    /// tampered payload fails.
     #[test]
-    fn sign_event_matches_known_answer() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[0x5e; 32]);
-        let public = Ed25519PublicKey(key.verifying_key().to_bytes());
-        assert_eq!(
-            hex::encode(public.as_bytes()),
-            "8146640f02493af4fbc54fe33388e75dc2c937ae0b7727cc2b2afb1b75199a3e"
-        );
-        let event = ("kat-event", 7_u64);
-        assert_eq!(canonical_bytes(&event).unwrap(), b"\x09kat-event\x07");
-        let expected = "7395c3a6845d8916c0cc16a6f92c3a5c69bee334eac7e76606b582c37fb52ad5\
-                        74222d2f7d9c7aca82dfa32560ba5490bd7db817593d488cb713d352c0656804";
-        let signature = sign_event(&event, &key).unwrap();
-        assert_eq!(hex::encode(signature.as_bytes()), expected);
-        verify_event(&event, &signature, &public).unwrap();
-        let wire = postcard::to_allocvec(&signature).unwrap();
-        assert_eq!(hex::encode(&wire), format!("40{expected}"));
+    fn event_signatures_are_known_answer_ed25519_bound_to_key_and_payload() {
+        // Phase: sign_event_matches_known_answer.
+        // Every signed op on the wire and on disk is an Ed25519 signature over
+        // `canonical_bytes`; pin one signature and its postcard encoding.
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[0x5e; 32]);
+            let public = Ed25519PublicKey(key.verifying_key().to_bytes());
+            assert_eq!(
+                hex::encode(public.as_bytes()),
+                "8146640f02493af4fbc54fe33388e75dc2c937ae0b7727cc2b2afb1b75199a3e"
+            );
+            let event = ("kat-event", 7_u64);
+            assert_eq!(canonical_bytes(&event).unwrap(), b"\x09kat-event\x07");
+            let expected = "7395c3a6845d8916c0cc16a6f92c3a5c69bee334eac7e76606b582c37fb52ad5\
+                            74222d2f7d9c7aca82dfa32560ba5490bd7db817593d488cb713d352c0656804";
+            let signature = sign_event(&event, &key).unwrap();
+            assert_eq!(hex::encode(signature.as_bytes()), expected);
+            verify_event(&event, &signature, &public).unwrap();
+            let wire = postcard::to_allocvec(&signature).unwrap();
+            assert_eq!(hex::encode(&wire), format!("40{expected}"));
+        }
+
+        // Phase: sign_verify_minimal_value.
+        {
+            let (sk, pk) = generate_keypair();
+            let payload: Vec<u8> = b"hello world".to_vec();
+            let sig = sign_event(&payload, &sk).unwrap();
+            assert!(verify_event(&payload, &sig, &pk).is_ok());
+        }
+
+        // Phase: sign_with_a_verify_with_b_fails.
+        {
+            let (sk_a, _) = generate_keypair();
+            let (_, pk_b) = generate_keypair();
+            let payload: Vec<u8> = b"hello".to_vec();
+            let sig = sign_event(&payload, &sk_a).unwrap();
+            assert_eq!(
+                verify_event(&payload, &sig, &pk_b).unwrap_err(),
+                VerifyError::BadSignature
+            );
+        }
+
+        // Phase: tampered_payload_fails.
+        {
+            let (sk, pk) = generate_keypair();
+            let payload: Vec<u8> = b"hello".to_vec();
+            let sig = sign_event(&payload, &sk).unwrap();
+            let tampered: Vec<u8> = b"hellp".to_vec();
+            assert_eq!(
+                verify_event(&tampered, &sig, &pk).unwrap_err(),
+                VerifyError::BadSignature
+            );
+        }
     }
 
+    /// A keypair round-trips through serialisation, Debug does not panic, and an invalid public key
+    /// is rejected.
     #[test]
-    fn keypair_round_trip_serialise() {
-        let (_, pk) = generate_keypair();
-        let bytes = canonical_bytes(&pk).unwrap();
-        let back: Ed25519PublicKey = crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(pk, back);
-    }
+    fn keys_serialise_debug_safely_and_reject_invalid_points() {
+        // Phase: keypair_round_trip_serialise.
+        {
+            let (_, pk) = generate_keypair();
+            let bytes = canonical_bytes(&pk).unwrap();
+            let back: Ed25519PublicKey = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(pk, back);
+        }
 
-    #[test]
-    fn debug_does_not_panic() {
-        let (_, pk) = generate_keypair();
-        let _ = format!("{pk:?}");
-        let sig = Signature::from_bytes([7u8; 64]);
-        let _ = format!("{sig:?}");
-    }
+        // Phase: debug_does_not_panic.
+        {
+            let (_, pk) = generate_keypair();
+            let _ = format!("{pk:?}");
+            let sig = Signature::from_bytes([7u8; 64]);
+            let _ = format!("{sig:?}");
+        }
 
-    #[test]
-    fn sign_verify_minimal_value() {
-        let (sk, pk) = generate_keypair();
-        let payload: Vec<u8> = b"hello world".to_vec();
-        let sig = sign_event(&payload, &sk).unwrap();
-        assert!(verify_event(&payload, &sig, &pk).is_ok());
-    }
-
-    #[test]
-    fn sign_with_a_verify_with_b_fails() {
-        let (sk_a, _) = generate_keypair();
-        let (_, pk_b) = generate_keypair();
-        let payload: Vec<u8> = b"hello".to_vec();
-        let sig = sign_event(&payload, &sk_a).unwrap();
-        assert_eq!(
-            verify_event(&payload, &sig, &pk_b).unwrap_err(),
-            VerifyError::BadSignature
-        );
-    }
-
-    #[test]
-    fn tampered_payload_fails() {
-        let (sk, pk) = generate_keypair();
-        let payload: Vec<u8> = b"hello".to_vec();
-        let sig = sign_event(&payload, &sk).unwrap();
-        let tampered: Vec<u8> = b"hellp".to_vec();
-        assert_eq!(
-            verify_event(&tampered, &sig, &pk).unwrap_err(),
-            VerifyError::BadSignature
-        );
-    }
-
-    #[test]
-    fn invalid_public_key_rejected() {
-        // All-zero bytes are not a valid Ed25519 public key.
-        let bad = Ed25519PublicKey([0u8; 32]);
-        let payload: Vec<u8> = b"x".to_vec();
-        let sig = Signature([0u8; 64]);
-        // dalek accepts the all-zero pubkey as syntactically valid but
-        // cryptographically useless; pick a value with the high bit set on
-        // the last byte to encode an invalid sign bit instead.
-        let _ = verify_event(&payload, &sig, &bad); // don't unwrap; behaviour exercised below
-        let mut bytes = [0u8; 32];
-        bytes[31] = 0xff;
-        let bad2 = Ed25519PublicKey(bytes);
-        // Either InvalidPublicKey (decode fails) or BadSignature (decode
-        // succeeds but sig is wrong) — both satisfy "not Ok".
-        assert!(verify_event(&payload, &sig, &bad2).is_err());
+        // Phase: invalid_public_key_rejected.
+        {
+            // All-zero bytes are not a valid Ed25519 public key.
+            let bad = Ed25519PublicKey([0u8; 32]);
+            let payload: Vec<u8> = b"x".to_vec();
+            let sig = Signature([0u8; 64]);
+            // dalek accepts the all-zero pubkey as syntactically valid but
+            // cryptographically useless; pick a value with the high bit set on
+            // the last byte to encode an invalid sign bit instead.
+            let _ = verify_event(&payload, &sig, &bad); // don't unwrap; behaviour exercised below
+            let mut bytes = [0u8; 32];
+            bytes[31] = 0xff;
+            let bad2 = Ed25519PublicKey(bytes);
+            // Either InvalidPublicKey (decode fails) or BadSignature (decode
+            // succeeds but sig is wrong) — both satisfy "not Ok".
+            assert!(verify_event(&payload, &sig, &bad2).is_err());
+        }
     }
 }

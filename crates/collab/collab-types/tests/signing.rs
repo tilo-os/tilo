@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;
 use collab_types::{
-    ArtifactId, AttestationId, ChannelEvent, ChannelId, OpClass, Signature, SignedOp, SpaceId,
-    generate_keypair, sign_event, sign_op, verify_event, verify_op,
+    ArtifactId, AttestationId, ChannelEvent, ChannelId, Ed25519PublicKey, OpClass, Signature,
+    SignedOp, SpaceId, generate_keypair, sign_event, sign_op, verify_event, verify_op,
 };
 
 fn t(secs: u64) -> SystemTime {
@@ -30,177 +30,122 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
+fn unsigned_op(author: Ed25519PublicKey, payload: &[u8], op_class: OpClass) -> SignedOp {
+    SignedOp::new_unsigned(
+        payload.to_vec(),
+        ArtifactId::new(),
+        author,
+        AttestationId::new(),
+        op_class,
+        t(10),
+        1,
+    )
+}
+
+/// An event signature verifies under the signer's key — for raw payloads and
+/// for the genesis and rename channel events' signing views — and not under
+/// another key.
 #[test]
-fn sign_event_round_trip() {
+fn an_event_signature_verifies_under_its_signer_only() {
+    // Case: sign_event round trip.
     let (sk, pk) = generate_keypair();
     let payload: Vec<u8> = b"hello".to_vec();
     let sig = sign_event(&payload, &sk).unwrap();
     assert!(verify_event(&payload, &sig, &pk).is_ok());
-}
 
-#[test]
-fn sign_with_wrong_key_fails() {
+    // Case: signing with the wrong key fails.
     let (sk_a, _) = generate_keypair();
     let (_, pk_b) = generate_keypair();
-    let payload: Vec<u8> = b"hello".to_vec();
     let sig = sign_event(&payload, &sk_a).unwrap();
     assert_eq!(
         verify_event(&payload, &sig, &pk_b).unwrap_err(),
         VerifyError::BadSignature
     );
+
+    // Cases: channel events (genesis, rename) sign and verify over their
+    // signing view, with the signature slot filled in afterwards.
+    let (sk, pk) = generate_keypair();
+    let events = [
+        (
+            "genesis",
+            ChannelEvent::Genesis {
+                channel_id: ChannelId::new(),
+                space: SpaceId::new(),
+                name: "g".into(),
+                owner: pk,
+                created_at: t(0),
+                signature: Signature::from_bytes([0u8; 64]),
+            },
+        ),
+        (
+            "rename",
+            ChannelEvent::Rename {
+                new_name: "renamed".into(),
+                signed_by: pk,
+                signature: Signature::from_bytes([0u8; 64]),
+            },
+        ),
+    ];
+    for (case, mut e) in events {
+        let view = e.signing_bytes().unwrap();
+        let sig = sign_event(&view, &sk).unwrap();
+        match &mut e {
+            ChannelEvent::Genesis { signature, .. } | ChannelEvent::Rename { signature, .. } => {
+                *signature = sig;
+            }
+            _ => unreachable!(),
+        }
+        let view2 = e.signing_bytes().unwrap();
+        assert!(verify_event(&view2, &sig, &pk).is_ok(), "case {case}");
+    }
 }
 
+/// `sign_op` produces a deterministic signature that verifies only under the
+/// op's stated author and only while every signed field is untouched.
 #[test]
-fn sign_op_then_verify() {
+fn a_signed_op_verifies_only_under_its_author_and_while_untampered() {
+    // Case: sign op then verify; the placeholder signature does not verify.
     let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"automerge change".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(10),
-        1,
-    );
-    // Placeholder signature does not verify.
+    let mut op = unsigned_op(pk, b"automerge change", OpClass::Splice);
     assert!(verify_op(&op).is_err());
-
     sign_op(&mut op, &sk).unwrap();
     assert!(verify_op(&op).is_ok());
-}
 
-#[test]
-fn sign_op_idempotent() {
-    // Calling sign_op twice on the same op produces the same
-    // signature because Ed25519 is deterministic and the signed view
+    // Case: sign_op is idempotent. Calling it twice on the same op produces
+    // the same signature because Ed25519 is deterministic and the signed view
     // omits the signature field.
     let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(10),
-        1,
-    );
+    let mut op = unsigned_op(pk, b"x", OpClass::Splice);
     sign_op(&mut op, &sk).unwrap();
     let first = op.signature;
     sign_op(&mut op, &sk).unwrap();
     let second = op.signature;
     assert_eq!(first, second);
-}
 
-#[test]
-fn op_signed_by_a_does_not_verify_with_b() {
+    // Case: an op signed by A does not verify with B. The author says it's
+    // pk_b, but we sign with sk_a — the signature will not verify against
+    // pk_b.
     let (sk_a, _pk_a) = generate_keypair();
     let (_sk_b, pk_b) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(),
-        // Author says it's pk_b, but we sign with sk_a — signature
-        // will not verify against pk_b.
-        pk_b,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(10),
-        1,
-    );
+    let mut op = unsigned_op(pk_b, b"x", OpClass::Splice);
     sign_op(&mut op, &sk_a).unwrap();
     assert!(verify_op(&op).is_err());
-}
 
-#[test]
-fn tampering_op_author_breaks_signature() {
-    let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(10),
-        1,
-    );
-    sign_op(&mut op, &sk).unwrap();
-    assert!(verify_op(&op).is_ok());
-    // Changing author after signing breaks verification.
-    let (_, other_pk) = generate_keypair();
-    op.author = other_pk;
-    assert!(verify_op(&op).is_err());
-}
-
-#[test]
-fn tampering_op_op_class_breaks_signature() {
-    let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Comment,
-        t(10),
-        1,
-    );
-    sign_op(&mut op, &sk).unwrap();
-    assert!(verify_op(&op).is_ok());
-    // Lying about op class breaks verification — the op_class field
-    // is covered by the signature.
-    op.op_class = OpClass::Splice;
-    assert!(verify_op(&op).is_err());
-}
-
-#[test]
-fn tampering_op_attestation_id_breaks_signature() {
-    let (sk, pk) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(),
-        pk,
-        AttestationId::new(),
-        OpClass::Splice,
-        t(10),
-        1,
-    );
-    sign_op(&mut op, &sk).unwrap();
-    assert!(verify_op(&op).is_ok());
-    op.attestation_id = AttestationId::new();
-    assert!(verify_op(&op).is_err());
-}
-
-#[test]
-fn channel_event_genesis_signs_and_verifies() {
-    let (sk, pk) = generate_keypair();
-    let mut g = ChannelEvent::Genesis {
-        channel_id: ChannelId::new(),
-        space: SpaceId::new(),
-        name: "g".into(),
-        owner: pk,
-        created_at: t(0),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let view = g.signing_bytes().unwrap();
-    let sig = sign_event(&view, &sk).unwrap();
-    if let ChannelEvent::Genesis { signature, .. } = &mut g {
-        *signature = sig;
+    // Cases: tampering with a signed field after signing breaks verification.
+    let tamper_author: fn(&mut SignedOp) = |op| op.author = generate_keypair().1;
+    // Lying about op class — the op_class field is covered by the signature.
+    let tamper_op_class: fn(&mut SignedOp) = |op| op.op_class = OpClass::Splice;
+    let tamper_attestation: fn(&mut SignedOp) = |op| op.attestation_id = AttestationId::new();
+    for (case, op_class, tamper) in [
+        ("author", OpClass::Splice, tamper_author),
+        ("op class", OpClass::Comment, tamper_op_class),
+        ("attestation id", OpClass::Splice, tamper_attestation),
+    ] {
+        let (sk, pk) = generate_keypair();
+        let mut op = unsigned_op(pk, b"x", op_class);
+        sign_op(&mut op, &sk).unwrap();
+        assert!(verify_op(&op).is_ok(), "case {case}");
+        tamper(&mut op);
+        assert!(verify_op(&op).is_err(), "case {case}");
     }
-    let view2 = g.signing_bytes().unwrap();
-    assert!(verify_event(&view2, &sig, &pk).is_ok());
-}
-
-#[test]
-fn channel_event_rename_signs_and_verifies() {
-    let (sk, pk) = generate_keypair();
-    let mut e = ChannelEvent::Rename {
-        new_name: "renamed".into(),
-        signed_by: pk,
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let view = e.signing_bytes().unwrap();
-    let sig = sign_event(&view, &sk).unwrap();
-    if let ChannelEvent::Rename { signature, .. } = &mut e {
-        *signature = sig;
-    }
-    let view2 = e.signing_bytes().unwrap();
-    assert!(verify_event(&view2, &sig, &pk).is_ok());
 }

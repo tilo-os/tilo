@@ -91,15 +91,9 @@ pub fn discover() -> Vec<KnownFolder> {
 
 #[cfg(target_os = "linux")]
 fn discover_one(kind: KnownFolderKind) -> KnownFolder {
-    let config_path = std::env::var_os("XDG_CONFIG_HOME").map_or_else(
-        || {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".config/user-dirs.dirs")
-        },
-        |root| PathBuf::from(root).join("user-dirs.dirs"),
-    );
+    let config_path = tilo_paths::xdg::config_home()
+        .unwrap_or_default()
+        .join("user-dirs.dirs");
     let config = match std::fs::read_to_string(&config_path) {
         Ok(config) => config,
         Err(_) => return KnownFolder::unavailable(kind, "this folder is not configured"),
@@ -208,47 +202,51 @@ mod tests {
 
     use super::{KnownFolderKind, parse_lookup_path, xdg_entry_is_configured};
 
+    /// Known folder lookup output parsing.
     #[test]
-    fn empty_lookup_output_is_unavailable() {
-        assert_eq!(parse_lookup_path(b"\n").unwrap(), None);
-        assert_eq!(parse_lookup_path(b"\r\n").unwrap(), None);
-    }
+    fn known_folder_lookup_preserves_paths_and_requires_explicit_config() {
+        // Phase `empty_lookup_output_is_unavailable`.
+        {
+            assert_eq!(parse_lookup_path(b"\n").unwrap(), None);
+            assert_eq!(parse_lookup_path(b"\r\n").unwrap(), None);
+        }
 
-    #[test]
-    fn redirected_lookup_path_is_preserved() {
-        assert_eq!(
-            parse_lookup_path(b"D:\\Redirected\\Documents\r\n").unwrap(),
-            Some(PathBuf::from(r"D:\Redirected\Documents"))
-        );
-    }
+        // Phase `redirected_lookup_path_is_preserved`.
+        {
+            assert_eq!(
+                parse_lookup_path(b"D:\\Redirected\\Documents\r\n").unwrap(),
+                Some(PathBuf::from(r"D:\Redirected\Documents"))
+            );
+        }
 
-    #[test]
-    fn lookup_path_preserves_meaningful_whitespace() {
-        assert_eq!(
-            parse_lookup_path(b"/home/ada/My Documents  \n").unwrap(),
-            Some(PathBuf::from("/home/ada/My Documents  "))
-        );
-    }
+        // Phase `lookup_path_preserves_meaningful_whitespace`.
+        {
+            assert_eq!(
+                parse_lookup_path(b"/home/ada/My Documents  \n").unwrap(),
+                Some(PathBuf::from("/home/ada/My Documents  "))
+            );
+        }
 
-    #[test]
-    fn xdg_lookup_requires_an_explicit_matching_configuration_entry() {
-        let configured = r#"
-# This file is written by xdg-user-dirs-update
-XDG_DOCUMENTS_DIR="$HOME/Work Documents"
-XDG_DOWNLOAD_DIR="$HOME/Downloads"
-"#;
-        assert!(xdg_entry_is_configured(
-            configured,
-            KnownFolderKind::Documents
-        ));
-        assert!(xdg_entry_is_configured(
-            configured,
-            KnownFolderKind::Downloads
-        ));
-        assert!(!xdg_entry_is_configured(
-            configured,
-            KnownFolderKind::Pictures
-        ));
-        assert!(!xdg_entry_is_configured("", KnownFolderKind::Desktop));
+        // Phase `xdg_lookup_requires_an_explicit_matching_configuration_entry`.
+        {
+            let configured = r#"
+    # This file is written by xdg-user-dirs-update
+    XDG_DOCUMENTS_DIR="$HOME/Work Documents"
+    XDG_DOWNLOAD_DIR="$HOME/Downloads"
+    "#;
+            assert!(xdg_entry_is_configured(
+                configured,
+                KnownFolderKind::Documents
+            ));
+            assert!(xdg_entry_is_configured(
+                configured,
+                KnownFolderKind::Downloads
+            ));
+            assert!(!xdg_entry_is_configured(
+                configured,
+                KnownFolderKind::Pictures
+            ));
+            assert!(!xdg_entry_is_configured("", KnownFolderKind::Desktop));
+        }
     }
 }

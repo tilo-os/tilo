@@ -220,78 +220,87 @@ impl DailyControls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Find queries, buffered text and zoom bounds per tab.
     #[test]
-    fn changing_query_ignores_stale_results_and_keeps_other_tab_untouched() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut first = DailyControls::default();
-        let second = DailyControls::default();
-        first.act(Action::Open, &engine);
-        first.query.set("needle".into());
-        assert!(first.sync(&engine));
-        assert!(capture.commands().contains(&WebViewCommand::Find {
-            id: 1,
-            text: "needle".into(),
-            forward: true,
-            next: false
-        }));
-        first.query.set("other".into());
-        first.sync(&engine);
-        assert!(!first.apply(&WebViewEvent::FindResult {
-            id: 1,
-            count: 9,
-            active: 3,
-            final_update: true
-        }));
-        assert!(first.apply(&WebViewEvent::FindResult {
-            id: 2,
-            count: 2,
-            active: 1,
-            final_update: true
-        }));
-        assert_eq!((first.count, first.active), (2, 1));
-        assert!(!second.open);
-        assert!(second.query.get().is_empty());
-        first.act(Action::Close, &engine);
-        assert!(capture.commands().contains(&WebViewCommand::StopFinding));
-    }
-    #[test]
-    fn buffered_find_text_and_navigation_reset_do_not_lose_or_reuse_matches() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture;
-        let mut controls = DailyControls::default();
-        controls.act(Action::Open, &engine);
-        controls.buffer_text("N");
-        controls.buffer_text("eedle");
-        assert_eq!(controls.take_buffered_cursor(), Some(6));
-        assert_eq!(controls.query.get(), "Needle");
-        controls.sync(&engine);
-        assert!(controls.navigation_started(&engine));
-        assert!(!controls.open);
-        assert!(!controls.apply(&WebViewEvent::FindResult {
-            id: 1,
-            count: 3,
-            active: 1,
-            final_update: true
-        }));
-        assert_eq!((controls.count, controls.active), (0, 0));
-    }
-
-    #[test]
-    fn zoom_is_bounded_and_reset_is_explicit_per_tab() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut first = DailyControls::default();
-        let second = DailyControls::default();
-        for _ in 0..20 {
-            first.act(Action::Zoom(1), &engine);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn find_and_zoom_state_is_per_tab_race_free_and_bounded() {
+        // Phase `changing_query_ignores_stale_results_and_keeps_other_tab_untouched`.
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut first = DailyControls::default();
+            let second = DailyControls::default();
+            first.act(Action::Open, &engine);
+            first.query.set("needle".into());
+            assert!(first.sync(&engine));
+            assert!(capture.commands().contains(&WebViewCommand::Find {
+                id: 1,
+                text: "needle".into(),
+                forward: true,
+                next: false
+            }));
+            first.query.set("other".into());
+            first.sync(&engine);
+            assert!(!first.apply(&WebViewEvent::FindResult {
+                id: 1,
+                count: 9,
+                active: 3,
+                final_update: true
+            }));
+            assert!(first.apply(&WebViewEvent::FindResult {
+                id: 2,
+                count: 2,
+                active: 1,
+                final_update: true
+            }));
+            assert_eq!((first.count, first.active), (2, 1));
+            assert!(!second.open);
+            assert!(second.query.get().is_empty());
+            first.act(Action::Close, &engine);
+            assert!(capture.commands().contains(&WebViewCommand::StopFinding));
         }
-        assert!((first.zoom - 9.0).abs() < f64::EPSILON);
-        assert!(second.zoom.abs() < f64::EPSILON);
-        first.act(Action::Zoom(0), &engine);
-        assert_eq!(
-            capture.commands().last(),
-            Some(&WebViewCommand::SetZoomLevel(0.0))
-        );
+
+        // Phase `buffered_find_text_and_navigation_reset_do_not_lose_or_reuse_matches`.
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture;
+            let mut controls = DailyControls::default();
+            controls.act(Action::Open, &engine);
+            controls.buffer_text("N");
+            controls.buffer_text("eedle");
+            assert_eq!(controls.take_buffered_cursor(), Some(6));
+            assert_eq!(controls.query.get(), "Needle");
+            controls.sync(&engine);
+            assert!(controls.navigation_started(&engine));
+            assert!(!controls.open);
+            assert!(!controls.apply(&WebViewEvent::FindResult {
+                id: 1,
+                count: 3,
+                active: 1,
+                final_update: true
+            }));
+            assert_eq!((controls.count, controls.active), (0, 0));
+        }
+
+        // Phase `zoom_is_bounded_and_reset_is_explicit_per_tab`.
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut first = DailyControls::default();
+            let second = DailyControls::default();
+            for _ in 0..20 {
+                first.act(Action::Zoom(1), &engine);
+            }
+            assert!((first.zoom - 9.0).abs() < f64::EPSILON);
+            assert!(second.zoom.abs() < f64::EPSILON);
+            first.act(Action::Zoom(0), &engine);
+            assert_eq!(
+                capture.commands().last(),
+                Some(&WebViewCommand::SetZoomLevel(0.0))
+            );
+        }
     }
 }

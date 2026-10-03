@@ -21,7 +21,6 @@
 //! page surface regardless of sibling order — the same overlay contract
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -377,8 +376,6 @@ impl AddressSuggestions {
 }
 
 impl Widget for AddressSuggestions {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -446,24 +443,14 @@ impl Widget for AddressSuggestions {
         self.render(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if !self.is_visible() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -474,26 +461,26 @@ impl Widget for AddressSuggestions {
                 if let Some(idx) = self.row_at(self.last_cursor) {
                     self.selected = idx;
                     self.chosen = self.items.get(idx).cloned();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
                 match &key.logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
                         self.move_selection(1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.move_selection(-1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
                         self.chosen = self.selected().cloned();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Escape) => {
                         self.clear();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -599,6 +586,7 @@ impl Widget for AddressSuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn entry(url: &str, title: &str) -> HistoryEntry {
         HistoryEntry {
@@ -634,158 +622,233 @@ mod tests {
         w.apply_layout(&taffy, node, Point::ZERO);
     }
 
+    /// Selection model of the suggestion overlay.
     #[test]
-    fn empty_overlay_is_hidden_with_no_selection() {
-        let w = AddressSuggestions::new();
-        assert!(!w.is_visible());
-        assert_eq!(w.selected(), None);
-        assert_eq!(w.selected_index(), None);
+    fn suggestion_selection_highlights_wraps_and_resets() {
+        // Phase `empty_overlay_is_hidden_with_no_selection`.
+        {
+            let w = AddressSuggestions::new();
+            assert!(!w.is_visible());
+            assert_eq!(w.selected(), None);
+            assert_eq!(w.selected_index(), None);
+        }
+
+        // Phase `set_suggestions_highlights_first_and_move_wraps`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            assert!(w.is_visible());
+            assert_eq!(
+                w.selected().unwrap().url,
+                "https://a.test",
+                "starts on the best row"
+            );
+
+            w.move_selection(1);
+            assert_eq!(w.selected().unwrap().url, "https://b.test");
+            w.move_selection(1);
+            assert_eq!(w.selected().unwrap().url, "https://c.test");
+            // Down from the last row wraps to the first.
+            w.move_selection(1);
+            assert_eq!(w.selected().unwrap().url, "https://a.test");
+            // Up from the first row wraps to the last.
+            w.move_selection(-1);
+            assert_eq!(w.selected().unwrap().url, "https://c.test");
+        }
+
+        // Phase `set_suggestions_resets_selection`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            w.move_selection(2); // now on row 2
+            w.set_suggestions(three()); // fresh list
+            assert_eq!(w.selected_index(), Some(0), "a new list resets to the top");
+        }
+
+        // Phase `move_selection_on_empty_is_noop`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.move_selection(1);
+            assert_eq!(w.selected(), None);
+        }
     }
 
+    /// Rendering, sizing and accessibility of suggestion rows.
     #[test]
-    fn set_suggestions_highlights_first_and_move_wraps() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        assert!(w.is_visible());
-        assert_eq!(
-            w.selected().unwrap().url,
-            "https://a.test",
-            "starts on the best row"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn suggestion_rows_render_and_expose_stable_accessible_targets() {
+        // Phase `accessibility_target_uses_the_stable_row_identity`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            let target = format!(
+                "browser.address-suggestion:{}",
+                blake3::hash(b"https://c.test").to_hex()
+            );
 
-        w.move_selection(1);
-        assert_eq!(w.selected().unwrap().url, "https://b.test");
-        w.move_selection(1);
-        assert_eq!(w.selected().unwrap().url, "https://c.test");
-        // Down from the last row wraps to the first.
-        w.move_selection(1);
-        assert_eq!(w.selected().unwrap().url, "https://a.test");
-        // Up from the first row wraps to the last.
-        w.move_selection(-1);
-        assert_eq!(w.selected().unwrap().url, "https://c.test");
+            assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
+            assert_eq!(
+                w.selected().map(|entry| entry.url.as_str()),
+                Some("https://c.test")
+            );
+            assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
+            assert_eq!(
+                w.take_chosen().map(|entry| entry.url),
+                Some("https://c.test".into())
+            );
+            assert!(
+                !w.perform_accessibility_action(
+                    "browser.address-suggestion:stale",
+                    &ui::a11y::Action::Activate
+                ),
+                "a stale AT-SPI row must never select a different suggestion"
+            );
+        }
+
+        // Phase `enlarged_text_expands_rows_and_pointer_hit_targets_together`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            w.set_anchor(Point::new(20.0, 40.0), 320.0);
+            let normal_height = w.rect.height();
+
+            w.set_text_scale(1.5);
+            assert!(w.rect.height() > normal_height);
+            assert_eq!(
+                w.row_at(Point::new(40.0, w.rect.y0 + PAD + w.row_height() + 1.0)),
+                Some(1),
+                "hit testing follows the larger visual row rather than the old 46px grid"
+            );
+        }
+
+        // Phase `suggestions_expose_stable_selectable_screen_reader_rows`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            w.set_anchor(Point::new(20.0, 40.0), 320.0);
+            let node = Widget::accessibility(&w).unwrap();
+            assert_eq!(node.children.len(), 3);
+            assert!(node.children[0].state.selected);
+            assert!(
+                node.children[0]
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
+            );
+            assert!(w.focus_synthetic_accessibility(&[2]));
+            assert_eq!(w.selected_index(), Some(2));
+            assert!(w.synthetic_accessibility_rect(&[2]).is_some());
+        }
+
+        // Phase `render_emits_when_visible_and_nothing_when_hidden`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+
+            // Hidden: no draw ops.
+            let mut hidden = AddressSuggestions::new();
+            lay_out(&mut hidden);
+            let mut empty_scene = Scene::new();
+            hidden.render(&mut empty_scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_eq!(
+                empty_scene.encoding().draw_tags.len(),
+                0,
+                "a hidden overlay paints nothing"
+            );
+
+            // Visible: the panel + rows produce draw ops.
+            let mut shown = AddressSuggestions::new();
+            shown.set_suggestions(three());
+            lay_out(&mut shown);
+            let mut scene = Scene::new();
+            shown.render(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                !scene.encoding().draw_tags.is_empty(),
+                "a visible overlay paints the panel and rows"
+            );
+        }
     }
 
+    /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    fn set_suggestions_resets_selection() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        w.move_selection(2); // now on row 2
-        w.set_suggestions(three()); // fresh list
-        assert_eq!(w.selected_index(), Some(0), "a new list resets to the top");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
+        // Phase `keyboard_moves_selection_and_enter_chooses`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
 
-    #[test]
-    fn accessibility_target_uses_the_stable_row_identity() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        let target = format!(
-            "browser.address-suggestion:{}",
-            blake3::hash(b"https://c.test").to_hex()
-        );
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
 
-        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
-        assert_eq!(
-            w.selected().map(|entry| entry.url.as_str()),
-            Some("https://c.test")
-        );
-        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
-        assert_eq!(
-            w.take_chosen().map(|entry| entry.url),
-            Some("https://c.test".into())
-        );
-        assert!(
-            !w.perform_accessibility_action(
-                "browser.address-suggestion:stale",
-                &ui::a11y::Action::Activate
-            ),
-            "a stale AT-SPI row must never select a different suggestion"
-        );
-    }
+            let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
+                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = Key::Named(named);
+                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                ev.location = winit::keyboard::KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                ev.text = None;
+                let event = WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: ev,
+                    is_synthetic: false,
+                };
+                let mut handled = false;
+                let mut focus = None;
+                w.handle_event(
+                    &event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                handled
+            };
 
-    #[test]
-    fn enlarged_text_expands_rows_and_pointer_hit_targets_together() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        w.set_anchor(Point::new(20.0, 40.0), 320.0);
-        let normal_height = w.rect.height();
+            assert!(send(&mut w, NamedKey::ArrowDown));
+            assert_eq!(
+                w.selected().unwrap().url,
+                "https://b.test",
+                "Down advances the highlight"
+            );
+            assert!(send(&mut w, NamedKey::Enter));
+            let chosen = w
+                .take_chosen()
+                .expect("Enter commits the highlighted entry");
+            assert_eq!(chosen.url, "https://b.test");
+            assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
+        }
 
-        w.set_text_scale(1.5);
-        assert!(w.rect.height() > normal_height);
-        assert_eq!(
-            w.row_at(Point::new(40.0, w.rect.y0 + PAD + w.row_height() + 1.0)),
-            Some(1),
-            "hit testing follows the larger visual row rather than the old 46px grid"
-        );
-    }
+        // Phase `escape_dismisses`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
 
-    #[test]
-    fn suggestions_expose_stable_selectable_screen_reader_rows() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        w.set_anchor(Point::new(20.0, 40.0), 320.0);
-        let node = Widget::accessibility(&w).unwrap();
-        assert_eq!(node.children.len(), 3);
-        assert!(node.children[0].state.selected);
-        assert!(
-            node.children[0]
-                .action_target
-                .as_deref()
-                .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
-        );
-        assert!(w.focus_synthetic_accessibility(&[2]));
-        assert_eq!(w.selected_index(), Some(2));
-        assert!(w.synthetic_accessibility_rect(&[2]).is_some());
-    }
-
-    #[test]
-    fn move_selection_on_empty_is_noop() {
-        let mut w = AddressSuggestions::new();
-        w.move_selection(1);
-        assert_eq!(w.selected(), None);
-    }
-
-    #[test]
-    fn render_emits_when_visible_and_nothing_when_hidden() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-
-        // Hidden: no draw ops.
-        let mut hidden = AddressSuggestions::new();
-        lay_out(&mut hidden);
-        let mut empty_scene = Scene::new();
-        hidden.render(&mut empty_scene, Affine::IDENTITY, &mut tr, &theme);
-        assert_eq!(
-            empty_scene.encoding().draw_tags.len(),
-            0,
-            "a hidden overlay paints nothing"
-        );
-
-        // Visible: the panel + rows produce draw ops.
-        let mut shown = AddressSuggestions::new();
-        shown.set_suggestions(three());
-        lay_out(&mut shown);
-        let mut scene = Scene::new();
-        shown.render(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        assert!(
-            !scene.encoding().draw_tags.is_empty(),
-            "a visible overlay paints the panel and rows"
-        );
-    }
-
-    #[test]
-    fn keyboard_moves_selection_and_enter_chooses() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-
-        let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
             let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(named);
+            ev.logical_key = Key::Named(NamedKey::Escape);
             ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
                 winit::keyboard::NativeKeyCode::Unidentified,
             );
@@ -802,126 +865,77 @@ mod tests {
             let mut focus = None;
             w.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
-            handled
-        };
+            assert!(handled);
+            assert!(!w.is_visible(), "Escape clears the overlay");
+        }
 
-        assert!(send(&mut w, NamedKey::ArrowDown));
-        assert_eq!(
-            w.selected().unwrap().url,
-            "https://b.test",
-            "Down advances the highlight"
-        );
-        assert!(send(&mut w, NamedKey::Enter));
-        let chosen = w
-            .take_chosen()
-            .expect("Enter commits the highlighted entry");
-        assert_eq!(chosen.url, "https://b.test");
-        assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
-    }
+        // Phase `mouse_click_selects_and_chooses_row`.
+        {
+            let mut w = AddressSuggestions::new();
+            w.set_suggestions(three());
+            w.set_anchor(Point::new(50.0, 100.0), 400.0);
+            lay_out(&mut w);
 
-    #[test]
-    fn escape_dismisses() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
 
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let mut handled = false;
-        let mut focus = None;
-        w.handle_event(
-            &event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(handled);
-        assert!(!w.is_visible(), "Escape clears the overlay");
-    }
-
-    #[test]
-    fn mouse_click_selects_and_chooses_row() {
-        let mut w = AddressSuggestions::new();
-        w.set_suggestions(three());
-        w.set_anchor(Point::new(50.0, 100.0), 400.0);
-        lay_out(&mut w);
-
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-
-        // Aim at the centre of the second row (idx 1).
-        let r = w.get_rect();
-        let row1_y = r.y0 + PAD + ROW_H * 1.5;
-        let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
-            let mut handled = false;
-            let mut focus = None;
-            w.handle_event(
-                &ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+            // Aim at the centre of the second row (idx 1).
+            let r = w.get_rect();
+            let row1_y = r.y0 + PAD + ROW_H * 1.5;
+            let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
+                let mut handled = false;
+                let mut focus = None;
+                w.handle_event(
+                    &ev,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                handled
+            };
+            dispatch(
+                &mut w,
+                WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
+                },
             );
-            handled
-        };
-        dispatch(
-            &mut w,
-            WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
-            },
-        );
-        let handled = dispatch(
-            &mut w,
-            WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert!(handled, "a click on a row is consumed");
-        assert_eq!(
-            w.selected_index(),
-            Some(1),
-            "the clicked row becomes selected"
-        );
-        assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
+            let handled = dispatch(
+                &mut w,
+                WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert!(handled, "a click on a row is consumed");
+            assert_eq!(
+                w.selected_index(),
+                Some(1),
+                "the clicked row becomes selected"
+            );
+            assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
+        }
     }
 }

@@ -74,21 +74,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_spec_fallback_order_is_followed() {
-        assert_eq!(
-            candidates_for("de_DE.UTF-8@euro"),
-            vec!["de_DE@euro", "de_DE", "de@euro", "de"]
-        );
-        assert_eq!(candidates_for("de_AT"), vec!["de_AT", "de"]);
-        assert_eq!(candidates_for("de.UTF-8"), vec!["de"]);
-        assert_eq!(candidates_for("de"), vec!["de"]);
-    }
-
-    #[test]
-    fn the_c_locale_means_take_the_unlocalised_value() {
-        assert!(candidates_for("C").is_empty());
-        assert!(candidates_for("POSIX").is_empty());
-        assert!(candidates_for("").is_empty());
+    fn a_locale_name_expands_to_the_spec_fallback_order() {
+        for (case, locale, want) in [
+            (
+                "the_spec_fallback_order_is_followed",
+                "de_DE.UTF-8@euro",
+                &["de_DE@euro", "de_DE", "de@euro", "de"][..],
+            ),
+            (
+                "the_spec_fallback_order_is_followed",
+                "de_AT",
+                &["de_AT", "de"],
+            ),
+            ("the_spec_fallback_order_is_followed", "de.UTF-8", &["de"]),
+            ("the_spec_fallback_order_is_followed", "de", &["de"]),
+            // The C locale means take the unlocalised value.
+            ("the_c_locale_means_take_the_unlocalised_value", "C", &[]),
+            (
+                "the_c_locale_means_take_the_unlocalised_value",
+                "POSIX",
+                &[],
+            ),
+            ("the_c_locale_means_take_the_unlocalised_value", "", &[]),
+        ] {
+            assert_eq!(candidates_for(locale), want, "case {case}: {locale:?}");
+        }
     }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -100,37 +110,35 @@ mod tests {
     }
 
     #[test]
-    fn lc_all_overrides_the_messages_category() {
-        assert_eq!(
-            candidates_from(env(&[
-                ("LC_ALL", "de_DE.UTF-8"),
-                ("LC_MESSAGES", "en_US.UTF-8")
-            ])),
-            vec!["de_DE", "de"]
-        );
-    }
-
-    #[test]
-    fn lc_messages_is_taken_when_lc_all_is_unset_or_empty() {
-        assert_eq!(
-            candidates_from(env(&[
-                ("LC_MESSAGES", "fr_FR.UTF-8"),
-                ("LANG", "en_US.UTF-8")
-            ])),
-            vec!["fr_FR", "fr"]
-        );
-        assert_eq!(
-            candidates_from(env(&[("LC_ALL", "   "), ("LC_MESSAGES", "fr_FR")])),
-            vec!["fr_FR", "fr"]
-        );
-    }
-
-    #[test]
-    fn lang_is_the_last_resort_and_nothing_set_means_unlocalised() {
-        assert_eq!(
-            candidates_from(env(&[("LANG", "es_ES")])),
-            vec!["es_ES", "es"]
-        );
-        assert!(candidates_from(env(&[])).is_empty());
+    fn the_environment_selects_lc_all_then_lc_messages_then_lang() {
+        for (case, vars, want) in [
+            (
+                "lc_all_overrides_the_messages_category",
+                &[("LC_ALL", "de_DE.UTF-8"), ("LC_MESSAGES", "en_US.UTF-8")][..],
+                &["de_DE", "de"][..],
+            ),
+            (
+                "lc_messages_is_taken_when_lc_all_is_unset_or_empty",
+                &[("LC_MESSAGES", "fr_FR.UTF-8"), ("LANG", "en_US.UTF-8")],
+                &["fr_FR", "fr"],
+            ),
+            (
+                "lc_messages_is_taken_when_lc_all_is_unset_or_empty",
+                &[("LC_ALL", "   "), ("LC_MESSAGES", "fr_FR")],
+                &["fr_FR", "fr"],
+            ),
+            (
+                "lang_is_the_last_resort_and_nothing_set_means_unlocalised",
+                &[("LANG", "es_ES")],
+                &["es_ES", "es"],
+            ),
+            (
+                "lang_is_the_last_resort_and_nothing_set_means_unlocalised",
+                &[],
+                &[],
+            ),
+        ] {
+            assert_eq!(candidates_from(env(vars)), want, "case {case}: {vars:?}");
+        }
     }
 }

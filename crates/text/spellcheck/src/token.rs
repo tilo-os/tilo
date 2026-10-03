@@ -128,57 +128,46 @@ mod tests {
     }
 
     #[test]
-    fn basic_split() {
-        assert_eq!(words("hello world"), vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn strips_surrounding_punctuation() {
-        assert_eq!(words("Hello, world!"), vec!["Hello", "world"]);
-        assert_eq!(words("(parenthetical)"), vec!["parenthetical"]);
-    }
-
-    #[test]
-    fn keeps_internal_apostrophe() {
-        assert_eq!(words("don't can't won't"), vec!["don't", "can't", "won't"]);
-    }
-
-    #[test]
-    fn unicode_apostrophe_kept() {
-        // U+2019 RIGHT SINGLE QUOTATION MARK as used by smart-quote editors.
-        assert_eq!(words("don\u{2019}t"), vec!["don\u{2019}t"]);
-    }
-
-    #[test]
-    fn url_and_email_stay_intact() {
-        assert_eq!(
-            words("see https://example.com or a@b.com"),
-            vec!["see", "https://example.com", "or", "a@b.com"]
-        );
-    }
-
-    #[test]
-    fn decimals_intact() {
-        assert_eq!(words("pi is 3.14 ok"), vec!["pi", "is", "3.14", "ok"]);
-    }
-
-    #[test]
-    fn offsets_round_trip() {
+    fn tokenize_splits_words_keeping_apostrophes_urls_and_decimals() {
+        for (case, text, want) in [
+            ("basic_split", "hello world", &["hello", "world"][..]),
+            (
+                "strips_surrounding_punctuation",
+                "Hello, world!",
+                &["Hello", "world"],
+            ),
+            (
+                "strips_surrounding_punctuation",
+                "(parenthetical)",
+                &["parenthetical"],
+            ),
+            (
+                "keeps_internal_apostrophe",
+                "don't can't won't",
+                &["don't", "can't", "won't"],
+            ),
+            // U+2019 RIGHT SINGLE QUOTATION MARK as used by smart-quote editors.
+            ("unicode_apostrophe_kept", "don\u{2019}t", &["don\u{2019}t"]),
+            (
+                "url_and_email_stay_intact",
+                "see https://example.com or a@b.com",
+                &["see", "https://example.com", "or", "a@b.com"],
+            ),
+            (
+                "decimals_intact",
+                "pi is 3.14 ok",
+                &["pi", "is", "3.14", "ok"],
+            ),
+            ("unicode_letters_are_words", "café déjà", &["café", "déjà"]),
+            ("empty_input", "", &[]),
+            ("empty_input", "   ,.!  ", &[]),
+        ] {
+            assert_eq!(words(text), want, "case {case}: {text:?}");
+        }
+        // offsets_round_trip
         let text = "  café, déjà-vu? oui!";
         for tok in tokenize(text) {
             assert_eq!(&text[tok.start..tok.end], tok.text);
         }
-    }
-
-    #[test]
-    fn unicode_letters_are_words() {
-        let text = "café déjà";
-        assert_eq!(words(text), vec!["café", "déjà"]);
-    }
-
-    #[test]
-    fn empty_input() {
-        assert!(tokenize("").is_empty());
-        assert!(tokenize("   ,.!  ").is_empty());
     }
 }

@@ -3,11 +3,10 @@
 //! The component owns dropdown visibility, drawing, and its topmost hit stack.
 //! Persisted preference changes are emitted as semantic actions for the app.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::TextWeight;
 use ui::widget::{Toggle, ToggleFace};
 
 use crate::model::{LibraryPrefs, LibrarySort};
@@ -118,22 +117,17 @@ impl ShelfControls {
             .map(|(_, action)| *action)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context plus shelf geometry"
-    )]
     pub(super) fn draw_bar(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         viewport: Rect,
         open_book_x: f64,
         cursor: Point,
         prefs: LibraryPrefs,
     ) -> Rect {
         use crate::chrome::rhythm;
+        let (transform, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx { scene, text, .. } = ctx;
         let colors = &theme.tokens.colors;
         let y = viewport.y0 + 13.0;
         let compact = viewport.width() < 560.0;
@@ -218,16 +212,9 @@ impl ShelfControls {
         sort
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the sort menu combines the paint context with viewport, anchor, cursor and the selected sort"
-    )]
     pub(super) fn draw_menu(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         viewport: Rect,
         anchor: Rect,
         cursor: Point,
@@ -237,6 +224,8 @@ impl ShelfControls {
         if !self.sort_menu_open {
             return;
         }
+        let (transform, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx { scene, text, .. } = ctx;
         let colors = &theme.tokens.colors;
         let width = 190.0_f64.max(anchor.width());
         // Menu rows share the settings menu's pitch: a `MENU_ROW_H` face plus
@@ -308,87 +297,77 @@ impl ShelfControls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
 
     fn draw(controls: &mut ShelfControls, prefs: LibraryPrefs) -> Rect {
         controls.begin_frame();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
         let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let anchor = controls.draw_bar(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            viewport,
-            1120.0,
-            Point::ZERO,
-            prefs,
-        );
-        controls.draw_menu(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            viewport,
-            anchor,
-            Point::ZERO,
-            prefs.sort,
-        );
+        let anchor = controls.draw_bar(&mut ctx, viewport, 1120.0, Point::ZERO, prefs);
+        controls.draw_menu(&mut ctx, viewport, anchor, Point::ZERO, prefs.sort);
         anchor
     }
 
+    /// The bar exposes sort and filter actions and an open menu owns its rows and swallows the gap.
     #[test]
-    fn bar_hit_testing_exposes_sort_and_filter_actions() {
-        let mut controls = ShelfControls::default();
-        let anchor = draw(&mut controls, LibraryPrefs::default());
-        assert_eq!(
-            controls.hit_test(anchor.center()),
-            Some(ShelfControlAction::ToggleSortMenu)
-        );
-        let toggle = controls
-            .hits
-            .iter()
-            .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
-            .map(|(rect, _)| rect.center())
-            .expect("hide-read toggle");
-        assert_eq!(
-            controls.hit_test(toggle),
-            Some(ShelfControlAction::ToggleHideRead)
-        );
-    }
+    fn shelf_controls_hit_testing_and_menu_ownership() {
+        // --- phase: bar_hit_testing_exposes_sort_and_filter_actions ---
+        {
+            let mut controls = ShelfControls::default();
+            let anchor = draw(&mut controls, LibraryPrefs::default());
+            assert_eq!(
+                controls.hit_test(anchor.center()),
+                Some(ShelfControlAction::ToggleSortMenu)
+            );
+            let toggle = controls
+                .hits
+                .iter()
+                .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
+                .map(|(rect, _)| rect.center())
+                .expect("hide-read toggle");
+            assert_eq!(
+                controls.hit_test(toggle),
+                Some(ShelfControlAction::ToggleHideRead)
+            );
+        }
 
-    #[test]
-    fn open_menu_owns_rows_and_gap_swallowing() {
-        use crate::chrome::rhythm;
-        let mut controls = ShelfControls::default();
-        controls.toggle_sort_menu();
-        let anchor = draw(&mut controls, LibraryPrefs::default());
-        let progress = controls
-            .hits
-            .iter()
-            .find(|(_, action)| *action == ShelfControlAction::SetSort(LibrarySort::Progress))
-            .map(|(rect, _)| rect.center())
-            .expect("progress row");
-        assert_eq!(
-            controls.hit_test(progress),
-            Some(ShelfControlAction::SetSort(LibrarySort::Progress))
-        );
-        // The menu opens a related step under its anchor and pads its rows
-        // by another related step: a point inside that top padding is the
-        // panel's own (swallowed), a point in the gap above it is nobody's.
-        assert_eq!(
-            controls.hit_test(Point::new(
-                anchor.x0,
-                anchor.y1 + rhythm::RELATED + rhythm::TIGHT
-            )),
-            Some(ShelfControlAction::Swallow)
-        );
-        assert_eq!(
-            controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
-            None
-        );
-        controls.close_sort_menu();
-        assert!(!controls.sort_menu_open());
+        // --- phase: open_menu_owns_rows_and_gap_swallowing ---
+        {
+            use crate::chrome::rhythm;
+            let mut controls = ShelfControls::default();
+            controls.toggle_sort_menu();
+            let anchor = draw(&mut controls, LibraryPrefs::default());
+            let progress = controls
+                .hits
+                .iter()
+                .find(|(_, action)| *action == ShelfControlAction::SetSort(LibrarySort::Progress))
+                .map(|(rect, _)| rect.center())
+                .expect("progress row");
+            assert_eq!(
+                controls.hit_test(progress),
+                Some(ShelfControlAction::SetSort(LibrarySort::Progress))
+            );
+            // The menu opens a related step under its anchor and pads its rows
+            // by another related step: a point inside that top padding is the
+            // panel's own (swallowed), a point in the gap above it is nobody's.
+            assert_eq!(
+                controls.hit_test(Point::new(
+                    anchor.x0,
+                    anchor.y1 + rhythm::RELATED + rhythm::TIGHT
+                )),
+                Some(ShelfControlAction::Swallow)
+            );
+            assert_eq!(
+                controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
+                None
+            );
+            controls.close_sort_menu();
+            assert!(!controls.sort_menu_open());
+        }
     }
 }

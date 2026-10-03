@@ -30,7 +30,7 @@
 )]
 
 use std::collections::HashMap;
-use std::time::Instant;
+use ui::time::Instant;
 
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -67,8 +67,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         return run_interaction_bench(viewport);
     }
+    if !wants_standalone(args.iter().skip(1).cloned()) {
+        ui::framework::run::<monitor::MonitorShell>();
+        return Ok(());
+    }
     ui::launch::run(&launch_spec(monitor::app_root))?;
     Ok(())
+}
+
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            _ => {}
+        }
+    }
+    false
 }
 
 fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
@@ -240,13 +259,13 @@ impl BenchHarness {
         let (w, h) = self.viewport;
         let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
 
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.sync(&mut self.state.doc, &self.state.root);
         let sync_us = us(t);
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let t = Instant::now();
+        let t = ui::time::now();
         let child = self
             .widget
             .build_layout(&mut taffy, &self.theme, &mut node_map);
@@ -263,7 +282,7 @@ impl BenchHarness {
             &[child],
         )?;
 
-        let t = Instant::now();
+        let t = ui::time::now();
         {
             let measure_map = node_map.clone();
             let tr = &mut self.text_renderer;
@@ -284,12 +303,12 @@ impl BenchHarness {
         }
         let layout_us = us(t);
 
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.apply_layout(&taffy, child, Point::ORIGIN);
         let apply_us = us(t);
 
         let mut scene = Scene::new();
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.draw_with_presence(
             &mut scene,
             Affine::IDENTITY,
@@ -313,17 +332,19 @@ impl BenchHarness {
     fn dispatch(&mut self, ev: &WindowEvent, child: NodeId, taffy: &TaffyTree<()>) -> f64 {
         let mut handled = false;
         let mut focus = None;
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.handle_event(
             ev,
-            1.0,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            child,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: child,
+                taffy,
+            },
         );
         t.elapsed().as_secs_f64() * 1e6
     }
@@ -352,7 +373,7 @@ impl BenchHarness {
 
         // The repaint reflecting the event: full frame + GPU scene encode.
         let (scene, _taffy, _child, frame_us) = self.frame()?;
-        let te = Instant::now();
+        let te = ui::time::now();
         let _rgba = self.renderer.render_rgba(&scene);
         let encode_us = te.elapsed().as_secs_f64() * 1e6;
 
@@ -441,52 +462,55 @@ mod launch_tests {
     }
 
     #[test]
-    fn production_launch_spec_installs_the_root_history_definition() {
-        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
-        spec.validate_history_declaration().unwrap();
-        let mut app = spec.build_controlled_app_for_test().unwrap();
-        let (installed, root) = app.controlled_history_definitions_for_test();
-        assert!(std::ptr::eq(
-            installed.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
-        assert!(std::ptr::eq(
-            root.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("History"))
-        );
-    }
+    fn launch_admits_only_the_root_history_declaration() {
+        // Phase `production_launch_spec_installs_the_root_history_definition`.
+        {
+            let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+            spec.validate_history_declaration().unwrap();
+            let mut app = spec.build_controlled_app_for_test().unwrap();
+            let (installed, root) = app.controlled_history_definitions_for_test();
+            assert!(std::ptr::eq(
+                installed.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
+            assert!(std::ptr::eq(
+                root.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("History"))
+            );
+        }
 
-    #[test]
-    fn missing_and_foreign_launch_declarations_are_not_admitted() {
-        let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
-        assert_eq!(
-            missing.validate_history_declaration(),
-            Err(ui::history_mode::HistoryRegistrationError::Missing)
-        );
-        let app = missing.build_controlled_app_for_test().unwrap();
-        let (installed, root) = app.controlled_history_definitions_for_test();
-        assert!(installed.is_none());
-        assert!(std::ptr::eq(
-            root.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
+        // Phase `missing_and_foreign_launch_declarations_are_not_admitted`.
+        {
+            let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
+            assert_eq!(
+                missing.validate_history_declaration(),
+                Err(ui::history_mode::HistoryRegistrationError::Missing)
+            );
+            let app = missing.build_controlled_app_for_test().unwrap();
+            let (installed, root) = app.controlled_history_definitions_for_test();
+            assert!(installed.is_none());
+            assert!(std::ptr::eq(
+                root.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
 
-        let foreign = launch_spec_base(inert_root)
-            .history(&FOREIGN_HISTORY)
-            .open_app_global_state(memory_state);
-        assert_eq!(
-            foreign.validate_history_declaration(),
-            Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
-        );
-        assert!(matches!(
-            foreign.build_controlled_app_for_test(),
-            Err(LaunchError::Operation(message)) if message.contains("different installed application")
-        ));
+            let foreign = launch_spec_base(inert_root)
+                .history(&FOREIGN_HISTORY)
+                .open_app_global_state(memory_state);
+            assert_eq!(
+                foreign.validate_history_declaration(),
+                Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
+            );
+            assert!(matches!(
+                foreign.build_controlled_app_for_test(),
+                Err(LaunchError::Operation(message)) if message.contains("different installed application")
+            ));
+        }
     }
 }

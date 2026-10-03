@@ -27,6 +27,19 @@ use crate::integrity;
 use crate::layout::{COLLECTION_FILE, Layout, MANIFEST_FILE, SIGNED_ROOT_FILE};
 use crate::registry::{InstalledPackage, Registry};
 
+fn image_install_time(
+    image_build: bool,
+    epoch: Option<&str>,
+    wall_clock: u64,
+) -> Result<u64, StoreError> {
+    if !image_build {
+        return Ok(wall_clock);
+    }
+    epoch
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(StoreError::InvalidImageBuildEpoch)
+}
+
 /// What the caller's policy decided about a package it has seen the
 /// metadata of.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -428,9 +441,15 @@ impl PackageStore {
                 set_mode(&target, mode)?;
             }
             std::fs::create_dir_all(&record)?;
-            atomic_file::write(&record.join(SIGNED_ROOT_FILE), &meta.signed_root_bytes())?;
-            atomic_file::write(&record.join(MANIFEST_FILE), &meta.manifest_bytes)?;
-            atomic_file::write(&record.join(COLLECTION_FILE), &meta.collection_bytes)?;
+            tilo_files::native::atomic::write(
+                &record.join(SIGNED_ROOT_FILE),
+                &meta.signed_root_bytes(),
+            )?;
+            tilo_files::native::atomic::write(&record.join(MANIFEST_FILE), &meta.manifest_bytes)?;
+            tilo_files::native::atomic::write(
+                &record.join(COLLECTION_FILE),
+                &meta.collection_bytes,
+            )?;
             swap_in(
                 &tree,
                 &layout.payload(meta.id),
@@ -457,7 +476,14 @@ impl PackageStore {
         admission: Admission,
     ) -> Result<(InstalledPackage, Option<InstalledPackage>), StoreError> {
         let mut registry = self.registry()?;
-        let now = unix_now();
+        // Only the image-wide store is built with this flag. Ordinary user
+        // installs continue to record wall-clock time; two independent image
+        // builds must write identical registry rows for the same source.
+        let now = image_install_time(
+            std::env::var_os("TILO_IMAGE_BUILD").as_deref() == Some(std::ffi::OsStr::new("1")),
+            std::env::var("SOURCE_DATE_EPOCH").ok().as_deref(),
+            unix_now(),
+        )?;
         let previous = registry.find(&meta.manifest.package.id).cloned();
         let pinned = admission.pinned || previous.as_ref().is_some_and(|row| row.pinned);
         let package = self.row_for(
@@ -723,5 +749,28 @@ impl DiskUsage {
 impl From<TappError> for StoreError {
     fn from(error: TappError) -> Self {
         Self::Tapp(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod image_build_tests {
+    use super::image_install_time;
+
+    #[test]
+    fn image_install_timestamp_is_fixed_without_changing_user_installs() {
+        assert_eq!(
+            image_install_time(true, Some("1790502039"), 17).unwrap(),
+            1_790_502_039
+        );
+        assert_eq!(
+            image_install_time(true, Some("1790502039"), 99).unwrap(),
+            1_790_502_039
+        );
+        assert_eq!(
+            image_install_time(false, Some("1790502039"), 17).unwrap(),
+            17
+        );
+        assert!(image_install_time(true, None, 17).is_err());
+        assert!(image_install_time(true, Some("invalid"), 17).is_err());
     }
 }

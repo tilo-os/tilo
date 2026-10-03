@@ -46,64 +46,70 @@ fn start(choice: EncoderChoice, receivers: &[CodecCapabilities]) -> SharedFlatpa
     .expect("session should start")
 }
 
-/// With no viewers yet, a share starts with this machine's best codec, and
-/// the kind it reports is one the media stack can produce.
 #[test]
-fn auto_starts_on_every_host() {
-    let session = start(EncoderChoice::Auto, &[]);
-    eprintln!(
-        "auto chose {} via {}",
-        session.chosen_codec().wire_label(),
-        session.chosen_encoder().as_str()
-    );
-}
-
-/// A software preference never touches hardware.
-#[test]
-fn software_choice_never_reports_hardware() {
-    let session = start(EncoderChoice::Software, &[]);
-    assert!(
-        !session.chosen_encoder().is_hardware(),
-        "{:?}",
-        session.chosen_encoder()
-    );
-}
-
-/// Preferring a vendor that isn't here still starts the share.
-#[test]
-fn a_missing_preferred_vendor_falls_back() {
-    for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
-        let _session = start(choice, &[]);
+fn encoder_negotiation_falls_back_safely_and_uses_hardware_av1_only_when_all_viewers_can() {
+    // Phase `auto_starts_on_every_host`.
+    // With no viewers yet, a share starts with this machine's best codec, and
+    // the kind it reports is one the media stack can produce.
+    {
+        let session = start(EncoderChoice::Auto, &[]);
+        eprintln!(
+            "auto chose {} via {}",
+            session.chosen_codec().wire_label(),
+            session.chosen_encoder().as_str()
+        );
     }
-}
 
-/// Where this machine encodes AV1 in hardware and a viewer decodes it in
-/// hardware, AV1 is negotiated; a legacy viewer joining pins H.264 (when
-/// an H.264 encoder exists) through `renegotiate`.
-#[test]
-fn hardware_av1_is_negotiated_only_while_every_viewer_takes_it() {
-    let local = local_capabilities();
-    if !local.hardware_encode.contains(&StreamCodec::Av1) {
-        eprintln!("no AV1 hardware encoder listed here; not run");
-        return;
+    // Phase `software_choice_never_reports_hardware`.
+    // A software preference never touches hardware.
+    {
+        let session = start(EncoderChoice::Software, &[]);
+        assert!(
+            !session.chosen_encoder().is_hardware(),
+            "{:?}",
+            session.chosen_encoder()
+        );
     }
-    let hw_viewer = CodecCapabilities {
-        hardware_decode: [StreamCodec::Av1, StreamCodec::H264].into(),
-        ..CodecCapabilities::default()
-    };
-    let session = start(EncoderChoice::Auto, std::slice::from_ref(&hw_viewer));
-    assert_eq!(session.chosen_codec(), StreamCodec::Av1);
-    assert_eq!(session.chosen_encoder(), EncoderKind::VaApi);
 
-    if local.can_encode(StreamCodec::H264) {
-        let switched = session.renegotiate(&[hw_viewer, CodecCapabilities::legacy_peer()]);
-        assert!(switched, "a legacy viewer forces a switch");
-        assert_eq!(session.chosen_codec(), StreamCodec::H264);
-        match session.stream_start_msg() {
-            shell::network::NeighbourMsg::SurfaceStreamStart { codec, .. } => {
-                assert_eq!(codec, "h264", "the new stream is announced as H.264");
-            }
-            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+    // Phase `a_missing_preferred_vendor_falls_back`.
+    // Preferring a vendor that isn't here still starts the share.
+    {
+        for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
+            let _session = start(choice, &[]);
         }
+    }
+
+    // Phase `hardware_av1_is_negotiated_only_while_every_viewer_takes_it`.
+    // Where this machine encodes AV1 in hardware and a viewer decodes it in
+    // hardware, AV1 is negotiated; a legacy viewer joining pins H.264 (when
+    // an H.264 encoder exists) through `renegotiate`.
+    {
+        fn phase() {
+            let local = local_capabilities();
+            if !local.hardware_encode.contains(&StreamCodec::Av1) {
+                eprintln!("no AV1 hardware encoder listed here; not run");
+                return;
+            }
+            let hw_viewer = CodecCapabilities {
+                hardware_decode: [StreamCodec::Av1, StreamCodec::H264].into(),
+                ..CodecCapabilities::default()
+            };
+            let session = start(EncoderChoice::Auto, std::slice::from_ref(&hw_viewer));
+            assert_eq!(session.chosen_codec(), StreamCodec::Av1);
+            assert_eq!(session.chosen_encoder(), EncoderKind::VaApi);
+
+            if local.can_encode(StreamCodec::H264) {
+                let switched = session.renegotiate(&[hw_viewer, CodecCapabilities::legacy_peer()]);
+                assert!(switched, "a legacy viewer forces a switch");
+                assert_eq!(session.chosen_codec(), StreamCodec::H264);
+                match session.stream_start_msg() {
+                    shell::network::NeighbourMsg::SurfaceStreamStart { codec, .. } => {
+                        assert_eq!(codec, "h264", "the new stream is announced as H.264");
+                    }
+                    other => panic!("expected SurfaceStreamStart, got {other:?}"),
+                }
+            }
+        }
+        phase();
     }
 }

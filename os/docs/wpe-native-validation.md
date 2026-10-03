@@ -1,6 +1,6 @@
 # Native WPE browser validation
 
-The `wpe-builder-1` target in `os/Containerfile` builds libwpe 1.16.3,
+The `wpe-builder-1` target in `os/Containerfile.wpe` builds libwpe 1.16.3,
 WPEBackend-fdo 1.16.1, and WPE WebKit 2.52.6 from verified cached sources.
 The ARM build completed all 9,423 WebKit compilation/link steps with two jobs
 and no network access during the engine build.

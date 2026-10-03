@@ -13,24 +13,23 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
 
 use crate::app::{ChatApp, Hit};
 use crate::geometry::line_top;
 use crate::model::{self, Presence, VoiceMember};
-use crate::paint::{
-    PaintContext, fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text,
-};
+use crate::paint::{fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text};
 use crate::render_chat::draw_avatar;
 
 /// One person to render in the call, derived from the shared CRDT voice
 /// membership (not hardcoded). The host (this peer) is listed first.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool mirrors a distinct CRDT voice-membership field (talking/muted/audio_only/sharing) read straight off the shared state — grouping them would just relocate the boolean soup, not remove it"
+    reason = "independent presentation facets; only native service inventory supplies current remote streams"
 )]
 struct Participant {
     user: String,
@@ -206,15 +205,15 @@ impl ChatApp {
         }
     }
 
-    /// The call roster, host-first, from the shared voice membership. Falls
-    /// back to "just me" if the channel has no recorded members yet.
+    /// The local listening panel followed by authenticated remote audio streams.
+    /// This is not a complete participant or listener roster.
     fn call_participants(&self) -> Vec<Participant> {
         let members: &[VoiceMember] = self.voice_in(&self.call.channel);
         let mut out: Vec<Participant> = Vec::new();
         // Host = this peer.
         out.push(Participant {
             user: self.me.id.clone(),
-            talking: !self.call.muted,
+            talking: false,
             muted: self.call.muted,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
@@ -225,7 +224,7 @@ impl ChatApp {
             }
             out.push(Participant {
                 user: m.user.clone(),
-                talking: m.talking && !m.muted,
+                talking: false,
                 muted: m.muted,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
@@ -302,7 +301,7 @@ impl ChatApp {
         let s2 = f64::from(theme.tokens.spacing.s2);
         let (cy, caption_y) = avatar_caption_block(rect, r, f64::from(sh), plate_height(theme), s2);
         draw_avatar(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             Point::new(cx, cy),
             r,
             &initials,
@@ -421,7 +420,7 @@ impl ChatApp {
         let panel = self.huddle_panel();
         let v = self.huddle_video();
         // Active-speaker ring around the host tile when this peer is talking.
-        let host_talking = !self.call.muted;
+        let host_talking = false;
         if host_talking {
             stroke_round(scene, tf, v, 10.0, c.semantic.success, 2.5);
         } else {
@@ -452,7 +451,7 @@ impl ChatApp {
         let others = parts.len().saturating_sub(1);
         let strip_y = v.y1 + 10.0;
         self.draw_huddle_strip_header(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             panel,
             strip_y,
             &parts,
@@ -475,12 +474,7 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(
-                PaintContext::new(scene, tf, tr, theme),
-                panel,
-                strip_y,
-                &parts,
-            );
+            Self::draw_huddle_chips(PaintCtx::new(scene, tf, tr, theme), panel, strip_y, &parts);
             scene.pop_layer();
         }
 
@@ -491,13 +485,13 @@ impl ChatApp {
     /// expand/collapse toggle's hit region.
     fn draw_huddle_strip_header(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         panel: Rect,
         strip_y: f64,
         parts: &[Participant],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -510,16 +504,36 @@ impl ChatApp {
         } else {
             "▸"
         };
-        // Surface the real media routing decision (P2P vs host relay), chosen
-        // from the live headcount — the call promotes as people join.
+        // Verified publication inventory is a stream list, not a person or listener roster.
         label(
             scene,
             tr,
             tf,
             &format!(
-                "{caret} {} in call · {}",
-                parts.len(),
-                self.call_session().label()
+                "{caret} {}",
+                crate::i18n::t_args(
+                    "chat-call-stream-status",
+                    &[
+                        (
+                            "count",
+                            (self.native_voice.snapshot.publishers.len()
+                                + usize::from(self.native_voice.snapshot.publication.is_some()))
+                            .to_string()
+                            .into(),
+                        ),
+                        (
+                            "status",
+                            crate::i18n::t(match self.native_voice.snapshot.state {
+                                ui::native_media::State::Live => "chat-call-connected",
+                                ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+                                ui::native_media::State::Preparing
+                                | ui::native_media::State::Joining => "chat-call-joining",
+                                _ => "chat-call-unavailable",
+                            })
+                            .into(),
+                        ),
+                    ],
+                )
             ),
             11.0,
             c.text_dim,
@@ -538,14 +552,8 @@ impl ChatApp {
 
     /// Adaptive participant chips beneath the strip header — one per
     /// non-host member, wrapping to the panel width.
-    fn draw_huddle_chips(
-        &self,
-        paint: PaintContext<'_>,
-        panel: Rect,
-        strip_y: f64,
-        parts: &[Participant],
-    ) {
-        let PaintContext {
+    fn draw_huddle_chips(paint: PaintCtx<'_>, panel: Rect, strip_y: f64, parts: &[Participant]) {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -557,7 +565,7 @@ impl ChatApp {
         let step = 2.0 * radius + 12.0;
         let per_row = ((panel.width() - 28.0) / step).floor().max(1.0) as usize;
         for (idx, p) in parts.iter().skip(1).enumerate() {
-            if let Some(u) = self.user(&p.user) {
+            {
                 let col = idx % per_row;
                 let row = idx / per_row;
                 let cc = Point::new(
@@ -569,11 +577,11 @@ impl ChatApp {
                     stroke_circle(scene, tf, cc, radius + 3.0, c.semantic.success, 2.0);
                 }
                 draw_avatar(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     cc,
                     radius,
-                    &u.initials,
-                    u.color_idx,
+                    "♫",
+                    0,
                     None,
                 );
                 if p.muted {
@@ -615,7 +623,6 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
-        let deaf = self.call.deafened;
         let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
             (
                 if muted { "Unmute" } else { "Mute" },
@@ -624,18 +631,11 @@ impl ChatApp {
                 false,
                 Hit::CallMute,
             ),
-            (
-                if deaf { "Undeafen" } else { "Deafen" },
-                if deaf { "🔕" } else { "🎧" },
-                deaf,
-                false,
-                Hit::CallDeafen,
-            ),
             ("Expand", "⤢", false, false, Hit::CallExpand),
             ("Leave", "✕", false, true, Hit::CallLeave),
         ];
         if panel.width() < 300.0 {
-            ctrls.remove(2); // trim Expand on a cramped panel
+            ctrls.remove(1); // trim Expand on a cramped panel
         }
         let n = ctrls.len() as f64;
         let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
@@ -644,18 +644,9 @@ impl ChatApp {
         for (txt, icon, on, danger, hit) in ctrls {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
             let hovered = self.call_control_is_hovered(&hit);
-            Self::ctl(
-                scene,
-                tf,
-                tr,
-                theme,
-                r,
-                if use_text { txt } else { icon },
-                on,
-                danger,
-                hovered,
-                true,
-            );
+            let face =
+                Self::ctl_face(r, if use_text { txt } else { icon }, on, danger).hovered(hovered);
+            Button::paint(scene, tf, tr, theme, &face);
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
         }
@@ -686,15 +677,11 @@ impl ChatApp {
             .map_or_else(|| "Call".into(), |c| c.name.clone());
         let (tw, _) = tr.measure_weighted(&title, CALL_TITLE_TEXT, None, TextWeight::Bold);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &title,
-            CALL_TITLE_TEXT,
+            &TextStyle::new(CALL_TITLE_TEXT).with_weight(TextWeight::Bold),
             c.text_primary,
-            self.rect.center().x - f64::from(tw) / 2.0,
-            title_y,
-            TextWeight::Bold,
+            Point::new(self.rect.center().x - f64::from(tw) / 2.0, title_y),
             None,
         );
         let parts = self.call_participants();
@@ -786,9 +773,9 @@ impl ChatApp {
         let radius = 16.0;
 
         // A real decoded screen frame from the sharer takes over the tile. This
-        // slot is only ever filled by the live media pump with a genuinely
-        // decoded frame, so when present it is an honest live view of the shared
-        // screen; otherwise we fall through to the drawn placeholder.
+        // slot only ever holds a genuinely decoded frame (the native voice path
+        // carries no video today, so it stays empty); otherwise we fall
+        // through to the drawn placeholder.
         if let Some(img) = self.remote_screens.get(sharer) {
             fill_round(scene, tf, rect, radius, Color::from_rgba8(0, 0, 0, 255));
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
@@ -850,15 +837,11 @@ impl ChatApp {
         };
         let (hw, _) = tr.measure(&head, 15.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &head,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            gcx - f64::from(hw) / 2.0,
-            base.y1 + 18.0,
-            TextWeight::Bold,
+            Point::new(gcx - f64::from(hw) / 2.0, base.y1 + 18.0),
             None,
         );
         // Honest status: the local sharer is the source; a remote tile is
@@ -910,7 +893,13 @@ impl ChatApp {
             rect.x0 + 12.0 + f64::from(lw) + 34.0,
             rect.y0 + 12.0 + 24.0,
         );
-        fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
+        fill_round(
+            scene,
+            tf,
+            pill,
+            12.0,
+            ui::paint::with_alpha(c.surfaces.scrim, 150),
+        );
         fill_circle(
             scene,
             tf,
@@ -924,7 +913,7 @@ impl ChatApp {
             tf,
             &txt,
             11.5,
-            Color::WHITE,
+            c.on_surface(c.surfaces.scrim).ink,
             pill.x0 + 24.0,
             pill.center().y - 8.0,
         );
@@ -958,9 +947,10 @@ impl ChatApp {
         );
         for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
-            Self::ctl(
-                scene, tf, tr, theme, r, &label_txt, on, danger, hovered, enabled,
-            );
+            let face = Self::ctl_face(r, &label_txt, on, danger)
+                .hovered(hovered)
+                .disabled(!enabled);
+            Button::paint(scene, tf, tr, theme, &face);
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
             }
@@ -1055,7 +1045,7 @@ impl ChatApp {
     /// (which sizes buttons from these labels) and the pre-paint measurement
     /// (which measures exactly these labels), so a toggled label — Mute →
     /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 5] {
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 3] {
         let t = crate::i18n::t;
         [
             (
@@ -1068,24 +1058,6 @@ impl ChatApp {
                 false,
                 self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallMute,
-            ),
-            (
-                t(if self.call.deafened {
-                    "chat-call-undeafen"
-                } else {
-                    "chat-call-deafen"
-                }),
-                self.call.deafened,
-                false,
-                self.call_allows(crate::call::CallAction::Speak),
-                Hit::CallDeafen,
-            ),
-            (
-                t("chat-call-audio-only"),
-                self.call.audio_only,
-                false,
-                self.call_allows(crate::call::CallAction::Camera),
-                Hit::CallAudioOnly,
             ),
             (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
             (t("chat-call-leave"), false, true, true, Hit::CallLeave),
@@ -1194,12 +1166,36 @@ impl ChatApp {
         p: &Participant,
     ) {
         let c = &theme.tokens.colors;
+        if self
+            .native_voice
+            .snapshot
+            .publishers
+            .iter()
+            .any(|namespace| namespace == &p.user)
+        {
+            fill_round(scene, tf, rect, 14.0, c.neutral[2]);
+            let caption = "Audio stream";
+            let (width, height) = tr.measure(caption, 11.5, None);
+            label(
+                scene,
+                tr,
+                tf,
+                caption,
+                11.5,
+                c.text_dim,
+                rect.center().x - f64::from(width) / 2.0,
+                rect.center().y - f64::from(height) / 2.0,
+            );
+            Self::name_plate(scene, tf, tr, theme, rect, &self.user_name(&p.user), false);
+            stroke_round(scene, tf, rect, 14.0, c.neutral[3], 1.0);
+            return;
+        }
         let u = self.user(&p.user);
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         // A real decoded camera/screen frame from this peer takes over the tile.
-        // This is only ever populated by the live media pump with a genuinely
-        // decoded frame — never a fabricated picture — so when present it is an
-        // honest live feed; otherwise we fall through to the avatar placeholder.
+        // This only ever holds a genuinely decoded frame — never a fabricated
+        // picture (the native voice path carries no video today, so it stays
+        // empty); otherwise we fall through to the avatar placeholder.
         if let Some(img) = self.remote_frames.get(&p.user) {
             ui::image_store::paint_image_cover(scene, tf, rect, img, 14.0);
             if p.talking {
@@ -1238,7 +1234,7 @@ impl ChatApp {
             let (cy, caption_y) =
                 avatar_caption_block(rect, radius, f64::from(sh), plate_height(theme), s2);
             draw_avatar(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 Point::new(cx, cy),
                 radius,
                 &u.initials,
@@ -1290,9 +1286,10 @@ impl ChatApp {
         fill_round(scene, tf, chip, 6.0, c.accent[5]);
         // A tiny drawn monitor: screen rect + base bar.
         let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
-        stroke_round(scene, tf, screen, 2.0, Color::WHITE, 1.4);
+        let ink = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        stroke_round(scene, tf, screen, 2.0, ink, 1.4);
         let base = Rect::new(cx - 3.0, screen.y1 + 0.5, cx + 3.0, screen.y1 + 2.0);
-        fill_round(scene, tf, base, 1.0, Color::WHITE);
+        fill_round(scene, tf, base, 1.0, ink);
     }
 
     /// Bottom-left name plate over a tile: name + mic state.
@@ -1324,22 +1321,14 @@ impl ChatApp {
             tile.x0 + inset + f64::from(lw) + 2.0 * pad_x,
             tile.y1 - inset,
         );
-        // The plate is a 59 % black scrim over the tile; its ink is measured
-        // against what that scrim composites to (over the light preset's
-        // pale tile it is a mid grey, where danger red fell to ~2:1), and
-        // pushed until it clears text contrast (`legible_on`).
-        let scrim = Color::from_rgba8(0, 0, 0, 150);
+        // The plate is the theme scrim at 59 % over the tile. Its ink is
+        // measured against what that scrim composites to (over the light
+        // preset's pale tile the wash is a mid grey, where danger red fell
+        // to ~2:1), and pushed until it clears text contrast (`legible_on`).
+        let scrim = ui::paint::with_alpha(c.surfaces.scrim, 150);
         fill_round(scene, tf, plate, 8.0, scrim);
-        // The scrim's own colour at full alpha, composited over the tile by
-        // the scrim's alpha: the ground the label actually lands on.
-        let scrim_ink = Color::new([
-            scrim.components[0],
-            scrim.components[1],
-            scrim.components[2],
-            1.0,
-        ]);
         let plate_ground =
-            crate::paint::blend_toward(c.neutral[2], scrim_ink, f64::from(scrim.components[3]));
+            crate::paint::blend_toward(c.neutral[2], c.surfaces.scrim, 150.0 / 255.0);
         let tone = if muted {
             c.semantic.danger
         } else {
@@ -1363,41 +1352,25 @@ impl ChatApp {
         );
     }
 
-    /// A pill control button. `on` = active/highlighted, `danger` = red.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "the four flags are independent visual states of one control; wrapping them would only move the boolean fields into a one-use parameter struct"
-    )]
-    fn ctl(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label_txt: &str,
-        on: bool,
-        danger: bool,
-        hovered: bool,
-        enabled: bool,
-    ) {
+    /// The face of a pill control button. `on` = active/highlighted,
+    /// `danger` = red; callers add the hover and disabled states.
+    fn ctl_face(rect: Rect, label_txt: &str, on: bool, danger: bool) -> ButtonFace<'_> {
         // The shared button face (HIG §8): Neutral at rest, the accent
         // Primary while "on", DangerOutline for the destructive control and
         // the toolkit's disabled face when it cannot be used — one painter
         // for fill, rest edge, ink and the label centred on its measured
         // line, instead of a local copy of each state.
-        let mut face = ButtonFace::new(rect, label_txt)
+        let face = ButtonFace::new(rect, label_txt)
             .text_size(CALL_CTL_TEXT)
             .weight(TextWeight::Regular)
-            .radius(9.0)
-            .hovered(hovered)
-            .disabled(!enabled);
+            .radius(9.0);
         if danger {
-            face = face.danger_outline();
+            face.danger_outline()
         } else if on {
-            face = face.primary();
+            face.primary()
+        } else {
+            face
         }
-        Button::paint(scene, tf, tr, theme, &face);
     }
 
     fn call_control_is_hovered(&self, hit: &Hit) -> bool {
@@ -1424,7 +1397,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let catalogue = emoji::Catalogue::english();
+        let catalogue = crate::i18n::emoji_catalogue();
         // full-window dismiss scrim (lowest priority)
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 
@@ -1571,7 +1544,7 @@ impl ChatApp {
             label(scene, tr, tf, heading, 10.5, c.text_dim, grid.x0 + 2.0, y);
             y += 16.0;
             Self::emoji_grid(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 set,
                 grid,
                 &mut y,
@@ -1586,7 +1559,7 @@ impl ChatApp {
     /// One section's cells from `*y` down, advancing `*y` past them. Only
     /// cells inside `clip` receive a hit target.
     fn emoji_grid(
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         set: &[&str],
         clip: Rect,
         y: &mut f64,
@@ -1594,7 +1567,7 @@ impl ChatApp {
         cell: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1612,15 +1585,14 @@ impl ChatApp {
             }
             let (ew, eh) = tr.measure(e, 19.0, None);
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 e,
-                19.0,
+                &TextStyle::new(19.0),
                 c.text_primary,
-                cellr.center().x - f64::from(ew) / 2.0,
-                cellr.center().y - f64::from(eh) / 2.0,
-                TextWeight::Regular,
+                Point::new(
+                    cellr.center().x - f64::from(ew) / 2.0,
+                    cellr.center().y - f64::from(eh) / 2.0,
+                ),
                 None,
             );
             let target = cellr.intersect(clip);
@@ -1725,15 +1697,11 @@ impl ChatApp {
             );
             y += 18.0;
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 body,
-                13.0,
+                &TextStyle::new(13.0),
                 if accent { c.text_primary } else { c.text_dim },
-                panel.x0 + 14.0,
-                y,
-                TextWeight::Regular,
+                Point::new(panel.x0 + 14.0, y),
                 Some(tw),
             );
             y += bh - 22.0 - 14.0 + 8.0;
@@ -1903,118 +1871,137 @@ mod tests {
     use vello::kurbo::Rect;
 
     #[test]
-    fn overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint() {
-        let m = CallOverlayMetrics::default();
-        // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
-        assert!((m.header_h() - 76.0).abs() < 1e-6);
-        assert_eq!(m.button_h, CALL_CTL_MIN_H);
-        // An unmeasured label keeps the fixed-length estimate the 1× layout
-        // used, so the geometry tests (which never paint) still resolve.
-        assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+    fn overlay_metrics_size_header_buttons_and_lower_chrome() {
+        // Phase: overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint.
+        {
+            let m = CallOverlayMetrics::default();
+            // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
+            assert!((m.header_h() - 76.0).abs() < 1e-6);
+            assert_eq!(m.button_h, CALL_CTL_MIN_H);
+            // An unmeasured label keeps the fixed-length estimate the 1× layout
+            // used, so the geometry tests (which never paint) still resolve.
+            assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+        }
+        // Phase: measured_button_widths_replace_the_estimate_label_by_label.
+        {
+            let m = CallOverlayMetrics {
+                button_w: vec![("Mute".to_string(), 71.0), ("Leave".to_string(), 80.5)],
+                ..CallOverlayMetrics::default()
+            };
+            assert_eq!(m.button_width("Mute"), 71.0);
+            assert_eq!(m.button_width("Leave"), 80.5);
+            // A label that toggled since the measurement (Mute → Unmute) falls
+            // back rather than borrowing another label's width.
+            assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
+        }
+        // Phase: a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines.
+        {
+            // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
+            // tiles start under grows by exactly the 40 px the lines gained.
+            let m = CallOverlayMetrics {
+                title_h: 50.0,
+                subtitle_h: 30.0,
+                ..CallOverlayMetrics::default()
+            };
+            let grew = m.header_h() - CallOverlayMetrics::default().header_h();
+            assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
+        }
+        // Phase: participant_reveal_morphs_the_complete_lower_chrome_monotonically.
+        {
+            let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
+            assert_eq!(samples[0], 116.0);
+            assert_eq!(samples[2], 136.0);
+            assert_eq!(samples[4], 156.0);
+            assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+        }
     }
 
     #[test]
-    fn measured_button_widths_replace_the_estimate_label_by_label() {
-        let m = CallOverlayMetrics {
-            button_w: vec![("Mute".to_string(), 71.0), ("Leave".to_string(), 80.5)],
-            ..CallOverlayMetrics::default()
-        };
-        assert_eq!(m.button_width("Mute"), 71.0);
-        assert_eq!(m.button_width("Leave"), 80.5);
-        // A label that toggled since the measurement (Mute → Unmute) falls
-        // back rather than borrowing another label's width.
-        assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
-    }
-
-    #[test]
-    fn a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines() {
-        // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
-        // tiles start under grows by exactly the 40 px the lines gained.
-        let m = CallOverlayMetrics {
-            title_h: 50.0,
-            subtitle_h: 30.0,
-            ..CallOverlayMetrics::default()
-        };
-        let grew = m.header_h() - CallOverlayMetrics::default().header_h();
-        assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
-    }
-
-    #[test]
-    fn participant_reveal_morphs_the_complete_lower_chrome_monotonically() {
-        let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
-        assert_eq!(samples[0], 116.0);
-        assert_eq!(samples[2], 136.0);
-        assert_eq!(samples[4], 156.0);
-        assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    /// The presentation-stage filmstrip must lay every participant in a single
-    /// centred row that stays inside its region, at any headcount — the
-    /// invariant the screen-share stage leans on so the strip never spills.
-    #[test]
-    fn avatar_caption_block_clears_the_name_plate_by_the_token_gap() {
-        // A 1× filmstrip tile: 232×152, the disc radius the member tile
-        // derives from that height, a 14.4 px caption and a 23 px plate. The
-        // caption's bottom stays a full `s2` above the plate's reserve.
-        let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
-        let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
-        let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
-        let plate_top = tile.y1 - gap - plate_h;
-        assert!(
-            caption_y + caption_h <= plate_top - gap + 1e-9,
-            "caption bottom {} vs plate top {plate_top}",
-            caption_y + caption_h
-        );
-        assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
-        // Centred: equal air above the disc and below the caption, inside the band.
-        let above = (cy - radius) - (tile.y0 + gap);
-        let below = (plate_top - gap) - (caption_y + caption_h);
-        assert!((above - below).abs() < 1e-9, "above {above} below {below}");
-    }
-
-    #[test]
-    fn a_short_tile_reads_the_block_from_the_band_top() {
-        // Too short for the block: it starts at the band's top instead of
-        // poking above the tile.
-        let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
-        let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
-        assert!((cy - 33.44 - 8.0).abs() < 1e-9);
-        assert!(caption_y > cy);
-    }
-
-    #[test]
-    fn filmstrip_is_a_single_centred_row_inside_its_region() {
-        for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
-            let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
-            for n in 1..=8 {
-                let tiles = filmstrip_rects(region, n);
-                assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
-                for t in &tiles {
-                    assert!(
-                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5,
-                        "n={n} w={w}: tile escaped the strip horizontally"
-                    );
-                    // One row: every tile spans the full strip height.
-                    assert!(
-                        (t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
-                        "n={n}: strip tiles are not a single full-height row"
-                    );
-                    assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
-                }
-                // Centred: equal slack on both sides of the row.
-                let left = tiles.first().unwrap().x0 - region.x0;
-                let right = region.x1 - tiles.last().unwrap().x1;
+    fn member_tile_centres_an_honest_caption_clear_of_the_name_plate() {
+        // Phase: avatar_caption_block_clears_the_name_plate_by_the_token_gap.
+        // The presentation-stage filmstrip must lay every participant in a single
+        // centred row that stays inside its region, at any headcount — the
+        // invariant the screen-share stage leans on so the strip never spills.
+        {
+            // A 1× filmstrip tile: 232×152, the disc radius the member tile
+            // derives from that height, a 14.4 px caption and a 23 px plate. The
+            // caption's bottom stays a full `s2` above the plate's reserve.
+            let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
+            let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
+            let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
+            let plate_top = tile.y1 - gap - plate_h;
+            assert!(
+                caption_y + caption_h <= plate_top - gap + 1e-9,
+                "caption bottom {} vs plate top {plate_top}",
+                caption_y + caption_h
+            );
+            assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
+            // Centred: equal air above the disc and below the caption, inside the band.
+            let above = (cy - radius) - (tile.y0 + gap);
+            let below = (plate_top - gap) - (caption_y + caption_h);
+            assert!((above - below).abs() < 1e-9, "above {above} below {below}");
+        }
+        // Phase: a_short_tile_reads_the_block_from_the_band_top.
+        {
+            // Too short for the block: it starts at the band's top instead of
+            // poking above the tile.
+            let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
+            let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
+            assert!((cy - 33.44 - 8.0).abs() < 1e-9);
+            assert!(caption_y > cy);
+        }
+        // Phase: remote_tile_caption_is_honest_never_a_fabricated_feed.
+        // Defect regression: remote tiles must be honest — never present a
+        // fabricated video feed. Every caption is a truthful "camera state"
+        // string (matching the host tile), never a claim of live video.
+        {
+            assert_eq!(member_tile_caption(&participant(true)), "Camera off");
+            assert_eq!(member_tile_caption(&participant(false)), "No video");
+            for audio_only in [true, false] {
+                let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
                 assert!(
-                    (left - right).abs() < 1.0,
-                    "n={n} w={w}: strip is not centred"
+                    !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
+                    "caption must not imply a live feed: {cap:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn filmstrip_is_empty_for_no_participants() {
-        assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+    fn filmstrip_is_a_single_centred_row_inside_its_region_or_empty() {
+        // Phase: filmstrip_is_a_single_centred_row_inside_its_region.
+        {
+            for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
+                let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
+                for n in 1..=8 {
+                    let tiles = filmstrip_rects(region, n);
+                    assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
+                    for t in &tiles {
+                        assert!(
+                            t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5,
+                            "n={n} w={w}: tile escaped the strip horizontally"
+                        );
+                        // One row: every tile spans the full strip height.
+                        assert!(
+                            (t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
+                            "n={n}: strip tiles are not a single full-height row"
+                        );
+                        assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
+                    }
+                    // Centred: equal slack on both sides of the row.
+                    let left = tiles.first().unwrap().x0 - region.x0;
+                    let right = region.x1 - tiles.last().unwrap().x1;
+                    assert!(
+                        (left - right).abs() < 1.0,
+                        "n={n} w={w}: strip is not centred"
+                    );
+                }
+            }
+        }
+        // Phase: filmstrip_is_empty_for_no_participants.
+        {
+            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+        }
     }
 
     fn participant(audio_only: bool) -> Participant {
@@ -2027,122 +2014,107 @@ mod tests {
         }
     }
 
-    /// Defect regression: remote tiles must be honest — never present a
-    /// fabricated video feed. Every caption is a truthful "camera state"
-    /// string (matching the host tile), never a claim of live video.
     #[test]
-    fn remote_tile_caption_is_honest_never_a_fabricated_feed() {
-        assert_eq!(member_tile_caption(&participant(true)), "Camera off");
-        assert_eq!(member_tile_caption(&participant(false)), "No video");
-        for audio_only in [true, false] {
-            let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
-            assert!(
-                !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
-                "caption must not imply a live feed: {cap:?}"
-            );
-        }
-    }
-
-    /// The packer must keep every tile inside the region it is handed, at any
-    /// headcount and width, with no degenerate tiles — the invariant the whole
-    /// expanded overlay leans on to stay within the window.
-    #[test]
-    fn grid_tiles_stay_inside_region_at_every_count_and_width() {
-        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
-            // A full-surface content band with symmetric side insets, matching
-            // what the overlay now hands the packer (host + remotes together).
-            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
-            for n in 1..=9 {
-                let rects = grid_rects(region, n);
-                assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
-                for r in &rects {
-                    assert!(
-                        r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
-                        "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
-                        r.x0,
-                        r.x1,
-                        region.x0,
-                        region.x1
-                    );
-                    assert!(
-                        r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
-                        "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
-                        r.y0,
-                        r.y1,
-                        region.y0,
-                        region.y1
-                    );
-                    assert!(
-                        r.width() > 0.0 && r.height() > 0.0,
-                        "n={n}: degenerate tile"
-                    );
+    fn grid_packs_every_count_inside_the_region_and_covers_it() {
+        // Phase: grid_tiles_stay_inside_region_at_every_count_and_width.
+        // The packer must keep every tile inside the region it is handed, at any
+        // headcount and width, with no degenerate tiles — the invariant the whole
+        // expanded overlay leans on to stay within the window.
+        {
+            for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+                // A full-surface content band with symmetric side insets, matching
+                // what the overlay now hands the packer (host + remotes together).
+                let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
+                for n in 1..=9 {
+                    let rects = grid_rects(region, n);
+                    assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
+                    for r in &rects {
+                        assert!(
+                            r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
+                            "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
+                            r.x0,
+                            r.x1,
+                            region.x0,
+                            region.x1
+                        );
+                        assert!(
+                            r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
+                            "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
+                            r.y0,
+                            r.y1,
+                            region.y0,
+                            region.y1
+                        );
+                        assert!(
+                            r.width() > 0.0 && r.height() > 0.0,
+                            "n={n}: degenerate tile"
+                        );
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn grid_is_empty_for_no_remotes() {
-        assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
-    }
-
-    /// The narrow-width void regression: with the host as the first cell of a
-    /// unified grid, the packed tiles must *cover* the content region — their
-    /// bounding box spans it in both axes (within one inter-tile gap) — so no
-    /// large dead band is left beneath or beside the host at any width. This is
-    /// the geometry that replaced the old "host pinned left, remotes to the
-    /// right" layout which left the whole bottom-left corner empty on a
-    /// portrait window.
-    #[test]
-    fn grid_fills_the_region_leaving_no_void() {
-        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
-            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
-            // A host + three remotes: the demo huddle, the exact case that
-            // exposed the void.
-            let tiles = grid_rects(region, 4);
-            let bbox =
-                tiles
-                    .iter()
-                    .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
-                        Rect::new(
-                            b.x0.min(r.x0),
-                            b.y0.min(r.y0),
-                            b.x1.max(r.x1),
-                            b.y1.max(r.y1),
-                        )
-                    });
-            // One inter-tile gap is the largest legitimate slack (a centred row
-            // or column can sit a gap in from an edge).
-            let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
-            let slack = gap + 1.0;
-            assert!(
-                bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
-                "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.x0,
-                bbox.x1,
-                region.x0,
-                region.x1
-            );
-            assert!(
-                bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
-                "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.y0,
-                bbox.y1,
-                region.y0,
-                region.y1
-            );
-            // And a tile actually occupies the lower-left quadrant — the exact
-            // corner the old layout left black.
-            let mid = (
-                region.x0 + region.width() * 0.5,
-                region.y0 + region.height() * 0.5,
-            );
-            assert!(
-                tiles
-                    .iter()
-                    .any(|r| r.center().x < mid.0 && r.center().y > mid.1),
-                "w={w}: nothing fills the lower-left of the call surface"
-            );
+        // Phase: grid_is_empty_for_no_remotes.
+        {
+            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+        }
+        // Phase: grid_fills_the_region_leaving_no_void.
+        // The narrow-width void regression: with the host as the first cell of a
+        // unified grid, the packed tiles must *cover* the content region — their
+        // bounding box spans it in both axes (within one inter-tile gap) — so no
+        // large dead band is left beneath or beside the host at any width. This is
+        // the geometry that replaced the old "host pinned left, remotes to the
+        // right" layout which left the whole bottom-left corner empty on a
+        // portrait window.
+        {
+            for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+                let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
+                // A host + three remotes: the demo huddle, the exact case that
+                // exposed the void.
+                let tiles = grid_rects(region, 4);
+                let bbox =
+                    tiles
+                        .iter()
+                        .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
+                            Rect::new(
+                                b.x0.min(r.x0),
+                                b.y0.min(r.y0),
+                                b.x1.max(r.x1),
+                                b.y1.max(r.y1),
+                            )
+                        });
+                // One inter-tile gap is the largest legitimate slack (a centred row
+                // or column can sit a gap in from an edge).
+                let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
+                let slack = gap + 1.0;
+                assert!(
+                    bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
+                    "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                    bbox.x0,
+                    bbox.x1,
+                    region.x0,
+                    region.x1
+                );
+                assert!(
+                    bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
+                    "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                    bbox.y0,
+                    bbox.y1,
+                    region.y0,
+                    region.y1
+                );
+                // And a tile actually occupies the lower-left quadrant — the exact
+                // corner the old layout left black.
+                let mid = (
+                    region.x0 + region.width() * 0.5,
+                    region.y0 + region.height() * 0.5,
+                );
+                assert!(
+                    tiles
+                        .iter()
+                        .any(|r| r.center().x < mid.0 && r.center().y > mid.1),
+                    "w={w}: nothing fills the lower-left of the call surface"
+                );
+            }
         }
     }
 }

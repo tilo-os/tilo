@@ -86,6 +86,77 @@ struct StructuralContinuationEnvelope {
     facets: u8,
     presentation: PortableContinuationView,
     semantic: Option<StructuralSemanticProjection>,
+    /// The record the window shows, so a device continuing it can bring
+    /// that record over before opening it. Never a file's path or identity:
+    /// files are routed by the shell's own file intents.
+    record: Option<String>,
+}
+
+/// Whether `record` may name a window's record in a continuation.
+fn portable_record(record: &str) -> bool {
+    crate::record::RecordId::parse(record).is_some_and(|id| {
+        !id.is_package_primary() && id.file_path().is_none() && id.file_record().is_none()
+    })
+}
+
+/// `metadata` (a structural checkpoint) naming the record its window shows.
+/// Unchanged when `record` may not travel.
+#[must_use]
+pub fn with_continuation_record(
+    metadata: crate::collaboration::ContinuationMetadata,
+    record: &crate::record::RecordId,
+) -> crate::collaboration::ContinuationMetadata {
+    if metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
+        || !portable_record(record.as_str())
+    {
+        return metadata;
+    }
+    let Ok(mut envelope) = postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
+    else {
+        return metadata;
+    };
+    envelope.record = Some(record.as_str().to_owned());
+    match postcard::to_stdvec(&envelope) {
+        Ok(bytes) if bytes.len() <= 32 * 1024 => crate::collaboration::ContinuationMetadata {
+            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
+            bytes,
+        },
+        _ => metadata,
+    }
+}
+
+#[cfg(test)]
+mod continuation_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_checkpoint_names_its_record_but_never_a_file() {
+        let base = compose_structural_continuation_metadata(crate::view::View::default(), None)
+            .expect("a checkpoint");
+        assert_eq!(structural_continuation_record(&base.bytes), None);
+        let minted = crate::record::RecordId::minted();
+        let named = with_continuation_record(base.clone(), &minted);
+        assert_eq!(structural_continuation_record(&named.bytes), Some(minted));
+        assert!(
+            sanitize_structural_continuation_metadata(&named.bytes, |_, _| true).is_some(),
+            "a named record passes the shell boundary"
+        );
+        let file = crate::record::RecordId::for_file("/home/ada/secret.txt");
+        let unnamed = with_continuation_record(base.clone(), &file);
+        assert_eq!(unnamed, base, "a file's path never travels in a checkpoint");
+    }
+}
+
+/// The record a structural checkpoint says its window shows.
+pub fn structural_continuation_record(bytes: &[u8]) -> Option<crate::record::RecordId> {
+    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
+    if !valid_structural_envelope(&envelope) {
+        return None;
+    }
+    envelope
+        .record
+        .as_deref()
+        .and_then(crate::record::RecordId::parse)
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -114,6 +185,10 @@ fn valid_structural_envelope(envelope: &StructuralContinuationEnvelope) -> bool 
         && envelope.facets & CONTINUATION_FACET_PRESENTATION != 0
         && (envelope.facets & CONTINUATION_FACET_SEMANTIC != 0) == envelope.semantic.is_some()
         && envelope.presentation.valid()
+        && envelope
+            .record
+            .as_deref()
+            .is_none_or(|record| record.len() <= 1024 && portable_record(record))
 }
 
 /// Inspect the framework facets without exposing their private wire shape.
@@ -152,6 +227,7 @@ pub fn compose_structural_continuation_metadata(
         facets,
         presentation: PortableContinuationView::capture(view),
         semantic,
+        record: None,
     };
     let mut bytes = postcard::to_stdvec(&envelope).ok()?;
     if bytes.len() > 32 * 1024 && envelope.semantic.is_some() {
@@ -232,16 +308,33 @@ impl App {
         if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
-        let semantic = self.root_widget.continuable().and_then(|continuable| {
+        let Some(route) = self.private_continuity_route() else {
+            return;
+        };
+        let semantic = crate::widget::capability::capability::<dyn crate::widget::Continuable>(
+            &*self.root_widget,
+        )
+        .and_then(|continuable| {
             continuable.continuation_metadata(&self.state.doc, &self.state.root)
         });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let metadata = compose_structural_continuation_metadata(view, semantic);
+        let record = self
+            .actions
+            .bound_record_sync
+            .as_ref()
+            .map(|sync| sync.binding.checkout.id.clone());
+        let metadata =
+            compose_structural_continuation_metadata(view, semantic).map(
+                |metadata| match &record {
+                    Some(record) => with_continuation_record(metadata, record),
+                    None => metadata,
+                },
+            );
         if metadata == self.continuation.last_published {
             return;
         }
         if let Some(request) = continuation_publication(
-            crate::collaboration::local_app_id(),
+            route.app_id,
             metadata.as_ref(),
             self.continuation.last_published.is_some(),
         ) {
@@ -264,7 +357,10 @@ impl App {
                             schema_version: semantic.schema_version,
                             bytes: semantic.bytes,
                         };
-                        if let Some(continuable) = self.root_widget.continuable_mut() {
+                        if let Some(continuable) = crate::widget::capability::capability_mut::<
+                            dyn crate::widget::Continuable,
+                        >(&mut *self.root_widget)
+                        {
                             let _ = continuable.restore_continuation_metadata(
                                 &metadata,
                                 &mut self.state.doc,
@@ -284,7 +380,10 @@ impl App {
                 return;
             }
             let root = self.state.root.clone();
-            if let Some(continuable) = self.root_widget.continuable_mut() {
+            if let Some(continuable) = crate::widget::capability::capability_mut::<
+                dyn crate::widget::Continuable,
+            >(&mut *self.root_widget)
+            {
                 let _ = continuable.restore_continuation_metadata(
                     &metadata,
                     &mut self.state.doc,

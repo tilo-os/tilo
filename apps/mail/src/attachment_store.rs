@@ -204,27 +204,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staged_attachment_is_portable_and_not_a_host_path() {
-        let path = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(path.path(), b"portable attachment").unwrap();
-        let content = ContentStore::memory();
-        let staged = stage_file(
-            &content,
-            std::fs::File::open(path.path()).unwrap(),
-            "../report.txt",
-        )
-        .unwrap();
-        assert!(valid_content_id(&staged.content_id));
-        assert_eq!(staged.filename, "report.txt");
-        assert_eq!(
-            materialize(&content, &staged).unwrap(),
-            b"portable attachment"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn staged_attachments_are_portable_and_bounded() {
+        // Phase `staged_attachment_is_portable_and_not_a_host_path`.
+        {
+            let path = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(path.path(), b"portable attachment").unwrap();
+            let content = ContentStore::memory();
+            let staged = stage_file(
+                &content,
+                std::fs::File::open(path.path()).unwrap(),
+                "../report.txt",
+            )
+            .unwrap();
+            assert!(valid_content_id(&staged.content_id));
+            assert_eq!(staged.filename, "report.txt");
+            assert_eq!(
+                materialize(&content, &staged).unwrap(),
+                b"portable attachment"
+            );
+        }
 
-    #[test]
-    fn rejects_bytes_beyond_the_portable_attachment_limit_before_storing() {
-        let bytes = vec![0; MAX_ATTACHMENT_BYTES + 1];
-        assert!(stage_bytes(&ContentStore::memory(), &bytes, "too-large.bin").is_err());
+        // Phase `rejects_bytes_beyond_the_portable_attachment_limit_before_storing`.
+        {
+            let bytes = vec![0; MAX_ATTACHMENT_BYTES + 1];
+            assert!(stage_bytes(&ContentStore::memory(), &bytes, "too-large.bin").is_err());
+        }
     }
 }

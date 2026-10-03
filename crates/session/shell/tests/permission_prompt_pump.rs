@@ -14,6 +14,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
@@ -63,14 +67,16 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     let root = automerge::ROOT;
     p.handle_event(
         event,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &tree,
+        },
     );
 }
 
@@ -107,7 +113,6 @@ struct StubContent {
     rect: Rect,
 }
 impl ui::widget::Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -128,19 +133,6 @@ impl ui::widget::Widget for StubContent {
         _presence: &ui::presence::PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &automerge::ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<taffy::NodeId>,
-        _node_id: taffy::NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "StubContent"
     }
@@ -158,130 +150,253 @@ fn host_with_chrome(chrome: std::rc::Rc<std::cell::RefCell<ChromeState>>) -> She
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the pending_grants assert and tree() both need st held; there is nothing \
-              to narrow between them"
+to narrow between them"
 )]
-fn pump_drains_pending_grant_after_choice() {
-    let (chrome, _ws_id) =
-        chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
-    let mut host = host_with_chrome(chrome.clone());
-
-    // First tick: latch the prompt widget.
-    host.tick_permission_prompt_for_tests();
-    assert!(
-        host.permission_prompt_mut_for_tests().is_some(),
-        "first tick must latch a prompt for the front of the queue",
-    );
-
-    // Synthesize a click on the Allow button (Once → don't persist).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
+    // Phase `pump_drains_pending_grant_after_choice`.
     {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("prompt latched");
-        // Known geometry so the button rects are deterministic.
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.allow_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-        assert_eq!(
-            prompt.pending_choice,
-            Some(PromptChoice::Allow),
-            "widget must observe the Allow click as a pending choice",
+        let (chrome, _ws_id) =
+            chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
+        let mut host = host_with_chrome(chrome.clone());
+
+        // First tick: latch the prompt widget.
+        host.tick_permission_prompt_for_tests();
+        assert!(
+            host.permission_prompt_mut_for_tests().is_some(),
+            "first tick must latch a prompt for the front of the queue",
+        );
+
+        // Synthesize a click on the Allow button (Once → don't persist).
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("prompt latched");
+            // Known geometry so the button rects are deterministic.
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.allow_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+            assert_eq!(
+                prompt.pending_choice,
+                Some(PromptChoice::Allow),
+                "widget must observe the Allow click as a pending choice",
+            );
+        }
+
+        // Second tick: drain the choice + pop the queue.
+        host.tick_permission_prompt_for_tests();
+
+        let st = chrome.borrow();
+        assert!(
+            st.pending_grants.is_empty(),
+            "queue must be empty after the user clicks Allow",
+        );
+        let tree = st.tree();
+        let ws = tree.desktop.active_workspace().expect("active workspace");
+        assert!(
+            !ws.app_grants_snapshot().contains_key("org.example.app"),
+            "Once doesn't persist on the workspace's grants map — \
+             got: {:?}",
+            ws.app_grants_snapshot().get("org.example.app"),
         );
     }
 
-    // Second tick: drain the choice + pop the queue.
-    host.tick_permission_prompt_for_tests();
+    // Phase `pump_does_not_latch_when_queue_is_empty`.
+    {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            tree.desktop
+                .workspaces
+                .push(Workspace::new(WorkspaceId::from(1), "demo"));
+            let id = WorkspaceId::from(1);
+            tree.set_active(id);
+        }
+        let mut host = host_with_chrome(chrome);
+        host.tick_permission_prompt_for_tests();
+        assert!(
+            host.permission_prompt_mut_for_tests().is_none(),
+            "no widget should latch when there's nothing to surface",
+        );
+    }
 
-    let st = chrome.borrow();
-    assert!(
-        st.pending_grants.is_empty(),
-        "queue must be empty after the user clicks Allow",
-    );
-    let tree = st.tree();
-    let ws = tree.desktop.active_workspace().expect("active workspace");
-    assert!(
-        !ws.app_grants_snapshot().contains_key("org.example.app"),
-        "Once doesn't persist on the workspace's grants map — \
-         got: {:?}",
-        ws.app_grants_snapshot().get("org.example.app"),
-    );
+    // Phase `pump_advances_to_next_grant_after_first_drain`.
+    {
+        // Allow then Deny across two apps: both visible in sequence, nothing left.
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::from(1);
+        tree.desktop.workspaces.push(Workspace::new(id, "demo"));
+        tree.set_active(id);
+        let chrome = ChromeState::new(tree);
+        {
+            let mut st = chrome.borrow_mut();
+            st.pending_grants.push_back(PendingPrompt::new(
+                "org.example.app".into(),
+                Capability::Camera { scope: GRANT_ONCE },
+            ));
+            st.pending_grants.push_back(PendingPrompt::new(
+                "org.other.app".into(),
+                Capability::Microphone { scope: GRANT_ONCE },
+            ));
+        }
+        let mut host = host_with_chrome(chrome.clone());
+
+        host.tick_permission_prompt_for_tests();
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("prompt latched");
+            assert_eq!(prompt.app_id, "org.example.app");
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.allow_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+        }
+        host.tick_permission_prompt_for_tests();
+
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("second prompt latched after first drain");
+            assert_eq!(
+                prompt.app_id, "org.other.app",
+                "advance to the next queued grant after the first is drained",
+            );
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.deny_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+        }
+        host.tick_permission_prompt_for_tests();
+
+        let st = chrome.borrow();
+        assert!(st.pending_grants.is_empty());
+        assert!(
+            host_has_no_prompt(&host),
+            "no widget remains after both grants are drained",
+        );
+    }
 }
 
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the pending_grants assert and tree() both need st held; there is nothing \
-              to narrow between them"
+to narrow between them"
 )]
-fn pump_keeps_session_choice_out_of_the_shared_workspace() {
-    let (chrome, _ws_id) =
-        chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
-    let mut host = host_with_chrome(chrome.clone());
-
-    host.tick_permission_prompt_for_tests();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn prompt_pump_persists_only_what_each_choice_allows() {
+    // Phase `pump_keeps_session_choice_out_of_the_shared_workspace`.
     {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("prompt latched");
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.session_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-        assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
-    }
+        let (chrome, _ws_id) =
+            chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
+        let mut host = host_with_chrome(chrome.clone());
 
-    host.tick_permission_prompt_for_tests();
+        host.tick_permission_prompt_for_tests();
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("prompt latched");
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.session_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+            assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
+        }
 
-    let st = chrome.borrow();
-    assert!(st.pending_grants.is_empty(), "queue must drain");
-    let tree = st.tree();
-    let ws = tree.desktop.active_workspace().expect("active workspace");
-    assert!(
-        !ws.app_grants_snapshot().contains_key("org.example.app"),
-        "a local portal consent must not be replicated to workspace peers",
-    );
-}
+        host.tick_permission_prompt_for_tests();
 
-#[test]
-fn pump_keeps_always_choice_out_of_workspace_persistence() {
-    let (chrome, _ws_id) =
-        chrome_with_pending_grant("org.gnome.gedit", Capability::Camera { scope: GRANT_ONCE });
-    let state_file = scratch_dir().join("state.json");
-    chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
-
-    let mut host = host_with_chrome(chrome.clone());
-
-    host.tick_permission_prompt_for_tests();
-    {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("prompt latched");
-        // Only a room administrator may grant permanently; the local user owns it.
-        assert!(prompt.is_owner);
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.always_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-        assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
-    }
-    host.tick_permission_prompt_for_tests();
-
-    let has_shared_grant = {
         let st = chrome.borrow();
+        assert!(st.pending_grants.is_empty(), "queue must drain");
         let tree = st.tree();
         let ws = tree.desktop.active_workspace().expect("active workspace");
-        let has = ws.app_grants_snapshot().contains_key("org.gnome.gedit");
-        drop(tree);
-        has
-    };
-    assert!(
-        !has_shared_grant,
-        "durable portal consent is private device state, not room state",
-    );
-    assert!(
-        !state_file.exists(),
-        "the UI pump must not persist the collaborative workspace merely because a portal prompt was answered",
-    );
+        assert!(
+            !ws.app_grants_snapshot().contains_key("org.example.app"),
+            "a local portal consent must not be replicated to workspace peers",
+        );
+    }
+
+    // Phase `pump_keeps_always_choice_out_of_workspace_persistence`.
+    {
+        let (chrome, _ws_id) =
+            chrome_with_pending_grant("org.gnome.gedit", Capability::Camera { scope: GRANT_ONCE });
+        let state_file = scratch_dir().join("state.json");
+        chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
+
+        let mut host = host_with_chrome(chrome.clone());
+
+        host.tick_permission_prompt_for_tests();
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("prompt latched");
+            // Only a room administrator may grant permanently; the local user owns it.
+            assert!(prompt.is_owner);
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.always_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+            assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
+        }
+        host.tick_permission_prompt_for_tests();
+
+        let has_shared_grant = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let ws = tree.desktop.active_workspace().expect("active workspace");
+            let has = ws.app_grants_snapshot().contains_key("org.gnome.gedit");
+            drop(tree);
+            has
+        };
+        assert!(
+            !has_shared_grant,
+            "durable portal consent is private device state, not room state",
+        );
+        assert!(
+            !state_file.exists(),
+            "the UI pump must not persist the collaborative workspace merely because a portal prompt was answered",
+        );
+    }
+
+    // Phase `pump_deny_drops_pending_grant_without_persisting`.
+    {
+        let (chrome, _ws_id) = chrome_with_pending_grant(
+            "org.example.app",
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        let mut host = host_with_chrome(chrome.clone());
+
+        host.tick_permission_prompt_for_tests();
+        {
+            let prompt = host
+                .permission_prompt_mut_for_tests()
+                .expect("prompt latched");
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let center = prompt.deny_rect().center();
+            dispatch(prompt, &cursor_at(center));
+            dispatch(prompt, &left_press());
+            assert_eq!(prompt.pending_choice, Some(PromptChoice::Deny));
+        }
+        host.tick_permission_prompt_for_tests();
+
+        let st = chrome.borrow();
+        assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
+        let tree = st.tree();
+        let ws = tree.desktop.active_workspace().expect("active workspace");
+        assert!(
+            !ws.app_grants_snapshot().contains_key("org.example.app"),
+            "Deny must not persist any grant — got {:?}",
+            ws.app_grants_snapshot().get("org.example.app"),
+        );
+    }
 }
 
 /// Per-test scratch dir under `target/`, off the user's real config dir.
@@ -298,120 +413,6 @@ fn scratch_dir() -> PathBuf {
         .join(format!("{}-{n}", std::process::id()));
     std::fs::create_dir_all(&base).expect("create scratch dir");
     base
-}
-
-#[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the pending_grants assert and tree() both need st held; there is nothing \
-              to narrow between them"
-)]
-fn pump_deny_drops_pending_grant_without_persisting() {
-    let (chrome, _ws_id) = chrome_with_pending_grant(
-        "org.example.app",
-        Capability::Microphone { scope: GRANT_ONCE },
-    );
-    let mut host = host_with_chrome(chrome.clone());
-
-    host.tick_permission_prompt_for_tests();
-    {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("prompt latched");
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.deny_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-        assert_eq!(prompt.pending_choice, Some(PromptChoice::Deny));
-    }
-    host.tick_permission_prompt_for_tests();
-
-    let st = chrome.borrow();
-    assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
-    let tree = st.tree();
-    let ws = tree.desktop.active_workspace().expect("active workspace");
-    assert!(
-        !ws.app_grants_snapshot().contains_key("org.example.app"),
-        "Deny must not persist any grant — got {:?}",
-        ws.app_grants_snapshot().get("org.example.app"),
-    );
-}
-
-#[test]
-fn pump_does_not_latch_when_queue_is_empty() {
-    let chrome = ChromeState::new(WorkspaceTree::default());
-    {
-        let st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        tree.desktop
-            .workspaces
-            .push(Workspace::new(WorkspaceId::from(1), "demo"));
-        let id = WorkspaceId::from(1);
-        tree.set_active(id);
-    }
-    let mut host = host_with_chrome(chrome);
-    host.tick_permission_prompt_for_tests();
-    assert!(
-        host.permission_prompt_mut_for_tests().is_none(),
-        "no widget should latch when there's nothing to surface",
-    );
-}
-
-#[test]
-fn pump_advances_to_next_grant_after_first_drain() {
-    // Allow then Deny across two apps: both visible in sequence, nothing left.
-    let mut tree = WorkspaceTree::default();
-    let id = WorkspaceId::from(1);
-    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
-    tree.set_active(id);
-    let chrome = ChromeState::new(tree);
-    {
-        let mut st = chrome.borrow_mut();
-        st.pending_grants.push_back(PendingPrompt::new(
-            "org.example.app".into(),
-            Capability::Camera { scope: GRANT_ONCE },
-        ));
-        st.pending_grants.push_back(PendingPrompt::new(
-            "org.other.app".into(),
-            Capability::Microphone { scope: GRANT_ONCE },
-        ));
-    }
-    let mut host = host_with_chrome(chrome.clone());
-
-    host.tick_permission_prompt_for_tests();
-    {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("prompt latched");
-        assert_eq!(prompt.app_id, "org.example.app");
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.allow_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-    }
-    host.tick_permission_prompt_for_tests();
-
-    {
-        let prompt = host
-            .permission_prompt_mut_for_tests()
-            .expect("second prompt latched after first drain");
-        assert_eq!(
-            prompt.app_id, "org.other.app",
-            "advance to the next queued grant after the first is drained",
-        );
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let center = prompt.deny_rect().center();
-        dispatch(prompt, &cursor_at(center));
-        dispatch(prompt, &left_press());
-    }
-    host.tick_permission_prompt_for_tests();
-
-    let st = chrome.borrow();
-    assert!(st.pending_grants.is_empty());
-    assert!(
-        host_has_no_prompt(&host),
-        "no widget remains after both grants are drained",
-    );
 }
 
 /// Read the host's prompt slot without borrowing it for the rest of the scope.
@@ -434,3 +435,9 @@ fn _suppress_unused() {
     let _ = Duration::from_secs(1);
     let _: VecDeque<u8> = VecDeque::new();
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

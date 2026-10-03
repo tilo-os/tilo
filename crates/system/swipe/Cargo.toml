@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 # Wraps the FUTO swipe-library (GPL-3.0-or-later) + ExecuTorch via a C-ABI
-# shim. Tilo is AGPL-3.0-or-later, which incorporates GPL-3.0 cleanly.
-license = "AGPL-3.0-or-later"
+# shim. Tilo is AGPL-3.0-only; GPL-3.0 section 13 permits the combination.
+license.workspace = true
 
 [package.metadata.cargo-machete]
 # build.rs uses cc to compile the libinput gesture bridge.
@@ -16,3 +16,6 @@ cc = "1"
 
 [lints]
 workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }

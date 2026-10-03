@@ -42,7 +42,9 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
+pub mod brightness;
 pub mod codec_pack;
+pub mod ddc;
 pub mod display;
 pub mod firmware;
 pub mod keyboard_backlight;
@@ -54,6 +56,7 @@ pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
@@ -65,8 +68,8 @@ pub mod tool_intent;
 pub mod users;
 
 pub use audio::{
-    VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
-    toggle_source_mute,
+    VolumeState, get_source_state, get_volume, get_volume_state, has_output_device, set_mute,
+    set_volume, toggle_mute, toggle_source_mute,
 };
 pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,
@@ -77,6 +80,7 @@ pub use bluetooth::{
     BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
     inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
+pub use brightness::{BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel};
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
     set_brightness,
@@ -112,6 +116,9 @@ pub use network::{
     portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
     set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
 };
+pub use orientation::{
+    AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
+};
 pub use peripheral_forwarding::{
     AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
     ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
@@ -121,8 +128,8 @@ pub use peripheral_forwarding::{
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
 pub use privacy::{
-    ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
-    monitor_media_usage, revoke_media_client,
+    ActiveMediaUse, DeviceGraphWatch, KillState, MediaKind, MonitorDisposition, PrivacyStatus,
+    active_media_uses, get_privacy_status, monitor_media_usage, revoke_media_client,
 };
 pub use session::{
     SessionAction, perform_session_action, request_logout, take_logout_request,
@@ -169,6 +176,20 @@ pub trait Dispatcher {
     /// Returns an error message if the backlight control is unavailable or the underlying
     /// call fails.
     fn set_brightness(&self, pct: f32) -> Result<(), String>;
+    /// Set one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to
+    /// `pct` percent (0–100): the panel's backlight or an external monitor
+    /// over DDC/CI. Applied in the background; returns once queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if that monitor's brightness cannot be set.
+    fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+        if brightness::BrightnessService::global().set(connector, pct) {
+            Ok(())
+        } else {
+            Err(format!("{connector} has no brightness control"))
+        }
+    }
     /// Set the default audio sink volume to `pct` percent (0–100).
     ///
     /// # Errors

@@ -223,12 +223,14 @@ impl ShareRegistry {
     }
 }
 
-/// Outcome of a single `encode_tick` call; `Encoded` carries the NALU
-/// bytes, the rest are distinct no-bytes reasons for metrics (skipped vs. throttled).
+/// Outcome of a single `encode_tick` call; `Encoded` carries every access
+/// unit the encoder finished, the rest are distinct no-bytes reasons for
+/// metrics (skipped vs. throttled).
 #[derive(Debug)]
 pub enum EncodeTickOutcome {
-    /// A frame was encoded; carries the NALU payload.
-    Encoded(Vec<u8>),
+    /// A frame was encoded; carries the finished units in order (possibly
+    /// none yet, or an earlier frame's late unit with this one).
+    Encoded(Vec<media::EncodedUnit>),
     /// The throttle rejected this tick (last encode was less than the configured interval ago); no frame fetched.
     Throttled,
     /// The throttle was open but no new frame is staged — no commit since the previous take, or readback failed and emptied the tracker slot.
@@ -258,9 +260,9 @@ where
         return EncodeTickOutcome::NoFrame;
     };
     match encoder.encode(&rgba) {
-        Ok(nalus) => {
+        Ok(units) => {
             throttle.mark_encoded(now);
-            EncodeTickOutcome::Encoded(nalus)
+            EncodeTickOutcome::Encoded(units)
         }
         Err(err) => EncodeTickOutcome::EncodeFailed(err),
     }
@@ -309,573 +311,592 @@ mod tests {
     // `StreamingThrottle` unit tests moved into the `tilo_callstream` crate's `throttle` module.
 
     #[test]
-    fn disclosure_reports_view_and_control_authority_stably() {
-        let mut registry = ShareRegistry::new();
-        registry.insert(9, 42, StreamingShare::new());
-        registry.insert(3, 77, StreamingShare { read_only: true });
+    fn remote_input_authority_is_disclosed_and_enforced() {
+        // Phase `disclosure_reports_view_and_control_authority_stably`.
+        {
+            let mut registry = ShareRegistry::new();
+            registry.insert(9, 42, StreamingShare::new());
+            registry.insert(3, 77, StreamingShare { read_only: true });
 
-        assert_eq!(registry.disclosure(), vec![(3, 77, false), (9, 42, true)]);
+            assert_eq!(registry.disclosure(), vec![(3, 77, false), (9, 42, true)]);
 
-        registry.remove(9, 42);
-        assert_eq!(registry.disclosure(), vec![(3, 77, false)]);
-    }
+            registry.remove(9, 42);
+            assert_eq!(registry.disclosure(), vec![(3, 77, false)]);
+        }
+        // Phase `remote_input_blocked_when_read_only`.
+        // A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
+        {
+            let peer: PeerId = 7;
+            let surface: SurfaceId = 42;
+            let mut registry = ShareRegistry::new();
+            registry.insert(peer, surface, StreamingShare::new());
+            let mut sink = RecordingSink::default();
 
-    /// A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
-    #[test]
-    fn remote_input_blocked_when_read_only() {
-        let peer: PeerId = 7;
-        let surface: SurfaceId = 42;
-        let mut registry = ShareRegistry::new();
-        registry.insert(peer, surface, StreamingShare::new());
-        let mut sink = RecordingSink::default();
+            // Read/write: event lands.
+            let ev = InputEvent::PointerMotion { x: 10.0, y: 20.0 };
+            assert!(registry.route_to(peer, surface, ev.clone(), &mut sink));
+            assert_eq!(sink.events.len(), 1);
+            assert_eq!(sink.events[0], (peer, surface, ev));
 
-        // Read/write: event lands.
-        let ev = InputEvent::PointerMotion { x: 10.0, y: 20.0 };
-        assert!(registry.route_to(peer, surface, ev.clone(), &mut sink));
-        assert_eq!(sink.events.len(), 1);
-        assert_eq!(sink.events[0], (peer, surface, ev));
-
-        // Flip to read-only: next event drops.
-        registry.set_read_only(peer, surface, true);
-        let ev2 = InputEvent::PointerButton {
-            button: 272,
-            pressed: true,
-        };
-        assert!(!registry.route_to(peer, surface, ev2, &mut sink));
-        assert_eq!(sink.events.len(), 1, "read-only share leaked input");
-
-        // Flip back: events flow again.
-        registry.set_read_only(peer, surface, false);
-        let ev3 = InputEvent::Key {
-            keysym: 0xFF0D,
-            pressed: true,
-            modifiers: 0,
-        };
-        assert!(registry.route_to(peer, surface, ev3.clone(), &mut sink));
-        assert_eq!(sink.events.len(), 2);
-        assert_eq!(sink.events[1].2, ev3);
-    }
-
-    #[test]
-    fn remote_input_dropped_for_unknown_share() {
-        let mut sink = RecordingSink::default();
-        let registry = ShareRegistry::new();
-        let ev = InputEvent::PointerMotion { x: 1.0, y: 2.0 };
-        // Peer never invited; event must drop.
-        assert!(!registry.route_to(99, 99, ev, &mut sink));
-        assert!(sink.events.is_empty());
-    }
-
-    #[test]
-    fn input_event_serde_round_trips() {
-        let events = [
-            InputEvent::PointerMotion { x: 1.5, y: -3.25 },
-            InputEvent::PointerButton {
+            // Flip to read-only: next event drops.
+            registry.set_read_only(peer, surface, true);
+            let ev2 = InputEvent::PointerButton {
                 button: 272,
                 pressed: true,
-            },
-            InputEvent::Key {
-                keysym: 0xFF1B,
-                pressed: false,
-                modifiers: 4, /* Ctrl */
-            },
-            InputEvent::PointerEnter { surface: 42 },
-            InputEvent::PointerLeave { surface: 42 },
-            InputEvent::KeyboardFocus {
-                surface: 42,
-                focused: true,
-            },
-        ];
-        for ev in events {
-            let bytes = serde_json::to_vec(&ev).expect("serialize");
-            let round: InputEvent = serde_json::from_slice(&bytes).expect("deserialize");
-            assert_eq!(round, ev);
-        }
-    }
+            };
+            assert!(!registry.route_to(peer, surface, ev2, &mut sink));
+            assert_eq!(sink.events.len(), 1, "read-only share leaked input");
 
-    /// Wires the production egress path through a
-    /// [`crate::network::surface_tracker::SurfaceTracker`]: a deposited
-    /// frame is drained via `take_latest`, H.264-decoded, and
-    /// PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
-    /// `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
-    #[test]
-    fn shared_foreign_surface_round_trips_rgba() {
-        use crate::network::decoder::VideoDecoder;
-        use crate::network::surface_tracker::SurfaceTracker;
-        use media::StreamCodec;
-
-        const W: u32 = 64;
-        const H: u32 = 64;
-        const SURFACE: SurfaceId = 314;
-
-        // Deterministic input — soft gradient so H.264 has a fair shot at the 35 dB floor.
-        let mut input = Vec::with_capacity((W * H * 4) as usize);
-        for y in 0..H {
-            for x in 0..W {
-                input.push(u8::try_from(x.saturating_mul(255).saturating_div(W)).unwrap_or(255));
-                input.push(u8::try_from(y.saturating_mul(255).saturating_div(H)).unwrap_or(255));
-                input.push(0x80);
-                input.push(0xFF);
-            }
-        }
-
-        // Inject the same way the compositor's commit handler would, minus the wayland plumbing.
-        let mut tracker = SurfaceTracker::new();
-        tracker.deposit_for_test(SURFACE, input.clone(), W, H);
-
-        // Production egress path — the streaming task wires exactly this shape.
-        // VP9, royalty-free software: no GPU and no Cisco binary needed.
-        let mut encoder = VideoEncoder::new(StreamCodec::Vp9, W, H, 30).expect("encoder");
-        let mut throttle = StreamingThrottle::new();
-        let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
-            tracker.take_latest(SURFACE).map(|frame| frame.rgba)
-        });
-        let nalus = match outcome {
-            EncodeTickOutcome::Encoded(b) => b,
-            other => panic!("expected Encoded, got {other:?}"),
-        };
-        assert!(!nalus.is_empty(), "encoder produced empty bitstream");
-
-        // Tracker slot was drained — a second tick must report NoFrame (no new commit since the take).
-        let outcome2 = encode_tick(
-            &mut encoder,
-            &mut throttle,
-            Instant::now() + Duration::from_millis(50),
-            || tracker.take_latest(SURFACE).map(|frame| frame.rgba),
-        );
-        assert!(
-            matches!(outcome2, EncodeTickOutcome::NoFrame),
-            "expected NoFrame, got {outcome2:?}"
-        );
-
-        // Decode + PSNR check against the same floor as the gradient test.
-        let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
-        let frame = decoder.decode(&nalus).expect("decoder yields a frame");
-        assert_eq!(frame.width, W);
-        assert_eq!(frame.height, H);
-
-        let strip_alpha = |buf: &[u8]| -> Vec<u8> {
-            buf.chunks_exact(4)
-                .flat_map(|c| [c[0], c[1], c[2]])
-                .collect()
-        };
-        let orig_rgb = strip_alpha(&input);
-        let rgba = match &frame.pixels {
-            crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-            other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
-                panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
-            }
-        };
-        let decoded_rgb = strip_alpha(rgba);
-        // PSNR inlined so this test stays self-contained without re-exporting `encoder::tests::psnr`.
-        let mse: f64 = orig_rgb
-            .iter()
-            .zip(&decoded_rgb)
-            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
-            .sum::<f64>()
-            / f64::from(u32::try_from(orig_rgb.len()).unwrap_or(u32::MAX));
-        let psnr = if mse == 0.0 {
-            f64::INFINITY
-        } else {
-            20.0 * 255.0_f64.log10() - 10.0 * mse.log10()
-        };
-        assert!(
-            psnr >= 35.0,
-            "shared-surface PSNR {psnr:.2} dB below 35 dB floor (v2 readback regression)"
-        );
-        eprintln!("shared-surface PSNR = {psnr:.3} dB");
-    }
-
-    /// `RemoteInputSink::apply` for `State` calls `PointerHandle::motion` for `PointerMotion`; asserts the pointer's location reflects the injected coordinates.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn apply_remote_input_pointer_motion_reaches_seat() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::{InputEvent, StreamingShare};
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        // Minimal standalone `State` — no listening socket, no clients; same plumbing `native::run` does at startup, minus the winit/drm backend.
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let display_handle = display.handle();
-        let mut state = State::new(event_loop.handle(), display_handle);
-
-        // Stage the (peer, surface) share, else `apply_remote_input` drops on the unknown-share path.
-        let peer: PeerId = 42;
-        let surface: SurfaceId = 7;
-        state
-            .share_registry
-            .insert(peer, surface, StreamingShare::new());
-        // The shared surface fills the output from its origin, so a surface-local coordinate matches its output-space translation.
-        stage_shared_surface(&mut state, surface);
-
-        // Fresh seat starts at the origin; current_location returns the last-known location.
-        let initial = state
-            .seat
-            .get_pointer()
-            .expect("seat has pointer device")
-            .current_location();
-        assert_eq!(
-            initial.x, 0.0,
-            "seat fresh start; pointer x should be 0, got {}",
-            initial.x
-        );
-        assert_eq!(initial.y, 0.0);
-
-        let routed = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::PointerMotion { x: 123.0, y: 456.0 },
-        );
-        assert!(routed, "share is read/write, motion must route");
-
-        // Proves the call reached the production `motion()` path, not just stamped `last_remote_input`.
-        let after = state
-            .seat
-            .get_pointer()
-            .expect("seat still has pointer")
-            .current_location();
-        assert_eq!(
-            (after.x, after.y),
-            (123.0, 456.0),
-            "D-1 regression: pointer location did not reach the seat \
-             after `apply_remote_input(PointerMotion)`; observed {:?}",
-            (after.x, after.y)
-        );
-
-        // Seat is mutating, not pinned at the first value.
-        let _ =
-            state.apply_remote_input(peer, surface, InputEvent::PointerMotion { x: 5.0, y: 6.0 });
-        let after2 = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!((after2.x, after2.y), (5.0, 6.0));
-    }
-
-    /// `InputEvent::Key` must reach `KeyboardHandle::input` — proven via `forwarded_pressed_keys` after a Key event.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn apply_remote_input_key_reaches_keyboard() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::{InputEvent, StreamingShare};
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let display_handle = display.handle();
-        let mut state = State::new(event_loop.handle(), display_handle);
-
-        let peer: PeerId = 7;
-        let surface: SurfaceId = 42;
-        state
-            .share_registry
-            .insert(peer, surface, StreamingShare::new());
-        // The scrubber's focus guard mutes a guest's keystrokes unless the shared surface holds keyboard focus.
-        stage_shared_surface(&mut state, surface);
-        assert!(state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::KeyboardFocus {
-                surface,
-                focused: true,
-            },
-        ));
-
-        // Baseline: no keys pressed.
-        {
-            let kb = state.seat.get_keyboard().expect("keyboard on seat");
-            assert!(
-                kb.pressed_keys().is_empty(),
-                "seat starts with no pressed keys",
-            );
-        }
-
-        let keysym: u32 = 30; /* evdev A on a US keymap */
-        let xkb_keycode = keysym + 8;
-        let routed = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::Key {
-                keysym,
+            // Flip back: events flow again.
+            registry.set_read_only(peer, surface, false);
+            let ev3 = InputEvent::Key {
+                keysym: 0xFF0D,
                 pressed: true,
                 modifiers: 0,
-            },
-        );
-        assert!(routed, "read/write share, key event must route");
-
-        // smithay's `forwarded_pressed_keys` reflects the state after `KeyboardHandle::input` runs.
-        {
-            let kb = state.seat.get_keyboard().expect("keyboard on seat");
-            let pressed = kb.pressed_keys();
-            assert!(
-                pressed.iter().any(|k| u32::from(*k) == xkb_keycode),
-                "keyboard did not observe key press; observed {pressed:?}",
-            );
+            };
+            assert!(registry.route_to(peer, surface, ev3.clone(), &mut sink));
+            assert_eq!(sink.events.len(), 2);
+            assert_eq!(sink.events[1].2, ev3);
         }
-
-        // After `Released`, the pressed set no longer contains the keycode.
-        let _ = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::Key {
-                keysym,
-                pressed: false,
-                modifiers: 0,
-            },
-        );
+        // Phase `remote_input_dropped_for_unknown_share`.
         {
+            let mut sink = RecordingSink::default();
+            let registry = ShareRegistry::new();
+            let ev = InputEvent::PointerMotion { x: 1.0, y: 2.0 };
+            // Peer never invited; event must drop.
+            assert!(!registry.route_to(99, 99, ev, &mut sink));
+            assert!(sink.events.is_empty());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn stream_payloads_round_trip_and_encoding_is_throttled() {
+        // Phase `input_event_serde_round_trips`.
+        {
+            let events = [
+                InputEvent::PointerMotion { x: 1.5, y: -3.25 },
+                InputEvent::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+                InputEvent::Key {
+                    keysym: 0xFF1B,
+                    pressed: false,
+                    modifiers: 4, /* Ctrl */
+                },
+                InputEvent::PointerEnter { surface: 42 },
+                InputEvent::PointerLeave { surface: 42 },
+                InputEvent::KeyboardFocus {
+                    surface: 42,
+                    focused: true,
+                },
+            ];
+            for ev in events {
+                let bytes = serde_json::to_vec(&ev).expect("serialize");
+                let round: InputEvent = serde_json::from_slice(&bytes).expect("deserialize");
+                assert_eq!(round, ev);
+            }
+        }
+        // Phase `shared_foreign_surface_round_trips_rgba`.
+        // Wires the production egress path through a
+        // [`crate::network::surface_tracker::SurfaceTracker`]: a deposited
+        // frame is drained via `take_latest`, H.264-decoded, and
+        // PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
+        // `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
+        {
+            use crate::network::decoder::VideoDecoder;
+            use crate::network::surface_tracker::SurfaceTracker;
+            use media::StreamCodec;
+
+            const W: u32 = 64;
+            const H: u32 = 64;
+            const SURFACE: SurfaceId = 314;
+
+            // Deterministic input — soft gradient so H.264 has a fair shot at the 35 dB floor.
+            let mut input = Vec::with_capacity((W * H * 4) as usize);
+            for y in 0..H {
+                for x in 0..W {
+                    input
+                        .push(u8::try_from(x.saturating_mul(255).saturating_div(W)).unwrap_or(255));
+                    input
+                        .push(u8::try_from(y.saturating_mul(255).saturating_div(H)).unwrap_or(255));
+                    input.push(0x80);
+                    input.push(0xFF);
+                }
+            }
+
+            // Inject the same way the compositor's commit handler would, minus the wayland plumbing.
+            let mut tracker = SurfaceTracker::new();
+            tracker.deposit_for_test(SURFACE, input.clone(), W, H);
+
+            // Production egress path — the streaming task wires exactly this shape.
+            // VP9, royalty-free software: no GPU and no Cisco binary needed.
+            let mut encoder = VideoEncoder::new(StreamCodec::Vp9, W, H, 30).expect("encoder");
+            let mut throttle = StreamingThrottle::new();
+            let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
+                tracker.take_latest(SURFACE).map(|frame| frame.rgba)
+            });
+            let units = match outcome {
+                EncodeTickOutcome::Encoded(units) => units,
+                other => panic!("expected Encoded, got {other:?}"),
+            };
+            let nalus = &units.first().expect("the first frame's unit").data;
+            assert!(!nalus.is_empty(), "encoder produced empty bitstream");
+
+            // Tracker slot was drained — a second tick must report NoFrame (no new commit since the take).
+            let outcome2 = encode_tick(
+                &mut encoder,
+                &mut throttle,
+                Instant::now() + Duration::from_millis(50),
+                || tracker.take_latest(SURFACE).map(|frame| frame.rgba),
+            );
+            assert!(
+                matches!(outcome2, EncodeTickOutcome::NoFrame),
+                "expected NoFrame, got {outcome2:?}"
+            );
+
+            // Decode + PSNR check against the same floor as the gradient test.
+            let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
+            let frame = decoder.decode(nalus).expect("decoder yields a frame");
+            assert_eq!(frame.width, W);
+            assert_eq!(frame.height, H);
+
+            let strip_alpha = |buf: &[u8]| -> Vec<u8> {
+                buf.chunks_exact(4)
+                    .flat_map(|c| [c[0], c[1], c[2]])
+                    .collect()
+            };
+            let orig_rgb = strip_alpha(&input);
+            let rgba = match &frame.pixels {
+                crate::network::decoder::DecodedPixels::Rgba8(b) => b,
+                other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                    panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
+                }
+            };
+            let decoded_rgb = strip_alpha(rgba);
+            // PSNR inlined so this test stays self-contained without re-exporting `encoder::tests::psnr`.
+            let mse: f64 = orig_rgb
+                .iter()
+                .zip(&decoded_rgb)
+                .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+                .sum::<f64>()
+                / f64::from(u32::try_from(orig_rgb.len()).unwrap_or(u32::MAX));
+            let psnr = if mse == 0.0 {
+                f64::INFINITY
+            } else {
+                20.0 * 255.0_f64.log10() - 10.0 * mse.log10()
+            };
+            assert!(
+                psnr >= 35.0,
+                "shared-surface PSNR {psnr:.2} dB below 35 dB floor (v2 readback regression)"
+            );
+            eprintln!("shared-surface PSNR = {psnr:.3} dB");
+        }
+        // Phase `encode_tick_throttled_when_within_interval`.
+        {
+            use crate::network::surface_tracker::SurfaceTracker;
+
+            const W: u32 = 32;
+            const H: u32 = 32;
+            const SURFACE: SurfaceId = 1;
+            let frame = vec![0u8; (W * H * 4) as usize];
+
+            let mut tracker = SurfaceTracker::new();
+            tracker.deposit_for_test(SURFACE, frame.clone(), W, H);
+
+            let mut encoder =
+                VideoEncoder::new(media::StreamCodec::Vp9, W, H, 30).expect("encoder");
+            let mut throttle = StreamingThrottle::new();
+            let t0 = Instant::now();
+
+            let r1 = encode_tick(&mut encoder, &mut throttle, t0, || {
+                tracker.take_latest(SURFACE).map(|f| f.rgba)
+            });
+            assert!(matches!(r1, EncodeTickOutcome::Encoded(_)));
+
+            // Re-deposit immediately — a second tick at t0+1ms must not drain the tracker; the throttle short-circuits before `fetch_frame` runs.
+            tracker.deposit_for_test(SURFACE, frame, W, H);
+            let r2 = encode_tick(
+                &mut encoder,
+                &mut throttle,
+                t0 + Duration::from_millis(1),
+                || tracker.take_latest(SURFACE).map(|f| f.rgba),
+            );
+            assert!(matches!(r2, EncodeTickOutcome::Throttled));
+            // Tracker slot is still full — the throttle blocked `take_latest` from running.
+            assert!(!tracker.is_empty_for(SURFACE));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn remote_seat_input_reaches_the_focused_client() {
+        // Phase `apply_remote_input_pointer_motion_reaches_seat`.
+        // `RemoteInputSink::apply` for `State` calls `PointerHandle::motion` for `PointerMotion`; asserts the pointer's location reflects the injected coordinates.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::{InputEvent, StreamingShare};
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            // Minimal standalone `State` — no listening socket, no clients; same plumbing `native::run` does at startup, minus the winit/drm backend.
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let display_handle = display.handle();
+            let mut state = State::new(event_loop.handle(), display_handle);
+
+            // Stage the (peer, surface) share, else `apply_remote_input` drops on the unknown-share path.
+            let peer: PeerId = 42;
+            let surface: SurfaceId = 7;
+            state
+                .share_registry
+                .insert(peer, surface, StreamingShare::new());
+            // The shared surface fills the output from its origin, so a surface-local coordinate matches its output-space translation.
+            stage_shared_surface(&mut state, surface);
+
+            // Fresh seat starts at the origin; current_location returns the last-known location.
+            let initial = state
+                .seat
+                .get_pointer()
+                .expect("seat has pointer device")
+                .current_location();
+            assert_eq!(
+                initial.x, 0.0,
+                "seat fresh start; pointer x should be 0, got {}",
+                initial.x
+            );
+            assert_eq!(initial.y, 0.0);
+
+            let routed = state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::PointerMotion { x: 123.0, y: 456.0 },
+            );
+            assert!(routed, "share is read/write, motion must route");
+
+            // Proves the call reached the production `motion()` path, not just stamped `last_remote_input`.
+            let after = state
+                .seat
+                .get_pointer()
+                .expect("seat still has pointer")
+                .current_location();
+            assert_eq!(
+                (after.x, after.y),
+                (123.0, 456.0),
+                "D-1 regression: pointer location did not reach the seat \
+                 after `apply_remote_input(PointerMotion)`; observed {:?}",
+                (after.x, after.y)
+            );
+
+            // Seat is mutating, not pinned at the first value.
+            let _ = state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::PointerMotion { x: 5.0, y: 6.0 },
+            );
+            let after2 = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!((after2.x, after2.y), (5.0, 6.0));
+        }
+        // Phase `apply_remote_input_key_reaches_keyboard`.
+        // `InputEvent::Key` must reach `KeyboardHandle::input` — proven via `forwarded_pressed_keys` after a Key event.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::{InputEvent, StreamingShare};
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let display_handle = display.handle();
+            let mut state = State::new(event_loop.handle(), display_handle);
+
+            let peer: PeerId = 7;
+            let surface: SurfaceId = 42;
+            state
+                .share_registry
+                .insert(peer, surface, StreamingShare::new());
+            // The scrubber's focus guard mutes a guest's keystrokes unless the shared surface holds keyboard focus.
+            stage_shared_surface(&mut state, surface);
+            assert!(state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true,
+                },
+            ));
+
+            // Baseline: no keys pressed.
+            {
+                let kb = state.seat.get_keyboard().expect("keyboard on seat");
+                assert!(
+                    kb.pressed_keys().is_empty(),
+                    "seat starts with no pressed keys",
+                );
+            }
+
+            let keysym: u32 = 30; /* evdev A on a US keymap */
+            let xkb_keycode = keysym + 8;
+            let routed = state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::Key {
+                    keysym,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            );
+            assert!(routed, "read/write share, key event must route");
+
+            // smithay's `forwarded_pressed_keys` reflects the state after `KeyboardHandle::input` runs.
+            {
+                let kb = state.seat.get_keyboard().expect("keyboard on seat");
+                let pressed = kb.pressed_keys();
+                assert!(
+                    pressed.iter().any(|k| u32::from(*k) == xkb_keycode),
+                    "keyboard did not observe key press; observed {pressed:?}",
+                );
+            }
+
+            // After `Released`, the pressed set no longer contains the keycode.
+            let _ = state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::Key {
+                    keysym,
+                    pressed: false,
+                    modifiers: 0,
+                },
+            );
+            {
+                let kb = state.seat.get_keyboard().expect("keyboard on seat");
+                assert!(
+                    !kb.pressed_keys()
+                        .iter()
+                        .any(|k| u32::from(*k) == xkb_keycode),
+                    "keyboard still holds the released keycode",
+                );
+            }
+
+            // `last_remote_input` carries the peer id so a future per-user "typing" overlay can find it in one place.
+            let (last_peer, _, _) = state.last_remote_input.as_ref().expect("event stamped");
+            assert_eq!(*last_peer, peer, "origin peer tag lost");
+        }
+        // Phase `pointer_leave_preserves_focus_until_explicit_blur`.
+        // Hover and click focus are independent: pointer leave preserves the
+        // caret, while an explicit blur releases keyboard focus.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::{InputEvent, StreamingShare};
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let display_handle = display.handle();
+            let mut state = State::new(event_loop.handle(), display_handle);
+
+            let peer: PeerId = 11;
+            let surface: SurfaceId = 314;
+            state
+                .share_registry
+                .insert(peer, surface, StreamingShare::new());
+            stage_shared_surface(&mut state, surface);
+
+            // No seat entry yet — the peer hasn't emitted any input.
+            assert!(state.remote_seats.seat(peer).is_none());
+
+            // PointerEnter remains a compatibility focus handshake for older
+            // viewers; importantly, leaving no longer clears that focus.
+            let routed =
+                state.apply_remote_input(peer, surface, InputEvent::PointerEnter { surface });
+            assert!(routed);
+            let seat = state
+                .remote_seats
+                .seat(peer)
+                .expect("peer's remote seat exists after enter");
+            assert_eq!(seat.pointer_surface, Some(surface));
+            assert_eq!(seat.focused_surface, Some(surface));
+
+            assert!(state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true,
+                },
+            ));
+
+            // Leaving the tile preserves the app caret/focus.
+            let _ = state.apply_remote_input(peer, surface, InputEvent::PointerLeave { surface });
+            let seat = state
+                .remote_seats
+                .seat(peer)
+                .expect("peer's remote seat still exists");
+            assert_eq!(seat.pointer_surface, None);
+            assert_eq!(seat.focused_surface, Some(surface));
+
+            assert!(state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: false,
+                },
+            ));
+            assert_eq!(state.remote_seats.seat(peer).unwrap().focused_surface, None);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn remote_desktop_input_reaches_the_seat_until_the_kill_switch() {
+        // Phase `apply_remote_desktop_absolute_motion_reaches_seat`.
+        // A `RemoteDesktop` `NotifyPointerMotionAbsolute` must reach the real smithay seat, mirroring the peer-sync motion test above.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::RemoteAction;
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+
+            let applied = state.apply_remote_desktop_action(RemoteAction::PointerMotionAbsolute {
+                stream: 1,
+                x: 200.0,
+                y: 150.0,
+            });
+            assert!(applied, "absolute motion must reach the seat pointer");
+            let loc = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!((loc.x, loc.y), (200.0, 150.0));
+
+            // Relative motion accumulates on top of the current location.
+            let _ = state.apply_remote_desktop_action(RemoteAction::PointerMotionRelative {
+                dx: -50.0,
+                dy: 25.0,
+            });
+            let loc2 = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
+        }
+        // Phase `personal_fabric_motion_reaches_seat_but_yields_to_kill_switch`.
+        {
+            use crate::compositor::state::State;
+            use crate::shell::device_fabric::FabricInputEvent;
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+            let controller =
+                crate::shell::personal_continuity::DeviceId::new("controller").unwrap();
+            assert!(state.apply_personal_fabric_input(
+                &controller,
+                FabricInputEvent::PointerMotion { x: 320, y: 180 }
+            ));
+            let loc = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!((loc.x, loc.y), (320.0, 180.0));
+
+            state.remote_input_firewall.engage_kill_switch();
+            assert!(!state.apply_personal_fabric_input(
+                &controller,
+                FabricInputEvent::PointerMotion { x: 640, y: 360 }
+            ));
+            let unchanged = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
+        }
+        // Phase `apply_remote_desktop_keycode_reaches_keyboard`.
+        // A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::RemoteAction;
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+
+            let kc: i32 = 30; // 'a' keycode
+            assert!(
+                state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+                    keycode: kc,
+                    pressed: true,
+                })
+            );
+            {
+                let kb = state.seat.get_keyboard().expect("keyboard on seat");
+                assert!(
+                    kb.pressed_keys()
+                        .iter()
+                        .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
+                    "keycode did not reach the seat keyboard",
+                );
+            }
+            let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+                keycode: kc,
+                pressed: false,
+            });
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(
                 !kb.pressed_keys()
                     .iter()
-                    .any(|k| u32::from(*k) == xkb_keycode),
-                "keyboard still holds the released keycode",
-            );
-        }
-
-        // `last_remote_input` carries the peer id so a future per-user "typing" overlay can find it in one place.
-        let (last_peer, _, _) = state.last_remote_input.as_ref().expect("event stamped");
-        assert_eq!(*last_peer, peer, "origin peer tag lost");
-    }
-
-    /// Hover and click focus are independent: pointer leave preserves the
-    /// caret, while an explicit blur releases keyboard focus.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn pointer_leave_preserves_focus_until_explicit_blur() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::{InputEvent, StreamingShare};
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let display_handle = display.handle();
-        let mut state = State::new(event_loop.handle(), display_handle);
-
-        let peer: PeerId = 11;
-        let surface: SurfaceId = 314;
-        state
-            .share_registry
-            .insert(peer, surface, StreamingShare::new());
-        stage_shared_surface(&mut state, surface);
-
-        // No seat entry yet — the peer hasn't emitted any input.
-        assert!(state.remote_seats.seat(peer).is_none());
-
-        // PointerEnter remains a compatibility focus handshake for older
-        // viewers; importantly, leaving no longer clears that focus.
-        let routed = state.apply_remote_input(peer, surface, InputEvent::PointerEnter { surface });
-        assert!(routed);
-        let seat = state
-            .remote_seats
-            .seat(peer)
-            .expect("peer's remote seat exists after enter");
-        assert_eq!(seat.pointer_surface, Some(surface));
-        assert_eq!(seat.focused_surface, Some(surface));
-
-        assert!(state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::KeyboardFocus {
-                surface,
-                focused: true,
-            },
-        ));
-
-        // Leaving the tile preserves the app caret/focus.
-        let _ = state.apply_remote_input(peer, surface, InputEvent::PointerLeave { surface });
-        let seat = state
-            .remote_seats
-            .seat(peer)
-            .expect("peer's remote seat still exists");
-        assert_eq!(seat.pointer_surface, None);
-        assert_eq!(seat.focused_surface, Some(surface));
-
-        assert!(state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::KeyboardFocus {
-                surface,
-                focused: false,
-            },
-        ));
-        assert_eq!(state.remote_seats.seat(peer).unwrap().focused_surface, None);
-    }
-
-    #[test]
-    fn encode_tick_throttled_when_within_interval() {
-        use crate::network::surface_tracker::SurfaceTracker;
-
-        const W: u32 = 32;
-        const H: u32 = 32;
-        const SURFACE: SurfaceId = 1;
-        let frame = vec![0u8; (W * H * 4) as usize];
-
-        let mut tracker = SurfaceTracker::new();
-        tracker.deposit_for_test(SURFACE, frame.clone(), W, H);
-
-        let mut encoder = VideoEncoder::new(media::StreamCodec::Vp9, W, H, 30).expect("encoder");
-        let mut throttle = StreamingThrottle::new();
-        let t0 = Instant::now();
-
-        let r1 = encode_tick(&mut encoder, &mut throttle, t0, || {
-            tracker.take_latest(SURFACE).map(|f| f.rgba)
-        });
-        assert!(matches!(r1, EncodeTickOutcome::Encoded(_)));
-
-        // Re-deposit immediately — a second tick at t0+1ms must not drain the tracker; the throttle short-circuits before `fetch_frame` runs.
-        tracker.deposit_for_test(SURFACE, frame, W, H);
-        let r2 = encode_tick(
-            &mut encoder,
-            &mut throttle,
-            t0 + Duration::from_millis(1),
-            || tracker.take_latest(SURFACE).map(|f| f.rgba),
-        );
-        assert!(matches!(r2, EncodeTickOutcome::Throttled));
-        // Tracker slot is still full — the throttle blocked `take_latest` from running.
-        assert!(!tracker.is_empty_for(SURFACE));
-    }
-
-    /// A `RemoteDesktop` `NotifyPointerMotionAbsolute` must reach the real smithay seat, mirroring the peer-sync motion test above.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn apply_remote_desktop_absolute_motion_reaches_seat() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::RemoteAction;
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let mut state = State::new(event_loop.handle(), display.handle());
-
-        let applied = state.apply_remote_desktop_action(RemoteAction::PointerMotionAbsolute {
-            stream: 1,
-            x: 200.0,
-            y: 150.0,
-        });
-        assert!(applied, "absolute motion must reach the seat pointer");
-        let loc = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!((loc.x, loc.y), (200.0, 150.0));
-
-        // Relative motion accumulates on top of the current location.
-        let _ = state.apply_remote_desktop_action(RemoteAction::PointerMotionRelative {
-            dx: -50.0,
-            dy: 25.0,
-        });
-        let loc2 = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn personal_fabric_motion_reaches_seat_but_yields_to_kill_switch() {
-        use crate::compositor::state::State;
-        use crate::shell::device_fabric::FabricInputEvent;
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let mut state = State::new(event_loop.handle(), display.handle());
-        let controller = crate::shell::personal_continuity::DeviceId::new("controller").unwrap();
-        assert!(state.apply_personal_fabric_input(
-            &controller,
-            FabricInputEvent::PointerMotion { x: 320, y: 180 }
-        ));
-        let loc = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!((loc.x, loc.y), (320.0, 180.0));
-
-        state.remote_input_firewall.engage_kill_switch();
-        assert!(!state.apply_personal_fabric_input(
-            &controller,
-            FabricInputEvent::PointerMotion { x: 640, y: 360 }
-        ));
-        let unchanged = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
-    }
-
-    /// A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn apply_remote_desktop_keycode_reaches_keyboard() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::RemoteAction;
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let mut state = State::new(event_loop.handle(), display.handle());
-
-        let kc: i32 = 30; // 'a' keycode
-        assert!(
-            state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
-                keycode: kc,
-                pressed: true,
-            })
-        );
-        {
-            let kb = state.seat.get_keyboard().expect("keyboard on seat");
-            assert!(
-                kb.pressed_keys()
-                    .iter()
                     .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
-                "keycode did not reach the seat keyboard",
+                "release must clear the pressed key",
             );
         }
-        let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
-            keycode: kc,
-            pressed: false,
-        });
-        let kb = state.seat.get_keyboard().expect("keyboard on seat");
-        assert!(
-            !kb.pressed_keys()
-                .iter()
-                .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
-            "release must clear the pressed key",
-        );
-    }
+        // Phase `remote_desktop_channel_injector_drives_the_seat`.
+        // End-to-end production path: a [`ChannelInjector`] carries a decoded action into `apply_remote_desktop_action` against the real seat.
+        {
+            use crate::compositor::state::State;
+            use crate::network::streaming::RemoteAction;
+            use crate::portal::{ChannelInjector, RemoteInputInjector};
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
 
-    /// End-to-end production path: a [`ChannelInjector`] carries a decoded action into `apply_remote_desktop_action` against the real seat.
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn remote_desktop_channel_injector_drives_the_seat() {
-        use crate::compositor::state::State;
-        use crate::network::streaming::RemoteAction;
-        use crate::portal::{ChannelInjector, RemoteInputInjector};
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let injector = ChannelInjector::new(tx);
+            // Portal `Notify*` handler side: forward the decoded action.
+            assert!(injector.inject(RemoteAction::PointerMotionAbsolute {
+                stream: 1,
+                x: 77.0,
+                y: 88.0,
+            }));
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let injector = ChannelInjector::new(tx);
-        // Portal `Notify*` handler side: forward the decoded action.
-        assert!(injector.inject(RemoteAction::PointerMotionAbsolute {
-            stream: 1,
-            x: 77.0,
-            y: 88.0,
-        }));
-
-        // Compositor-loop side: drain + apply to the live seat.
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> = Display::new().expect("wayland display");
-        let mut state = State::new(event_loop.handle(), display.handle());
-        while let Ok(action) = rx.try_recv() {
-            state.apply_remote_desktop_action(action);
+            // Compositor-loop side: drain + apply to the live seat.
+            let event_loop: EventLoop<'static, State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<State> = Display::new().expect("wayland display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+            while let Ok(action) = rx.try_recv() {
+                state.apply_remote_desktop_action(action);
+            }
+            let loc = state.seat.get_pointer().unwrap().current_location();
+            assert_eq!(
+                (loc.x, loc.y),
+                (77.0, 88.0),
+                "channel injector → loop drain → seat must move the pointer"
+            );
         }
-        let loc = state.seat.get_pointer().unwrap().current_location();
-        assert_eq!(
-            (loc.x, loc.y),
-            (77.0, 88.0),
-            "channel injector → loop drain → seat must move the pointer"
-        );
     }
 }

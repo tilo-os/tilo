@@ -1,5 +1,5 @@
 // C ABI shim over the FUTO swipe-library `SwipeEngine` (GPL-3.0-or-later;
-// linked into Tilo which is AGPL-3.0-or-later — compatible). Compiled by
+// linked into Tilo, which is AGPL-3.0-only — compatible). Compiled by
 // build.rs via the `cc` crate and linked against libswipe_decoder.a +
 // ExecuTorch static libs. The Rust side (`tilo-swipe`) calls these.
 //

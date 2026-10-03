@@ -642,6 +642,7 @@ mod tests {
             pubkey_hex: entry.publisher_pubkey_hex,
             can_add_new: true,
             note: String::new(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
         });
         let identity = ServerIdentity {
             owner_pubkey_hex: hex::encode(reviewer.verifying_key().to_bytes()),
@@ -671,186 +672,194 @@ mod tests {
     }
 
     #[test]
-    fn report_is_signed_idempotent_and_publicly_verifiable() {
-        let (directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = report(&reporter, "request-one");
-        let first = service.apply(&request, 110, &allowlist).unwrap();
-        assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
-        let page = service.transparency(1, 10).unwrap();
-        assert_eq!(page.events.len(), 1);
-        registry_types::verify_transparency_chain(&page.events, "").unwrap();
-        assert_eq!(service.case(&first.case_id).unwrap(), Some(first.clone()));
+    fn moderation_requests_are_signed_idempotent_and_fresh() {
+        // phase: report_is_signed_idempotent_and_publicly_verifiable
+        {
+            let (directory, service, _publisher, _reviewer, allowlist) = setup();
+            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = report(&reporter, "request-one");
+            let first = service.apply(&request, 110, &allowlist).unwrap();
+            assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
+            let page = service.transparency(1, 10).unwrap();
+            assert_eq!(page.events.len(), 1);
+            registry_types::verify_transparency_chain(&page.events, "").unwrap();
+            assert_eq!(service.case(&first.case_id).unwrap(), Some(first.clone()));
 
-        // Simulate a crash after the immutable event rename but before the
-        // materialized case/receipt renames. Retry repairs both without a
-        // second public event.
-        std::fs::remove_file(
-            directory
-                .path()
-                .join("moderation-requests/request-one.json"),
-        )
-        .unwrap();
-        std::fs::remove_file(
-            directory
-                .path()
-                .join(format!("moderation-cases/{}.json", first.case_id)),
-        )
-        .unwrap();
-        service.apply(&request, 112, &allowlist).unwrap();
-        assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
-        let clicked_retry = report(&reporter, "new-id-same-evidence");
-        assert_eq!(
-            service.apply(&clicked_retry, 113, &allowlist).unwrap(),
-            first
-        );
-        assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
-    }
-
-    #[test]
-    fn request_id_reuse_and_expiry_are_rejected() {
-        let (_directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-        service
-            .apply(&report(&reporter, "same"), 110, &allowlist)
-            .unwrap();
-        let changed = sign_moderation_mutation(
-            "same".into(),
-            100,
-            200,
-            ModerationActorRole::Reporter,
-            ModerationMutation::FileReport {
-                package_id: "so.tilo.notes".into(),
-                category: "quality".into(),
-                summary: "A different signed report".into(),
-                evidence_digest_hex: "bb".repeat(32),
-            },
-            &reporter,
-        )
-        .unwrap();
-        assert!(matches!(
-            service.apply(&changed, 110, &allowlist),
-            Err(ModerationApiError::RequestIdReused)
-        ));
-        assert!(matches!(
-            service.apply(&report(&reporter, "expired"), 201, &allowlist),
-            Err(ModerationApiError::Expired)
-        ));
-    }
-
-    #[test]
-    fn only_package_publisher_can_reply_or_appeal() {
-        let (_directory, service, publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let case = service
-            .apply(&report(&reporter, "file"), 110, &allowlist)
-            .unwrap();
-        let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let make = |key: &SigningKey, id: &str| {
-            sign_moderation_mutation(
-                id.into(),
-                111,
-                200,
-                ModerationActorRole::Publisher,
-                ModerationMutation::PublisherAppeal {
-                    case_id: case.case_id.clone(),
-                    reason: "The report has omitted important context".into(),
-                    evidence_digest_hex: None,
-                },
-                key,
+            // Simulate a crash after the immutable event rename but before the
+            // materialized case/receipt renames. Retry repairs both without a
+            // second public event.
+            std::fs::remove_file(
+                directory
+                    .path()
+                    .join("moderation-requests/request-one.json"),
             )
-            .unwrap()
-        };
-        assert!(matches!(
-            service.apply(&make(&attacker, "bad"), 112, &allowlist),
-            Err(ModerationApiError::Forbidden)
-        ));
-        let appealed = service
-            .apply(&make(&publisher, "good"), 112, &allowlist)
             .unwrap();
-        assert_eq!(appealed.status, ModerationCaseStatus::Appealed);
+            std::fs::remove_file(
+                directory
+                    .path()
+                    .join(format!("moderation-cases/{}.json", first.case_id)),
+            )
+            .unwrap();
+            service.apply(&request, 112, &allowlist).unwrap();
+            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
+            let clicked_retry = report(&reporter, "new-id-same-evidence");
+            assert_eq!(
+                service.apply(&clicked_retry, 113, &allowlist).unwrap(),
+                first
+            );
+            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
+        }
+        // phase: request_id_reuse_and_expiry_are_rejected
+        {
+            let (_directory, service, _publisher, _reviewer, allowlist) = setup();
+            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+            service
+                .apply(&report(&reporter, "same"), 110, &allowlist)
+                .unwrap();
+            let changed = sign_moderation_mutation(
+                "same".into(),
+                100,
+                200,
+                ModerationActorRole::Reporter,
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "quality".into(),
+                    summary: "A different signed report".into(),
+                    evidence_digest_hex: "bb".repeat(32),
+                },
+                &reporter,
+            )
+            .unwrap();
+            assert!(matches!(
+                service.apply(&changed, 110, &allowlist),
+                Err(ModerationApiError::RequestIdReused)
+            ));
+            assert!(matches!(
+                service.apply(&report(&reporter, "expired"), 201, &allowlist),
+                Err(ModerationApiError::Expired)
+            ));
+        }
     }
 
     #[test]
-    fn only_registry_owner_can_make_reviewer_decision() {
-        let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let case = service
-            .apply(&report(&reporter, "file"), 110, &allowlist)
-            .unwrap();
-        let decision = |key: &SigningKey, id: &str| {
-            sign_moderation_mutation(
-                id.into(),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn moderation_decisions_are_role_authorised_and_recoverable() {
+        // phase: only_package_publisher_can_reply_or_appeal
+        {
+            let (_directory, service, publisher, _reviewer, allowlist) = setup();
+            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let case = service
+                .apply(&report(&reporter, "file"), 110, &allowlist)
+                .unwrap();
+            let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let make = |key: &SigningKey, id: &str| {
+                sign_moderation_mutation(
+                    id.into(),
+                    111,
+                    200,
+                    ModerationActorRole::Publisher,
+                    ModerationMutation::PublisherAppeal {
+                        case_id: case.case_id.clone(),
+                        reason: "The report has omitted important context".into(),
+                        evidence_digest_hex: None,
+                    },
+                    key,
+                )
+                .unwrap()
+            };
+            assert!(matches!(
+                service.apply(&make(&attacker, "bad"), 112, &allowlist),
+                Err(ModerationApiError::Forbidden)
+            ));
+            let appealed = service
+                .apply(&make(&publisher, "good"), 112, &allowlist)
+                .unwrap();
+            assert_eq!(appealed.status, ModerationCaseStatus::Appealed);
+        }
+        // phase: only_registry_owner_can_make_reviewer_decision
+        {
+            let (_directory, service, _publisher, reviewer, allowlist) = setup();
+            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let case = service
+                .apply(&report(&reporter, "file"), 110, &allowlist)
+                .unwrap();
+            let decision = |key: &SigningKey, id: &str| {
+                sign_moderation_mutation(
+                    id.into(),
+                    111,
+                    200,
+                    ModerationActorRole::Reviewer,
+                    ModerationMutation::ReviewerDecision {
+                        case_id: case.case_id.clone(),
+                        decision: ModerationDecision::NoAction,
+                        reason: "The signed evidence does not demonstrate a policy violation"
+                            .into(),
+                    },
+                    key,
+                )
+                .unwrap()
+            };
+            assert!(matches!(
+                service.apply(&decision(&reporter, "bad-decision"), 112, &allowlist),
+                Err(ModerationApiError::Forbidden)
+            ));
+            assert_eq!(
+                service
+                    .apply(&decision(&reviewer, "good-decision"), 112, &allowlist)
+                    .unwrap()
+                    .status,
+                ModerationCaseStatus::ClosedNoAction
+            );
+        }
+        // phase: restore_recovers_when_catalogue_effect_was_durable_before_public_event
+        {
+            let (_directory, service, _publisher, reviewer, allowlist) = setup();
+            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let case = service
+                .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
+                .unwrap();
+            let quarantine = sign_moderation_mutation(
+                "quarantine-first".into(),
                 111,
                 200,
                 ModerationActorRole::Reviewer,
                 ModerationMutation::ReviewerDecision {
                     case_id: case.case_id.clone(),
-                    decision: ModerationDecision::NoAction,
-                    reason: "The signed evidence does not demonstrate a policy violation".into(),
+                    decision: ModerationDecision::Quarantine,
+                    reason: "Hold while the signed evidence is investigated".into(),
                 },
-                key,
+                &reviewer,
             )
-            .unwrap()
-        };
-        assert!(matches!(
-            service.apply(&decision(&reporter, "bad-decision"), 112, &allowlist),
-            Err(ModerationApiError::Forbidden)
-        ));
-        assert_eq!(
+            .unwrap();
+            service.apply(&quarantine, 112, &allowlist).unwrap();
+
+            // The catalogue half of restore lands, then the process dies before
+            // the API can append its public event.
             service
-                .apply(&decision(&reviewer, "good-decision"), 112, &allowlist)
-                .unwrap()
-                .status,
-            ModerationCaseStatus::ClosedNoAction
-        );
-    }
-
-    #[test]
-    fn restore_recovers_when_catalogue_effect_was_durable_before_public_event() {
-        let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let case = service
-            .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
+                .moderation
+                .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
+                .unwrap();
+            let restore = sign_moderation_mutation(
+                "restore-after-crash".into(),
+                113,
+                200,
+                ModerationActorRole::Reviewer,
+                ModerationMutation::ReviewerDecision {
+                    case_id: case.case_id,
+                    decision: ModerationDecision::Restore,
+                    reason: "The publisher supplied a verified fixed package".into(),
+                },
+                &reviewer,
+            )
             .unwrap();
-        let quarantine = sign_moderation_mutation(
-            "quarantine-first".into(),
-            111,
-            200,
-            ModerationActorRole::Reviewer,
-            ModerationMutation::ReviewerDecision {
-                case_id: case.case_id.clone(),
-                decision: ModerationDecision::Quarantine,
-                reason: "Hold while the signed evidence is investigated".into(),
-            },
-            &reviewer,
-        )
-        .unwrap();
-        service.apply(&quarantine, 112, &allowlist).unwrap();
-
-        // The catalogue half of restore lands, then the process dies before
-        // the API can append its public event.
-        service
-            .moderation
-            .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
-            .unwrap();
-        let restore = sign_moderation_mutation(
-            "restore-after-crash".into(),
-            113,
-            200,
-            ModerationActorRole::Reviewer,
-            ModerationMutation::ReviewerDecision {
-                case_id: case.case_id,
-                decision: ModerationDecision::Restore,
-                reason: "The publisher supplied a verified fixed package".into(),
-            },
-            &reviewer,
-        )
-        .unwrap();
-        assert_eq!(
-            service.apply(&restore, 114, &allowlist).unwrap().status,
-            ModerationCaseStatus::Restored
-        );
-        assert_eq!(service.transparency(1, 10).unwrap().events.len(), 3);
+            assert_eq!(
+                service.apply(&restore, 114, &allowlist).unwrap().status,
+                ModerationCaseStatus::Restored
+            );
+            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 3);
+        }
     }
 }

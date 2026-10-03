@@ -17,7 +17,8 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+private-fs = { path = "../../crates/system/private-fs" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: the saved-connection store is the app's shared-document
@@ -30,7 +31,7 @@ tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Durable, same-directory replacement for the device-private SSH trust store.
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }
@@ -51,12 +52,14 @@ russh = { version = "0.63.3", default-features = false, features = ["ring", "fla
 tokio.workspace = true
 vte = "0.15.0"
 des = "0.9"
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Serialises tests that exercise the process-wide clipboard, so they never
 # race each other under cargo's default parallel runner.
 serial_test.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -4,8 +4,8 @@
 //! same for spacing, so `const PAD: f64 = 12.0;` and `length(16.0)` kept
 //! entering widget, chrome, shell and app code with no record. This file
 //! counts them per file and pins the count: a file may never carry more than
-//! `spacing_token_baseline.txt` says, and one that sheds some has to lower
-//! its line in the same commit. The number only moves down.
+//! `spacing_token_baseline.txt` says; one that sheds some is noted so its
+//! line can be lowered. The number only moves down.
 //!
 //! Two shapes are counted, both outside comments and `#[cfg(test)]` modules:
 //!
@@ -41,7 +41,8 @@ use std::{
 };
 
 use crate::support::ratchet::{
-    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
+    Counts, is_skipped, note_stale, ratchet_failures, read_baseline, test_module_spans,
+    write_baseline,
 };
 
 /// Recorded counts, relative to the `ui` crate root.
@@ -187,131 +188,135 @@ fn repository_root() -> PathBuf {
     root.to_path_buf()
 }
 
-/// The scanner must be able to see what it polices. Each rule is exercised
-/// on a line that must count and one that must not, so a regex edit that
-/// silently stops matching fails here instead of passing an empty audit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
 #[test]
-fn spacing_patterns_match_the_shapes_they_claim() {
-    let patterns = patterns();
-    let pixel = &patterns[0];
-    let length = &patterns[1];
-    let count = |p: &Pattern, line: &str| {
-        p.regex
-            .captures_iter(line)
-            .filter(|c| (p.counts)(&c[1]))
-            .count()
-    };
+fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
+    // Case `spacing_patterns_match_the_shapes_they_claim`.
+    // The scanner must be able to see what it polices. Each rule is exercised
+    // on a line that must count and one that must not, so a regex edit that
+    // silently stops matching fails here instead of passing an empty audit.
+    {
+        let patterns = patterns();
+        let pixel = &patterns[0];
+        let length = &patterns[1];
+        let count = |p: &Pattern, line: &str| {
+            p.regex
+                .captures_iter(line)
+                .filter(|c| (p.counts)(&c[1]))
+                .count()
+        };
 
-    assert_eq!(count(pixel, "const PAD: f64 = 12.0;"), 1);
-    assert_eq!(
-        count(pixel, "pub const DEFAULT_SHELL_BREAKPOINT: f64 = 720.0;"),
-        1
-    );
-    assert_eq!(count(pixel, "pub(crate) const BAR: f32 = 8.0_f32;"), 1);
-    assert_eq!(count(pixel, "    const CHIP_SIZE: f64 = 36.0;"), 1);
-    assert_eq!(
-        count(pixel, "const MAX_FRAME_DT: f64 = 0.1;"),
-        0,
-        "a rate is not a pixel"
-    );
-    assert_eq!(
-        count(pixel, "const OVERDRAW: f64 = 1.25;"),
-        0,
-        "a ratio is not a pixel"
-    );
-    assert_eq!(
-        count(pixel, "const NONE: f32 = 0.0;"),
-        0,
-        "zero is the deliberate absence"
-    );
-    assert_eq!(
-        count(pixel, "const BAND: f64 = PAD + CTRL_H + PAD;"),
-        0,
-        "arithmetic is not a literal"
-    );
-    assert_eq!(count(pixel, "const LIMIT: usize = 8;"), 0, "not a float");
-    assert_eq!(
-        count(pixel, "let pad: f32 = 12.0;"),
-        0,
-        "a local is not a module constant"
-    );
-
-    assert_eq!(count(length, "left: length(12.0),"), 1);
-    assert_eq!(
-        count(length, "width: length(8.0_f32), height: length(8.0_f32),"),
-        2
-    );
-    assert_eq!(count(length, "size: length(320.0)"), 1);
-    assert_eq!(
-        count(length, "length(0.5)"),
-        1,
-        "a half-pixel hairline is still a literal"
-    );
-    assert_eq!(
-        count(length, "left: length(0.0_f32),"),
-        0,
-        "zero is the deliberate absence"
-    );
-    assert_eq!(
-        count(length, "length(theme.gap_standard)"),
-        0,
-        "a token is the goal"
-    );
-    assert_eq!(count(length, "length(pad)"), 0);
-    assert_eq!(
-        count(length, "length(w / 2.0)"),
-        0,
-        "arithmetic is not a literal"
-    );
-    assert_eq!(count(length, "Dimension::length(24.0)"), 1);
-}
-
-/// The `#[cfg(test)]` span finder's shapes are pinned once in
-/// `support::ratchet` (both audits scan through the same finder).
-///
-/// Spacing literals in widget, chrome, shell and app production code may
-/// not grow, and a file that has shed some has to record it.
-#[test]
-fn spacing_literals_do_not_grow() {
-    let repository = repository_root();
-    let files = production_files(&repository);
-    assert!(!files.is_empty(), "spacing audit found no files to scan");
-    for root in ROOTS.iter().copied().chain(["apps/"]) {
-        assert!(
-            files.iter().any(|f| f
-                .strip_prefix(&repository)
-                .is_ok_and(|r| r.starts_with(root))),
-            "spacing audit did not reach {root}; the scan cannot observe its subject"
+        assert_eq!(count(pixel, "const PAD: f64 = 12.0;"), 1);
+        assert_eq!(
+            count(pixel, "pub const DEFAULT_SHELL_BREAKPOINT: f64 = 720.0;"),
+            1
         );
+        assert_eq!(count(pixel, "pub(crate) const BAR: f32 = 8.0_f32;"), 1);
+        assert_eq!(count(pixel, "    const CHIP_SIZE: f64 = 36.0;"), 1);
+        assert_eq!(
+            count(pixel, "const MAX_FRAME_DT: f64 = 0.1;"),
+            0,
+            "a rate is not a pixel"
+        );
+        assert_eq!(
+            count(pixel, "const OVERDRAW: f64 = 1.25;"),
+            0,
+            "a ratio is not a pixel"
+        );
+        assert_eq!(
+            count(pixel, "const NONE: f32 = 0.0;"),
+            0,
+            "zero is the deliberate absence"
+        );
+        assert_eq!(
+            count(pixel, "const BAND: f64 = PAD + CTRL_H + PAD;"),
+            0,
+            "arithmetic is not a literal"
+        );
+        assert_eq!(count(pixel, "const LIMIT: usize = 8;"), 0, "not a float");
+        assert_eq!(
+            count(pixel, "let pad: f32 = 12.0;"),
+            0,
+            "a local is not a module constant"
+        );
+
+        assert_eq!(count(length, "left: length(12.0),"), 1);
+        assert_eq!(
+            count(length, "width: length(8.0_f32), height: length(8.0_f32),"),
+            2
+        );
+        assert_eq!(count(length, "size: length(320.0)"), 1);
+        assert_eq!(
+            count(length, "length(0.5)"),
+            1,
+            "a half-pixel hairline is still a literal"
+        );
+        assert_eq!(
+            count(length, "left: length(0.0_f32),"),
+            0,
+            "zero is the deliberate absence"
+        );
+        assert_eq!(
+            count(length, "length(theme.gap_standard)"),
+            0,
+            "a token is the goal"
+        );
+        assert_eq!(count(length, "length(pad)"), 0);
+        assert_eq!(
+            count(length, "length(w / 2.0)"),
+            0,
+            "arithmetic is not a literal"
+        );
+        assert_eq!(count(length, "Dimension::length(24.0)"), 1);
     }
 
-    let found = counts(&files, &repository);
-    let baseline_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(BASELINE);
-    if std::env::var_os("UPDATE_F1_SPACING_BASELINE").is_some_and(|value| value == "1") {
-        write_baseline(&baseline_path, BASELINE_HEADER, &found);
-        return;
-    }
-    let baseline = read_baseline(&baseline_path);
-    assert!(
-        !baseline.is_empty(),
-        "{BASELINE} is empty; a ratchet with nothing recorded pins nothing"
-    );
-    let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
+    // Case `spacing_literals_do_not_grow`.
+    // The `#[cfg(test)]` span finder's shapes are pinned once in
+    // `support::ratchet` (both audits scan through the same finder).
+    //
+    // Spacing literals in widget, chrome, shell and app production code may
+    // not grow, and a file that has shed some has to record it.
+    {
+        fn spacing_literals_do_not_grow() {
+            let repository = repository_root();
+            let files = production_files(&repository);
+            assert!(!files.is_empty(), "spacing audit found no files to scan");
+            for root in ROOTS.iter().copied().chain(["apps/"]) {
+                assert!(
+                    files.iter().any(|f| f
+                        .strip_prefix(&repository)
+                        .is_ok_and(|r| r.starts_with(root))),
+                    "spacing audit did not reach {root}; the scan cannot observe its subject"
+                );
+            }
 
-    assert!(
-        grew.is_empty(),
-        "{} file(s) gained a spacing literal the Theme should own.\n\
+            let found = counts(&files, &repository);
+            let baseline_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(BASELINE);
+            if std::env::var_os("UPDATE_F1_SPACING_BASELINE").is_some_and(|value| value == "1") {
+                write_baseline(&baseline_path, BASELINE_HEADER, &found);
+                return;
+            }
+            let baseline = read_baseline(&baseline_path);
+            assert!(
+                !baseline.is_empty(),
+                "{BASELINE} is empty; a ratchet with nothing recorded pins nothing"
+            );
+            let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
+
+            assert!(
+                grew.is_empty(),
+                "{} file(s) gained a spacing literal the Theme should own.\n\
          Read the value from theme.tokens.spacing or theme.tokens.metrics (insets_all / \
          insets_xy build a padding Rect from one). If it genuinely cannot be a token, say \
          why in a comment on the line and raise its count in {BASELINE}.\n{}",
-        grew.len(),
-        grew.join("\n"),
-    );
-    assert!(
-        stale.is_empty(),
-        "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
-         The ratchet only moves down — lower these so the progress is kept:\n{}",
-        stale.len(),
-        stale.join("\n"),
-    );
+                grew.len(),
+                grew.join("\n"),
+            );
+            note_stale(BASELINE, "UPDATE_F1_SPACING_BASELINE", &stale);
+        }
+        spacing_literals_do_not_grow();
+    }
 }

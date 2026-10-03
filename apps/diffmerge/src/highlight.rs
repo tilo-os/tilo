@@ -10,11 +10,10 @@
 
 use std::path::Path;
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::TextStyle;
 use ui::widget::code_editor::{Span, SyntaxHighlighter};
-use vello::Scene;
-use vello::kurbo::Affine;
+use vello::kurbo::Point;
 
 /// The grammar for a panel label such as `"rate_limiter.rs · HEAD"` or a
 /// path: its file extension, else its whole file name (`Dockerfile`), else
@@ -45,38 +44,24 @@ pub fn document<'a>(
         .collect()
 }
 
-/// Paint `text` at `(x, y)` (the glyph top) as runs coloured by `spans`. A
+/// Paint `text` at `origin` (the glyph top) as runs coloured by `spans`. A
 /// line with no spans (its side was never tokenized) paints as body text.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one line's paint context: scene, transform, renderer, theme, origin, text, spans and size"
-)]
 pub fn draw_line(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x: f64,
-    y: f64,
+    ctx: &mut PaintCtx<'_>,
+    origin: Point,
     text: &str,
     spans: &[Span],
     font_size: f32,
 ) {
-    let syntax = &theme.tokens.syntax;
+    let syntax = &ctx.theme.tokens.syntax;
+    let style = TextStyle::new(font_size);
     if spans.is_empty() {
         if !text.is_empty() {
-            tr.draw_text(
-                scene,
-                text,
-                font_size,
-                syntax.text,
-                transform * Affine::translate((x, y)),
-                None,
-            );
+            ctx.text(text, &style, syntax.text, origin, None);
         }
         return;
     }
-    let mut x = x;
+    let mut at = origin;
     for span in spans {
         let Some(run) = text.get(span.range.clone()) else {
             continue;
@@ -84,16 +69,9 @@ pub fn draw_line(
         if run.is_empty() {
             continue;
         }
-        tr.draw_text(
-            scene,
-            run,
-            font_size,
-            syntax.color(span.kind),
-            transform * Affine::translate((x, y)),
-            None,
-        );
-        let (w, _) = tr.measure(run, font_size, None);
-        x += f64::from(w);
+        ctx.text(run, &style, syntax.color(span.kind), at, None);
+        let (w, _) = ctx.text.measure(run, font_size, None);
+        at.x += f64::from(w);
     }
 }
 
@@ -111,7 +89,16 @@ mod tests {
             .collect()
     }
 
+    /// Syntax highlighting: the grammar follows the file a label names, token kinds
+    /// cover a line, and a side is highlighted as one document. Each phase is a
+    /// former test with its own inputs.
     #[test]
+    fn highlighting_picks_grammar_by_label_and_spans_whole_documents() {
+        the_grammar_follows_the_file_a_label_names();
+        keywords_strings_and_comments_take_their_kinds();
+        a_side_is_one_document_so_block_comments_span_rows();
+    }
+
     fn the_grammar_follows_the_file_a_label_names() {
         assert_eq!(grammar_for_label("rate_limiter.rs · HEAD").name(), "Rust");
         assert_eq!(grammar_for_label("config.toml · ours").name(), "TOML");
@@ -123,7 +110,6 @@ mod tests {
         assert_eq!(grammar_for_label("").name(), "Plain Text");
     }
 
-    #[test]
     fn keywords_strings_and_comments_take_their_kinds() {
         let grammar = grammar_for_label("a.rs");
         let line = "pub fn f() { let s = \"hi\"; } // done";
@@ -135,7 +121,6 @@ mod tests {
         assert_eq!(covered, line.len(), "spans cover the whole line");
     }
 
-    #[test]
     fn a_side_is_one_document_so_block_comments_span_rows() {
         let grammar = grammar_for_label("a.rs");
         let lines = ["/* opened", "still inside", "*/ let x = 1;"];

@@ -662,139 +662,259 @@ fn join(lines: &[String]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn identical_inputs_have_no_blocks() {
-        let m = DiffModel::compute("a\nb\nc\n", "a\nb\nc\n");
-        assert!(m.is_identical());
-        assert_eq!(m.added, 0);
-        assert_eq!(m.removed, 0);
-        assert_eq!(m.modified, 0);
-        assert!(m.rows.iter().all(|r| r.kind == RowKind::Equal));
+    /// One two-way diff input pair and every property the case pins down.
+    struct DiffCase {
+        name: &'static str,
+        left: &'static str,
+        right: &'static str,
+        identical: bool,
+        added: Option<usize>,
+        removed: Option<usize>,
+        modified: Option<usize>,
+        /// A row of this kind exists and carries exactly these sides.
+        row: Option<(RowKind, Option<&'static str>, Option<&'static str>)>,
+        /// The exact change blocks, in order.
+        blocks: Option<Vec<BlockKind>>,
     }
 
+    /// Two-way diff classification: identical inputs have no blocks, pure
+    /// insertions/deletions have one empty side, a modification pairs old and
+    /// new, and contiguous changes group into one block.
     #[test]
-    fn pure_insertion_detected() {
-        let m = DiffModel::compute("a\nc\n", "a\nb\nc\n");
-        assert_eq!(m.added, 1);
-        assert_eq!(m.removed, 0);
-        // The inserted row has no left, a right.
-        let ins = m.rows.iter().find(|r| r.kind == RowKind::Insert).unwrap();
-        assert_eq!(ins.right.as_deref(), Some("b"));
-        assert!(ins.left.is_none());
+    fn diff_classifies_rows_counts_and_blocks() {
+        let cases = [
+            DiffCase {
+                name: "identical inputs have no blocks",
+                left: "a\nb\nc\n",
+                right: "a\nb\nc\n",
+                identical: true,
+                added: Some(0),
+                removed: Some(0),
+                modified: Some(0),
+                row: None,
+                blocks: None,
+            },
+            DiffCase {
+                // The inserted row has no left, a right.
+                name: "pure insertion",
+                left: "a\nc\n",
+                right: "a\nb\nc\n",
+                identical: false,
+                added: Some(1),
+                removed: Some(0),
+                modified: None,
+                row: Some((RowKind::Insert, None, Some("b"))),
+                blocks: None,
+            },
+            DiffCase {
+                name: "pure deletion",
+                left: "a\nb\nc\n",
+                right: "a\nc\n",
+                identical: false,
+                added: Some(0),
+                removed: Some(1),
+                modified: None,
+                row: Some((RowKind::Delete, Some("b"), None)),
+                blocks: None,
+            },
+            DiffCase {
+                name: "modification pairs old and new",
+                left: "hello\nworld\n",
+                right: "hello\nthere\n",
+                identical: false,
+                added: None,
+                removed: None,
+                modified: Some(1),
+                row: Some((RowKind::Modify, Some("world"), Some("there"))),
+                blocks: None,
+            },
+            DiffCase {
+                // b,c modified to X,Y form one block.
+                name: "blocks group contiguous changes",
+                left: "a\nb\nc\nd\n",
+                right: "a\nX\nY\nd\n",
+                identical: false,
+                added: None,
+                removed: None,
+                modified: None,
+                row: None,
+                blocks: Some(vec![BlockKind::Modified]),
+            },
+        ];
+        for case in cases {
+            let name = case.name;
+            let m = DiffModel::compute(case.left, case.right);
+            assert_eq!(m.is_identical(), case.identical, "case {name}: identical");
+            if case.identical {
+                assert!(
+                    m.rows.iter().all(|r| r.kind == RowKind::Equal),
+                    "case {name}: every row is Equal"
+                );
+            }
+            if let Some(added) = case.added {
+                assert_eq!(m.added, added, "case {name}: added");
+            }
+            if let Some(removed) = case.removed {
+                assert_eq!(m.removed, removed, "case {name}: removed");
+            }
+            if let Some(modified) = case.modified {
+                assert_eq!(m.modified, modified, "case {name}: modified");
+            }
+            if let Some((kind, left, right)) = case.row {
+                let row = m
+                    .rows
+                    .iter()
+                    .find(|r| r.kind == kind)
+                    .unwrap_or_else(|| panic!("case {name}: a {kind:?} row"));
+                assert_eq!(row.left.as_deref(), left, "case {name}: row left");
+                assert_eq!(row.right.as_deref(), right, "case {name}: row right");
+            }
+            if let Some(blocks) = case.blocks {
+                assert_eq!(
+                    m.blocks.iter().map(|b| b.kind).collect::<Vec<_>>(),
+                    blocks,
+                    "case {name}: blocks"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn pure_deletion_detected() {
-        let m = DiffModel::compute("a\nb\nc\n", "a\nc\n");
-        assert_eq!(m.removed, 1);
-        assert_eq!(m.added, 0);
-        let del = m.rows.iter().find(|r| r.kind == RowKind::Delete).unwrap();
-        assert_eq!(del.left.as_deref(), Some("b"));
-        assert!(del.right.is_none());
+    /// A resolution applied to the (single) conflict hunk of a case, with what
+    /// the merge then reports.
+    struct Take {
+        resolution: Resolution,
+        fully_resolved: Option<bool>,
+        merged: Vec<&'static str>,
     }
 
-    #[test]
-    fn modification_pairs_old_and_new() {
-        let m = DiffModel::compute("hello\nworld\n", "hello\nthere\n");
-        let modi = m.rows.iter().find(|r| r.kind == RowKind::Modify).unwrap();
-        assert_eq!(modi.left.as_deref(), Some("world"));
-        assert_eq!(modi.right.as_deref(), Some("there"));
-        assert_eq!(m.modified, 1);
+    struct MergeCase {
+        name: &'static str,
+        base: &'static str,
+        ours: &'static str,
+        theirs: &'static str,
+        conflicts: usize,
+        fully_resolved: Option<bool>,
+        merged: Option<Vec<&'static str>>,
+        /// The conflict hunk carries both candidate sides.
+        conflict_sides: Option<(Vec<&'static str>, Vec<&'static str>)>,
+        /// Each applied to a freshly computed model.
+        takes: Vec<Take>,
     }
 
+    /// Three-way merge: one-sided changes auto-resolve to the changed side,
+    /// identical edits are not conflicts, divergent edits (including trailing
+    /// inserts) conflict, and taking theirs / both rewrites the output.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "case table: every row is one original merge case, kept verbatim"
+    )]
     #[test]
-    fn blocks_group_contiguous_changes() {
-        let m = DiffModel::compute("a\nb\nc\nd\n", "a\nX\nY\nd\n");
-        // b,c modified to X,Y form one block.
-        assert_eq!(m.blocks.len(), 1);
-        let block = m.blocks[0];
-        assert_eq!(block.kind, BlockKind::Modified);
-    }
-
-    #[test]
-    fn merge_auto_resolves_one_sided_change() {
-        // Only ours changes line 2; theirs unchanged → auto Ours, no conflict.
-        let base = "a\nb\nc\n";
-        let ours = "a\nB\nc\n";
-        let theirs = "a\nb\nc\n";
-        let m = MergeModel::compute(base, ours, theirs);
-        assert_eq!(m.conflict_count(), 0);
-        assert!(m.fully_resolved());
-        assert_eq!(m.merged_lines(), vec!["a", "B", "c"]);
-    }
-
-    #[test]
-    fn merge_auto_resolves_theirs_change() {
-        let base = "a\nb\nc\n";
-        let ours = "a\nb\nc\n";
-        let theirs = "a\nb\nC\n";
-        let m = MergeModel::compute(base, ours, theirs);
-        assert_eq!(m.conflict_count(), 0);
-        assert_eq!(m.merged_lines(), vec!["a", "b", "C"]);
-    }
-
-    #[test]
-    fn merge_detects_real_conflict() {
-        let base = "a\nb\nc\n";
-        let ours = "a\nOURS\nc\n";
-        let theirs = "a\nTHEIRS\nc\n";
-        let m = MergeModel::compute(base, ours, theirs);
-        assert_eq!(m.conflict_count(), 1);
-        assert!(!m.fully_resolved());
-        // The conflict hunk carries both candidate sides.
-        let conflict = m.hunks.iter().find(|h| h.resolution.is_conflict()).unwrap();
-        assert_eq!(conflict.ours, vec!["OURS"]);
-        assert_eq!(conflict.theirs, vec!["THEIRS"]);
-    }
-
-    #[test]
-    fn conflict_take_theirs_changes_output() {
-        let base = "a\nb\nc\n";
-        let ours = "a\nOURS\nc\n";
-        let theirs = "a\nTHEIRS\nc\n";
-        let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m
-            .hunks
-            .iter()
-            .position(|h| h.resolution.is_conflict())
-            .unwrap();
-        m.hunks[idx].resolution = Resolution::TookTheirs;
-        assert!(m.fully_resolved());
-        assert_eq!(m.merged_lines(), vec!["a", "THEIRS", "c"]);
-    }
-
-    #[test]
-    fn conflict_take_both_concatenates() {
-        let base = "a\nb\nc\n";
-        let ours = "a\nOURS\nc\n";
-        let theirs = "a\nTHEIRS\nc\n";
-        let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m
-            .hunks
-            .iter()
-            .position(|h| h.resolution.is_conflict())
-            .unwrap();
-        m.hunks[idx].resolution = Resolution::TookBoth;
-        assert_eq!(m.merged_lines(), vec!["a", "OURS", "THEIRS", "c"]);
-    }
-
-    #[test]
-    fn merge_identical_sides_no_conflict() {
-        // Both sides made the SAME edit — not a conflict.
-        let base = "a\nb\nc\n";
-        let ours = "a\nSAME\nc\n";
-        let theirs = "a\nSAME\nc\n";
-        let m = MergeModel::compute(base, ours, theirs);
-        assert_eq!(m.conflict_count(), 0);
-        assert_eq!(m.merged_lines(), vec!["a", "SAME", "c"]);
-    }
-
-    #[test]
-    fn merge_trailing_insert_both_sides_conflict() {
-        let base = "a\nb\n";
-        let ours = "a\nb\nOURS_TAIL\n";
-        let theirs = "a\nb\nTHEIRS_TAIL\n";
-        let m = MergeModel::compute(base, ours, theirs);
-        assert_eq!(m.conflict_count(), 1);
+    fn merge_auto_resolves_or_conflicts_and_resolutions_rewrite_output() {
+        let cases = [
+            MergeCase {
+                // Only ours changes line 2; theirs unchanged → auto Ours, no conflict.
+                name: "auto resolves one-sided ours change",
+                base: "a\nb\nc\n",
+                ours: "a\nB\nc\n",
+                theirs: "a\nb\nc\n",
+                conflicts: 0,
+                fully_resolved: Some(true),
+                merged: Some(vec!["a", "B", "c"]),
+                conflict_sides: None,
+                takes: vec![],
+            },
+            MergeCase {
+                name: "auto resolves theirs change",
+                base: "a\nb\nc\n",
+                ours: "a\nb\nc\n",
+                theirs: "a\nb\nC\n",
+                conflicts: 0,
+                fully_resolved: None,
+                merged: Some(vec!["a", "b", "C"]),
+                conflict_sides: None,
+                takes: vec![],
+            },
+            MergeCase {
+                name: "real conflict",
+                base: "a\nb\nc\n",
+                ours: "a\nOURS\nc\n",
+                theirs: "a\nTHEIRS\nc\n",
+                conflicts: 1,
+                fully_resolved: Some(false),
+                merged: None,
+                conflict_sides: Some((vec!["OURS"], vec!["THEIRS"])),
+                takes: vec![
+                    // Taking theirs changes the output.
+                    Take {
+                        resolution: Resolution::TookTheirs,
+                        fully_resolved: Some(true),
+                        merged: vec!["a", "THEIRS", "c"],
+                    },
+                    // Taking both concatenates ours then theirs.
+                    Take {
+                        resolution: Resolution::TookBoth,
+                        fully_resolved: None,
+                        merged: vec!["a", "OURS", "THEIRS", "c"],
+                    },
+                ],
+            },
+            MergeCase {
+                // Both sides made the SAME edit — not a conflict.
+                name: "identical sides are no conflict",
+                base: "a\nb\nc\n",
+                ours: "a\nSAME\nc\n",
+                theirs: "a\nSAME\nc\n",
+                conflicts: 0,
+                fully_resolved: None,
+                merged: Some(vec!["a", "SAME", "c"]),
+                conflict_sides: None,
+                takes: vec![],
+            },
+            MergeCase {
+                name: "trailing insert on both sides conflicts",
+                base: "a\nb\n",
+                ours: "a\nb\nOURS_TAIL\n",
+                theirs: "a\nb\nTHEIRS_TAIL\n",
+                conflicts: 1,
+                fully_resolved: None,
+                merged: None,
+                conflict_sides: None,
+                takes: vec![],
+            },
+        ];
+        for case in cases {
+            let name = case.name;
+            let m = MergeModel::compute(case.base, case.ours, case.theirs);
+            assert_eq!(m.conflict_count(), case.conflicts, "case {name}: conflicts");
+            if let Some(fully) = case.fully_resolved {
+                assert_eq!(m.fully_resolved(), fully, "case {name}: fully resolved");
+            }
+            if let Some(merged) = &case.merged {
+                assert_eq!(&m.merged_lines(), merged, "case {name}: merged lines");
+            }
+            if let Some((ours, theirs)) = &case.conflict_sides {
+                let conflict = m
+                    .hunks
+                    .iter()
+                    .find(|h| h.resolution.is_conflict())
+                    .unwrap_or_else(|| panic!("case {name}: a conflict hunk"));
+                assert_eq!(&conflict.ours, ours, "case {name}: conflict ours");
+                assert_eq!(&conflict.theirs, theirs, "case {name}: conflict theirs");
+            }
+            for take in case.takes {
+                let label = format!("case {name}, {:?}", take.resolution);
+                let mut m = MergeModel::compute(case.base, case.ours, case.theirs);
+                let idx = m
+                    .hunks
+                    .iter()
+                    .position(|h| h.resolution.is_conflict())
+                    .unwrap_or_else(|| panic!("{label}: a conflict hunk"));
+                m.hunks[idx].resolution = take.resolution;
+                if let Some(fully) = take.fully_resolved {
+                    assert_eq!(m.fully_resolved(), fully, "{label}: fully resolved");
+                }
+                assert_eq!(m.merged_lines(), take.merged, "{label}: merged lines");
+            }
+        }
     }
 }

@@ -23,17 +23,18 @@
 //! next cell, a paste spreads across the cells, Backspace in an empty cell
 //! steps back and clears the one before it.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
-use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
+use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -261,50 +262,21 @@ impl PairDeviceScreen {
 
     /// Hand `event` to every field; each answers for its own node and only
     /// a focused (or hovered) one acts on it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget::handle_event parameter list to the embedded fields"
-    )]
-    fn forward_all(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_all(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         for i in 0..CODE_LEN {
-            let node = self.cell_nodes.get(i).copied().flatten().unwrap_or(node_id);
+            let node = self
+                .cell_nodes
+                .get(i)
+                .copied()
+                .flatten()
+                .unwrap_or(ctx.node_id);
             if let Some(cell) = self.cells.get_mut(i) {
-                cell.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node,
-                    taffy,
-                );
+                cell.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
         }
-        let node = self.payload_node.unwrap_or(node_id);
-        self.payload.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
+        let node = self.payload_node.unwrap_or(ctx.node_id);
+        self.payload
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
     }
 
     /// After any input. Digits that landed in a cell — one typed, or
@@ -424,77 +396,111 @@ impl PairDeviceScreen {
     ///
     /// Blocks for up to the poll window: call it from a worker, never from a
     /// frame.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
-    )]
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
         hs: &PairingHandshake,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
-        let nonce = payload.nonce()?;
-        let host_round1 = payload.initiator_round1()?;
-        // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
-        let mut rng = UnwrapErr(SysRng);
-        let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
-        // Process the host's round-1 → produce our round-2 reply.
-        let outgoing = my_session.receive_round1(std::slice::from_ref(&host_round1))?;
-        let reply = outgoing
-            .into_iter()
-            .find(|(idx, _)| *idx == 1)
-            .map(|(_, r)| r)
-            .ok_or_else(|| {
-                IdentityFlowError::DecodeFailed("DKG produced no round-2 reply to share 1".into())
-            })?;
-        let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
-        // Publication is one acknowledged, idempotent exchange. A transient
-        // TLS timeout must not strand round 1 or round 2 while both screens
-        // continue to say they are waiting for the other device.
-        let publish_deadline = crate::time::now()
-            .checked_add(crate::time::Duration::from_secs(15))
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
-        loop {
-            if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
-                break;
-            }
-            if crate::time::now() >= publish_deadline {
-                return Err(IdentityFlowError::DecodeFailed(
-                    "pairing broker did not acknowledge the DKG exchange".into(),
-                ));
-            }
-            std::thread::sleep(crate::time::Duration::from_millis(20));
+        self.perform_pairing_on_platform(payload, hs, cfg!(not(target_arch = "wasm32")))
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
+    )]
+    fn perform_pairing_on_platform(
+        &mut self,
+        payload: &PairingPayload,
+        hs: &PairingHandshake,
+        native: bool,
+    ) -> Result<ThresholdIdentity, IdentityFlowError> {
+        if !native || cfg!(target_arch = "wasm32") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into());
         }
-        // The pairer also needs the host's round-1 contribution, sent as the
-        // host's own round-2 message; bounded-poll the broker mailbox for it.
-        let mut host_reply: Option<EnrolmentRound2> = None;
-        let deadline = crate::time::now()
-            .checked_add(crate::time::Duration::from_secs(15))
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
-        loop {
-            if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
-                let expected =
-                    super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
-                if expected != host_mac {
-                    return Err(IdentityFlowError::PairingMacInvalid);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (payload, hs);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let nonce = payload.nonce()?;
+            let host_round1 = payload.initiator_round1()?;
+            // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
+            let mut rng = UnwrapErr(SysRng);
+            let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+            let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
+            // Process the host's round-1 → produce our round-2 reply.
+            let outgoing = my_session.receive_round1(std::slice::from_ref(&host_round1))?;
+            let reply = outgoing
+                .into_iter()
+                .find(|(idx, _)| *idx == 1)
+                .map(|(_, r)| r)
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed(
+                        "DKG produced no round-2 reply to share 1".into(),
+                    )
+                })?;
+            let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
+            // Publication is one acknowledged, idempotent exchange. A transient
+            // TLS timeout must not strand round 1 or round 2 while both screens
+            // continue to say they are waiting for the other device.
+            let publish_deadline = crate::time::now()
+                .checked_add(crate::time::Duration::from_secs(15))
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("pairing deadline overflow".into())
+                })?;
+            loop {
+                if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
+                    break;
                 }
-                host_reply = Some(r);
-                break;
+                if crate::time::now() >= publish_deadline {
+                    return Err(IdentityFlowError::DecodeFailed(
+                        "pairing broker did not acknowledge the DKG exchange".into(),
+                    ));
+                }
+                std::thread::sleep(crate::time::Duration::from_millis(20));
             }
-            if crate::time::now() >= deadline {
-                break;
+            // The pairer also needs the host's round-1 contribution, sent as the
+            // host's own round-2 message; bounded-poll the broker mailbox for it.
+            let mut host_reply: Option<threshold_identity::EnrolmentRound2> = None;
+            let deadline = crate::time::now()
+                .checked_add(crate::time::Duration::from_secs(15))
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("pairing deadline overflow".into())
+                })?;
+            loop {
+                if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
+                    let expected =
+                        super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
+                    if expected != host_mac {
+                        return Err(IdentityFlowError::PairingMacInvalid);
+                    }
+                    host_reply = Some(r);
+                    break;
+                }
+                if crate::time::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(crate::time::Duration::from_millis(20));
             }
-            std::thread::sleep(crate::time::Duration::from_millis(20));
+            let host_reply = host_reply.ok_or_else(|| {
+                IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
+            })?;
+            my_session.receive_round2(&[host_reply])?;
+            my_identity.adopt_dkg_outcome(my_session)?;
+            self.completed = true;
+            self.status = "Paired.".to_string();
+            Ok(my_identity)
         }
-        let host_reply = host_reply.ok_or_else(|| {
-            IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
-        })?;
-        my_session.receive_round2(&[host_reply])?;
-        my_identity.adopt_dkg_outcome(my_session)?;
-        self.completed = true;
-        self.status = "Paired.".to_string();
-        Ok(my_identity)
     }
 
     /// Connect to the exact pinned broker carried by `payload` and run the
@@ -508,8 +514,20 @@ impl PairDeviceScreen {
         &mut self,
         payload: &PairingPayload,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
-        let broker = payload.remote_broker()?;
-        self.perform_pairing(payload, &broker)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = payload;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let broker = payload.remote_broker()?;
+            self.perform_pairing(payload, &broker)
+        }
     }
 
     /// Companion to `perform_pairing` that *exposes* the round-1 the
@@ -529,42 +547,21 @@ impl PairDeviceScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pairing screen routing forwards the Widget event, CRDT state, focus outputs and layout to its input fields"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let h = self.submit_rect.contains(p);
                 if h != self.submit_hovered {
                     self.submit_hovered = h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.forward_all(event, ctx);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
@@ -572,18 +569,8 @@ impl PairDeviceScreen {
                 button: MouseButton::Left,
                 ..
             } => {
-                let outcome = self.handle_mouse_press(handled, focus_target);
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                let outcome = self.handle_mouse_press(ctx.handled, ctx.focus_target);
+                self.forward_all(event, ctx);
                 outcome
             }
             WindowEvent::KeyboardInput {
@@ -596,47 +583,27 @@ impl PairDeviceScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height)
-                    || self.backspace_steps_back(logical_key, focus_target)
+                    || self.backspace_steps_back(logical_key, ctx.focus_target)
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
-                    self.forward_all(
-                        event,
-                        scale_factor,
-                        *modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
+                    self.forward_all(event, ctx);
                 }
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
             // Key releases, IME preedit/commit, modifiers: the fields'.
             _ => {
-                self.forward_all(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.forward_all(event, ctx);
                 ScreenOutcome::Stay
             }
         };
-        self.settle(Some(focus_target));
+        self.settle(Some(ctx.focus_target));
         outcome
     }
 
@@ -841,7 +808,7 @@ impl PairDeviceScreen {
 }
 
 impl Widget for PairDeviceScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -926,10 +893,7 @@ impl Widget for PairDeviceScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.status,
             &self.status,
             Role::Body,
@@ -937,10 +901,7 @@ impl Widget for PairDeviceScreen {
             true,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.code_label,
             CODE_LABEL,
             Role::Label,
@@ -949,10 +910,7 @@ impl Widget for PairDeviceScreen {
         );
         self.draw_code_boxes(scene, transform, text_renderer, theme, presence, plan);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.payload_label,
             PAYLOAD_LABEL,
             Role::Label,
@@ -963,10 +921,7 @@ impl Widget for PairDeviceScreen {
             .draw(scene, transform, text_renderer, theme, presence);
         if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,
@@ -976,20 +931,6 @@ impl Widget for PairDeviceScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -1050,226 +991,257 @@ impl Widget for PairDeviceScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
-    fn set_code_handles_partial_input() {
-        let mut s = PairDeviceScreen::new();
-        s.set_code("123");
-        assert_eq!(s.code_string(), "123---");
-        s.set_code("987654");
-        assert_eq!(s.code_string(), "987654");
+    fn pair_code_parsing_and_payload_validation() {
+        fn set_code_handles_partial_input() {
+            let mut s = PairDeviceScreen::new();
+            s.set_code("123");
+            assert_eq!(s.code_string(), "123---");
+            s.set_code("987654");
+            assert_eq!(s.code_string(), "987654");
+        }
+
+        fn parse_code_requires_six_digits() {
+            let mut s = PairDeviceScreen::new();
+            assert!(s.parse_code().is_none());
+            s.set_code("12345");
+            assert!(s.parse_code().is_none());
+            s.set_code("000042");
+            assert_eq!(s.parse_code(), Some(42));
+        }
+
+        fn validate_code_against_payload_round_trip() {
+            let mut rng = UnwrapErr(SysRng);
+            let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+            let nonce = [0x77u8; 16];
+            let payload = PairingPayload::new(nonce, id.group_public_key(), &r1).unwrap();
+            let derived = derive_pairing_code(&nonce);
+            // Correct code accepted.
+            PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
+            // Wrong code rejected.
+            let err =
+                PairDeviceScreen::validate_code_against_payload(derived.wrapping_add(1), &payload)
+                    .unwrap_err();
+            assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
+        }
+
+        set_code_handles_partial_input();
+        parse_code_requires_six_digits();
+        validate_code_against_payload_round_trip();
     }
 
     #[test]
-    fn parse_code_requires_six_digits() {
-        let mut s = PairDeviceScreen::new();
-        assert!(s.parse_code().is_none());
-        s.set_code("12345");
-        assert!(s.parse_code().is_none());
-        s.set_code("000042");
-        assert_eq!(s.parse_code(), Some(42));
-    }
+    fn pair_code_entry_input_and_layout() {
+        fn manual_payload_copy_is_the_only_advertised_input() {
+            assert!(PAYLOAD_PLACEHOLDER.contains("Paste the pairing payload"));
+            assert!(!PAYLOAD_PLACEHOLDER.contains("scanner"));
+            assert!(!PAYLOAD_PLACEHOLDER.contains("TODO"));
+        }
 
-    #[test]
-    fn manual_payload_copy_is_the_only_advertised_input() {
-        assert!(PAYLOAD_PLACEHOLDER.contains("Paste the pairing payload"));
-        assert!(!PAYLOAD_PLACEHOLDER.contains("scanner"));
-        assert!(!PAYLOAD_PLACEHOLDER.contains("TODO"));
-    }
-
-    #[test]
-    fn validate_code_against_payload_round_trip() {
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let nonce = [0x77u8; 16];
-        let payload = PairingPayload::new(nonce, id.group_public_key(), &r1).unwrap();
-        let derived = derive_pairing_code(&nonce);
-        // Correct code accepted.
-        PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
-        // Wrong code rejected.
-        let err =
-            PairDeviceScreen::validate_code_against_payload(derived.wrapping_add(1), &payload)
-                .unwrap_err();
-        assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
-    }
-
-    /// Code entry through the shared inputs keeps its shape: a digit moves
-    /// on to the next cell, a multi-digit edit (a paste, an accessibility
-    /// `SetValue`) spreads across the cells, Backspace in an empty cell
-    /// steps back and clears the one before it, and typing into a focused
-    /// filled cell replaces its digit.
-    #[test]
-    fn typing_advances_a_paste_spreads_and_backspace_steps_back() {
-        use crate::widget::identity_flow::test_events as ev;
-        fn send(
-            s: &mut PairDeviceScreen,
-            event: &WindowEvent,
-            doc: &mut AutoCommit,
-            taffy: &TaffyTree<()>,
-            node: NodeId,
-        ) {
-            let mut handled = false;
-            let mut target = None;
-            s.handle_event_screen(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut target,
-                node,
-                taffy,
+        /// Code entry through the shared inputs keeps its shape: a digit moves
+        /// on to the next cell, a multi-digit edit (a paste, an accessibility
+        /// `SetValue`) spreads across the cells, Backspace in an empty cell
+        /// steps back and clears the one before it, and typing into a focused
+        /// filled cell replaces its digit.
+        fn typing_advances_a_paste_spreads_and_backspace_steps_back() {
+            use crate::widget::identity_flow::test_events as ev;
+            fn send(
+                s: &mut PairDeviceScreen,
+                event: &WindowEvent,
+                doc: &mut AutoCommit,
+                taffy: &TaffyTree<()>,
+                node: NodeId,
+            ) {
+                let mut handled = false;
+                let mut target = None;
+                s.handle_event_screen(
+                    event,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut target,
+                        node_id: node,
+                        taffy,
+                    },
+                );
+            }
+            let (taffy, node) = ev::scratch_node();
+            let mut doc = AutoCommit::new();
+            let mut s = PairDeviceScreen::new();
+            assert_eq!(
+                s.focused_cell(),
+                Some(0),
+                "the screen opens with the first cell focused"
             );
+
+            send(&mut s, &ev::char("9"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "9-----");
+            assert_eq!(
+                s.focused_cell(),
+                Some(1),
+                "a digit moves on to the next cell"
+            );
+
+            send(&mut s, &ev::char("x"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "9-----", "a cell admits digits only");
+            assert_eq!(s.focused_cell(), Some(1));
+
+            // An accessibility SetValue lands as one edit in a cell and is
+            // noticed by the layout pass, which spreads the digits forward but
+            // leaves focus where the host put it.
+            Widget::perform_action(
+                &mut s.cells[1],
+                &crate::a11y::Action::SetValue("2468".into()),
+                &mut doc,
+                &automerge::ROOT,
+            );
+            s.settle(None);
+            assert_eq!(s.code_string(), "92468-");
+            assert_eq!(
+                s.focused_cell(),
+                Some(1),
+                "the layout pass never moves focus"
+            );
+
+            // A selection change is not an edit: nothing spreads, nothing moves.
+            Widget::perform_action(
+                &mut s.cells[2],
+                &crate::a11y::Action::SetSelection {
+                    anchor: 0,
+                    focus: 1,
+                },
+                &mut doc,
+                &automerge::ROOT,
+            );
+            send(
+                &mut s,
+                &ev::cursor_at(Point::new(5.0, 5.0)),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            assert_eq!(s.code_string(), "92468-");
+            assert_eq!(s.focused_cell(), Some(1), "a SetSelection is not an edit");
+
+            // Moving the caret inside a filled cell and typing still replaces
+            // its digit rather than appending a second one.
+            send(
+                &mut s,
+                &ev::named(NamedKey::ArrowRight),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            send(&mut s, &ev::named(NamedKey::End), &mut doc, &taffy, node);
+            send(&mut s, &ev::char("5"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "95468-",
+                "typing after a caret move replaces the cell's digit"
+            );
+            assert_eq!(s.focused_cell(), Some(2));
+
+            // Focus handed to a filled cell by the host (Tab/Shift+Tab move
+            // focus without an event reaching the screen): the layout pass
+            // selects the digit, so the next keystroke replaces it too.
+            for (i, cell) in s.cells.iter_mut().enumerate() {
+                cell.set_focus(i == 3);
+            }
+            s.settle(None);
+            send(&mut s, &ev::char("0"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "95408-",
+                "a digit typed into a host-focused filled cell replaces it"
+            );
+            assert_eq!(s.focused_cell(), Some(4));
+
+            s.focus_cell(5, &mut None);
+            send(
+                &mut s,
+                &ev::named(NamedKey::Backspace),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            assert_eq!(
+                s.code_string(),
+                "9540--",
+                "backspace in an empty cell clears the one before it"
+            );
+            assert_eq!(s.focused_cell(), Some(4));
+
+            send(&mut s, &ev::char("7"), &mut doc, &taffy, node);
+            send(&mut s, &ev::char("1"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "954071");
+            assert_eq!(s.parse_code(), Some(954_071));
+            assert_eq!(s.focused_cell(), Some(5), "the last cell keeps focus");
+            send(&mut s, &ev::char("3"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "954073",
+                "typing into a focused, filled cell replaces its digit"
+            );
+
+            let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+            assert_eq!(ids.len(), CODE_LEN + 1);
+            assert_eq!(ids[0], CODE_CELL_IDS[0]);
+            assert_eq!(ids[CODE_LEN], PAYLOAD_INPUT_ID);
         }
-        let (taffy, node) = ev::scratch_node();
-        let mut doc = AutoCommit::new();
-        let mut s = PairDeviceScreen::new();
-        assert_eq!(
-            s.focused_cell(),
-            Some(0),
-            "the screen opens with the first cell focused"
-        );
 
-        send(&mut s, &ev::char("9"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "9-----");
-        assert_eq!(
-            s.focused_cell(),
-            Some(1),
-            "a digit moves on to the next cell"
-        );
-
-        send(&mut s, &ev::char("x"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "9-----", "a cell admits digits only");
-        assert_eq!(s.focused_cell(), Some(1));
-
-        // An accessibility SetValue lands as one edit in a cell and is
-        // noticed by the layout pass, which spreads the digits forward but
-        // leaves focus where the host put it.
-        Widget::perform_action(
-            &mut s.cells[1],
-            &crate::a11y::Action::SetValue("2468".into()),
-            &mut doc,
-            &automerge::ROOT,
-        );
-        s.settle(None);
-        assert_eq!(s.code_string(), "92468-");
-        assert_eq!(
-            s.focused_cell(),
-            Some(1),
-            "the layout pass never moves focus"
-        );
-
-        // A selection change is not an edit: nothing spreads, nothing moves.
-        Widget::perform_action(
-            &mut s.cells[2],
-            &crate::a11y::Action::SetSelection {
-                anchor: 0,
-                focus: 1,
-            },
-            &mut doc,
-            &automerge::ROOT,
-        );
-        send(
-            &mut s,
-            &ev::cursor_at(Point::new(5.0, 5.0)),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        assert_eq!(s.code_string(), "92468-");
-        assert_eq!(s.focused_cell(), Some(1), "a SetSelection is not an edit");
-
-        // Moving the caret inside a filled cell and typing still replaces
-        // its digit rather than appending a second one.
-        send(
-            &mut s,
-            &ev::named(NamedKey::ArrowRight),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        send(&mut s, &ev::named(NamedKey::End), &mut doc, &taffy, node);
-        send(&mut s, &ev::char("5"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "95468-",
-            "typing after a caret move replaces the cell's digit"
-        );
-        assert_eq!(s.focused_cell(), Some(2));
-
-        // Focus handed to a filled cell by the host (Tab/Shift+Tab move
-        // focus without an event reaching the screen): the layout pass
-        // selects the digit, so the next keystroke replaces it too.
-        for (i, cell) in s.cells.iter_mut().enumerate() {
-            cell.set_focus(i == 3);
+        /// Six square boxes on the spacing scale, starting on the body's edge
+        /// under their label; the payload field spans the body and is several
+        /// lines tall.
+        fn plan_lays_six_square_code_boxes_under_their_label() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let s = PairDeviceScreen::new();
+            let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let sp = &theme.tokens.spacing;
+            let side = f64::from(sp.s12);
+            assert_eq!(plan.boxes[0].x0, plan.code_label.x0);
+            for b in &plan.boxes {
+                assert_eq!(b.width(), side);
+                assert_eq!(b.height(), side);
+            }
+            for pair in plan.boxes.windows(2) {
+                assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
+            }
+            assert!(plan.boxes[5].x1 <= body.x1, "the row fits the body");
+            assert_eq!((plan.payload.x0, plan.payload.x1), (body.x0, body.x1));
+            assert!(plan.payload.height() > 3.0 * line_height(&mut tr, &theme, Role::Value));
+            assert!((plan.bottom - plan.payload.y1).abs() < 1e-9);
         }
-        s.settle(None);
-        send(&mut s, &ev::char("0"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "95408-",
-            "a digit typed into a host-focused filled cell replaces it"
-        );
-        assert_eq!(s.focused_cell(), Some(4));
 
-        s.focus_cell(5, &mut None);
-        send(
-            &mut s,
-            &ev::named(NamedKey::Backspace),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        assert_eq!(
-            s.code_string(),
-            "9540--",
-            "backspace in an empty cell clears the one before it"
-        );
-        assert_eq!(s.focused_cell(), Some(4));
-
-        send(&mut s, &ev::char("7"), &mut doc, &taffy, node);
-        send(&mut s, &ev::char("1"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "954071");
-        assert_eq!(s.parse_code(), Some(954_071));
-        assert_eq!(s.focused_cell(), Some(5), "the last cell keeps focus");
-        send(&mut s, &ev::char("3"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "954073",
-            "typing into a focused, filled cell replaces its digit"
-        );
-
-        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
-        assert_eq!(ids.len(), CODE_LEN + 1);
-        assert_eq!(ids[0], CODE_CELL_IDS[0]);
-        assert_eq!(ids[CODE_LEN], PAYLOAD_INPUT_ID);
+        manual_payload_copy_is_the_only_advertised_input();
+        typing_advances_a_paste_spreads_and_backspace_steps_back();
+        plan_lays_six_square_code_boxes_under_their_label();
     }
 
-    /// Six square boxes on the spacing scale, starting on the body's edge
-    /// under their label; the payload field spans the body and is several
-    /// lines tall.
     #[test]
-    fn plan_lays_six_square_code_boxes_under_their_label() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let s = PairDeviceScreen::new();
-        let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let sp = &theme.tokens.spacing;
-        let side = f64::from(sp.s12);
-        assert_eq!(plan.boxes[0].x0, plan.code_label.x0);
-        for b in &plan.boxes {
-            assert_eq!(b.width(), side);
-            assert_eq!(b.height(), side);
-        }
-        for pair in plan.boxes.windows(2) {
-            assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
-        }
-        assert!(plan.boxes[5].x1 <= body.x1, "the row fits the body");
-        assert_eq!((plan.payload.x0, plan.payload.x1), (body.x0, body.x1));
-        assert!(plan.payload.height() > 3.0 * line_height(&mut tr, &theme, Role::Value));
-        assert!((plan.bottom - plan.payload.y1).abs() < 1e-9);
+    fn portable_review_pairing_is_unavailable_before_decode_or_retry() {
+        let payload = PairingPayload {
+            ty: String::new(),
+            channel: String::new(),
+            initiator_pk: String::new(),
+            initiator_dkg_round1: String::new(),
+            broker_endpoint: String::new(),
+            broker_certificate: String::new(),
+        };
+        let result = PairDeviceScreen::new().perform_pairing_on_platform(
+            &payload,
+            &PairingHandshake::new(),
+            false,
+        );
+        assert!(
+            matches!(result, Err(IdentityFlowError::Io(error)) if error.kind() == std::io::ErrorKind::Unsupported)
+        );
     }
 }

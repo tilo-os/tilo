@@ -1,0 +1,118 @@
+[package]
+name = "tilo-runtime"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The per-user shared runtime daemon: private profile, native endpoint, app attachment and the MCP projection of the action host."
+
+# Deliberately free of the compositor: the desktop session supplies its
+# services through `RuntimeServices`, and `standalone` hosts the shared broker
+# and identity service itself, so this crate and its `tilo-runtime`
+# executable build on stock macOS and on Linux without a Wayland stack.
+
+[lib]
+name = "tilo_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-runtime"
+path = "src/bin/tilo-runtime.rs"
+
+[dependencies]
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-files = { path = "../../platform/tilo-files" }
+automerge.workspace = true
+base64.workspace = true
+# Seals and opens the channel state this device keeps for its encrypted routes.
+channel-crypto = { path = "../../collab/channel-crypto" }
+blake3.workspace = true
+chrono = { workspace = true, features = ["std"] }
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek.workspace = true
+# The random key sealing the channel state.
+getrandom.workspace = true
+hex.workspace = true
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+image = { workspace = true, features = ["jpeg", "png"] }
+# The endpoint joined rooms sync over, keyed by this device's key.
+iroh.workspace = true
+# The launcher's manifest view, service names and developer-override gate;
+# its binary builds every Linux app sandbox.
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+package-store = { path = "../../packaging/package-store" }
+postcard = { workspace = true, features = ["alloc"] }
+rand_core.workspace = true
+runtime-fs = { path = "../runtime-fs" }
+runtime-identity = { path = "../runtime-identity" }
+serde.workspace = true
+serde_json.workspace = true
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-automerge-isolate.workspace = true
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The document-media capability over the content store, and the workspace
+# files mirrored into a folder where nothing mounts them.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-identity-host = { path = "../tilo-identity-host" }
+# The one per-user index the host's own search reads.
+tilo-os-search = { path = "../os-search" }
+# The native request an app hands a host search result back with.
+tilo-host-search = { path = "../../platform/tilo-host-search" }
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
+# Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-rt.workspace = true
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+# Mounts the workspace files where this user can mount FUSE.
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser.workspace = true
+
+# App Sandbox or Seatbelt: how every app launches on stock macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+launcher-macos = { path = "../../packaging/launcher-macos" }
+# The file chooser a confined app asks this runtime to show.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The device grants, as actions on the runtime's console socket.
+console-control = { path = "../../session/console-control" }
+# The runtime's own words (consent prompt, device grants), from Fluent.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# The camera and microphone a confined app asks this runtime to capture.
+tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
+# The login Keychain keeps the channel-state key.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+
+[dev-dependencies]
+# The steward channel fixtures owner tests seal writes with.
+tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
+# The join protocol a runtime joins rooms over.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+# The governor whose rooms a runtime joins.
+tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
+# Signs the installed-package fixtures the launch path verifies.
+ed25519-dalek.workspace = true
+tempfile.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-test-env = { path = "../../dev/test-env" }
+# Paused time drives the watch lease's expiry.
+tokio = { workspace = true, features = ["test-util"] }
+# An ordinary SDK app, to prove the standalone session admits and publishes it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[lints]
+workspace = true

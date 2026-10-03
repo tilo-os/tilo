@@ -18,7 +18,7 @@ use crate::model::{ConnId, LocalProfileDetails};
 /// `$HOME/.local/state`; an empty or relative `XDG_STATE_HOME` is ignored.
 fn path() -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::state_home()?
+        tilo_paths::xdg::state_home()?
             .join("tilo")
             .join("vpn-local-profiles.json"),
     )
@@ -50,7 +50,7 @@ pub fn save<S: std::hash::BuildHasher>(
         );
     };
     let bytes = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
-    atomic_file::write_private(&path, &bytes).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_private(&path, &bytes).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -69,18 +69,19 @@ mod tests {
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn state_path_prefers_xdg_state_home() {
-        let path = with_env(Some("/state"), "/home/user", path).unwrap();
-        assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
-    }
-
-    #[test]
-    #[serial_test::serial(vpn_env)]
-    fn state_path_uses_freedesktop_home_fallback() {
-        let expected = PathBuf::from("/home/user/.local/state/tilo/vpn-local-profiles.json");
-        for state_home in [None, Some(""), Some("relative/state")] {
-            let path = with_env(state_home, "/home/user", path).unwrap();
-            assert_eq!(path, expected, "XDG_STATE_HOME={state_home:?}");
+    fn state_path_prefers_xdg_state_home_then_home_fallback() {
+        // Case `state_path_prefers_xdg_state_home`.
+        {
+            let path = with_env(Some("/state"), "/home/user", path).unwrap();
+            assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
+        }
+        // Case `state_path_uses_freedesktop_home_fallback`.
+        {
+            let expected = PathBuf::from("/home/user/.local/state/tilo/vpn-local-profiles.json");
+            for state_home in [None, Some(""), Some("relative/state")] {
+                let path = with_env(state_home, "/home/user", path).unwrap();
+                assert_eq!(path, expected, "XDG_STATE_HOME={state_home:?}");
+            }
         }
     }
 }

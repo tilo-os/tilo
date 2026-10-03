@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use settings_store::display_identify::{IdentifyRequest, display_numbers};
+use settings_store::display_identify::{IDENTIFY_MS, IdentifyRequest, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -48,13 +48,13 @@ impl DisplayIdentify {
             return false;
         }
         self.seen = Some(request.requested_unix_ms);
-        let Some(remaining) = request.remaining_ms(tilo_clock::unix_now_ms()) else {
+        if !request.is_fresh(tilo_clock::unix_now_ms()) {
             return false;
-        };
+        }
         self.start(
             outputs,
             DisplayHardwareSnapshot::load().as_ref(),
-            Duration::from_millis(remaining),
+            Duration::from_millis(IDENTIFY_MS),
             now,
         );
         true
@@ -80,27 +80,22 @@ impl DisplayIdentify {
             .filter(|output| output.width > 0.0 && output.height > 0.0)
             .map(|output| {
                 let placed = snapshot.and_then(|snapshot| {
-                    // Matched by left edge: a mirror shares its target's
+                    // Matched by origin: a mirror shares its target's
                     // picture, so it shows the target's card anyway.
-                    let placement = snapshot
-                        .layout
-                        .iter()
-                        .find(|placement| (f64::from(placement.x) - output.x).abs() < 0.5)?;
+                    let placement = snapshot.layout.iter().find(|placement| {
+                        (f64::from(placement.x) - output.x).abs() < 0.5
+                            && (f64::from(placement.y) - output.y).abs() < 0.5
+                    })?;
                     let index = snapshot
                         .outputs
                         .iter()
                         .position(|o| o.descriptor.connector == placement.connector)?;
                     let described = snapshot.outputs.get(index)?;
-                    Some((placement, described, numbers.get(index).copied()?))
+                    Some((described, numbers.get(index).copied()?))
                 });
-                if let Some((placement, described, number)) = placed {
+                if let Some((described, number)) = placed {
                     IdentifyLabel {
-                        output: Rect::new(
-                            output.x,
-                            f64::from(placement.y),
-                            output.x + output.width,
-                            f64::from(placement.y) + output.height,
-                        ),
+                        output: output.rect(),
                         number,
                         name: if described.builtin {
                             t("display-identify-builtin")
@@ -111,7 +106,7 @@ impl DisplayIdentify {
                 } else {
                     next_unknown = next_unknown.saturating_add(1);
                     IdentifyLabel {
-                        output: Rect::new(output.x, 0.0, output.x + output.width, output.height),
+                        output: output.rect(),
                         number: next_unknown,
                         name: t_args(
                             "display-identify-unnamed",
@@ -229,5 +224,61 @@ mod tests {
         assert_eq!(labels[0].number, 1);
         assert_eq!(labels[1].output, Rect::new(1920.0, 0.0, 4480.0, 1440.0));
         assert!(identify.labels(now + Duration::from_secs(3)).is_empty());
+    }
+
+    #[test]
+    fn stacked_displays_are_told_apart_by_their_origin() {
+        use settings_store::hardware::{
+            DisplayOutputSnapshot, LiveOutputPlacement, OutputDescriptor, OutputMode,
+        };
+        let mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let described = |connector: &str, builtin: bool| DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.into(),
+                connector_label: connector.into(),
+                modes: vec![mode],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            },
+            current_mode: mode,
+            scale: 1.0,
+            builtin,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: std::collections::BTreeMap::new(),
+        };
+        let placed = |connector: &str, y: i32| LiveOutputPlacement {
+            connector: connector.into(),
+            x: 0,
+            y,
+            width: 1920,
+            height: 1080,
+        };
+        // The monitor sits above the laptop panel, sharing its left edge.
+        let snapshot = DisplayHardwareSnapshot {
+            outputs: vec![described("eDP-1", true), described("DP-1", false)],
+            layout: vec![placed("DP-1", 0), placed("eDP-1", 1080)],
+            ..DisplayHardwareSnapshot::default()
+        };
+        let outputs = [
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+            OutputGeometry::unscaled(0.0, 1080.0, 1920.0, 1080.0),
+        ];
+        let mut identify = DisplayIdentify::default();
+        let now = Instant::now();
+        identify.start(&outputs, Some(&snapshot), Duration::from_secs(3), now);
+        let labels = identify.labels(now);
+        assert_eq!(labels[0].name, "DP-1");
+        assert_eq!(labels[0].number, 2);
+        assert_eq!(labels[1].number, 1, "the built-in panel below is display 1");
+        assert_eq!(labels[1].output, Rect::new(0.0, 1080.0, 1920.0, 2160.0));
     }
 }

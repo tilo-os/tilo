@@ -8,7 +8,7 @@ in [§22](#22-open-questions-for-the-owner) instead of guessing.
 This document replaces the storage parts of several documents that grew up
 separately: the collaborative file daemon (`crates/system/fs`), app state
 (`crates/system/app-state`, `crates/sdk/ui-core/src/{persist,record}.rs`),
-document blobs (`crates/doc/qdoc/src/blobstore.rs`) and the package store
+document blobs (`crates/doc/tilo-doc/src/blobstore.rs`) and the package store
 (`crates/packaging/app-host`). They become one system with one content store,
 one record model, one history and one permission model.
 
@@ -118,7 +118,7 @@ The pieces are strong. What is missing is one model and the performance path.
 | Content sync | A new QUIC connection and a whole-blob GET per 8 KiB chunk, sequential; push is disabled (`sync.rs:862`). About two RTTs per chunk, regardless of bandwidth: ~4 MB/s on LAN, ~50 KB/s over an 80 ms relay. | R3 |
 | Serving | Authorising one chunk scans every readable manifest while holding the namespace lock, in one serial task (`sync.rs:737-840`). | R3 |
 | App data | 44 of 54 apps keep all state in one Automerge document per `(package, room)`. Snapshots and deltas are capped at 3 MiB (`crates/collab/collab-types/src/op.rs:30-35`), and an oversized delta is dropped after the frontier has advanced (`crates/sdk/ui-core/src/collaboration.rs:3653-3661`). Room discovery is capped at 64 records (`ui-core/src/record.rs:38`). | R5, R8 |
-| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/qdoc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
+| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/tilo-doc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
 | Packages | A third store. `app-host` ingests every blob into its own `FsBlobStore` and eagerly unpacks a second copy (`crates/packaging/app-host/src/install.rs:1-20`, `store.rs:1-12`). `app-fs` (lazy FUSE) has no dependents. | R6, R7 |
 | History | Automerge change graphs for app state, signed versions plus a global JSON file for files, and an audit log on the relay. | R6 |
 
@@ -655,10 +655,13 @@ bounds.
   loop-mounted store) are gone too: an epoch is now one signed changeset,
   written in one log transaction (see "What the operation log implements"
   in §8.3).
-- *Content is still stored twice.* The daemon chunks the snapshot file into
-  its existing content store (gear CDC, v1 manifests); capture therefore runs
-  with `hash_content = false` and the FastCDC manifests of §7 are unused until
-  the file-backed `ChunkStore` (§7.4) replaces the blob copy.
+- *Content is stored once.* The capture chunks what changed in the format
+  of §7 (re-hashing only changed extents of a file it chunked before), and
+  publishing clones the snapshot file into the content store's area on the
+  store volume (`<store>/.content/<room>/`) instead of reading it. A peer
+  fetches missing ranges into the area and fills placeholders by copying
+  area ranges, which clones extents. See "What the content format and store
+  implement" in §7.
 
 **Not yet**
 
@@ -669,6 +672,108 @@ bounds.
   create, fill and hand over files in a room it does not own.
 - A rename cycle within one epoch (`a`↔`b` swapped) is published as content
   changes of both paths, not as moves.
+
+### 6.10 Cloud accounts
+
+An external file account set up in Settings (WebDAV, Nextcloud, Google
+Drive, OneDrive, Dropbox and iCloud Drive) is an ordinary folder at `~/Remote/<account label>`. Every app and POSIX tool
+uses it the way it uses any other folder. Rooms replicate signed records
+between peers. A cloud account mirrors a server, and the server is the
+authority for its own tree. That is why this is a separate backing, not a
+room.
+
+**Processes and credentials.** `fs cloud-service` (user unit
+`tilo-fs-cloud.service`) follows Settings' account store. It keeps one
+`fs mount-cloud` child per enabled file account. Disabling an account
+unmounts it. Removing an account also drops its cached content and queued
+state. Neither the service nor its children open the account vault, where
+Settings keeps long-lived grants (refresh tokens, app passwords, iCloud
+trust state). The service reads one account's short-lived credential from a
+separate handoff store (`accounts::handoff`: one sealed file per account,
+under its own key) and sends the child only that, on stdin: HTTP Basic, an
+OAuth2 access token, or iCloud web session headers. When the credential is
+missing, has expired or the server rejected it, the service runs Settings'
+credential helper, `tilo-account-credential refresh <id>`, through
+`bounded-command`. The helper opens the vault for that one call, refreshes
+the grant, seals a rotated one back and publishes only the short-lived part.
+A grant the provider no longer accepts marks the account "sign in again".
+Closing the child's stdin unmounts it.
+
+Settings resolves an OAuth account's storage once at sign-in (the OneDrive
+drive and root ids, a Dropbox member's team space root; Google Drive and
+iCloud Drive store their defaults) and keeps the provider crate's own serde
+configuration in the account's non-secret `config` under `mount`. The
+daemon's provider table (`crates/system/fs/src/cloud/providers.rs`) mounts
+from it and sends credentials only to HTTPS or loopback endpoints.
+Public OAuth client registrations are data in
+`crates/system/account-custody/oauth-clients.toml`, overridable per value
+from the environment. Mount health goes to the shared account status store, which
+Settings and Files read. Files has no transport of its own. It opens the
+folder and shows the account's health as a badge.
+
+**Provider interface.** `crates/system/cloud-source` defines `CloudSource`:
+
+- id-based items with a POSIX projection (duplicate names, several parents,
+  provider-native documents as read-only `<name>.<link-extension>` entries);
+- a cursor change feed with long-poll or push, or polling of listings that
+  skips folders whose recursive revision did not change;
+- provider hashes, revision preconditions and revision history;
+- ranged streaming reads and resumable chunked upload sessions;
+- per-provider capability flags, including a best-effort marker for
+  unofficial APIs.
+
+`crates/system/cloud-source-dav` implements it for WebDAV and Nextcloud. Its
+Nextcloud support covers recursive ETags, checksums, chunked uploads,
+versions and trash, and it uses a `sync-collection` feed where the server
+offers one. `cloud-source-gdrive`, `cloud-source-onedrive`,
+`cloud-source-dropbox` and `cloud-source-icloud` implement it for the other
+providers, each with an in-process fake server (feature `fake-server`).
+
+**Data path.** Each mount is a `CloudVolume`
+(`crates/system/fs/src/cloud/`) behind FUSE:
+
+- Metadata is persisted, so the folder lists instantly and offline after a
+  restart.
+- A read fetches only the missing, 1 MiB-aligned ranges of the requested
+  window. The window widens for sequential readers. Every fetch is a ranged
+  read pinned to the listed revision, so a read never mixes versions.
+- Fetched ranges land in the content store's file area (§7, §12.2), keyed
+  by remote revision: a sparse file per revision with persisted range
+  residency, under the account's byte budget, least recently used first.
+  Complete revisions with identical bytes share extents. The FUSE adapter
+  stays separate from the rooms' FUSE filesystem: that one's inodes, reads
+  and writes are the namespace, records and ACL of a room, and its
+  passthrough needs privileges a per-user mount does not have. What the two
+  share is the content store underneath.
+- Local writes go to a staged copy. When the last writer closes the file,
+  an upload is queued in a persisted outbox and sent in the background, with
+  the revision the edit started from as an `If-Match` precondition.
+  Creates, folders, renames and deletes queue the same way. An editor's save
+  by rename replaces the target, which keeps its identity.
+- On a conflict, the remote version keeps the name and the local edit is
+  uploaded next to it under the daemon's conflict-copy name
+  (`<name>.sync-conflict-<hash>`, §11).
+- Offline, cached bytes stay readable, uncached reads fail with `EIO`, and
+  writes wait in the outbox across restarts.
+
+**Tests.** The provider conformance suite (`cloud_source::conformance`) runs
+unchanged in three layers:
+
+- in-process fakes on every build (`FakeDav` on the shared `test-http`
+  responder, with injected 429/5xx responses, truncated bodies, expired
+  credentials and cursor resets);
+- real servers in containers: Nextcloud and Apache mod_dav, started by
+  `crates/system/cloud-source-dav/tests/servers.sh`;
+- live accounts on a schedule, when CI secrets are present.
+
+`crates/system/fs/tests/cloud_mount.rs` covers the mount end to end against
+the fake, including a kernel mount where `/dev/fuse` exists.
+`apps/settings/tests/cloud_storage.rs` covers every provider from sign-in to
+removal: Settings signs in through the fake authorization server (or Apple's
+sign-in on the fake iCloud), custody publishes the handoff credential, the
+cloud service mounts the account against the provider's fake, a file is
+written and read back, and removing the account unmounts it and deletes its
+cache.
 
 ---
 
@@ -755,6 +860,52 @@ rule, and two physical backings:
 - The daemon writes the snapshot file that it hashes, so "the bytes on disk
   still match the hash" holds by construction. Sending re-verifies anyway: a
   corrupt disk must never propagate.
+
+**What the content format and store implement** (`crates/system/fs-content`,
+`crates/system/fs/src/store/`, `hydration/ranges.rs`):
+
+- *Chunking* follows the table of §7.1: normalised FastCDC, tiers sticky per
+  record with the 4× hysteresis, chunk hashes computed on several threads,
+  and cut points of a large body found on several threads (each thread
+  chunks a segment; the true sequence joins a segment's cuts at the first
+  cut both found, which is exact because a cut depends only on the bytes
+  from its chunk's start). Compression in transfer is not implemented.
+- *The manifest is one self-contained blob* rather than `HashSeq[meta, …]`
+  with a separate meta blob: a `HashSeq` whose first entry is a header
+  (`"tilocf"`, format 2, tier, total length, chunk count), then the chunk
+  hashes, then the chunk lengths packed eight to an entry. One blob tells a
+  reader where every chunk starts; a `GET` of the content id names chunk
+  `i` at position `i + 2` and never asks for the header or length entries,
+  and the provider authorises exactly those positions of a readable content
+  id. Small files keep the cost of the earlier format: a manifest and one
+  chunk. Legacy postcard manifests are read everywhere; the format is told
+  apart by the header, and nothing is converted in bulk.
+- *Backings.* The content store keeps loose blobs in iroh-blobs (manifests,
+  the chunks of content up to 1 MiB, legacy content) and everything larger
+  in a **file area**: one sparse file per content id at the file's own
+  offsets, with persisted range residency, a chunk index (chunk hash →
+  entry, offset, length) and a retention class. The provider does not go
+  through a custom iroh-blobs store backend: it is handed a store that
+  answers the provider's requests itself, reading area chunks from their
+  files, checking each against its hash and computing its BAO outboard
+  from the bytes it just read, and forwarding everything else to the loose
+  store. A corrupt or stale file fails the request instead of reaching a
+  peer.
+- *Ranged fetches.* A read of file-backed content turns its missing byte
+  ranges into `GET`s of the content id whose `RangeSpecSeq` names the
+  chunks it overlaps and, within each, the 16 KiB groups needed (16 MiB of
+  groups per request, 8 requests in flight per peer, spread over peers,
+  retried on the next peer). Verified groups are written straight into the
+  area; residency is recorded after the data is synced, in batches of
+  256 MiB, so a crash or restart resumes with what is missing and never
+  trusts unsynced bytes. Chunks this device already holds, in another entry
+  or as loose blobs, are copied locally instead of fetched, so a new version
+  of a large file costs only its changed chunks on the wire. Concurrent
+  readers of overlapping ranges share one fetch.
+- *Streaming publish.* A Tier 1 author never holds a file in memory: the
+  capture maps the snapshot, and the content store clones it into the area.
+  Content without a capture (a FUSE commit is already in memory) is chunked
+  from memory, or as a stream from a file.
 
 ### 7.5 Dedup scope and the access rule
 
@@ -865,9 +1016,7 @@ rule, and two physical backings:
   the repository directory) under a global position; records, stream
   cursors and history are rebuilt from it in log order. Envelopes are
   verified once, at ingest; reopening replays the log without verifying
-  signatures again. The per-record JSON files of earlier releases are
-  verified and imported into the log in one transaction on first start,
-  then moved aside (`imported-json/`).
+  signatures again.
 - The 16,384-record bound is gone. What bounds a device is the in-memory
   index (replica state and envelopes per record); the repository refuses
   more than 2^24 records, far past any tree one device holds.
@@ -992,10 +1141,16 @@ One engine moves record operations, file content, CRDT segments and packages.
 **What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
 `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/1`: one connection per peer, authenticated once, a
+- `tilo-fs-session/2`: one connection per peer, authenticated once, a
   QUIC stream per request, every request authorised against the live
   policy and certification. It carries the namespace (Automerge sync
   between writers; changes since the reader's heads for read-only peers),
+  each payload bound to the requesting workspace by the sender's device
+  signature over the workspace, the payload kind and the digest of its
+  bytes, and applied only from a device the receiver's policy lets read
+  (or, for sync, write) the whole workspace
+  (`crates/system/fs/src/namespace_binding.rs`; `tilo-fs-sync/1` does the
+  same),
   range-based reconciliation of record stream heads, pulls of up to 1024
   streams per request with files up to 4 KiB inline, batched replica
   receipts (only for revisions not acknowledged recently), the authority
@@ -1009,14 +1164,22 @@ One engine moves record operations, file content, CRDT segments and packages.
   ranges; the serving side authorises chunks through them from an index
   rebuilt only when the namespace heads change, concurrently and without
   holding the namespace lock.
-- Not yet: `HashSeq` manifests and BAO range requests into a chunk (content
-  is still gear-CDC v1 manifests), priority classes, hedged multi-peer
-  splitting of one large file, and push of content (announcements make
-  peers pull).
+- Large content goes as ranged `GET`s of the content id (see "What the
+  content format and store implement" in §7). Priority classes order
+  them: a blocked read and the read-ahead of an active sequential reader
+  are interactive and sent at once; pinned, predictive and backfill work
+  is admitted only while no interactive request is on the wire, and claims
+  its ranges only once admitted, so it never holds a range a reader waits
+  for. A background transfer therefore delays a foreground read by at most
+  the requests already in flight.
+- Not yet: hedged multi-peer splitting of one large file (requests are
+  spread over peers, but a slow peer is not raced), and push of content
+  (announcements make peers pull).
 
-- **Resumability.** Partial content survives restarts as a range bitmap
-  (iroh-blobs partial blobs for loose content, and the per-file bitmap for
-  materialised files). Reconciliation resumes from digests, not cursors.
+- **Resumability.** Partial content survives restarts as persisted range
+  residency: the file area's per-entry range set (recorded only after its
+  bytes are synced) and the placeholder's residency xattr for materialised
+  files. Reconciliation resumes from digests, not cursors.
 
 ---
 
@@ -1036,7 +1199,7 @@ disk would hold if the machine lost power at that instant *after* all
 completed writes. Programs that are crash-safe on one machine are built to
 recover from exactly that. That includes git (objects before refs, lockfile
 plus rename), SQLite (journal or WAL), and any program that uses the
-write-temp-fsync-rename pattern (`crates/system/atomic-file`).
+write-temp-fsync-rename pattern (`tilo_files::native::atomic`).
 
 **Guarantee V3: ordered application.** A peer applies one device's changesets
 in epoch order, and each changeset only after its causal context (other
@@ -1141,7 +1304,11 @@ mmap-written). [R9]
 - Lease-class detection: a file whose journal shows a write without a create
   or rename, whose inode survived the epoch, and whose new version still
   shares extents with the previous snapshot (FIEMAP). A truncate-and-rewrite
-  allocates new extents and is not lease-class.
+  allocates new extents and is not lease-class. A small file can have every
+  block rewritten in place (an update of a two-page SQLite database rewrites
+  the header page and the one table page); when no extent is shared, the
+  rewritten ranges are compared in 512-byte sectors, and a file that kept
+  non-zero sectors at their offsets while others changed is lease-class too.
 - The lease is a `WriteLease {holder, epoch, expires_ms}` carried in the
   namespace (one root-level register per record), so every device sees it in
   causal order with the file's changes. A change of holder raises the epoch;
@@ -1232,6 +1399,16 @@ mmap-written). [R9]
 - **Two eviction models merge into one.** The Settings namespace path
   (`docs/sync-storage-hydration.md:22-44`) and the record-plane path become one
   (`docs/personal-and-workspace-settings.md:94-104` names this debt).
+
+**Implemented:** the content store's file area is the one bounded cache.
+Its entries carry a retention class: fetched content is *cached* and is
+evicted least recently used first once cached resident bytes exceed the
+budget (a quarter of the area's filesystem by default); content this device
+may be the only holder of (what it authored) is *local-only*, and "Keep
+offline" hydration makes an entry *pinned*; neither is ever evicted by the
+budget. Explicit eviction through the queue above removes area entries by
+any of their hashes. Watermarks, ARC scoring and punching holes into
+partially cold files are not implemented; eviction is per entry.
 
 ### 12.3 Pinning and offline
 
@@ -1654,7 +1831,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `record_transaction.rs`, `transaction_coordinator.rs` | multi-record atomicity | also carries changesets and Record Store transactions |
 | `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
 | `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
-| `fs` `durable_backup.rs`, `crates/system/atomic-file` | crash-safe small files | only for security stores |
+| `fs` `durable_backup.rs`, `tilo_files::native::atomic` | crash-safe small files | only for security stores |
 | `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
 | `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
 | `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |
@@ -1694,7 +1871,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `recipient_mount.rs` (after Tier 1) | recipients materialise natively |
 | `crates/packaging/app-fs` | no dependents. Placeholders or composefs cover lazy start |
 | `crates/runtime/runtime-fs/schema/fs.capnp` `WorkspaceFs` read/write RPC | no server. Replaced by the Record Store capability with fd passing |
-| `qdoc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
+| `tilo_doc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
 | package-global `state.automerge` as a content store (44 apps), `LegacyLaunchInputs`, `RecordId::for_file`/`for_tab` as identities, the 3 MiB single-message snapshot path, 29 hand-written tombstone maps, inline assets in notes | wrong grain or duplicated |
 | `tilo-relay` `snapshot.automerge` / `pending/*.delta` opaque co-edit store (`tilo-relay/src/store.rs:1-20`) for app documents | hosts store record operations and segments like any replica. Live presence stays |
 | the hard caps at `record_repository.rs:24-31`, `namespace.rs:35`, `full_replica.rs:23-27`, `store.rs:56-70`, `blobstore.rs:33-40`, `record.rs:38` | replaced by compaction, streaming and quotas |
@@ -1852,7 +2029,7 @@ stopped.
 | 10 | Residual cross-file window (§10) bites a program with an unusual update pattern | low / medium | Quiescence epochs, leases, Q8 |
 | 11 | Git index ping-pong (Q4) | high without a decision / low | Q4 option (a) |
 | 12 | History growth under retention | medium / medium | Thinning, quotas, reflinked versions share extents |
-| 13 | Migration of existing stores and app documents | certain / medium | v1 readers kept. `open_migrating` claim markers. Staged, reversible cut-overs |
+| 13 | Migration of existing stores and app documents | certain / medium | Pre-alpha: earlier stores and app documents are not migrated; each format has one reader. Staged, reversible cut-overs once there are users to carry |
 | 14 | Scope: this is a large rebuild of the data path | certain / high | Stages ship independently. Stage 0–2 fixes land before the data path changes |
 
 ---

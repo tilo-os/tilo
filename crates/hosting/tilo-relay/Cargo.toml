@@ -10,12 +10,22 @@ license = "MIT OR Apache-2.0"
 
 # cargo-machete cannot see serde_bytes: it is only named in
 # `#[serde(with = "serde_bytes")]` attributes (compute_transport.rs).
+# getrandom is a feature-only edge that selects JS entropy for transitive
+# WASM cryptography.
 [package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
+ignored = ["serde_bytes", "getrandom"]
 
 [lib]
 name = "tilo_relay"
 path = "src/lib.rs"
+
+[features]
+test-support = []
+# Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
+# (tilo-agent-participant, which links every web app) as the app-serving
+# plane. Needs the browser listener for steering from pages.
+agents = ["web", "dep:tilo-agent-participant"]
+web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -55,27 +65,23 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
-bounded-command = { path = "../../system/bounded-command" }
-launcher = { path = "../../packaging/launcher" }
-# Installed packages and their integrity records.
-package-store = { path = "../../packaging/package-store" }
-# Home-peer configuration is one signed filesystem bundle; the relay imports
-# its workspace tickets rather than asking the operator to duplicate ids.
-fs = { path = "../../system/fs" }
-collab-types = { path = "../../collab/collab-types" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+web-time = { version = "1", features = ["serde"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-automerge-isolate.workspace = true
+# Remote-action vocabulary: the relay routes these frames between devices and,
+# only when an app-serving plane is supplied, answers them through ActionHost.
+tilo-actions = { path = "../../collab/actions" }
 # Handshake and wire messages plus the mesh, configuration, registry and
 # metrics records shared with the relay's clients; re-exported so the daemon's
 # own module paths stay unchanged.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
-# Federation dials other relays as a client, and both ends of every relay
-# stream use its frame codec.
+# Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
-# Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
+# Delivery, private-action, agent-read, v2 live and join records the relay carries.
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+# Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
 # fallback out of the box, so the relay is reachable from any device
@@ -87,10 +93,6 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
-# Remote-action vocabulary: the relay routes these frames between devices and,
-# only when an app-serving plane is supplied, answers them through ActionHost.
-tilo-actions = { path = "../../collab/actions" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -116,25 +118,80 @@ hex.workspace = true
 uuid.workspace = true
 
 # Runtime + config.
-tokio = { workspace = true, features = ["full"] }
-tilo-rt.workspace = true
-clap.workspace = true
-toml.workspace = true
-anyhow.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+n0-future = "0.3.2"
 thiserror.workspace = true
-libc.workspace = true
-socket2 = "0.6"
 
 # Observability.
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
 sd-notify.workspace = true
+workspace-hack = { version = "0.1" }
 
-[dev-dependencies]
+# Browser carriers (feature `web`): HTTPS for the durable plane and device
+# certification, WebTransport + moq-lite for the live plane. quinn (under
+# web-transport-quinn) is a second QUIC stack next to iroh's noq, so only
+# hosts that serve browsers link it.
+tilo-moq = { path = "../tilo-moq", features = ["relay"], optional = true }
+hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"], optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+launcher = { path = "../../packaging/launcher" }
+# Installed packages and their integrity records.
+package-store = { path = "../../packaging/package-store" }
+# Exclusive, owner-only publication of the relay's node secret.
+private-fs = { path = "../../system/private-fs" }
+clap.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+sd-notify.workspace = true
+tokio = { workspace = true, features = ["full"] }
+# The daemon's bounded runtime.
+tilo-rt.workspace = true
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+tilo-files = { path = "../../platform/tilo-files" }
+# Home-peer configuration is one signed filesystem bundle; the relay imports
+# its workspace tickets rather than asking the operator to duplicate ids.
+tilo-fs = { path = "../../system/fs" }
+collab-types = { path = "../../collab/collab-types" }
+# A node stewards the encrypted channels of the rooms it governs.
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# Owners pre-admit people by the SHA-256 of a token someone else hands them.
+sha2.workspace = true
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+socket2 = "0.6"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+chat = { path = "../../../apps/chat", default-features = false }
+word-processor = { path = "../../../apps/word-processor" }
+tilo-doc = { path = "../../doc/tilo-doc" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+moq-net.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
@@ -147,6 +204,12 @@ path = "tests/it.rs"
 [[test]]
 name = "held_memory"
 path = "tests/held_memory.rs"
+
+# Examples that carry unit tests build as test targets too, so `cargo test`
+# and the CI test jobs run those tests.
+[[example]]
+name = "inspect-peer-archive"
+test = true
 
 [lints]
 workspace = true

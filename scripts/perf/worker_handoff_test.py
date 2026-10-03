@@ -32,40 +32,41 @@ def fixture():
 def encode(rows):return [p+' '+json.dumps(r) for p,r in rows]
 
 class WorkerHandoffTests(unittest.TestCase):
-    def test_first_and_last_frame_need_no_future_frame(self):
-        r=summarize_worker_handoffs(encode(fixture()),[7,8])
-        self.assertTrue(r['available'])
-        self.assertFalse(r['performance_certified'])
-        self.assertEqual(len(r['frames']),2)
-        self.assertNotIn('previous_scene_recycle',r['frames'][0]['intervals_ms'])
-        self.assertAlmostEqual(r['frames'][1]['intervals_ms']['previous_scene_recycle'][1],10,places=6)
-        self.assertAlmostEqual(r['frames'][1]['intervals_ms']['receive_call'][1],100,places=6)
+    def test_handoffs_are_summarized_per_frame_without_aliasing_auxiliary_workers(self):
+        with self.subTest(phase='first and last frame need no future frame'):
+            r=summarize_worker_handoffs(encode(fixture()),[7,8])
+            self.assertTrue(r['available'])
+            self.assertFalse(r['performance_certified'])
+            self.assertEqual(len(r['frames']),2)
+            self.assertNotIn('previous_scene_recycle',r['frames'][0]['intervals_ms'])
+            self.assertAlmostEqual(r['frames'][1]['intervals_ms']['previous_scene_recycle'][1],10,places=6)
+            self.assertAlmostEqual(r['frames'][1]['intervals_ms']['receive_call'][1],100,places=6)
+        with self.subTest(phase='explicit null auxiliary identity not cpu zero'):
+            rows=fixture();aux=copy.deepcopy(rows[:2])
+            for _,r in aux:r.update(worker_id=2,cpu_frame_id=None)
+            r=summarize_worker_handoffs(encode(rows+aux),[7,8])
+            self.assertEqual([f['cpu_frame_id'] for f in r['frames']],[7,8])
+            del aux[1][1]['cpu_frame_id']
+            with self.assertRaises(ValueError):summarize_worker_handoffs(encode(rows+aux),[7,8])
 
-    def test_missing_legacy_is_optional_but_partial_and_duplicate_are_rejected(self):
-        self.assertFalse(summarize_worker_handoffs([], [7])['available'])
-        rows=fixture()
-        for bad in [rows[:2],rows+[rows[3]],rows[:3]]:
-            with self.assertRaises(ValueError):summarize_worker_handoffs(encode(bad),[7,8])
+    def test_partial_duplicate_or_invalid_handoffs_are_rejected(self):
+        with self.subTest(phase='missing legacy optional, partial and duplicate rejected'):
+            self.assertFalse(summarize_worker_handoffs([], [7])['available'])
+            rows=fixture()
+            for bad in [rows[:2],rows+[rows[3]],rows[:3]]:
+                with self.assertRaises(ValueError):summarize_worker_handoffs(encode(bad),[7,8])
+        with self.subTest(phase='invalid clock, identity and predecessor'):
+            changes=[{'previous_worker_frame_ix':4},{'previous_cpu_frame_id':8},
+                     {'worker_id':True},{'cpu_frame_id':None},
+                     {'before_receive_host_lo_s':float('nan')},
+                     {'before_receive_host_hi_s':102},
+                     {'previous_after_pool_send_host_lo_s':99},
+                     {'previous_render_end_host_hi_s':100.31},
+                     {'previous_handoff_log_after_host_hi_s':100.25}]
+            for change in changes:
+                rows=copy.deepcopy(fixture());rows[3][1].update(change)
+                with self.subTest(change=change),self.assertRaises(ValueError):
+                    summarize_worker_handoffs(encode(rows),[7,8])
 
-    def test_invalid_clock_identity_and_predecessor_rejected(self):
-        changes=[{'previous_worker_frame_ix':4},{'previous_cpu_frame_id':8},
-                 {'worker_id':True},{'cpu_frame_id':None},
-                 {'before_receive_host_lo_s':float('nan')},
-                 {'before_receive_host_hi_s':102},
-                 {'previous_after_pool_send_host_lo_s':99},
-                 {'previous_render_end_host_hi_s':100.31},
-                 {'previous_handoff_log_after_host_hi_s':100.25}]
-        for change in changes:
-            rows=copy.deepcopy(fixture());rows[3][1].update(change)
-            with self.subTest(change=change),self.assertRaises(ValueError):
-                summarize_worker_handoffs(encode(rows),[7,8])
-
-    def test_explicit_null_auxiliary_identity_not_cpu_zero(self):
-        rows=fixture();aux=copy.deepcopy(rows[:2])
-        for _,r in aux:r.update(worker_id=2,cpu_frame_id=None)
-        r=summarize_worker_handoffs(encode(rows+aux),[7,8])
-        self.assertEqual([f['cpu_frame_id'] for f in r['frames']],[7,8])
-        del aux[1][1]['cpu_frame_id']
-        with self.assertRaises(ValueError):summarize_worker_handoffs(encode(rows+aux),[7,8])
 
 if __name__=='__main__':unittest.main()

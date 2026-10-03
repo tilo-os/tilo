@@ -20,17 +20,19 @@ which bootc keeps across images. Sessions restart with the reboot.
 |---|---|
 | a component `os/components.toml` lists (shell, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
 | anything else, and CI has built the commit | `tilo-vm vm upgrade --from sha:<commit>` |
-| anything else, not pushed yet | `tilo-vm vm upgrade --from local` |
+| anything else, not pushed yet | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
 
 Swap whatever it can swap. An image upgrade reboots the VM and restarts every
 slot's session, including other agents'.
 
 ## From a CI build: `--from ci:<tag>` / `--from sha:<commit>`
 
-Every main build pushes its OS image, unsigned, to
-`registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>` (`sha:<commit>` is short for
-`ci:main-<sha7>`). `vm upgrade` then takes, in order, the first of these that
-exists:
+The Build / OS dev workflow builds every main push and every pull request
+that touches `os/`, fully cached, and pushes two images per architecture:
+the unsigned OS image `registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>` and
+its dev image `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-ci`, where `<ref>` is
+`main` or `pr-<number>`. `sha:<commit>` is short for `ci:main-<sha7>`, and
+`vm upgrade` takes, in order, the first of these that exists:
 
 1. the dev image CI published for that build,
    `registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci` (or `:main-<sha7>` from a signed
@@ -40,10 +42,53 @@ exists:
    pulled here and used as the base of `--from local`'s dev image build, which
    compiles only the dev layers, with this worktree's `os/Containerfile.dev`.
    The result is `localhost/tilo-vm:ci-<tag>`, sent and switched to like any
-   local image.
+   local image;
+3. for a `sha:` that is not a main build, the same two for the pull request
+   that built it: the tags of `tilo-vm` and `tilo-ci` are listed and the one
+   ending in `-<sha7>-ci` (then `-<sha7>-<arch>`) is taken.
 
 Nothing on this host rebuilds the production image. To see which builds
 exist: `skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci`.
+
+## Building somewhere else: `tilo-vm image build`
+
+`tilo-vm image build` runs the same build as `--from local` without a VM and
+leaves the dev image as an OCI layout, `target/tilo-vm/image`, with its
+`.facts` and `.digest` beside it. `vm upgrade --image <that layout>` moves a VM
+onto it. `tilo-vm image disk` writes a dev disk from it,
+`target/tilo-vm/disk.qcow2` (`image build --disk` does both in one go), for
+`vm create --image`.
+
+A laptop does not have to compile the OS: run `image build` on a build
+machine, in a copy of the worktree inside the dev build container, and bring
+`target/tilo-vm` back:
+
+```sh
+# on the build machine, in the synced worktree:
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)   # the commit time dates the image (needed without git)
+tilo-vm image build
+# back here, after syncing target/tilo-vm:
+tilo-vm vm upgrade --image target/tilo-vm/image       # new layers into the VM, reboot
+
+# no VM yet, and no published disk to create one from:
+tilo-vm image disk                                    # here: loop device, sudo
+tilo-vm vm create dev --image target/tilo-vm/disk.qcow2 && tilo-vm vm start
+```
+
+- Sync the worktree over, uncommitted edits included, and mirror
+  `target/tilo-vm` back incrementally (rsync or similar): blobs the laptop has
+  stay, only new layers cross.
+- On the build machine the build is incremental like a local one: the base is
+  rebuilt only when its inputs changed (outside a git checkout its files are
+  fingerprinted directly), podman's layer cache and the builder stage's cargo
+  cache keep everything else, and a failed step reruns on its own.
+- The nested podman keeps its image store in whatever directory the build
+  container binds at `/var/lib/containers`; a persistent directory there is the
+  whole cache.
+- The disk is written where loop devices are, not in a rootless build
+  container. A new disk replaces `target/tilo-vm/disk.qcow2`,
+  which backs any VM made from it: keep a VM current with `vm upgrade
+  --image`, and write a disk only for a new VM.
 
 ## Building the base here
 

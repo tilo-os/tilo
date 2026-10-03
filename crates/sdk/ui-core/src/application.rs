@@ -8,7 +8,7 @@ use crate::permissions::{PermissionContext, PermissionScope, UserId};
 use crate::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
 };
-use crate::view::{FrozenApp, ThawError, View};
+use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
@@ -17,7 +17,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod host;
-pub use host::{ApplicationHost, NativeProcessHost};
+mod open_file;
+pub mod registry;
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
 pub type InstanceId = u64;
 pub type ComponentFactory =
@@ -29,11 +32,16 @@ pub struct ApplicationDefinition {
     pub record_kind: RecordKind,
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
+    /// Media types (`type/subtype`, lowercase) the component opens when a host
+    /// hands it a file ([`HostContext::take_open_file`]).
+    pub opens: &'static [&'static str],
     pub create: ComponentFactory,
 }
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
+    /// Explicit creation of the one room-scoped package-primary document.
+    PrimaryNew,
     Record {
         checkout: RecordCheckout,
         reveal: Option<tilo_actions::ActionAddress>,
@@ -43,11 +51,23 @@ pub enum LaunchTarget {
 pub enum RestoreInput {
     None,
     Local(SavedInstanceView),
-    LegacyRecovery(FrozenApp),
+}
+
+/// Host-supplied storage, identity and authority for one instance, checked by
+/// [`HostContext::prepare`] before any factory runs.
+pub struct HostContextInputs {
+    pub records: RecordStore,
+    pub views: Rc<InstanceViewStore>,
+    pub device_id: String,
+    pub instance_id: InstanceId,
+    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub author: UserId,
+    pub action_context: tilo_actions::ActionContext,
 }
 
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
 pub struct HostContext {
+    /// The app's package id, matching both its definition and its record namespace.
     app_id: String,
     instance_id: InstanceId,
     device_id: String,
@@ -58,12 +78,18 @@ pub struct HostContext {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// See [`Self::write_as_author`].
+    writes_as_author: bool,
     wake_scope: WakeScope,
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
+    retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
+    content: Option<tilo_content::ContentStore>,
+    open_file: Option<OpenFile>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -78,6 +104,7 @@ pub struct ComponentRunnerInputs {
 impl ComponentRunnerInputs {
     /// Explicit native-runner discovery of the system's presentation settings
     /// and fonts. Factories and capture hosts should use supplied inputs instead.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_process() -> Self {
         crate::App::native_component_presentation()
     }
@@ -92,37 +119,36 @@ pub struct PreparedComponentInputs {
 }
 
 impl HostContext {
+    fn retire_semantic_mount(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+    pub(crate) fn bind_retirement(
+        &mut self,
+        retirement: crate::semantic_document_read::retirement::MountRetirement,
+    ) -> Result<(), LaunchError> {
+        if self.retirement.is_some() || self.closing.get() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.retirement = Some(retirement);
+        Ok(())
+    }
+    pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
+        self.records
+            .require_invocation_provenance(&self.record)
+            .map_err(crate::launch::LaunchError::Operation)
+    }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
     /// # Errors
     /// Rejects denied authority, invalid/foreign namespaces and unavailable records.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host inputs are explicit rather than resolved from ambient state"
-    )]
     pub fn prepare(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
-            records,
-            views,
-            device_id,
-            instance_id,
-            permissions,
-            author,
-            action_context,
-            target,
-            None,
-        )
+        Self::prepare_scoped(definition, inputs, target, None)
     }
 
     /// Reserve a host-named new record through the same checked construction
@@ -132,23 +158,21 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects foreign namespaces, denied authority and occupied identities.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit authenticated host inputs"
-    )]
     pub fn prepare_new_record(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         record_id: RecordId,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
+        Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(record_id))
+    }
+
+    fn prepare_scoped(
+        definition: &ApplicationDefinition,
+        inputs: HostContextInputs,
+        target: &LaunchTarget,
+        new_record_id: Option<RecordId>,
+    ) -> Result<Self, LaunchError> {
+        let HostContextInputs {
             records,
             views,
             device_id,
@@ -156,27 +180,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
-            &LaunchTarget::New,
-            Some(record_id),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one validation path for minted and host-named records"
-    )]
-    fn prepare_scoped(
-        definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
-        target: &LaunchTarget,
-        new_record_id: Option<RecordId>,
-    ) -> Result<Self, LaunchError> {
+        } = inputs;
         validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
@@ -208,9 +212,23 @@ impl HostContext {
                     .map_err(LaunchError::Record)?;
                 (checkout, Some(reservation))
             }
+            LaunchTarget::PrimaryNew => {
+                if new_record_id.is_some() {
+                    return Err(LaunchError::BindingMismatch);
+                }
+                let checkout = RecordCheckout::new(
+                    RecordId::package_primary(),
+                    definition.record_kind.clone(),
+                );
+                let reservation = records
+                    .reserve_record(&checkout)
+                    .map_err(LaunchError::Record)?;
+                (checkout, Some(reservation))
+            }
             LaunchTarget::Record { checkout, .. } => {
                 if checkout.kind != definition.record_kind
-                    || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+                    || !checkout.id.is_package_primary()
+                        && RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -221,7 +239,7 @@ impl HostContext {
             }
         };
         Ok(Self {
-            app_id: definition.app_id.into(),
+            app_id: package,
             instance_id,
             device_id,
             records,
@@ -231,16 +249,69 @@ impl HostContext {
             permissions,
             author,
             action_context,
+            writes_as_author: false,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
+            control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
+            retirement: None,
+            content: None,
+            open_file: None,
         })
+    }
+    /// Commit this instance's edits to its record under an actor of its
+    /// author's own ([`crate::record::author_writer`]) rather than the
+    /// record's writer, which every instance sharing the record's store
+    /// writes as. For a host that mounts several authors on one store (a
+    /// page's mounts of one profile and device), so history can tell whose
+    /// edit each change is. The record's writer, which the store persists,
+    /// is unchanged, as is everything written outside the instance.
+    pub fn write_as_author(&mut self) {
+        self.writes_as_author = true;
+    }
+    /// Lend the component the host's content store for this storage scope:
+    /// opaque bytes addressed by hash that outlive the component and that
+    /// other components of the same scope read too.
+    pub fn provide_content(&mut self, store: tilo_content::ContentStore) {
+        self.content = Some(store);
+    }
+    /// The content store the host lent, if any.
+    pub fn content(&self) -> Option<&tilo_content::ContentStore> {
+        self.content.as_ref()
+    }
+    /// Hand the component a file to open. [`ApplicationDefinition::instantiate`]
+    /// refuses the launch unless the definition opens its media type.
+    pub fn provide_open_file(&mut self, file: OpenFile) {
+        self.open_file = Some(file);
+    }
+    /// The file the host handed over to open, once.
+    pub fn take_open_file(&mut self) -> Option<OpenFile> {
+        self.open_file.take()
+    }
+    /// Explicit owner-bound producer capability, available before factory work.
+    pub fn control_domain(&self) -> crate::ControlDomain {
+        self.control_domain
+            .set_owner(crate::control_custody::ControlOwner::Component(
+                self.callback_binding(),
+            ));
+        self.control_domain.clone()
+    }
+    /// Establish presentation scope before constructing a nested component.
+    pub fn inherit_control_custody(
+        &self,
+        parent: &crate::ControlDomain,
+    ) -> Result<(), crate::control_custody::CustodyError> {
+        self.control_domain().attach_to(parent)
     }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
+    }
+    /// The application this context was prepared for.
+    pub fn app_id(&self) -> &str {
+        &self.app_id
     }
     pub fn author(&self) -> &UserId {
         &self.author
@@ -265,6 +336,23 @@ impl HostContext {
     /// [`crate::host::current`] resolved when the host prepared it.
     pub fn services(&self) -> &crate::host::HostServices {
         &self.services
+    }
+    /// This app's secrets, in the store its host provides: the system's
+    /// (the Secret Service, the Keychain, the browser's wrapped store) or a
+    /// host's own. Other apps' secrets are out of reach.
+    pub fn secrets(&self) -> crate::secrets::SecretStore {
+        self.services.secrets.store(&self.app_id)
+    }
+    /// This app's private file areas (data, config, cache, state): the
+    /// per-user directories natively, the origin-private file system in a
+    /// page. See [`crate::storage`] for what belongs where.
+    pub fn files(&self) -> crate::storage::AppFiles {
+        crate::storage::AppFiles::for_app(&self.app_id)
+    }
+    /// This app's preferences: its own section of the desktop settings
+    /// document, named by the app id.
+    pub fn settings(&self) -> crate::storage::Settings {
+        crate::storage::Settings::for_app(&self.app_id)
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -296,6 +384,7 @@ impl HostContext {
             registry_owner: Rc::downgrade(&self.construction),
             lifetime_id: self.lifetime_id,
             queued_controls: self.queued_controls.clone(),
+            control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
             records: self.records.clone(),
@@ -303,6 +392,7 @@ impl HostContext {
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             operation_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
         }
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
@@ -328,33 +418,54 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || saved.record_kind != self.record.kind.as_str()
+                    || !self.record.kind.names(&saved.record_kind)
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
                 Ok(())
             }
-            RestoreInput::LegacyRecovery(frozen) => {
-                if frozen.version != crate::view::FROZEN_VERSION {
-                    return Err(LaunchError::Restore(ThawError::UnsupportedVersion {
-                        found: frozen.version,
-                        supported: crate::view::FROZEN_VERSION,
-                    }));
-                }
-                AutoCommit::load(&frozen.state)
-                    .map_err(|e| LaunchError::Restore(ThawError::State(e.to_string())))?;
-                frozen.view.validate().map_err(LaunchError::Restore)?;
-                Err(LaunchError::RecoveryRequired)
-            }
         }
     }
 }
+
 impl Drop for HostContext {
     fn drop(&mut self) {
+        self.retire_semantic_mount();
+        self.control_domain.close();
         self.wake_scope.close();
     }
 }
 impl ApplicationDefinition {
+    /// Whether the app keeps one record per room, its package primary
+    /// (Chat's conversation), rather than a record per window. Definitions
+    /// do not declare this; Chat's record kind names it.
+    pub fn keeps_room_record(&self) -> bool {
+        self.record_kind.as_str() == "chat.workspace"
+    }
+
+    /// The launch target of an instance with no saved record: a new record
+    /// of its own, or the room's record (created on first use) for an app
+    /// that [keeps one](Self::keeps_room_record).
+    pub fn unsaved_target(&self, records: &RecordStore) -> LaunchTarget {
+        if !self.keeps_room_record() {
+            return LaunchTarget::New;
+        }
+        let checkout = RecordCheckout::package_primary(self.record_kind.clone());
+        if records.try_open_record(&checkout).is_ok() {
+            LaunchTarget::Record {
+                checkout,
+                reveal: None,
+            }
+        } else {
+            LaunchTarget::PrimaryNew
+        }
+    }
+
+    /// Whether the component opens files of `media_type` (parameters and case ignored).
+    pub fn opens_media_type(&self, media_type: &str) -> bool {
+        open_file::media_type_essence(media_type)
+            .is_some_and(|essence| self.opens.contains(&essence.as_str()))
+    }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     /// The factory projects through `HostContext::read_record`; no mutable `Widget::sync`
     /// or second history/autosave initialization follows its View restoration.
@@ -394,8 +505,13 @@ impl ApplicationDefinition {
         if context.app_id != self.app_id || context.record.kind != self.record_kind {
             return Err(LaunchError::BindingMismatch);
         }
+        if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
+            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
         match &target {
-            LaunchTarget::New if context.reservation.is_none() => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew if context.reservation.is_none() => {
                 return Err(LaunchError::BindingMismatch);
             }
             LaunchTarget::Record { checkout, .. }
@@ -411,6 +527,16 @@ impl ApplicationDefinition {
             if !context.permissions.borrow().check(required) {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
+        }
+        if let Some(file) = &context.open_file
+            && !self.opens_media_type(file.media_type())
+        {
+            return Err(LaunchError::Operation(format!(
+                "{} does not open {} files ({})",
+                self.title,
+                file.media_type(),
+                file.name()
+            )));
         }
         context.validate_restore(&restore)?;
         let records = context.records.clone();
@@ -447,8 +573,21 @@ impl ApplicationDefinition {
     }
 }
 
+/// How the window hosting a component treats its tree. Part of the
+/// component, so every host that runs it applies the same behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComponentBehaviour {
+    /// After a structural rebuild, focus the first focusable field again so a
+    /// filter that rebuilds the tree keeps its caret.
+    pub autofocus_on_structure_change: bool,
+    /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live:
+    /// scale, theme, contrast and motion follow it each tick.
+    pub appearance_reconcile: bool,
+}
+
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
     pub(crate) root: Option<Box<dyn AppWidget>>,
@@ -464,6 +603,18 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    /// Set how the hosting window treats this component's tree.
+    pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
+        self.behaviour = behaviour;
+    }
+    pub(crate) fn take_root_retirement(
+        &mut self,
+    ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
+        self.context
+            .retirement
+            .as_mut()
+            .and_then(|retirement| retirement.take_app())
+    }
     /// Register presentation for this component's actual document custody. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata carries no new authority and follows native/headless/tile mounts.
@@ -573,11 +724,25 @@ impl AppComponent {
 
     pub fn new(
         context: HostContext,
-        root: Box<dyn AppWidget>,
+        mut root: Box<dyn AppWidget>,
         registry: tilo_actions::ActionRegistry,
     ) -> Self {
+        // The actual root already exists. Retire before its destructor if its
+        // first SDK control-install callback unwinds, even before Self exists.
+        let construction =
+            crate::semantic_document_read::retirement::MountConstructionRetirement::new(
+                context.retirement.as_ref(),
+            );
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
+            &context.control_domain(),
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        context.control_domain().finish_initial_installation();
         let registry_owner = context.construction.clone();
+        construction.disarm();
         Self {
+            behaviour: ComponentBehaviour::default(),
             history: None,
             context,
             root: Some(root),
@@ -598,6 +763,15 @@ impl AppComponent {
         }
     }
 
+    /// Take the view and action decoders of newly loaded code in place of
+    /// the running ones. The document stays: the new view reads it, and edits
+    /// the new view encodes are decoded and applied by the new code.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
+        self.root = Some(root.view);
+        self.registry = Some(root.registry);
+    }
+
     /// Return only weak proxies; payload ownership remains with this component.
     pub(crate) fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         let binding = self.callback_binding();
@@ -607,7 +781,7 @@ impl AppComponent {
         let Some(root) = self.root.as_deref() else {
             return vec![];
         };
-        root.search_providers()
+        crate::search::capability::search_providers(root)
             .into_iter()
             .filter_map(|provider| {
                 // The host independently collects nested component boundaries.
@@ -642,6 +816,13 @@ impl AppComponent {
         if !self.prepared {
             return Err(LaunchError::BindingMismatch);
         }
+        if let Some(root) = &mut self.root {
+            crate::widget::controls::install_control_custody(
+                root.as_mut(),
+                &self.context.control_domain(),
+                crate::control_custody::CustodyAttachment::Dynamic,
+            );
+        }
         self.context
             .wake_scope
             .bind(sink)
@@ -675,6 +856,12 @@ impl AppComponent {
         }
         view.validate()?;
         let application = root.capture_application_view()?;
+        if application
+            .as_ref()
+            .is_some_and(|local| local.app_id != self.context.app_id)
+        {
+            return Err(ThawError::BindingMismatch);
+        }
         self.context
             .envelope(view.clone(), application.clone())
             .validate()?;
@@ -693,6 +880,9 @@ impl AppComponent {
         self.context
             .read_record(|doc| {
                 let policy = if let Some(local) = &saved.application {
+                    if local.app_id != self.context.app_id {
+                        return Err(ThawError::BindingMismatch);
+                    }
                     root.restore_application_view(local, doc)?
                 } else {
                     ApplicationFocusRestore::Generic
@@ -745,7 +935,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| root.unsaved_documents(doc))
+            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -775,9 +965,11 @@ impl AppComponent {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
-            errors.extend(root.checkpoint_components());
+            errors.extend(crate::component_lifecycle::checkpoint_components(root));
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         errors.extend(crate::close_admission::retry_reports(
             &mut self.pending_reports,
@@ -788,6 +980,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
         }
@@ -795,9 +988,12 @@ impl AppComponent {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.finish_admitted_close());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::finish_admitted_close(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         let mut report = ComponentCloseReport {
             recovery: Some(
@@ -830,6 +1026,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
             view_error: None,
@@ -839,6 +1036,7 @@ impl AppComponent {
             record_retry_target: None,
             teardown_error: None,
         };
+        self.context.control_domain.close();
         self.context.closing.set(true);
         match self.capture_local_pair_owned(&self.local_view) {
             Ok((view, application)) => {
@@ -870,9 +1068,12 @@ impl AppComponent {
         // Parent View has already been captured. Each child still owns its live
         // tree and captures/closes exactly once before any parent root is dropped.
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.close_components());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         self.close_report = Some(report.clone());
         if let Err(error) = self.teardown() {
@@ -888,7 +1089,9 @@ impl AppComponent {
         // the parent here, and never consult a root after teardown removed it.
         if let Some(root) = self.root.as_deref_mut() {
             let _entry = self.context.wake_scope.enter();
-            reports.extend(root.take_component_close_reports());
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root,
+            ));
         }
         if !self.report_drained
             && let Some(report) = &self.close_report
@@ -902,6 +1105,8 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        self.context.retire_semantic_mount();
+        self.context.control_domain.close();
         self.context.closing.set(true);
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
@@ -974,6 +1179,11 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         self.invoke(|provider| provider.action_directory_generation())
             .flatten()
+    }
+
+    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+        self.invoke(|provider| provider.action_directory_invocation_domain())
+            .unwrap_or_default()
     }
     fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
         self.invoke(|provider| provider.action_directory_cursor_is_current(cursor))
@@ -1182,12 +1392,16 @@ mod cleanup_tests {
         );
     }
     #[test]
-    fn root_panic_still_drops_registry_under_closed_scope_and_propagates() {
-        assert_closed_cleanup("root");
-    }
-    #[test]
-    fn registry_panic_propagates_after_both_closed_scope_drops() {
-        assert_closed_cleanup("registry");
+    fn panics_propagate_after_the_registry_drops_under_a_closed_scope() {
+        // Case `root_panic_still_drops_registry_under_closed_scope_and_propagates`.
+        {
+            assert_closed_cleanup("root");
+        }
+
+        // Case `registry_panic_propagates_after_both_closed_scope_drops`.
+        {
+            assert_closed_cleanup("registry");
+        }
     }
 }
 
@@ -1195,11 +1409,11 @@ mod cleanup_tests {
 mod bound_lifetime_tests {
     use super::*;
     use crate::widget::{AppKind, Column, Widget};
-    use automerge::ObjId;
+
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
-        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.0.sync(doc, path);
         }
         fn build_layout(
@@ -1231,18 +1445,9 @@ mod bound_lifetime_tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            doc: &mut AutoCommit,
-            path: &ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
+            ctx: &mut crate::widget::EventCtx<'_>,
         ) {
-            self.0.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, tree,
-            );
+            self.0.handle_event(event, ctx);
         }
         fn name(&self) -> &'static str {
             "MountProbe"
@@ -1282,135 +1487,327 @@ mod bound_lifetime_tests {
             tilo_actions::ActionRegistry::new(),
         ))
     }
+
     #[test]
-    fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
+    fn host_named_new_and_package_primary_keep_distinct_identity_contracts() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "so.tilo.mount-probe",
+            app_id: "dev.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: factory,
         };
-        let prepare = |target: &LaunchTarget| {
-            HostContext::prepare(
+        let supplied = RecordId::for_tab(55);
+        let prepare = |target, supplied| {
+            HostContext::prepare_scoped(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 target,
+                supplied,
             )
-            .unwrap()
         };
-        let mut old = definition
-            .instantiate(
-                prepare(&LaunchTarget::New),
-                LaunchTarget::New,
-                RestoreInput::None,
-            )
-            .unwrap();
-        let binding = old.callback_binding();
-        let target = LaunchTarget::Record {
-            checkout: old.record().clone(),
-            reveal: None,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        old.mount(move |event| {
-            tx.send(event).unwrap();
-        })
-        .unwrap();
-        let local = binding
-            .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
-            .unwrap();
-        assert!(local.writer().try_set(1));
-        let queued = rx.try_recv().unwrap();
-        assert!(old.context.wake_scope.accepts(&queued));
-        records
-            .with(&old.record().id, |_| {
-                assert!(matches!(
-                    binding.with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
-                    Err(crate::bound_dispatch::BoundDispatchError::Record(
-                        RecordOpenError::Busy
-                    ))
-                ));
-            })
-            .unwrap();
-        old.close();
-        let mut reopened = definition
-            .instantiate(prepare(&target), target, RestoreInput::None)
-            .unwrap();
-        let (tx, new_rx) = std::sync::mpsc::channel();
-        reopened
-            .mount(move |event| {
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-        assert!(!old.context.wake_scope.accepts(&queued));
-        assert!(!reopened.context.wake_scope.accepts(&queued));
-        assert!(!local.writer().try_set(2));
-        assert!(new_rx.try_recv().is_err());
+
+        let named = prepare(&LaunchTarget::New, Some(supplied.clone())).unwrap();
+        assert_eq!(named.record.id, supplied);
+        drop(named);
+
         assert!(matches!(
-            binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
+            Err(LaunchError::BindingMismatch)
         ));
+        let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
+        assert!(primary.record.id.is_package_primary());
     }
 
     #[test]
-    fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
+    fn existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "so.tilo.mount-probe",
+            app_id: "dev.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: factory,
         };
-        let context = HostContext::prepare(
-            &definition,
-            records,
-            views,
-            "D".into(),
-            7,
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            UserId("probe-author".into()),
-            tilo_actions::ActionContext::default(),
-            &LaunchTarget::New,
-        )
-        .unwrap();
+        let prepare = |checkout| {
+            HostContext::prepare(
+                &definition,
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
+                &LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+            )
+        };
+
+        let malformed = RecordCheckout::new(
+            RecordId::derived("invalid role", &RecordId::for_tab(55)),
+            definition.record_kind.clone(),
+        );
+        assert!(matches!(
+            prepare(malformed),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
+        assert!(matches!(
+            prepare(foreign),
+            Err(LaunchError::Record(
+                crate::record::RecordOpenError::MissingRecord
+            ))
+        ));
+
+        let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+        records.create_record(&primary).unwrap();
+        let context = prepare(primary).expect("an existing local package primary must reopen");
+        assert!(context.record.id.is_package_primary());
+    }
+
+    #[test]
+    fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
+        // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+            let views =
+                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let definition = ApplicationDefinition {
+                app_id: "so.tilo.mount-probe",
+                title: "Mount probe",
+                icon: IconDescriptor::Glyph("P"),
+                record_kind: RecordKind::new("probe"),
+                required: vec![],
+                optional: vec![],
+                opens: &[],
+                create: factory,
+            };
+            let prepare = |target: &LaunchTarget| {
+                HostContext::prepare(
+                    &definition,
+                    HostContextInputs {
+                        records: records.clone(),
+                        views: views.clone(),
+                        device_id: "D".into(),
+                        instance_id: 7,
+                        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                        author: UserId("probe-author".into()),
+                        action_context: tilo_actions::ActionContext::default(),
+                    },
+                    target,
+                )
+                .unwrap()
+            };
+            let mut old = definition
+                .instantiate(
+                    prepare(&LaunchTarget::New),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            let binding = old.callback_binding();
+            let target = LaunchTarget::Record {
+                checkout: old.record().clone(),
+                reveal: None,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            old.mount(move |event| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+            let local = binding
+                .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
+                .unwrap();
+            assert!(local.writer().try_set(1));
+            let queued = rx.try_recv().unwrap();
+            assert!(old.context.wake_scope.accepts(&queued));
+            records
+                .with(&old.record().id, |_| {
+                    assert!(matches!(
+                        binding
+                            .with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
+                        Err(crate::bound_dispatch::BoundDispatchError::Record(
+                            RecordOpenError::Busy
+                        ))
+                    ));
+                })
+                .unwrap();
+            old.close();
+            let mut reopened = definition
+                .instantiate(prepare(&target), target, RestoreInput::None)
+                .unwrap();
+            let (tx, new_rx) = std::sync::mpsc::channel();
+            reopened
+                .mount(move |event| {
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            assert!(!old.context.wake_scope.accepts(&queued));
+            assert!(!reopened.context.wake_scope.accepts(&queued));
+            assert!(!local.writer().try_set(2));
+            assert!(new_rx.try_recv().is_err());
+            assert!(matches!(
+                binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+        }
+
+        // Case `task4_component_loan_checks_captured_registry_and_lifetime_before_delivery`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+            let views =
+                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let definition = ApplicationDefinition {
+                app_id: "so.tilo.mount-probe",
+                title: "Mount probe",
+                icon: IconDescriptor::Glyph("P"),
+                record_kind: RecordKind::new("probe"),
+                required: vec![],
+                optional: vec![],
+                opens: &[],
+                create: factory,
+            };
+            let context = HostContext::prepare(
+                &definition,
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
+                &LaunchTarget::New,
+            )
+            .unwrap();
+            let mut component = definition
+                .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                .unwrap();
+            let binding = component.callback_binding();
+            component
+                .with_live_component(&binding, |admitted, root, _registry| {
+                    assert_eq!(admitted.instance_id, 7);
+                    assert_eq!(root.app_title(), "Mount probe");
+                })
+                .unwrap();
+            let mut foreign = binding.clone();
+            foreign.registry_owner = std::rc::Weak::new();
+            assert!(matches!(
+                component
+                    .with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+            component.close();
+            assert!(matches!(
+                component
+                    .with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use crate::application_test_support as probe;
+    #[test]
+    fn portable_host_checks_namespaces_authority_and_persists_real_component() {
+        let cache =
+            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open(probe::APP, probe::ROOM)
+            .unwrap();
+        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::ROOM).unwrap());
+        let definition = probe::definition(probe::probe_factory);
+        let prepare = |views, permissions| {
+            HostContext::prepare(
+                &definition,
+                HostContextInputs {
+                    records: records.clone(),
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 7,
+                    permissions,
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
+                &LaunchTarget::New,
+            )
+        };
+        let foreign =
+            crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+        assert!(matches!(
+            prepare(
+                Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()),
+                probe::permissions()
+            ),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let context = prepare(views.clone(), probe::permissions()).unwrap();
         let mut component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let binding = component.callback_binding();
-        component
-            .with_live_component(&binding, |admitted, root, _registry| {
-                assert_eq!(admitted.instance_id, 7);
-                assert_eq!(root.app_title(), "Mount probe");
-            })
-            .unwrap();
-        let mut foreign = binding.clone();
-        foreign.registry_owner = std::rc::Weak::new();
+        let checkout = component.record().clone();
+        assert!(records.is_ready(&checkout.id));
+        let report = component.close();
+        assert!(report.record_error.is_some());
+        assert!(report.view_error.is_some());
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        records.try_flush().unwrap();
+        let saved = views.load(7).unwrap().unwrap();
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        views.save(&saved).unwrap();
+        let mut denied = probe::definition(probe::probe_factory);
+        denied.required.push(probe::denied_scope());
         assert!(matches!(
-            component.with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-        ));
-        component.close();
-        assert!(matches!(
-            component.with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            HostContext::prepare(
+                &denied,
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 8,
+                    permissions: probe::permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance()
+                },
+                &LaunchTarget::New,
+            ),
+            Err(LaunchError::CapabilityDenied(_))
         ));
     }
 }

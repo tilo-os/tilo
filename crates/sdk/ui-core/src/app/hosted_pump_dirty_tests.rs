@@ -1,0 +1,513 @@
+// Included in `semantic_tree_app_tests` beside hosted_model_tests.rs: the
+// dirty-tracked hosted worker pump keeps idle passes cheap while every real
+// model, notification, invocation, commit, inbound and policy change still
+// refreshes resources and the published action surface.
+
+/// Widget state (label) arrives asynchronously and is applied in `sync`,
+/// document state (`more`) is read by `resources`, exactly like app workers.
+struct HostedPumpProbe {
+    calls: std::rc::Rc<Cell<usize>>,
+    syncs: std::rc::Rc<Cell<usize>>,
+    pending_label: std::rc::Rc<RefCell<Option<String>>>,
+    label: String,
+    commit: std::rc::Rc<Cell<bool>>,
+    actions: usize,
+}
+impl Widget for HostedPumpProbe {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
+
+    crate::testing::inert_widget_methods!(
+        unregistered_leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "hosted-pump-probe"
+    );
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+        self.syncs.set(self.syncs.get() + 1);
+        if let Some(label) = self.pending_label.borrow_mut().take() {
+            self.label = label;
+        }
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE]
+    }
+}
+
+impl crate::undo::UndoPoints for HostedPumpProbe {
+    fn needs_commit(&self) -> bool {
+        self.commit.get()
+    }
+    fn on_commit(&mut self) {
+        self.commit.set(false);
+    }
+}
+
+impl crate::resources::PublishesResources for HostedPumpProbe {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        self.calls.set(self.calls.get() + 1);
+        let count = if doc.get(ROOT, "more").unwrap().is_some() {
+            3
+        } else {
+            1
+        };
+        (0..count)
+            .map(|index| {
+                let mut resource = Resource::new(
+                    format!("probe:{index}"),
+                    "probe",
+                    format!("{} {index}", self.label),
+                );
+                for action in 0..self.actions {
+                    resource = resource.with_action(
+                        ActionSpec::operation(
+                            format!("inspect:{action}"),
+                            "Inspect",
+                            OperationKind::View,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .unwrap()
+                        .with_contract(tilo_actions::ActionContract::view()),
+                    );
+                }
+                resource
+            })
+            .collect()
+    }
+}
+
+struct HostedPumpFixture {
+    app: App,
+    wake: crate::wake::WakeHandle,
+    calls: std::rc::Rc<Cell<usize>>,
+    syncs: std::rc::Rc<Cell<usize>>,
+    pending_label: std::rc::Rc<RefCell<Option<String>>>,
+    commit: std::rc::Rc<Cell<bool>>,
+    sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
+    events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+}
+
+struct HostedPumpTransport {
+    sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
+    events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+}
+impl crate::collaboration::PeerTransport for HostedPumpTransport {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        self.sent.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl HostedPumpFixture {
+    /// An application worker: unbound instance wake scope, no event loop.
+    fn new(actions: usize) -> Self {
+        let scope = crate::wake::WakeScope::new();
+        let wake = scope.handle();
+        let calls = std::rc::Rc::new(Cell::new(0));
+        let syncs = std::rc::Rc::new(Cell::new(0));
+        let pending_label = std::rc::Rc::new(RefCell::new(None));
+        let commit = std::rc::Rc::new(Cell::new(false));
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            scope,
+            State::new(),
+            Box::new(HostedPumpProbe {
+                calls: calls.clone(),
+                syncs: syncs.clone(),
+                pending_label: pending_label.clone(),
+                label: "Before".into(),
+                commit: commit.clone(),
+                actions,
+            }),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        let sent = std::rc::Rc::new(RefCell::new(vec![]));
+        let events = std::rc::Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedPumpTransport {
+                sent: sent.clone(),
+                events: events.clone(),
+            });
+        app.init_layout();
+        let mut fixture = Self {
+            app,
+            wake,
+            calls,
+            syncs,
+            pending_label,
+            commit,
+            sent,
+            events,
+        };
+        // Construction wakes and the first publication settle here.
+        fixture.app.pump_hosted_model_as(false);
+        fixture.app.pump_hosted_model_as(false);
+        fixture
+    }
+
+    fn pump(&mut self) -> model_lifecycle::HostedPumpReport {
+        self.app.pump_hosted_model_as(false)
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.app
+            .actions
+            .last_published_actions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|descriptor| descriptor.resource_label.clone())
+            .collect()
+    }
+
+    fn assert_idle(&mut self) {
+        let generation = self.app.actions.resource_generation.get();
+        let calls = self.calls.get();
+        let syncs = self.syncs.get();
+        let attempts = self.app.actions.action_surface_publication_attempts;
+        let revision = self.app.action_directory_revision();
+        let report = self.pump();
+        assert_eq!(report, model_lifecycle::HostedPumpReport::default());
+        assert_eq!(self.app.actions.resource_generation.get(), generation);
+        assert_eq!(self.calls.get(), calls, "idle pump must not rematerialize");
+        assert_eq!(self.syncs.get(), syncs, "idle pump must not sync");
+        assert_eq!(
+            self.app.actions.action_surface_publication_attempts, attempts,
+            "idle pump must not rebuild the action surface"
+        );
+        assert_eq!(self.app.action_directory_revision(), revision);
+    }
+}
+
+#[test]
+fn hosted_pump_idle_keeps_resource_cache_and_published_surface() {
+    let mut fixture = HostedPumpFixture::new(1);
+    assert_eq!(fixture.labels(), vec!["Before 0".to_string()]);
+    for _ in 0..3 {
+        fixture.assert_idle();
+    }
+    assert!(fixture.app.actions.resource_cache.borrow().is_some());
+}
+
+#[test]
+fn hosted_pump_idle_keeps_directory_cursor() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    let page = fixture
+        .app
+        .action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert_eq!(page.rows.len(), 1);
+    assert!(!page.next_cursor.is_empty());
+    fixture.assert_idle();
+    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+    query.cursor = page.next_cursor;
+    let next = fixture.app.action_directory_page(query);
+    assert!(
+        !next.stale_cursor,
+        "idle pump must retain the issued cursor"
+    );
+    assert_eq!(next.rows.len(), 1);
+}
+
+#[test]
+fn hosted_pump_async_notification_wake_refreshes_widget_resources() {
+    let mut fixture = HostedPumpFixture::new(1);
+    *fixture.pending_label.borrow_mut() = Some("After".into());
+    // Without a wake the pump cannot know (same contract as the window
+    // runner, whose redraw syncs only on a model-dirty wake).
+    fixture.assert_idle();
+    fixture.wake.wake();
+    let generation = fixture.app.actions.resource_generation.get();
+    let report = fixture.pump();
+    assert!(report.synced && report.published);
+    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+    assert_eq!(fixture.labels(), vec!["After 0".to_string()]);
+    fixture.assert_idle();
+}
+
+#[test]
+fn hosted_pump_queue_only_notification_updates_without_forced_sync() {
+    let mut fixture = HostedPumpFixture::new(1);
+    let syncs = fixture.syncs.get();
+    fixture.wake.notify_events();
+    let report = fixture.pump();
+    assert!(
+        report.updated,
+        "queue notification drains update-driven work"
+    );
+    assert!(!report.synced, "a queue wake alone is not model-dirty");
+    assert_eq!(fixture.syncs.get(), syncs);
+    fixture.assert_idle();
+}
+
+#[test]
+fn hosted_pump_local_commit_refreshes_resources() {
+    let mut fixture = HostedPumpFixture::new(1);
+    // A widget-local edit with no wake: only needs_commit reports it.
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.commit.set(true);
+    let report = fixture.pump();
+    assert!(report.published);
+    assert_eq!(fixture.labels().len(), 3);
+    // The commit set needs_sync; the next pass syncs it like the window runner.
+    assert!(fixture.pump().synced);
+    fixture.assert_idle();
+}
+
+#[test]
+fn hosted_pump_inbound_event_refreshes_remote_document_state() {
+    let mut fixture = HostedPumpFixture::new(1);
+    // Remote document bytes enter only with an inbound collaboration event.
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.events.borrow_mut().push(CollabEvent::Context {
+        collaborators: vec![],
+        permissions: vec![],
+    });
+    let report = fixture.pump();
+    assert!(report.synced && report.published);
+    assert_eq!(fixture.labels().len(), 3);
+    fixture.assert_idle();
+}
+
+#[test]
+fn idle_nearby_snapshot_reply_does_not_request_a_hosted_pump() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture
+        .events
+        .borrow_mut()
+        .push(CollabEvent::NearbyTransferCommandResult {
+            request_id: 1,
+            result: Ok(crate::collaboration::NearbyTransferReply::Snapshot {
+                snapshot: crate::collaboration::NearbyTransferSnapshot::default(),
+            }),
+        });
+    assert!(
+        !fixture.app.pump_collab_presence(),
+        "an unchanged Nearby snapshot must not keep requesting frames"
+    );
+    fixture.assert_idle();
+}
+
+#[test]
+fn hosted_pump_invocation_advances_and_publishes_then_idles() {
+    let scope = crate::wake::WakeScope::new();
+    let mut app = App::from_scoped_parts_with_controlled_inputs(
+        scope,
+        State::new(),
+        Box::new(CounterCard::with_async_post_bump_reset()),
+    );
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let sent = std::rc::Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    app.pump_hosted_model_as(false);
+    app.pump_hosted_model_as(false);
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        872,
+        invocation,
+        "test.counter".into(),
+        "async-bump".into(),
+        None,
+        "original-caller",
+        None,
+    );
+    assert!(app.pump_hosted_model_as(false).synced);
+    assert_eq!(counter(&app), 1, "accepted work advances without a wake");
+    app.pump_hosted_model_as(false);
+    assert!(!app.actions.directed_invocations.contains_key(&invocation));
+    assert_eq!(sent.borrow().iter().filter(|request| matches!(request,
+        CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }, .. } if *observed == invocation
+    )).count(), 1);
+    app.pump_hosted_model_as(false);
+    let generation = app.actions.resource_generation.get();
+    assert_eq!(
+        app.pump_hosted_model_as(false),
+        model_lifecycle::HostedPumpReport::default(),
+        "after completion the worker returns to idle"
+    );
+    assert_eq!(app.actions.resource_generation.get(), generation);
+    assert_eq!(counter(&app), 1);
+}
+
+#[test]
+fn hosted_pump_policy_change_and_expiry_refresh() {
+    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let mut fixture = HostedPumpFixture::new(1);
+    let time = Arc::new(AtomicU64::new(100));
+    let sample = time.clone();
+    fixture.app.permission_ctx = PermissionContext::from_capabilities(
+        Actor::person(None, "fixture-user"),
+        vec![
+            CapOverride::grant(
+                Subject::person("fixture-user"),
+                Scope::Workspace,
+                Verb::Admin,
+            )
+            .with_expiry(110),
+        ],
+    )
+    .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
+    let generation = fixture.app.actions.resource_generation.get();
+    assert!(fixture.pump().synced, "a replaced policy refreshes");
+    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+    fixture.assert_idle();
+    time.store(105, Ordering::Release);
+    fixture.assert_idle();
+    time.store(110, Ordering::Release);
+    assert!(
+        fixture.pump().synced,
+        "capability expiry is a policy change"
+    );
+    fixture.assert_idle();
+}
+
+#[test]
+fn hosted_pump_host_owner_permission_replacement_refreshes() {
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open("test.directory", "00000000-0000-0000-0000-000000000005")
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000005",
+        )
+        .unwrap(),
+    );
+    let definition = ApplicationDefinition {
+        app_id: "test.directory",
+        title: "Directory",
+        icon: crate::widget::IconDescriptor::Glyph("D"),
+        record_kind: crate::record::RecordKind::new("directory"),
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        create: owned_declared_directory_factory,
+    };
+    let permissions = Rc::new(RefCell::new(
+        crate::permissions::PermissionContext::permissive(),
+    ));
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 82,
+            permissions: permissions.clone(),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let inputs = crate::application::ComponentRunnerInputs {
+        theme: Theme::dark(),
+        text_renderer: crate::font_catalog::fixture_renderer(),
+    };
+    let mut app = App::from_component_using(component, inputs, |_, _| {
+        AppConstructionInputs::controlled()
+    })
+    .unwrap();
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: binding.broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.init_layout();
+    // The first pass joins the record route, whose initial catalogue arrives
+    // only once the broker worker has processed the join: settle on the
+    // worker, not on a count of passes.
+    let mut settled = false;
+    for _ in 0..8 {
+        app.collaboration.manager.wait_for_commands_for_test();
+        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "hosted pump never went idle");
+    app.collaboration.manager.wait_for_commands_for_test();
+    let before = tilo_actions::door::survey(&app.publication_resources()).len();
+    assert!(before > 0);
+    let generation = app.actions.resource_generation.get();
+    assert_eq!(
+        app.pump_hosted_model_as(false),
+        model_lifecycle::HostedPumpReport::default()
+    );
+    assert_eq!(app.actions.resource_generation.get(), generation);
+    // What HostWorker::pump does with the host's recomputed authority.
+    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+        crate::permissions::Actor::person(None, "fixture-user"),
+        vec![],
+    );
+    let report = app.pump_hosted_model_as(false);
+    assert!(report.synced && report.published);
+    assert_ne!(app.actions.resource_generation.get(), generation);
+    assert!(
+        tilo_actions::door::survey(&app.publication_resources()).len() < before,
+        "revoked authority must filter the published surface"
+    );
+}
+
+#[test]
+fn hosted_pump_baseline_always_refreshes() {
+    let mut fixture = HostedPumpFixture::new(1);
+    let generation = fixture.app.actions.resource_generation.get();
+    let report = fixture.app.pump_hosted_model_as(true);
+    assert!(report.synced && report.published);
+    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+    assert!(!fixture.sent.borrow().is_empty());
+}
+
+/// `cargo test -p tilo-ui --lib hosted_pump_cost -- --ignored --nocapture`
+#[test]
+#[ignore = "timing measurement"]
+fn hosted_pump_cost_idle_before_after() {
+    const PUMPS: u32 = 200;
+    let mut fixture = HostedPumpFixture::new(40);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    for (name, always) in [("baseline", true), ("dirty-tracked", false)] {
+        let started = std::time::Instant::now();
+        for _ in 0..PUMPS {
+            fixture.app.pump_hosted_model_as(always);
+        }
+        let per = started.elapsed() / PUMPS;
+        eprintln!("hosted pump {name}: {per:?} per idle pump ({PUMPS} pumps, 3x40 actions)");
+    }
+}

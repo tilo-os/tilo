@@ -22,6 +22,7 @@
 //!   there is one.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -74,6 +75,7 @@ pub struct NameField {
 struct NameFieldVisual {
     layout: Option<RichTextLayout>,
     signature: u64,
+    layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
 }
 
@@ -82,6 +84,7 @@ impl Default for NameFieldVisual {
         Self {
             layout: None,
             signature: u64::MAX,
+            layout_epoch: None,
             caret: None,
         }
     }
@@ -340,14 +343,26 @@ impl NameField {
             hash.finish()
         };
         let mut visual = self.visual.borrow_mut();
-        if visual.layout.is_none() || visual.signature != signature {
-            let mut layout =
-                RichTextLayout::shape_plain(&mut tr.font_system, display, &style, None);
+        let epoch_stale = visual
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, tr.layout_epoch()));
+        if visual.layout.is_none() || visual.signature != signature || epoch_stale {
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_plain_browser(
+                &mut tr.font_system,
+                display,
+                &style,
+                None,
+                browser_emoji,
+            );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 layout.add_underline(self.buffer.len()..display.len());
             }
             visual.layout = Some(layout);
             visual.signature = signature;
+            visual.layout_epoch = Some(Arc::clone(tr.layout_epoch()));
         }
     }
 
@@ -498,150 +513,201 @@ mod tests {
     }
 
     #[test]
-    fn typing_then_enter_commits_the_trimmed_text() {
-        let mut f = NameField::new("");
-        let m = Modifiers::default();
-        for c in " Intro ".chars() {
-            let out = if c == ' ' {
-                f.handle_event(&key(Key::Named(NamedKey::Space)), &m)
-            } else {
-                f.handle_event(&ch(c), &m)
-            };
-            assert_eq!(out, NameFieldOutcome::Edited);
+    fn name_field_commits_trimmed_text_or_cancels() {
+        // Case `typing_then_enter_commits_the_trimmed_text`.
+        {
+            let mut f = NameField::new("");
+            let m = Modifiers::default();
+            for c in " Intro ".chars() {
+                let out = if c == ' ' {
+                    f.handle_event(&key(Key::Named(NamedKey::Space)), &m)
+                } else {
+                    f.handle_event(&ch(c), &m)
+                };
+                assert_eq!(out, NameFieldOutcome::Edited);
+            }
+            assert_eq!(f.text(), " Intro ");
+            assert_eq!(
+                f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+                NameFieldOutcome::Commit("Intro".to_string())
+            );
         }
-        assert_eq!(f.text(), " Intro ");
-        assert_eq!(
-            f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
-            NameFieldOutcome::Commit("Intro".to_string())
-        );
-    }
 
-    #[test]
-    fn a_rename_starts_from_the_existing_name_and_can_be_emptied() {
-        let mut f = NameField::new("Intro rewrite");
-        let m = Modifiers::default();
-        assert_eq!(f.text(), "Intro rewrite");
-        for _ in 0.."Intro rewrite".len() {
-            f.handle_event(&key(Key::Named(NamedKey::Backspace)), &m);
+        // Case `a_rename_starts_from_the_existing_name_and_can_be_emptied`.
+        {
+            let mut f = NameField::new("Intro rewrite");
+            let m = Modifiers::default();
+            assert_eq!(f.text(), "Intro rewrite");
+            for _ in 0.."Intro rewrite".len() {
+                f.handle_event(&key(Key::Named(NamedKey::Backspace)), &m);
+            }
+            assert_eq!(f.text(), "");
+            assert_eq!(
+                f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+                NameFieldOutcome::Commit(String::new()),
+                "an empty commit is reported, not swallowed — it means 'remove it'"
+            );
         }
-        assert_eq!(f.text(), "");
-        assert_eq!(
-            f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
-            NameFieldOutcome::Commit(String::new()),
-            "an empty commit is reported, not swallowed — it means 'remove it'"
-        );
+
+        // Case `escape_cancels`.
+        {
+            let mut f = NameField::new("half typed");
+            assert_eq!(
+                f.handle_event(&key(Key::Named(NamedKey::Escape)), &Modifiers::default()),
+                NameFieldOutcome::Cancel
+            );
+        }
     }
 
     #[test]
-    fn escape_cancels() {
-        let mut f = NameField::new("half typed");
-        assert_eq!(
-            f.handle_event(&key(Key::Named(NamedKey::Escape)), &Modifiers::default()),
-            NameFieldOutcome::Cancel
-        );
-    }
+    fn name_field_owns_editing_keys_but_leaves_chords_to_the_host() {
+        // Case `a_chorded_key_is_left_for_the_host`.
+        {
+            let mut f = NameField::new("");
+            let m = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            assert_eq!(f.handle_event(&ch('s'), &m), NameFieldOutcome::Ignored);
+            assert_eq!(f.text(), "", "Ctrl+S must not type an 's' into the name");
+        }
 
-    #[test]
-    fn a_chorded_key_is_left_for_the_host() {
-        let mut f = NameField::new("");
-        let m = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        assert_eq!(f.handle_event(&ch('s'), &m), NameFieldOutcome::Ignored);
-        assert_eq!(f.text(), "", "Ctrl+S must not type an 's' into the name");
-    }
+        // Case `a_stray_key_is_consumed_rather_than_reaching_a_typeahead`.
+        {
+            // The pane behind this field filters by author as you type. An arrow key
+            // (or anything else) leaking through while a name field is up would
+            // silently re-filter the list under the user.
+            let mut f = NameField::new("x");
+            let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
+            assert_eq!(out, NameFieldOutcome::Edited, "consumed");
+            assert_eq!(f.text(), "x", "and it changed nothing");
+        }
 
-    #[test]
-    fn a_stray_key_is_consumed_rather_than_reaching_a_typeahead() {
-        // The pane behind this field filters by author as you type. An arrow key
-        // (or anything else) leaking through while a name field is up would
-        // silently re-filter the list under the user.
-        let mut f = NameField::new("x");
-        let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
-        assert_eq!(out, NameFieldOutcome::Edited, "consumed");
-        assert_eq!(f.text(), "x", "and it changed nothing");
-    }
+        // Case `backspace_removes_one_extended_grapheme`.
+        {
+            let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
+            let mut field = NameField::new(format!("{family}e\u{301}"));
+            let backspace = key(Key::Named(NamedKey::Backspace));
+            assert_eq!(
+                field.handle_event(&backspace, &Modifiers::default()),
+                NameFieldOutcome::Edited
+            );
+            assert_eq!(field.text(), family, "combining sequence is one deletion");
+            field.handle_event(&backspace, &Modifiers::default());
+            assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
+        }
 
-    #[test]
-    fn backspace_removes_one_extended_grapheme() {
-        let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
-        let mut field = NameField::new(format!("{family}e\u{301}"));
-        let backspace = key(Key::Named(NamedKey::Backspace));
-        assert_eq!(
-            field.handle_event(&backspace, &Modifiers::default()),
-            NameFieldOutcome::Edited
-        );
-        assert_eq!(field.text(), family, "combining sequence is one deletion");
-        field.handle_event(&backspace, &Modifiers::default());
-        assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
-    }
+        // Case `ime_preedit_is_shaped_underlined_and_committed_atomically`.
+        {
+            let mut field = NameField::new("ab");
+            let preedit = "漢字";
+            assert_eq!(
+                field.handle_event(
+                    &WindowEvent::Ime(
+                        Ime::Preedit(preedit.into(), Some(("漢".len(), "漢".len())),)
+                    ),
+                    &Modifiers::default(),
+                ),
+                NameFieldOutcome::Edited
+            );
+            assert_eq!(field.text(), "ab", "preedit stays out of the value");
+            let rect = Rect::new(10.0, 20.0, 210.0, 52.0);
+            draw_field(&field, rect);
+            let visual = field.visual.borrow();
+            assert_eq!(
+                visual.layout.as_ref().unwrap().underlines,
+                vec![(2, 2 + preedit.len())]
+            );
+            drop(visual);
+            let candidate = field
+                .ime_cursor_rect()
+                .expect("draw publishes caret geometry");
+            assert!(rect.contains(candidate.center()));
 
-    #[test]
-    fn ime_preedit_is_shaped_underlined_and_committed_atomically() {
-        let mut field = NameField::new("ab");
-        let preedit = "漢字";
-        assert_eq!(
             field.handle_event(
-                &WindowEvent::Ime(Ime::Preedit(preedit.into(), Some(("漢".len(), "漢".len())),)),
+                &WindowEvent::Ime(Ime::Commit(preedit.into())),
                 &Modifiers::default(),
-            ),
-            NameFieldOutcome::Edited
-        );
-        assert_eq!(field.text(), "ab", "preedit stays out of the value");
-        let rect = Rect::new(10.0, 20.0, 210.0, 52.0);
-        draw_field(&field, rect);
-        let visual = field.visual.borrow();
+            );
+            assert_eq!(field.text(), "ab漢字");
+            assert!(field.preedit.is_empty());
+        }
+    }
+
+    #[test]
+    fn long_or_squeezed_names_keep_the_caret_end_visible_without_overflow() {
+        // Case `shaped_end_caret_stays_visible_for_long_ltr_and_rtl_names`.
+        {
+            let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
+            let ltr = NameField::new("a very long version name whose end must stay visible");
+            draw_field(&ltr, rect);
+            let ltr_caret = ltr.ime_cursor_rect().unwrap();
+            assert!(ltr_caret.x0 >= rect.x1 - 9.0 && ltr_caret.x1 < rect.x1);
+
+            let rtl = NameField::new("שלום זהו שם גרסה ארוך מאוד");
+            draw_field(&rtl, rect);
+            let rtl_caret = rtl.ime_cursor_rect().unwrap();
+            assert!(
+                rtl_caret.x0 < rect.center().x,
+                "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
+            );
+            assert!(rect.contains(rtl_caret.center()));
+        }
+
+        // Case `a_long_name_keeps_the_end_visible`.
+        {
+            let mut tr = TextRenderer::new();
+            let long = "a very long version name that will not fit in the box";
+            let shown = fit_tail(&mut tr, long, 13.0, 80.0);
+            assert!(shown.starts_with('\u{2026}'), "got {shown:?}");
+            assert!(
+                long.ends_with(shown.trim_start_matches('\u{2026}')),
+                "the tail is what is kept: {shown:?}"
+            );
+            assert!(shown.chars().count() < long.chars().count());
+        }
+
+        // Case `a_box_squeezed_to_nothing_draws_nothing_rather_than_overflowing`.
+        {
+            let mut tr = TextRenderer::new();
+            assert_eq!(fit_tail(&mut tr, "anything", 13.0, 0.0), "");
+            assert_eq!(fit_tail(&mut tr, "anything", 13.0, -5.0), "");
+        }
+    }
+
+    #[test]
+    fn unchanged_browser_name_reshapes_after_font_generation_changes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let field = NameField::new("مَرْحَبًا");
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
         assert_eq!(
-            visual.layout.as_ref().unwrap().underlines,
-            vec![(2, 2 + preedit.len())]
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
         );
-        drop(visual);
-        let candidate = field
-            .ime_cursor_rect()
-            .expect("draw publishes caret geometry");
-        assert!(rect.contains(candidate.center()));
-
-        field.handle_event(
-            &WindowEvent::Ime(Ime::Commit(preedit.into())),
-            &Modifiers::default(),
+        renderer.browser_font_failed();
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
         );
-        assert_eq!(field.text(), "ab漢字");
-        assert!(field.preedit.is_empty());
-    }
-
-    #[test]
-    fn shaped_end_caret_stays_visible_for_long_ltr_and_rtl_names() {
-        let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
-        let ltr = NameField::new("a very long version name whose end must stay visible");
-        draw_field(&ltr, rect);
-        let ltr_caret = ltr.ime_cursor_rect().unwrap();
-        assert!(ltr_caret.x0 >= rect.x1 - 9.0 && ltr_caret.x1 < rect.x1);
-
-        let rtl = NameField::new("שלום זהו שם גרסה ארוך מאוד");
-        draw_field(&rtl, rect);
-        let rtl_caret = rtl.ime_cursor_rect().unwrap();
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
         assert!(
-            rtl_caret.x0 < rect.center().x,
-            "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
+            field
+                .visual
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
         );
-        assert!(rect.contains(rtl_caret.center()));
-    }
-
-    #[test]
-    fn a_long_name_keeps_the_end_visible() {
-        let mut tr = TextRenderer::new();
-        let long = "a very long version name that will not fit in the box";
-        let shown = fit_tail(&mut tr, long, 13.0, 80.0);
-        assert!(shown.starts_with('\u{2026}'), "got {shown:?}");
-        assert!(
-            long.ends_with(shown.trim_start_matches('\u{2026}')),
-            "the tail is what is kept: {shown:?}"
-        );
-        assert!(shown.chars().count() < long.chars().count());
-    }
-
-    #[test]
-    fn a_box_squeezed_to_nothing_draws_nothing_rather_than_overflowing() {
-        let mut tr = TextRenderer::new();
-        assert_eq!(fit_tail(&mut tr, "anything", 13.0, 0.0), "");
-        assert_eq!(fit_tail(&mut tr, "anything", 13.0, -5.0), "");
     }
 }

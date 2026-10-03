@@ -71,6 +71,23 @@ enum Command {
     Snapshot {
         path: String,
     },
+    /// A touchpad swipe; the shell takes three fingers or more.
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+        steps: Option<u32>,
+    },
+    /// A touchpad pinch to absolute `scale`.
+    Pinch {
+        fingers: u32,
+        scale: f64,
+        steps: Option<u32>,
+    },
+    /// Attach (`on`) or detach (`off`) a viewer of a headless session.
+    Watch {
+        watching: bool,
+    },
     StateDump {
         pretty: bool,
     },
@@ -85,6 +102,7 @@ enum Command {
         provider: String,
         id: String,
         args_json: Option<String>,
+        device: Option<String>,
     },
     ActionsStatus {
         invocation_id: u64,
@@ -140,6 +158,14 @@ fn parse_global_flags(argv: &[String]) -> Result<(Option<PathBuf>, Vec<String>),
     Ok((socket, positional))
 }
 
+fn parse_watch(arg: Option<&String>) -> Result<Command, ParseError> {
+    match arg.map(String::as_str) {
+        Some("on") => Ok(Command::Watch { watching: true }),
+        Some("off") => Ok(Command::Watch { watching: false }),
+        _ => Err(ParseError::Usage("watch requires on or off".to_string())),
+    }
+}
+
 fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     let (socket, positional) = parse_global_flags(argv)?;
     let mut iter = positional.iter();
@@ -180,6 +206,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
                 steps,
             }
         }
+        "swipe" | "pinch" => parse_gesture(op, &mut iter)?,
         "key" => {
             let key = iter
                 .next()
@@ -208,6 +235,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
                 .ok_or_else(|| ParseError::Usage("snapshot PATH requires a path".to_string()))?;
             Command::Snapshot { path: path.clone() }
         }
+        "watch" => parse_watch(iter.next())?,
         "state-dump" => {
             let mut pretty = false;
             for rest in iter.by_ref() {
@@ -240,6 +268,34 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
 
 /// Parse the `actions list|invoke ...` subcommand. Split out of
 /// [`parse_args`] to keep it short.
+fn parse_gesture<'a>(
+    op: &str,
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    const SWIPE: &str = "swipe FINGERS DX DY [STEPS]";
+    const PINCH: &str = "pinch FINGERS SCALE [STEPS]";
+    if op == "swipe" {
+        let fingers = next_u32(iter, SWIPE)?;
+        let dx = next_f64(iter, SWIPE)?;
+        let dy = next_f64(iter, SWIPE)?;
+        let steps = optional_u32(iter, SWIPE)?;
+        return Ok(Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+        });
+    }
+    let fingers = next_u32(iter, PINCH)?;
+    let scale = next_f64(iter, PINCH)?;
+    let steps = optional_u32(iter, PINCH)?;
+    Ok(Command::Pinch {
+        fingers,
+        scale,
+        steps,
+    })
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -275,8 +331,15 @@ fn parse_actions_command<'a>(
                 ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
             })?;
             let mut args_json = None;
+            let mut device = None;
             while let Some(flag) = iter.next() {
                 match flag.as_str() {
+                    "--device" => {
+                        let id = iter.next().ok_or_else(|| {
+                            ParseError::Usage("--device requires an enrolled device id".to_string())
+                        })?;
+                        device = Some(id.clone());
+                    }
                     "--args-json" => {
                         let json = iter.next().ok_or_else(|| {
                             ParseError::Usage("--args-json requires a JSON object".to_string())
@@ -303,6 +366,7 @@ fn parse_actions_command<'a>(
                 provider: provider.clone(),
                 id: id.clone(),
                 args_json,
+                device,
             })
         }
         "status" | "cancel" => {
@@ -341,6 +405,28 @@ fn next_f64<'a>(
         .ok_or_else(|| ParseError::Usage(err_msg.to_string()))?;
     raw.parse::<f64>()
         .map_err(|e| ParseError::Usage(format!("{err_msg} — `{raw}` is not a number ({e})")))
+}
+
+fn next_u32<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+    err_msg: &str,
+) -> Result<u32, ParseError> {
+    let raw = iter
+        .next()
+        .ok_or_else(|| ParseError::Usage(err_msg.to_string()))?;
+    raw.parse::<u32>()
+        .map_err(|e| ParseError::Usage(format!("{err_msg} — `{raw}` is not a count ({e})")))
+}
+
+fn optional_u32<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+    err_msg: &str,
+) -> Result<Option<u32>, ParseError> {
+    let mut rest = iter.peekable();
+    if rest.peek().is_none() {
+        return Ok(None);
+    }
+    next_u32(&mut rest, err_msg).map(Some)
 }
 
 /// Parse `"ctrl,shift"` into `(ctrl, shift, alt, logo)`. Empty string
@@ -415,6 +501,18 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
+        Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+        } => json!({ "op": "swipe", "fingers": fingers, "dx": dx, "dy": dy, "steps": steps }),
+        Command::Pinch {
+            fingers,
+            scale,
+            steps,
+        } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
+        Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
@@ -423,6 +521,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             provider,
             id,
             args_json,
+            device,
         } => {
             let args = args_json
                 .as_deref()
@@ -430,7 +529,20 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
                 .transpose()
                 .map_err(|error| ParseError::Usage(format!("invalid action arguments: {error}")))?
                 .unwrap_or_else(|| serde_json::json!({}));
-            json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args })
+            let mut value =
+                json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args });
+            if let Some(device) = device {
+                let Some(object) = value.as_object_mut() else {
+                    return Err(ParseError::Usage(
+                        "action invocation payload is not an object".into(),
+                    ));
+                };
+                object.insert(
+                    "device".to_string(),
+                    serde_json::Value::String(device.clone()),
+                );
+            }
+            value
         }
         Command::ActionsStatus { invocation_id } => {
             json!({ "op": "actions_status", "invocation_id": invocation_id })
@@ -597,9 +709,12 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         Command::Click { .. }
         | Command::ClickAt { .. }
         | Command::Drag { .. }
+        | Command::Swipe { .. }
+        | Command::Pinch { .. }
         | Command::Key { .. }
         | Command::Type { .. }
-        | Command::Modifiers { .. } => {
+        | Command::Modifiers { .. }
+        | Command::Watch { .. } => {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
@@ -630,16 +745,20 @@ fn print_usage() {
          \x20 click NAME                    click_named\n\
          \x20 click-at X Y                  click_at\n\
          \x20 drag X1 Y1 X2 Y2 [STEPS]      drag\n\
+         \x20 swipe FINGERS DX DY [STEPS]   touchpad swipe through the shell's gesture tracker\n\
+         \x20 pinch FINGERS SCALE [STEPS]   touchpad pinch to an absolute scale\n\
          \x20 key KEY                       key (named like `Enter`, or single char)\n\
          \x20 type TEXT                     type each character in TEXT\n\
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
          \x20                               (empty string clears all)\n\
          \x20 snapshot PATH                 snapshot — write PNG to PATH\n\
+         \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop\n\
          \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
          \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything)\n\
-         \x20 actions invoke PROVIDER ID [--args-json OBJECT]\n\
-         \x20                               run one typed action without synthetic input\n\
+         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
+         \x20                               run one typed action without synthetic input;\n\
+         \x20                               --device sends resource/action to that enrolled device\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
@@ -740,231 +859,179 @@ mod tests {
     }
 
     #[test]
-    fn list_targets_parses_with_no_args() {
-        let inv = parse(&["list-targets"]).unwrap();
-        assert_eq!(inv.command, Command::ListTargets);
-    }
-
-    #[test]
-    fn click_parses_name_argument() {
-        let inv = parse(&["click", "btn"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Click {
-                name: "btn".to_string()
-            }
+    fn touchpad_gestures_parse_with_optional_steps() {
+        let cases: Vec<(&[&str], Command)> = vec![
+            (
+                &["swipe", "3", "-240", "0"],
+                Command::Swipe {
+                    fingers: 3,
+                    dx: -240.0,
+                    dy: 0.0,
+                    steps: None,
+                },
+            ),
+            (
+                &["pinch", "4", "0.5", "6"],
+                Command::Pinch {
+                    fingers: 4,
+                    scale: 0.5,
+                    steps: Some(6),
+                },
+            ),
+        ];
+        for (args, want) in cases {
+            assert_eq!(parse(args).unwrap().command, want, "case {args:?}");
+        }
+        assert!(
+            parse(&["swipe", "3", "-240"]).is_err(),
+            "a swipe needs both axes"
+        );
+        assert!(
+            parse(&["pinch", "three", "0.5"]).is_err(),
+            "fingers are a count"
         );
     }
 
     #[test]
-    fn click_without_name_errors() {
-        let err = parse(&["click"]).unwrap_err();
-        assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
-    }
+    fn subcommands_and_modifier_flags_parse_into_their_values() {
+        let drag = |steps| Command::Drag {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 100.0,
+            y2: 100.0,
+            steps,
+        };
+        let modifiers = |ctrl, shift| Command::Modifiers {
+            ctrl,
+            shift,
+            alt: false,
+            logo: false,
+        };
+        let cases: Vec<(&[&str], Command)> = vec![
+            (&["list-targets"], Command::ListTargets),
+            (
+                &["click", "btn"],
+                Command::Click {
+                    name: "btn".to_string(),
+                },
+            ),
+            (
+                &["click-at", "100.5", "200"],
+                Command::ClickAt { x: 100.5, y: 200.0 },
+            ),
+            // Drag takes four floats with optional steps.
+            (&["drag", "0", "0", "100", "100"], drag(None)),
+            (&["drag", "0", "0", "100", "100", "16"], drag(Some(16))),
+            (
+                &["key", "Enter"],
+                Command::Key {
+                    key: "Enter".to_string(),
+                },
+            ),
+            // The OS arg-tokenizer hands us the already-quoted string,
+            // so `type "hello world"` arrives as one argv slot.
+            (
+                &["type", "hello world"],
+                Command::Type {
+                    text: "hello world".to_string(),
+                },
+            ),
+            (&["modifiers", "ctrl,shift"], modifiers(true, true)),
+            // The empty string clears every modifier.
+            (&["modifiers", ""], modifiers(false, false)),
+            (
+                &["snapshot", "/tmp/x.png"],
+                Command::Snapshot {
+                    path: "/tmp/x.png".to_string(),
+                },
+            ),
+            (&["watch", "on"], Command::Watch { watching: true }),
+            (&["watch", "off"], Command::Watch { watching: false }),
+            (&["state-dump"], Command::StateDump { pretty: false }),
+            (
+                &["state-dump", "--pretty"],
+                Command::StateDump { pretty: true },
+            ),
+            (
+                &[
+                    "actions",
+                    "invoke",
+                    "app-actions",
+                    "peer-address",
+                    "--args-json",
+                    r#"{"count":2,"force":true}"#,
+                ],
+                Command::ActionsInvoke {
+                    provider: "app-actions".into(),
+                    id: "peer-address".into(),
+                    args_json: Some(r#"{"count":2,"force":true}"#.into()),
+                    device: None,
+                },
+            ),
+            // Receipt ids parse for both status and cancel.
+            (
+                &["actions", "status", "42"],
+                Command::ActionsStatus { invocation_id: 42 },
+            ),
+            (
+                &["actions", "cancel", "42"],
+                Command::ActionsCancel { invocation_id: 42 },
+            ),
+            (
+                &["raw", r#"{"op":"list_targets"}"#],
+                Command::Raw {
+                    json: r#"{"op":"list_targets"}"#.to_string(),
+                },
+            ),
+        ];
+        for (args, want) in cases {
+            assert_eq!(parse(args).unwrap().command, want, "case {args:?}");
+        }
 
-    #[test]
-    fn click_at_parses_two_floats() {
-        let inv = parse(&["click-at", "100.5", "200"]).unwrap();
-        assert_eq!(inv.command, Command::ClickAt { x: 100.5, y: 200.0 });
-    }
-
-    #[test]
-    fn click_at_with_bad_number_errors() {
-        let err = parse(&["click-at", "nope", "200"]).unwrap_err();
-        assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
-    }
-
-    #[test]
-    fn drag_parses_four_floats_with_optional_steps() {
-        let inv = parse(&["drag", "0", "0", "100", "100"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Drag {
-                x1: 0.0,
-                y1: 0.0,
-                x2: 100.0,
-                y2: 100.0,
-                steps: None,
-            }
-        );
-
-        let inv = parse(&["drag", "0", "0", "100", "100", "16"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Drag {
-                x1: 0.0,
-                y1: 0.0,
-                x2: 100.0,
-                y2: 100.0,
-                steps: Some(16),
-            }
-        );
-    }
-
-    #[test]
-    fn key_parses_keyword_argument() {
-        let inv = parse(&["key", "Enter"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Key {
-                key: "Enter".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn type_parses_text_with_spaces_as_single_arg() {
-        // The OS arg-tokenizer hands us the already-quoted string,
-        // so `type "hello world"` arrives as one argv slot.
-        let inv = parse(&["type", "hello world"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Type {
-                text: "hello world".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn modifiers_parses_comma_separated_flags() {
-        let inv = parse(&["modifiers", "ctrl,shift"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Modifiers {
-                ctrl: true,
-                shift: true,
-                alt: false,
-                logo: false,
-            }
-        );
-    }
-
-    #[test]
-    fn modifiers_empty_string_clears_all() {
-        let inv = parse(&["modifiers", ""]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Modifiers {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                logo: false,
-            }
-        );
-    }
-
-    #[test]
-    fn modifiers_unknown_flag_errors() {
-        let err = parse(&["modifiers", "meta"]).unwrap_err();
-        assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
-    }
-
-    #[test]
-    fn snapshot_parses_path_argument() {
-        let inv = parse(&["snapshot", "/tmp/x.png"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Snapshot {
-                path: "/tmp/x.png".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn state_dump_parses_with_no_args() {
-        let inv = parse(&["state-dump"]).unwrap();
-        assert_eq!(inv.command, Command::StateDump { pretty: false });
-    }
-
-    #[test]
-    fn state_dump_pretty_flag() {
-        let inv = parse(&["state-dump", "--pretty"]).unwrap();
-        assert_eq!(inv.command, Command::StateDump { pretty: true });
-    }
-
-    #[test]
-    fn actions_invoke_accepts_a_typed_json_object() {
-        let inv = parse(&[
-            "actions",
-            "invoke",
-            "app-actions",
-            "peer-address",
-            "--args-json",
-            r#"{"count":2,"force":true}"#,
-        ])
-        .unwrap();
-        assert_eq!(
-            inv.command,
-            Command::ActionsInvoke {
-                provider: "app-actions".into(),
-                id: "peer-address".into(),
-                args_json: Some(r#"{"count":2,"force":true}"#.into()),
-            }
-        );
-    }
-
-    #[test]
-    fn actions_invoke_rejects_non_object_arguments() {
-        let error = parse(&[
-            "actions",
-            "invoke",
-            "app-actions",
-            "peer-address",
-            "--args-json",
-            "[]",
-        ])
-        .unwrap_err();
-        assert!(matches!(error, ParseError::Usage(_)));
-    }
-
-    #[test]
-    fn actions_status_and_cancel_parse_receipt_ids() {
-        assert_eq!(
-            parse(&["actions", "status", "42"]).unwrap().command,
-            Command::ActionsStatus { invocation_id: 42 }
-        );
-        assert_eq!(
-            parse(&["actions", "cancel", "42"]).unwrap().command,
-            Command::ActionsCancel { invocation_id: 42 }
-        );
-        assert!(parse(&["actions", "status", "not-a-number"]).is_err());
-    }
-
-    #[test]
-    fn raw_parses_json_payload() {
-        let inv = parse(&["raw", r#"{"op":"list_targets"}"#]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::Raw {
-                json: r#"{"op":"list_targets"}"#.to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn unknown_subcommand_errors() {
-        let err = parse(&["go-fishing"]).unwrap_err();
-        assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
-    }
-
-    #[test]
-    fn help_flag_returns_help_variant() {
-        let err = parse(&["--help"]).unwrap_err();
-        assert_eq!(err, ParseError::Help);
-        let err = parse(&["-h"]).unwrap_err();
-        assert_eq!(err, ParseError::Help);
-    }
-
-    #[test]
-    fn socket_flag_overrides_default() {
+        // The socket flag overrides the default.
         let inv = parse(&["--socket", "/custom/path", "list-targets"]).unwrap();
         assert_eq!(inv.socket, Some(PathBuf::from("/custom/path")));
+
+        // The modifier-flag parser itself.
+        for (flags, want) in [
+            ("", (false, false, false, false)),
+            ("ctrl,shift,alt,logo", (true, true, true, true)),
+            // Tolerate `ctrl, shift` (with a space) — shells often
+            // produce that when the user quotes the arg.
+            ("ctrl, shift", (true, true, false, false)),
+        ] {
+            assert_eq!(parse_modifier_flags(flags).unwrap(), want, "case {flags:?}");
+        }
     }
 
     #[test]
-    fn socket_flag_with_missing_path_errors() {
-        let err = parse(&["--socket"]).unwrap_err();
-        assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
+    fn malformed_invocations_are_usage_errors_and_help_is_its_own_variant() {
+        let usage: [&[&str]; 7] = [
+            &["click"],
+            &["click-at", "nope", "200"],
+            &["modifiers", "meta"],
+            &[
+                "actions",
+                "invoke",
+                "app-actions",
+                "peer-address",
+                "--args-json",
+                "[]",
+            ],
+            &["go-fishing"],
+            &["--socket"],
+            &["actions", "status", "not-a-number"],
+        ];
+        for args in usage {
+            let err = parse(args).unwrap_err();
+            assert!(
+                matches!(err, ParseError::Usage(_)),
+                "case {args:?}: {err:?}"
+            );
+        }
+        for flag in ["--help", "-h"] {
+            assert_eq!(parse(&[flag]).unwrap_err(), ParseError::Help, "case {flag}");
+        }
     }
 
     #[test]
@@ -984,10 +1051,8 @@ mod tests {
             resolve_socket(None, None, runtime).unwrap(),
             PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
         );
-    }
 
-    #[test]
-    fn no_runtime_dir_means_no_default_rather_than_tmp() {
+        // No usable runtime dir means no default rather than /tmp.
         for runtime in [
             None,
             Some(OsString::new()),
@@ -1007,102 +1072,68 @@ mod tests {
     // Wire payload encoding — guards the JSON shape per subcommand.
     // ===================================================================
 
-    #[test]
-    fn wire_list_targets_emits_op_only() {
-        let json = command_to_wire(&Command::ListTargets).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["op"], "list_targets");
+    fn wire(command: &Command) -> serde_json::Value {
+        serde_json::from_str(&command_to_wire(command).unwrap()).unwrap()
     }
 
     #[test]
-    fn wire_click_emits_click_named_with_name() {
-        let json = command_to_wire(&Command::Click {
+    fn wire_payloads_carry_exactly_each_commands_fields() {
+        assert_eq!(wire(&Command::ListTargets)["op"], "list_targets");
+
+        let v = wire(&Command::Click {
             name: "btn".to_string(),
-        })
-        .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        });
         assert_eq!(v["op"], "click_named");
         assert_eq!(v["name"], "btn");
-    }
 
-    #[test]
-    fn wire_click_at_emits_x_y() {
-        let json = command_to_wire(&Command::ClickAt { x: 1.5, y: 2.5 }).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v = wire(&Command::ClickAt { x: 1.5, y: 2.5 });
         assert_eq!(v["op"], "click_at");
         assert_eq!(v["x"], 1.5);
         assert_eq!(v["y"], 2.5);
-    }
 
-    #[test]
-    fn wire_drag_includes_steps_when_set_omits_when_unset() {
-        let json = command_to_wire(&Command::Drag {
+        // Drag includes steps when set and omits them when unset.
+        let drag = |steps| Command::Drag {
             x1: 0.0,
             y1: 0.0,
             x2: 100.0,
             y2: 100.0,
-            steps: None,
-        })
-        .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            steps,
+        };
+        let v = wire(&drag(None));
         assert_eq!(v["op"], "drag");
         assert!(v.get("steps").is_none(), "steps must be absent when None");
+        assert_eq!(wire(&drag(Some(4)))["steps"], 4);
 
-        let json = command_to_wire(&Command::Drag {
-            x1: 0.0,
-            y1: 0.0,
-            x2: 100.0,
-            y2: 100.0,
-            steps: Some(4),
-        })
-        .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["steps"], 4);
-    }
-
-    #[test]
-    fn wire_modifiers_emits_four_bool_flags() {
-        let json = command_to_wire(&Command::Modifiers {
+        let v = wire(&Command::Modifiers {
             ctrl: true,
             shift: false,
             alt: true,
             logo: false,
-        })
-        .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        });
         assert_eq!(v["op"], "modifiers");
         assert_eq!(v["ctrl"], true);
         assert_eq!(v["shift"], false);
         assert_eq!(v["alt"], true);
         assert_eq!(v["logo"], false);
-    }
 
-    #[test]
-    fn wire_state_dump_emits_op_only() {
-        let json = command_to_wire(&Command::StateDump { pretty: true }).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v = wire(&Command::StateDump { pretty: true });
         assert_eq!(v["op"], "state_dump");
         // `pretty` is purely a print-time concern; the wire payload
         // never carries it (the compositor doesn't need to know).
         assert!(v.get("pretty").is_none());
-    }
 
-    #[test]
-    fn wire_action_invocation_preserves_structured_arguments() {
-        let json = command_to_wire(&Command::ActionsInvoke {
+        // Action invocations preserve structured arguments.
+        let value = wire(&Command::ActionsInvoke {
             provider: "app-actions".into(),
             id: "7-resource-action".into(),
             args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
-        })
-        .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            device: None,
+        });
         assert_eq!(value["op"], "actions_invoke");
         assert_eq!(value["args"]["resource"], "notes.note:42");
         assert_eq!(value["args"]["at"], "2026-09-01T12:00:00Z");
-    }
 
-    #[test]
-    fn wire_action_status_and_cancel_preserve_the_broker_id() {
+        // Status and cancel preserve the broker id.
         for (command, operation) in [
             (
                 Command::ActionsStatus { invocation_id: 91 },
@@ -1113,58 +1144,21 @@ mod tests {
                 "actions_cancel",
             ),
         ] {
-            let value: serde_json::Value =
-                serde_json::from_str(&command_to_wire(&command).unwrap()).unwrap();
-            assert_eq!(value["op"], operation);
-            assert_eq!(value["invocation_id"], 91);
+            let value = wire(&command);
+            assert_eq!(value["op"], operation, "case {operation}");
+            assert_eq!(value["invocation_id"], 91, "case {operation}");
         }
-    }
 
-    #[test]
-    fn wire_raw_passes_through_verbatim() {
+        // Raw passes through verbatim, and invalid raw JSON is a usage error.
         let json = command_to_wire(&Command::Raw {
             json: r#"{"op":"list_targets","extra":1}"#.to_string(),
         })
         .unwrap();
         assert_eq!(json, r#"{"op":"list_targets","extra":1}"#);
-    }
-
-    #[test]
-    fn wire_raw_with_invalid_json_errors() {
         let err = command_to_wire(&Command::Raw {
             json: "not json".to_string(),
         })
         .unwrap_err();
         assert!(matches!(err, ParseError::Usage(_)), "{err:?}");
-    }
-
-    // ===================================================================
-    // Modifier-flag parser
-    // ===================================================================
-
-    #[test]
-    fn parse_modifier_flags_empty_string_returns_all_false() {
-        assert_eq!(
-            parse_modifier_flags("").unwrap(),
-            (false, false, false, false)
-        );
-    }
-
-    #[test]
-    fn parse_modifier_flags_all_four_set() {
-        assert_eq!(
-            parse_modifier_flags("ctrl,shift,alt,logo").unwrap(),
-            (true, true, true, true)
-        );
-    }
-
-    #[test]
-    fn parse_modifier_flags_trims_whitespace() {
-        // Tolerate `ctrl, shift` (with a space) — shells often
-        // produce that when the user quotes the arg.
-        assert_eq!(
-            parse_modifier_flags("ctrl, shift").unwrap(),
-            (true, true, false, false)
-        );
     }
 }

@@ -1,0 +1,24 @@
+cask "tilo" do
+  version "@VERSION@"
+  sha256 "@MACOS_UNIVERSAL_SHA256@"
+
+  url "@RELEASE_PAGE@/releases/download/runtime-v#{version}/tilo-macos-universal.dmg"
+  name "Tilo"
+  desc "Per-user Tilo runtime with the Tilo app store and search"
+  homepage "@RELEASE_PAGE@"
+
+  depends_on macos: :ventura
+
+  app "Tilo.app"
+
+  uninstall launchctl: ["so.tilo.runtime", "so.tilo.runtime.update"],
+            quit:      "so.tilo.runtime"
+
+  # Not ~/Library/Application Support/Tilo itself: on a case-insensitive
+  # volume that is the directory other Tilo apps share.
+  zap trash: [
+    "~/Library/Application Support/tilo-store",
+    "~/Library/Application Support/Tilo/runtime",
+    "~/Library/Caches/tilo-store",
+  ]
+end

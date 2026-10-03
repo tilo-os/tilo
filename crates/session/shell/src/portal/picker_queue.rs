@@ -179,6 +179,7 @@ mod tests {
                 accept_label: None,
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply: tx,
             },
             rx,
@@ -186,23 +187,25 @@ mod tests {
     }
 
     #[test]
-    fn spawn_queues_rather_than_blocking() {
-        let q = FilePickerQueue::new();
-        let (r, _rx) = req("Open");
-        q.spawn(r);
-        assert_eq!(q.len(), 1, "spawn must buffer the request");
-    }
-
-    #[test]
-    fn drain_takes_everything_and_leaves_the_queue_empty() {
-        let q = FilePickerQueue::new();
-        let (a, _ra) = req("a");
-        let (b, _rb) = req("b");
-        q.spawn(a);
-        q.spawn(b);
-        let taken = q.drain();
-        assert_eq!(taken.len(), 2);
-        assert!(q.is_empty(), "drain must leave nothing behind");
+    fn picker_queue_queues_without_blocking_and_drains_everything() {
+        // Phase `spawn_queues_rather_than_blocking`.
+        {
+            let q = FilePickerQueue::new();
+            let (r, _rx) = req("Open");
+            q.spawn(r);
+            assert_eq!(q.len(), 1, "spawn must buffer the request");
+        }
+        // Phase `drain_takes_everything_and_leaves_the_queue_empty`.
+        {
+            let q = FilePickerQueue::new();
+            let (a, _ra) = req("a");
+            let (b, _rb) = req("b");
+            q.spawn(a);
+            q.spawn(b);
+            let taken = q.drain();
+            assert_eq!(taken.len(), 2);
+            assert!(q.is_empty(), "drain must leave nothing behind");
+        }
     }
 
     #[tokio::test]
@@ -220,33 +223,34 @@ mod tests {
     }
 
     #[test]
-    fn a_documents_dir_that_is_home_is_treated_as_unset() {
-        let home = Path::new("/home/someone");
-        assert!(
-            !is_useful_documents_dir(home, home),
-            "a documents dir equal to home carries no information"
-        );
-    }
-
-    #[test]
-    fn a_missing_documents_dir_is_not_used() {
-        let home = Path::new("/home/someone");
-        assert!(!is_useful_documents_dir(
-            Path::new("/definitely/not/here"),
-            home
-        ));
-    }
-
-    #[test]
-    fn the_user_scope_always_has_a_root_and_starts_inside_it() {
-        let scope = PickerScope::for_user();
-        assert!(
-            !scope.roots.is_empty(),
-            "a picker with no root can browse nothing"
-        );
-        assert!(
-            scope.roots.iter().any(|r| scope.initial_dir.starts_with(r)),
-            "the dialog must open somewhere it is allowed to be: {scope:?}"
-        );
+    fn user_scope_root_ignores_home_or_missing_documents_dirs() {
+        // Phase `a_documents_dir_that_is_home_is_treated_as_unset`.
+        {
+            let home = Path::new("/home/someone");
+            assert!(
+                !is_useful_documents_dir(home, home),
+                "a documents dir equal to home carries no information"
+            );
+        }
+        // Phase `a_missing_documents_dir_is_not_used`.
+        {
+            let home = Path::new("/home/someone");
+            assert!(!is_useful_documents_dir(
+                Path::new("/definitely/not/here"),
+                home
+            ));
+        }
+        // Phase `the_user_scope_always_has_a_root_and_starts_inside_it`.
+        {
+            let scope = PickerScope::for_user();
+            assert!(
+                !scope.roots.is_empty(),
+                "a picker with no root can browse nothing"
+            );
+            assert!(
+                scope.roots.iter().any(|r| scope.initial_dir.starts_with(r)),
+                "the dialog must open somewhere it is allowed to be: {scope:?}"
+            );
+        }
     }
 }

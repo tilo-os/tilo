@@ -110,15 +110,14 @@ impl VideoEditorApp {
                 )
             };
             ui::widget::EmptyState::paint(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 canvas,
-                Some(icon),
-                title,
-                Some(hint),
-                None,
+                &ui::widget::EmptyStateContent {
+                    icon: Some(icon),
+                    title,
+                    message: Some(hint),
+                    action_label: None,
+                },
                 Point::new(f64::MIN, f64::MIN),
             );
         }
@@ -150,11 +149,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &tc,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Bold),
                 Color::WHITE,
-                tc_chip.x0 + 7.0,
-                baseline,
-                TextWeight::Bold,
+                Point::new(tc_chip.x0 + 7.0, baseline),
             );
         }
         // The clip under the playhead has no bytes on this device: say so on the
@@ -185,11 +182,9 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     msg,
-                    12.0,
+                    &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                     Color::WHITE,
-                    chip.x0 + pad,
-                    baseline,
-                    TextWeight::Semibold,
+                    Point::new(chip.x0 + pad, baseline),
                 );
             }
         }
@@ -344,11 +339,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &big,
-                18.0,
+                &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 c.text_primary,
-                x,
-                big_y,
-                TextWeight::Bold,
+                Point::new(x, big_y),
             );
         }
         if let Some(x) = fit.total_x {

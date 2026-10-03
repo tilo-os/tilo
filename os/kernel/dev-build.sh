@@ -67,7 +67,7 @@ case "$arch" in
   aarch64) buildroot_var=KERNEL_BUILDROOT_AARCH64_REF ;;
 esac
 KERNEL_BUILDROOT_REF="${KERNEL_BUILDROOT_REF:-$(sed -n "s/^$buildroot_var=//p" "$repo/os/kernel-buildroot-snapshot.env")}"
-[ -n "$KERNEL_BUILDROOT_REF" ] || die "os/kernel-buildroot-snapshot.env has no $buildroot_var; run the snapshot-kernel-buildroot workflow"
+[ -n "$KERNEL_BUILDROOT_REF" ] || die "os/kernel-buildroot-snapshot.env has no $buildroot_var; run the build-buildroots workflow"
 
 mkdir -p "$cache_root"
 started=$(date +%s)
@@ -80,7 +80,8 @@ key="$(
     printf '%s\n%s\n' "$KERNEL_BUILDROOT_REF" "$arch"
     cd "$repo"
     find os/kernel/Containerfile os/kernel/project-crate.py os/tests/secureboot_vm_app.c \
-         Cargo.toml Cargo.lock crates/system/tilo-crypto/Cargo.toml crates/system/tilo-crypto/src \
+         Cargo.toml Cargo.lock crates/system/tilo-crypto/Cargo.toml \
+         crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs \
          os/external-assets/github-assets.tsv -type f -print0 \
       | sort -z | xargs -0 sha256sum
   } | sha256sum | cut -c1-16

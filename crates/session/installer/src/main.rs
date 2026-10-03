@@ -320,55 +320,58 @@ mod tests {
     }
 
     #[test]
-    fn viewport_accepts_separate_and_equals_forms() {
-        assert_eq!(
-            parse_viewport_arg(&args(&["tilo-installer", "--viewport", "640x480"])),
-            Some((640, 480))
-        );
-        assert_eq!(
-            parse_viewport_arg(&args(&["tilo-installer", "--viewport=360X640"])),
-            Some((360, 640))
-        );
-    }
-
-    #[test]
-    fn viewport_rejects_malformed_or_empty_dimensions() {
-        for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+    fn viewport_and_text_scale_arguments_are_bounded() {
+        // Phase `viewport_accepts_separate_and_equals_forms`.
+        {
             assert_eq!(
-                parse_viewport_arg(&args(&["tilo-installer", "--viewport", raw])),
-                None,
-                "accepted malformed viewport {raw:?}"
+                parse_viewport_arg(&args(&["tilo-installer", "--viewport", "640x480"])),
+                Some((640, 480))
+            );
+            assert_eq!(
+                parse_viewport_arg(&args(&["tilo-installer", "--viewport=360X640"])),
+                Some((360, 640))
             );
         }
-    }
-
-    #[test]
-    fn shot_text_scale_accepts_only_bounded_finite_values() {
-        assert_eq!(
-            parse_text_scale_arg(&args(&["tilo-installer", "--text-scale=1.3"])),
-            Some(1.3)
-        );
-        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+        // Phase `viewport_rejects_malformed_or_empty_dimensions`.
+        {
+            for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+                assert_eq!(
+                    parse_viewport_arg(&args(&["tilo-installer", "--viewport", raw])),
+                    None,
+                    "accepted malformed viewport {raw:?}"
+                );
+            }
+        }
+        // Phase `shot_text_scale_accepts_only_bounded_finite_values`.
+        {
             assert_eq!(
-                parse_text_scale_arg(&args(&["tilo-installer", "--text-scale", value])),
-                None
+                parse_text_scale_arg(&args(&["tilo-installer", "--text-scale=1.3"])),
+                Some(1.3)
             );
+            for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+                assert_eq!(
+                    parse_text_scale_arg(&args(&["tilo-installer", "--text-scale", value])),
+                    None
+                );
+            }
         }
     }
 
     #[test]
-    fn recovery_visual_states_are_renderable() {
-        for scenario in [
-            "finish-recovery",
-            "finish-recovery-saved",
-            "failed-recovery",
-        ] {
-            assert!(build_shot(scenario).is_some(), "missing {scenario}");
+    fn recovery_and_profile_repair_shot_states_are_renderable() {
+        // Phase `recovery_visual_states_are_renderable`.
+        {
+            for scenario in [
+                "finish-recovery",
+                "finish-recovery-saved",
+                "failed-recovery",
+            ] {
+                assert!(build_shot(scenario).is_some(), "missing {scenario}");
+            }
         }
-    }
-
-    #[test]
-    fn transported_profile_repair_state_is_renderable() {
-        assert!(build_shot("profile-locale-repair").is_some());
+        // Phase `transported_profile_repair_state_is_renderable`.
+        {
+            assert!(build_shot("profile-locale-repair").is_some());
+        }
     }
 }

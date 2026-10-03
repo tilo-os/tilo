@@ -7,8 +7,8 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
-use ui::automerge::{AutoCommit, ObjId};
 use ui::prelude::*;
 use ui::vello::kurbo;
 
@@ -54,7 +54,8 @@ impl ui::widget::Decorator for NativeProbe {
         &mut self.content
     }
 
-    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
+        let (doc, _) = ui::doc::document_ref(doc, path);
         let body = <crate::Note as Resource>::read(doc)
             .map(|note| note.body)
             .unwrap_or_default();

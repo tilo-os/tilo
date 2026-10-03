@@ -920,6 +920,85 @@ pub fn composite_xrgb(
     }
 }
 
+/// Composite the software cursor into an HDR `XBGR2101010` buffer holding a
+/// PQ BT.2020 signal. The cursor's colour goes through the output's SDR → PQ
+/// encoder, so it has the brightness of the rest of the desktop; its
+/// antialiased edge blends in signal space, which is exact at the fully
+/// opaque and fully clear pixels that make up almost all of it.
+pub fn composite_xbgr2101010(
+    dst: &mut [u8],
+    pitch: usize,
+    width: usize,
+    height: usize,
+    (px, py): (i32, i32),
+    cursor: &CursorBitmap,
+    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+) {
+    let hotspot_x = i32::try_from(cursor.hotspot.0).unwrap_or(0);
+    let hotspot_y = i32::try_from(cursor.hotspot.1).unwrap_or(0);
+    for y in 0..cursor.height {
+        for x in 0..cursor.width {
+            let dx = px
+                .saturating_sub(hotspot_x)
+                .saturating_add(i32::try_from(x).unwrap_or(i32::MAX));
+            let dy = py
+                .saturating_sub(hotspot_y)
+                .saturating_add(i32::try_from(y).unwrap_or(i32::MAX));
+            let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
+                continue;
+            };
+            if dx >= width || dy >= height {
+                continue;
+            }
+            let src_offset = y
+                .saturating_mul(cursor.width)
+                .saturating_add(x)
+                .saturating_mul(4);
+            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
+            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
+                continue;
+            };
+            if alpha == 0 {
+                continue;
+            }
+            let dst_offset = dy
+                .saturating_mul(pitch)
+                .saturating_add(dx.saturating_mul(4));
+            let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
+                continue;
+            };
+            let Ok(word) = <&mut [u8; 4]>::try_from(pixel) else {
+                continue;
+            };
+            // The bitmap is premultiplied; the encoder wants straight colour.
+            let straight = |channel: u8| {
+                u8::try_from(
+                    u32::from(channel)
+                        .saturating_mul(255)
+                        .checked_div(u32::from(alpha))
+                        .unwrap_or(0)
+                        .min(255),
+                )
+                .unwrap_or(u8::MAX)
+            };
+            let source = encoder.encode([straight(red), straight(green), straight(blue)]);
+            let under = u32::from_le_bytes(*word);
+            let under = [under & 0x3FF, (under >> 10) & 0x3FF, (under >> 20) & 0x3FF];
+            let inverse = 255_u32.saturating_sub(u32::from(alpha));
+            let blended = [0, 1, 2].map(|channel| {
+                let over = source.get(channel).copied().map_or(0, u32::from);
+                let below = under.get(channel).copied().unwrap_or(0);
+                let mixed = over
+                    .saturating_mul(u32::from(alpha))
+                    .saturating_add(below.saturating_mul(inverse))
+                    / 255;
+                u16::try_from(mixed).unwrap_or(1023)
+            });
+            *word = crate::shell::color_pipeline::pack_xbgr2101010(blended).to_le_bytes();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,7 +1022,46 @@ mod tests {
     }
 
     #[test]
-    fn default_cursor_is_cached_and_antialiased_at_accessibility_sizes() {
+    fn hdr_cursor_is_encoded_at_desktop_brightness_and_clipped() {
+        let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(203.0);
+        let cursor = CursorBitmap {
+            width: 2,
+            height: 1,
+            hotspot: (0, 0),
+            // Opaque white, then half-covered black (premultiplied).
+            rgba: Arc::new(vec![255, 255, 255, 255, 0, 0, 0, 128]),
+        };
+        let background = crate::shell::color_pipeline::pack_xbgr2101010([400, 400, 400]);
+        let mut dst: Vec<u8> = background.to_le_bytes().repeat(4);
+        // A 2x2 target, cursor at the bottom-right corner so it is clipped.
+        composite_xbgr2101010(&mut dst, 8, 2, 2, (0, 0), &cursor, &encoder);
+        let word = |index: usize| {
+            u32::from_le_bytes([
+                dst[index * 4],
+                dst[index * 4 + 1],
+                dst[index * 4 + 2],
+                dst[index * 4 + 3],
+            ])
+        };
+        assert_eq!(word(0), encoder.encode_xbgr2101010([255, 255, 255]));
+        let half = word(1) & 0x3FF;
+        assert!(
+            (195..=205).contains(&half),
+            "half black over 400 → ~200, got {half}"
+        );
+        assert_eq!(word(2), background, "untouched below the cursor");
+        let mut clipped: Vec<u8> = background.to_le_bytes().repeat(4);
+        composite_xbgr2101010(&mut clipped, 8, 2, 2, (1, 1), &cursor, &encoder);
+        assert_eq!(
+            u32::from_le_bytes([clipped[12], clipped[13], clipped[14], clipped[15]]),
+            encoder.encode_xbgr2101010([255, 255, 255])
+        );
+        assert_eq!(&clipped[..12], &background.to_le_bytes().repeat(3)[..]);
+    }
+
+    #[test]
+    fn cursor_images_are_cached_antialiased_and_composited_with_clipping() {
+        // Phase `default_cursor_is_cached_and_antialiased_at_accessibility_sizes`.
         for size in [24, 48, 64] {
             let first = bitmap(CursorShape::Default, size);
             let second = bitmap(CursorShape::Default, size);
@@ -959,6 +1077,14 @@ mod tests {
                     .any(|pixel| (1..=254).contains(&pixel[3]))
             );
             assert!(first.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        }
+        // Phase `software_composite_clips_and_preserves_uncovered_pixels`.
+        {
+            let cursor = bitmap(CursorShape::Default, 24);
+            let mut dst = vec![17_u8; 12 * 12 * 4];
+            composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
+            assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
+            assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
         }
     }
 
@@ -1076,15 +1202,6 @@ mod tests {
             PointerImage::Shape(CursorShape::Text).describe()["shape"],
             "text"
         );
-    }
-
-    #[test]
-    fn software_composite_clips_and_preserves_uncovered_pixels() {
-        let cursor = bitmap(CursorShape::Default, 24);
-        let mut dst = vec![17_u8; 12 * 12 * 4];
-        composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
-        assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
-        assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
     }
 
     #[test]

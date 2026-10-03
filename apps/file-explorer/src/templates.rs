@@ -17,7 +17,7 @@ pub fn templates_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    xdg_paths::home().map(|h| h.join("Templates"))
+    tilo_paths::home().map(|h| h.join("Templates"))
 }
 
 /// The template files inside `dir`: regular files only (directories and
@@ -69,56 +69,60 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Templates list sorted files skipping dirs and dotfiles, empty dirs yield nothing, labels drop extensions and creation copies content.
     #[test]
-    fn list_templates_returns_files_sorted_skipping_dirs_and_dotfiles() {
-        let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("Document.md"), b"# ${title}\n").unwrap();
-        fs::write(d.path().join("Spreadsheet.csv"), b"a,b\n").unwrap();
-        fs::write(d.path().join(".hidden"), b"x").unwrap();
-        fs::create_dir(d.path().join("subdir")).unwrap();
+    fn templates_list_label_and_create_files() {
+        // --- phase: list_templates_returns_files_sorted_skipping_dirs_and_dotfiles ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            fs::write(d.path().join("Document.md"), b"# ${title}\n").unwrap();
+            fs::write(d.path().join("Spreadsheet.csv"), b"a,b\n").unwrap();
+            fs::write(d.path().join(".hidden"), b"x").unwrap();
+            fs::create_dir(d.path().join("subdir")).unwrap();
 
-        let t = list_templates(d.path());
-        let names: Vec<String> = t
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            names,
-            ["Document.md", "Spreadsheet.csv"],
-            "files only, sorted, no dotfiles/dirs"
-        );
-    }
+            let t = list_templates(d.path());
+            let names: Vec<String> = t
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                ["Document.md", "Spreadsheet.csv"],
+                "files only, sorted, no dotfiles/dirs"
+            );
+        }
 
-    #[test]
-    fn empty_templates_dir_yields_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(list_templates(d.path()).is_empty());
-        // A missing directory is also empty, not an error.
-        assert!(list_templates(&d.path().join("nope")).is_empty());
-    }
+        // --- phase: empty_templates_dir_yields_nothing ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            assert!(list_templates(d.path()).is_empty());
+            // A missing directory is also empty, not an error.
+            assert!(list_templates(&d.path().join("nope")).is_empty());
+        }
 
-    #[test]
-    fn menu_label_drops_extension() {
-        assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
-        assert_eq!(menu_label(Path::new("/t/notes")), "New notes");
-    }
+        // --- phase: menu_label_drops_extension ---
+        {
+            assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
+            assert_eq!(menu_label(Path::new("/t/notes")), "New notes");
+        }
 
-    #[test]
-    fn create_from_template_copies_content_into_dest() {
-        let d = tempfile::tempdir().unwrap();
-        let tmpl = d.path().join("Document.md");
-        fs::write(&tmpl, b"hello template").unwrap();
-        let dest = d.path().join("dest");
-        fs::create_dir(&dest).unwrap();
+        // --- phase: create_from_template_copies_content_into_dest ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            let tmpl = d.path().join("Document.md");
+            fs::write(&tmpl, b"hello template").unwrap();
+            let dest = d.path().join("dest");
+            fs::create_dir(&dest).unwrap();
 
-        let made = create_from_template(&tmpl, &dest).unwrap();
-        assert_eq!(made.file_name().unwrap().to_string_lossy(), "Document.md");
-        assert_eq!(fs::read(&made).unwrap(), b"hello template");
-        // A second create de-duplicates the name.
-        let made2 = create_from_template(&tmpl, &dest).unwrap();
-        assert_eq!(
-            made2.file_name().unwrap().to_string_lossy(),
-            "Document 2.md"
-        );
+            let made = create_from_template(&tmpl, &dest).unwrap();
+            assert_eq!(made.file_name().unwrap().to_string_lossy(), "Document.md");
+            assert_eq!(fs::read(&made).unwrap(), b"hello template");
+            // A second create de-duplicates the name.
+            let made2 = create_from_template(&tmpl, &dest).unwrap();
+            assert_eq!(
+                made2.file_name().unwrap().to_string_lossy(),
+                "Document 2.md"
+            );
+        }
     }
 }

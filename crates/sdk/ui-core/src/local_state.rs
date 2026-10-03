@@ -701,431 +701,522 @@ mod tests {
     }
 
     #[test]
-    fn clones_share_typed_value_and_revision() {
-        let state = LocalState::new(vec![1, 2]);
-        let clone = state.clone();
-        assert_eq!(clone.get(), vec![1, 2]);
-        assert_eq!(state.revision(), 0);
+    fn local_state_shares_value_and_revision_across_clones_threads_and_bindings() {
+        // Case `clones_share_typed_value_and_revision`.
+        {
+            let state = LocalState::new(vec![1, 2]);
+            let clone = state.clone();
+            assert_eq!(clone.get(), vec![1, 2]);
+            assert_eq!(state.revision(), 0);
 
-        clone.update(|items| items.push(3));
-        assert_eq!(state.get(), vec![1, 2, 3]);
-        assert_eq!(state.revision(), 1);
+            clone.update(|items| items.push(3));
+            assert_eq!(state.get(), vec![1, 2, 3]);
+            assert_eq!(state.revision(), 1);
 
-        state.set(vec![4]);
-        assert_eq!(clone.get(), vec![4]);
-        assert_eq!(clone.revision(), 2);
-    }
+            state.set(vec![4]);
+            assert_eq!(clone.get(), vec![4]);
+            assert_eq!(clone.revision(), 2);
+        }
 
-    #[test]
-    fn text_sink_accepts_text_input_callback_shape() {
-        let state = LocalState::new(String::new());
-        let mut sink = state.text_sink();
-        sink("漢字");
-        assert_eq!(state.get(), "漢字");
-    }
+        // Case `text_sink_accepts_text_input_callback_shape`.
+        {
+            let state = LocalState::new(String::new());
+            let mut sink = state.text_sink();
+            sink("漢字");
+            assert_eq!(state.get(), "漢字");
+        }
 
-    #[test]
-    fn widget_binding_polls_and_publishes_without_echoing_its_own_write() {
-        let state = LocalState::new(String::from("one"));
-        let (initial, mut binding) = LocalBinding::new(&state);
-        assert_eq!(initial, "one");
-        assert_eq!(binding.poll(), None);
+        // Case `widget_binding_polls_and_publishes_without_echoing_its_own_write`.
+        {
+            let state = LocalState::new(String::from("one"));
+            let (initial, mut binding) = LocalBinding::new(&state);
+            assert_eq!(initial, "one");
+            assert_eq!(binding.poll(), None);
 
-        state.set(String::from("two"));
-        assert_eq!(binding.poll().as_deref(), Some("two"));
-        assert_eq!(binding.poll(), None);
+            state.set(String::from("two"));
+            assert_eq!(binding.poll().as_deref(), Some("two"));
+            assert_eq!(binding.poll(), None);
 
-        binding.publish(&String::from("three"));
-        assert_eq!(state.get(), "three");
-        assert_eq!(binding.poll(), None, "a widget does not echo its own write");
-    }
+            binding.publish(&String::from("three"));
+            assert_eq!(state.get(), "three");
+            assert_eq!(binding.poll(), None, "a widget does not echo its own write");
+        }
 
-    #[test]
-    fn local_state_can_cross_a_worker_thread() {
-        let state = LocalState::new(String::from("loading"));
-        let worker = state.clone();
-        std::thread::spawn(move || worker.set(String::from("ready")))
+        // Case `local_state_can_cross_a_worker_thread`.
+        {
+            let state = LocalState::new(String::from("loading"));
+            let worker = state.clone();
+            std::thread::spawn(move || worker.set(String::from("ready")))
+                .join()
+                .unwrap();
+            assert_eq!(state.get(), "ready");
+            assert_eq!(state.revision(), 1);
+        }
+
+        // Case `background_writer_wakes_once_after_each_completed_mutation`.
+        {
+            let (scope, rx) = bound_scope();
+            let state = {
+                let _entry = scope.enter();
+                LocalState::new(vec![1])
+            };
+            let writer = state.writer();
+
+            writer.update(|values| values.push(2));
+            writer.set(vec![3]);
+            assert_eq!(state.get(), vec![3]);
+            assert_eq!(state.revision(), 2);
+            assert_eq!(rx.try_iter().count(), 2);
+        }
+
+        // Case `writer_publication_before_binding_flushes_one_pending_event`.
+        {
+            let mut scope = WakeScope::new();
+            let state = {
+                let _entry = scope.enter();
+                LocalState::new(0)
+            };
+            let writer = state.writer();
+            std::thread::spawn(move || {
+                writer.set(1);
+                writer.set(2);
+            })
             .join()
             .unwrap();
-        assert_eq!(state.get(), "ready");
-        assert_eq!(state.revision(), 1);
+            let (tx, rx) = mpsc::channel();
+            scope
+                .bind(move |event| {
+                    let _ = tx.send(event);
+                })
+                .unwrap();
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert_eq!(state.get(), 2);
+        }
     }
 
     #[test]
-    fn background_writer_wakes_once_after_each_completed_mutation() {
-        let (scope, rx) = bound_scope();
-        let state = {
-            let _entry = scope.enter();
-            LocalState::new(vec![1])
-        };
-        let writer = state.writer();
-
-        writer.update(|values| values.push(2));
-        writer.set(vec![3]);
-        assert_eq!(state.get(), vec![3]);
-        assert_eq!(state.revision(), 2);
-        assert_eq!(rx.try_iter().count(), 2);
-    }
-
-    #[test]
-    fn latest_task_rejects_an_older_completion() {
-        let task = LatestTask::new(0);
-        let state = task.state();
-        let first = task.begin(1);
-        let second = task.begin(2);
-
-        assert!(!first.is_current());
-        assert!(second.is_current());
-        assert!(!first.complete(10));
-        assert_eq!(state.get(), 2);
-        assert!(second.complete(20));
-        assert_eq!(state.get(), 20);
-    }
-
-    #[test]
-    fn latest_task_cancel_prevents_a_late_worker_overwrite() {
-        let task = LatestTask::new("idle");
-        let state = task.state();
-        let completion = task.begin("loading");
-
-        assert!(task.try_cancel("cancelled"));
-
-        assert!(!completion.is_current());
-        assert!(!completion.complete("late result"));
-        assert_eq!(state.get(), "cancelled");
-    }
-
-    #[test]
-    fn latest_request_drains_only_the_current_completion() {
-        let mut request = LatestRequest::new();
-        let first = request.begin();
-        let second = request.begin();
-
-        assert!(!first.is_current());
-        assert!(second.is_current());
-        assert!(!first.complete("stale"));
-        assert!(request.is_pending());
-        assert!(second.complete("ready"));
-        assert_eq!(request.try_take(), Some("ready"));
-        assert!(!request.is_pending());
-        assert_eq!(request.try_take(), None);
-    }
-
-    #[test]
-    fn latest_request_cancel_rejects_late_work() {
-        let mut request = LatestRequest::new();
-        let completion = request.begin();
-
-        assert!(request.try_cancel());
-
-        assert!(!completion.is_current());
-        assert!(!completion.complete(42));
-        assert!(!request.is_pending());
-        assert_eq!(request.try_take(), None);
-    }
-
-    #[test]
-    fn exhausted_local_state_revision_leaves_value_and_callback_untouched() {
-        let state = LocalState::new(String::from("before"));
-        state.inner.revision.store(u64::MAX, Ordering::Release);
-        let called = AtomicUsize::new(0);
-
-        assert!(!state.try_set(String::from("after")));
-        assert!(!state.try_update(|value| {
-            called.fetch_add(1, Ordering::Relaxed);
-            value.push_str(" mutated");
-        }));
-        assert_eq!(state.get(), "before");
-        assert_eq!(called.load(Ordering::Relaxed), 0);
-        assert_eq!(state.revision(), u64::MAX);
-    }
-
-    #[test]
-    fn exhausted_latest_request_never_reissues_a_completion_generation() {
-        let mut request = LatestRequest::<()>::new();
-        request.generation.store(u64::MAX - 1, Ordering::Release);
-
-        assert!(request.try_begin().is_none());
-        assert!(!request.is_pending());
-        assert!(
-            request.try_cancel(),
-            "the terminal invalidation is still available"
-        );
-        assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
-        assert!(!request.try_cancel());
-        assert!(request.try_begin().is_none());
-        let stale = request.begin();
-        assert!(!stale.is_current());
-        assert!(!stale.complete(()));
-    }
-
-    #[test]
-    fn exhausted_latest_task_does_not_publish_a_new_run() {
-        let task = LatestTask::new("idle");
-        let state = task.state();
-        *task.generation.lock().unwrap() = u64::MAX - 1;
-
-        assert!(task.try_begin("running").is_none());
-        assert_eq!(state.get(), "idle");
-        assert!(task.try_cancel("cancelled"));
-        assert_eq!(state.get(), "cancelled");
-        assert!(!task.try_cancel("later"));
-        assert_eq!(state.get(), "cancelled");
-        let inert_completion = task.begin("never published");
-        assert!(!inert_completion.is_current());
-        assert!(!inert_completion.complete("late"));
-        assert_eq!(state.get(), "cancelled");
-    }
-
-    #[test]
-    fn writer_keeps_creation_owner_when_requested_under_another_scope() {
-        let (mut a, a_rx) = bound_scope();
-        let (b, b_rx) = bound_scope();
-        let state = {
-            let _entry = a.enter();
-            LocalState::new(0)
-        };
-        let writer = {
-            let _entry = b.enter();
-            state.writer()
-        };
-        assert!(
-            std::thread::spawn(move || writer.try_set(1))
-                .join()
-                .unwrap()
-        );
-        assert_eq!(state.get(), 1);
-        assert_eq!(state.revision(), 1);
-        assert!(a.accepts(&a_rx.try_recv().unwrap()));
-        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
-        a.close();
-        b.handle().wake();
-        assert!(b.accepts(&b_rx.try_recv().unwrap()));
-    }
-
-    #[test]
-    fn closed_state_rejects_direct_writer_and_binding_publications() {
-        let (mut scope, rx) = bound_scope();
-        let state = {
-            let _entry = scope.enter();
-            LocalState::new(7)
-        };
-        let writer = state.writer();
-        let (_, mut binding) = LocalBinding::new(&state);
-        scope.close();
-        assert!(!state.try_set(8));
-        assert!(!state.try_update(|_| panic!("closed direct callback ran")));
-        assert!(!writer.try_set(9));
-        assert!(!writer.try_update(|_| panic!("closed writer callback ran")));
-        binding.publish(&10);
-        assert_eq!(state.get(), 7);
-        assert_eq!(state.revision(), 0);
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn authorized_update_can_finish_after_nonblocking_close() {
-        use crate::time::Duration;
-
-        let (mut scope, rx) = bound_scope();
-        let state = {
-            let _entry = scope.enter();
-            LocalState::new(1)
-        };
-        let writer = state.writer();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (resume_tx, resume_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            writer.try_update(|value| {
-                entered_tx.send(()).unwrap();
-                resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                *value = 2;
-            })
-        });
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        // If close waits for the mutation callback, its 5s timeout fails the test.
-        scope.close();
-        let replacement_scope = WakeScope::new();
-        let replacement = {
-            let _entry = replacement_scope.enter();
-            LocalState::new(100)
-        };
-        resume_tx.send(()).unwrap();
-        assert!(worker.join().unwrap());
-        assert_eq!(state.get(), 2);
-        assert_eq!(state.revision(), 1);
-        assert_eq!(replacement.get(), 100);
-        assert_eq!(replacement.revision(), 0);
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn update_may_publish_second_state_and_close_its_scope() {
-        let (mut scope, rx) = bound_scope();
-        let (first, second) = {
-            let _entry = scope.enter();
-            (LocalState::new(0), LocalState::new(0))
-        };
-        assert!(first.writer().try_update(|value| {
-            assert!(second.writer().try_set(2));
-            scope.close();
-            *value = 1;
-        }));
-        assert_eq!(first.get(), 1);
-        assert_eq!(second.get(), 2);
-        let old = rx.try_recv().unwrap();
-        assert!(!scope.accepts(&old));
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn task_begin_under_another_scope_keeps_the_state_creation_owner() {
-        let (a, a_rx) = bound_scope();
-        let (b, b_rx) = bound_scope();
-        let task = {
-            let _entry = a.enter();
-            LatestTask::new(0)
-        };
-        let completion = {
-            let _entry = b.enter();
-            task.begin(1)
-        };
-        assert!(
-            std::thread::spawn(move || completion.complete(2))
-                .join()
-                .unwrap()
-        );
-        assert!(a.accepts(&a_rx.try_recv().unwrap()));
-        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
-        assert_eq!(task.state().get(), 2);
-    }
-
-    #[test]
-    fn close_rejects_task_and_request_without_explicit_cancel() {
-        let (mut scope, rx) = bound_scope();
-        let (task, mut request) = {
-            let _entry = scope.enter();
-            (LatestTask::new(0), LatestRequest::new())
-        };
-        let task_completion = task.begin(1);
-        let request_completion = request.begin();
-        scope.close();
-        assert!(!task_completion.is_current());
-        assert!(!request_completion.is_current());
-        assert!(!task_completion.complete(2));
-        assert!(!request_completion.complete(3));
-        assert_eq!(task.state().get(), 1);
-        assert!(!request.is_pending());
-        assert_eq!(request.try_take(), None);
-        assert!(task.try_begin(4).is_none());
-        assert!(request.try_begin().is_none());
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn closed_zero_generation_fallbacks_are_permanently_stale() {
-        let mut scope = WakeScope::new();
-        let (task, mut request) = {
-            let _entry = scope.enter();
-            (LatestTask::new(0), LatestRequest::<u32>::new())
-        };
-        scope.close();
-        let task_fallback = task.begin(1);
-        let request_fallback = request.begin();
-        assert!(!task_fallback.is_current());
-        assert!(!request_fallback.is_current());
-        assert!(!task_fallback.complete(2));
-        assert!(!request_fallback.complete(2));
-        assert_eq!(*task.generation.lock().unwrap(), 0);
-        assert_eq!(request.generation.load(Ordering::Acquire), 0);
-        assert_eq!(task.state().get(), 0);
-    }
-
-    #[test]
-    fn request_begin_keeps_owner_and_closed_inbox_discards_queued_result() {
-        let (mut a, a_rx) = bound_scope();
-        let (b, b_rx) = bound_scope();
-        let mut request = {
-            let _entry = a.enter();
-            LatestRequest::new()
-        };
-        let completion = {
-            let _entry = b.enter();
-            request.begin()
-        };
-        assert!(
-            std::thread::spawn(move || completion.complete(42))
-                .join()
-                .unwrap()
-        );
-        let event = a_rx.try_recv().unwrap();
-        assert!(a.accepts(&event));
-        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
-        a.close();
-        assert_eq!(request.try_take(), None);
-        assert!(!request.is_pending());
-        assert!(!a.accepts(&event));
-    }
-
-    #[test]
-    fn writer_publication_before_binding_flushes_one_pending_event() {
-        let mut scope = WakeScope::new();
-        let state = {
-            let _entry = scope.enter();
-            LocalState::new(0)
-        };
-        let writer = state.writer();
-        std::thread::spawn(move || {
-            writer.set(1);
-            writer.set(2);
-        })
-        .join()
-        .unwrap();
-        let (tx, rx) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                let _ = tx.send(event);
-            })
-            .unwrap();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        assert_eq!(state.get(), 2);
-    }
-
-    #[test]
-    fn dropped_owner_leaves_all_retained_capabilities_closed() {
-        let (state, task, mut request, task_completion, request_completion) = {
-            let scope = WakeScope::new();
-            let _entry = scope.enter();
-            let state = LocalState::new(0);
+    fn latest_task_and_request_reject_stale_or_cancelled_completions() {
+        // Case `latest_task_rejects_an_older_completion`.
+        {
             let task = LatestTask::new(0);
+            let state = task.state();
+            let first = task.begin(1);
+            let second = task.begin(2);
+
+            assert!(!first.is_current());
+            assert!(second.is_current());
+            assert!(!first.complete(10));
+            assert_eq!(state.get(), 2);
+            assert!(second.complete(20));
+            assert_eq!(state.get(), 20);
+        }
+
+        // Case `latest_task_cancel_prevents_a_late_worker_overwrite`.
+        {
+            let task = LatestTask::new("idle");
+            let state = task.state();
+            let completion = task.begin("loading");
+
+            assert!(task.try_cancel("cancelled"));
+
+            assert!(!completion.is_current());
+            assert!(!completion.complete("late result"));
+            assert_eq!(state.get(), "cancelled");
+        }
+
+        // Case `latest_request_drains_only_the_current_completion`.
+        {
             let mut request = LatestRequest::new();
+            let first = request.begin();
+            let second = request.begin();
+
+            assert!(!first.is_current());
+            assert!(second.is_current());
+            assert!(!first.complete("stale"));
+            assert!(request.is_pending());
+            assert!(second.complete("ready"));
+            assert_eq!(request.try_take(), Some("ready"));
+            assert!(!request.is_pending());
+            assert_eq!(request.try_take(), None);
+        }
+
+        // Case `latest_request_cancel_rejects_late_work`.
+        {
+            let mut request = LatestRequest::new();
+            let completion = request.begin();
+
+            assert!(request.try_cancel());
+
+            assert!(!completion.is_current());
+            assert!(!completion.complete(42));
+            assert!(!request.is_pending());
+            assert_eq!(request.try_take(), None);
+        }
+    }
+
+    #[test]
+    fn exhausted_revisions_and_generations_are_never_reissued() {
+        // Case `exhausted_local_state_revision_leaves_value_and_callback_untouched`.
+        {
+            let state = LocalState::new(String::from("before"));
+            state.inner.revision.store(u64::MAX, Ordering::Release);
+            let called = AtomicUsize::new(0);
+
+            assert!(!state.try_set(String::from("after")));
+            assert!(!state.try_update(|value| {
+                called.fetch_add(1, Ordering::Relaxed);
+                value.push_str(" mutated");
+            }));
+            assert_eq!(state.get(), "before");
+            assert_eq!(called.load(Ordering::Relaxed), 0);
+            assert_eq!(state.revision(), u64::MAX);
+        }
+
+        // Case `exhausted_latest_request_never_reissues_a_completion_generation`.
+        {
+            let mut request = LatestRequest::<()>::new();
+            request.generation.store(u64::MAX - 1, Ordering::Release);
+
+            assert!(request.try_begin().is_none());
+            assert!(!request.is_pending());
+            assert!(
+                request.try_cancel(),
+                "the terminal invalidation is still available"
+            );
+            assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
+            assert!(!request.try_cancel());
+            assert!(request.try_begin().is_none());
+            let stale = request.begin();
+            assert!(!stale.is_current());
+            assert!(!stale.complete(()));
+        }
+
+        // Case `exhausted_latest_task_does_not_publish_a_new_run`.
+        {
+            let task = LatestTask::new("idle");
+            let state = task.state();
+            *task.generation.lock().unwrap() = u64::MAX - 1;
+
+            assert!(task.try_begin("running").is_none());
+            assert_eq!(state.get(), "idle");
+            assert!(task.try_cancel("cancelled"));
+            assert_eq!(state.get(), "cancelled");
+            assert!(!task.try_cancel("later"));
+            assert_eq!(state.get(), "cancelled");
+            let inert_completion = task.begin("never published");
+            assert!(!inert_completion.is_current());
+            assert!(!inert_completion.complete("late"));
+            assert_eq!(state.get(), "cancelled");
+        }
+
+        // Case `closed_zero_generation_fallbacks_are_permanently_stale`.
+        {
+            let mut scope = WakeScope::new();
+            let (task, mut request) = {
+                let _entry = scope.enter();
+                (LatestTask::new(0), LatestRequest::<u32>::new())
+            };
+            scope.close();
+            let task_fallback = task.begin(1);
+            let request_fallback = request.begin();
+            assert!(!task_fallback.is_current());
+            assert!(!request_fallback.is_current());
+            assert!(!task_fallback.complete(2));
+            assert!(!request_fallback.complete(2));
+            assert_eq!(*task.generation.lock().unwrap(), 0);
+            assert_eq!(request.generation.load(Ordering::Acquire), 0);
+            assert_eq!(task.state().get(), 0);
+        }
+    }
+
+    #[test]
+    fn writers_tasks_and_requests_keep_the_state_creation_owner() {
+        // Case `writer_keeps_creation_owner_when_requested_under_another_scope`.
+        {
+            let (mut a, a_rx) = bound_scope();
+            let (b, b_rx) = bound_scope();
+            let state = {
+                let _entry = a.enter();
+                LocalState::new(0)
+            };
+            let writer = {
+                let _entry = b.enter();
+                state.writer()
+            };
+            assert!(
+                std::thread::spawn(move || writer.try_set(1))
+                    .join()
+                    .unwrap()
+            );
+            assert_eq!(state.get(), 1);
+            assert_eq!(state.revision(), 1);
+            assert!(a.accepts(&a_rx.try_recv().unwrap()));
+            assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+            a.close();
+            b.handle().wake();
+            assert!(b.accepts(&b_rx.try_recv().unwrap()));
+        }
+
+        // Case `task_begin_under_another_scope_keeps_the_state_creation_owner`.
+        {
+            let (a, a_rx) = bound_scope();
+            let (b, b_rx) = bound_scope();
+            let task = {
+                let _entry = a.enter();
+                LatestTask::new(0)
+            };
+            let completion = {
+                let _entry = b.enter();
+                task.begin(1)
+            };
+            assert!(
+                std::thread::spawn(move || completion.complete(2))
+                    .join()
+                    .unwrap()
+            );
+            assert!(a.accepts(&a_rx.try_recv().unwrap()));
+            assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+            assert_eq!(task.state().get(), 2);
+        }
+
+        // Case `request_begin_keeps_owner_and_closed_inbox_discards_queued_result`.
+        {
+            let (mut a, a_rx) = bound_scope();
+            let (b, b_rx) = bound_scope();
+            let mut request = {
+                let _entry = a.enter();
+                LatestRequest::new()
+            };
+            let completion = {
+                let _entry = b.enter();
+                request.begin()
+            };
+            assert!(
+                std::thread::spawn(move || completion.complete(42))
+                    .join()
+                    .unwrap()
+            );
+            let event = a_rx.try_recv().unwrap();
+            assert!(a.accepts(&event));
+            assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+            a.close();
+            assert_eq!(request.try_take(), None);
+            assert!(!request.is_pending());
+            assert!(!a.accepts(&event));
+        }
+
+        // Case `update_may_publish_second_state_and_close_its_scope`.
+        {
+            let (mut scope, rx) = bound_scope();
+            let (first, second) = {
+                let _entry = scope.enter();
+                (LocalState::new(0), LocalState::new(0))
+            };
+            assert!(first.writer().try_update(|value| {
+                assert!(second.writer().try_set(2));
+                scope.close();
+                *value = 1;
+            }));
+            assert_eq!(first.get(), 1);
+            assert_eq!(second.get(), 2);
+            let old = rx.try_recv().unwrap();
+            assert!(!scope.accepts(&old));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+    }
+
+    #[test]
+    fn closing_the_state_rejects_later_publications_and_work() {
+        // Case `closed_state_rejects_direct_writer_and_binding_publications`.
+        {
+            let (mut scope, rx) = bound_scope();
+            let state = {
+                let _entry = scope.enter();
+                LocalState::new(7)
+            };
+            let writer = state.writer();
+            let (_, mut binding) = LocalBinding::new(&state);
+            scope.close();
+            assert!(!state.try_set(8));
+            assert!(!state.try_update(|_| panic!("closed direct callback ran")));
+            assert!(!writer.try_set(9));
+            assert!(!writer.try_update(|_| panic!("closed writer callback ran")));
+            binding.publish(&10);
+            assert_eq!(state.get(), 7);
+            assert_eq!(state.revision(), 0);
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Case `authorized_update_can_finish_after_nonblocking_close`.
+        {
+            let (mut scope, rx) = bound_scope();
+            let state = {
+                let _entry = scope.enter();
+                LocalState::new(1)
+            };
+            let writer = state.writer();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                writer.try_update(|value| {
+                    entered_tx.send(()).unwrap();
+                    tilo_test_env::recv("the resume signal", &resume_rx);
+                    *value = 2;
+                })
+            });
+            tilo_test_env::recv("the mutation callback to start", &entered_rx);
+            // If close waits for the mutation callback, the hang-bounded wait fails the test.
+            scope.close();
+            let replacement_scope = WakeScope::new();
+            let replacement = {
+                let _entry = replacement_scope.enter();
+                LocalState::new(100)
+            };
+            resume_tx.send(()).unwrap();
+            assert!(worker.join().unwrap());
+            assert_eq!(state.get(), 2);
+            assert_eq!(state.revision(), 1);
+            assert_eq!(replacement.get(), 100);
+            assert_eq!(replacement.revision(), 0);
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Case `close_rejects_task_and_request_without_explicit_cancel`.
+        {
+            let (mut scope, rx) = bound_scope();
+            let (task, mut request) = {
+                let _entry = scope.enter();
+                (LatestTask::new(0), LatestRequest::new())
+            };
             let task_completion = task.begin(1);
             let request_completion = request.begin();
-            (state, task, request, task_completion, request_completion)
-        };
-        assert!(!state.writer().try_set(2));
-        assert!(!task_completion.complete(2));
-        assert!(!request_completion.complete(2));
-        assert_eq!(task.state().get(), 1);
-        assert_eq!(request.try_take(), None);
+            scope.close();
+            assert!(!task_completion.is_current());
+            assert!(!request_completion.is_current());
+            assert!(!task_completion.complete(2));
+            assert!(!request_completion.complete(3));
+            assert_eq!(task.state().get(), 1);
+            assert!(!request.is_pending());
+            assert_eq!(request.try_take(), None);
+            assert!(task.try_begin(4).is_none());
+            assert!(request.try_begin().is_none());
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Case `dropped_owner_leaves_all_retained_capabilities_closed`.
+        {
+            let (state, task, mut request, task_completion, request_completion) = {
+                let scope = WakeScope::new();
+                let _entry = scope.enter();
+                let state = LocalState::new(0);
+                let task = LatestTask::new(0);
+                let mut request = LatestRequest::new();
+                let task_completion = task.begin(1);
+                let request_completion = request.begin();
+                (state, task, request, task_completion, request_completion)
+            };
+            assert!(!state.writer().try_set(2));
+            assert!(!task_completion.complete(2));
+            assert!(!request_completion.complete(2));
+            assert_eq!(task.state().get(), 1);
+            assert_eq!(request.try_take(), None);
+        }
     }
 
     #[test]
-    fn task_wake_sink_runs_after_generation_lock_is_released() {
-        let mut scope = WakeScope::new();
-        let task = {
-            let _entry = scope.enter();
-            LatestTask::new(0)
-        };
-        let reentrant_task = task.clone();
-        scope
-            .bind(move |_| {
-                assert!(reentrant_task.try_cancel(3));
-            })
-            .unwrap();
-        assert!(task.begin(1).complete(2));
-        assert_eq!(task.state().get(), 3);
+    fn spawned_work_runs_off_the_ui_thread_and_wakes_after_unlocking() {
+        // Case `task_wake_sink_runs_after_generation_lock_is_released`.
+        {
+            let mut scope = WakeScope::new();
+            let task = {
+                let _entry = scope.enter();
+                LatestTask::new(0)
+            };
+            let reentrant_task = task.clone();
+            scope
+                .bind(move |_| {
+                    assert!(reentrant_task.try_cancel(3));
+                })
+                .unwrap();
+            assert!(task.begin(1).complete(2));
+            assert_eq!(task.state().get(), 3);
+        }
+
+        // Case `spawned_work_never_runs_on_the_ui_thread`.
+        {
+            on_ui_thread(|scope, wakes| {
+                let ui_thread = std::thread::current().id();
+                let mut request = LatestRequest::new();
+                assert!(request.spawn(async {
+                    // Cross an await point, so a runtime driven from the caller
+                    // would have to be polled again here.
+                    tokio::task::yield_now().await;
+                    let current = std::thread::current();
+                    (
+                        current.id(),
+                        current.name().map(str::to_owned),
+                        tilo_rt::is_ui_thread(),
+                    )
+                }));
+                // Spawning neither entered a runtime on the UI thread nor ran the
+                // future inline.
+                assert!(!tilo_rt::in_runtime());
+                assert!(request.try_take().is_none());
+
+                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                assert!(scope.accepts(&event));
+                let (ran_on, name, ran_on_ui) = request.try_take().unwrap();
+                assert_ne!(ran_on, ui_thread);
+                assert_eq!(ran_on, tilo_rt::app().thread_id());
+                assert_eq!(name.as_deref(), Some("tilo-rt"));
+                assert!(!ran_on_ui);
+                // The UI thread can never block on the runtime either.
+                assert!(matches!(
+                    tilo_rt::app().block_on(async {}),
+                    Err(tilo_rt::Error::UiThread)
+                ));
+            });
+        }
+
+        // Case `spawned_results_wake_the_event_loop_and_stale_runs_are_aborted`.
+        {
+            on_ui_thread(|scope, wakes| {
+                let mut request = LatestRequest::new();
+                let (started, started_rx) = mpsc::channel();
+                let (_never, hold) = tokio::sync::oneshot::channel::<()>();
+                let (dropped, dropped_rx) = mpsc::channel();
+                let guard = DropSignal(dropped);
+                assert!(request.spawn(async move {
+                    let _guard = guard;
+                    started.send(()).unwrap();
+                    let _ = hold.await;
+                    "stale"
+                }));
+                started_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+                // A newer request supersedes the parked one: it is aborted, and
+                // only the newer result reaches the UI.
+                assert!(request.spawn(async { "fresh" }));
+                dropped_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                assert!(scope.accepts(&event));
+                assert_eq!(request.try_take(), Some("fresh"));
+
+                let task = LatestTask::new("idle");
+                let state = task.state();
+                let (release, gate) = tokio::sync::oneshot::channel::<()>();
+                assert!(task.spawn("loading", async move {
+                    let _ = gate.await;
+                    "loaded"
+                }));
+                // The running state is published before the future runs.
+                assert_eq!(state.get(), "loading");
+                release.send(()).unwrap();
+                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                assert!(scope.accepts(&event));
+                assert_eq!(state.get(), "loaded");
+            });
+        }
     }
 
     /// Stands in for the event loop: a thread marked as the UI thread whose
@@ -1146,81 +1237,6 @@ mod tests {
     }
 
     const WAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-
-    #[test]
-    fn spawned_work_never_runs_on_the_ui_thread() {
-        on_ui_thread(|scope, wakes| {
-            let ui_thread = std::thread::current().id();
-            let mut request = LatestRequest::new();
-            assert!(request.spawn(async {
-                // Cross an await point, so a runtime driven from the caller
-                // would have to be polled again here.
-                tokio::task::yield_now().await;
-                let current = std::thread::current();
-                (
-                    current.id(),
-                    current.name().map(str::to_owned),
-                    tilo_rt::is_ui_thread(),
-                )
-            }));
-            // Spawning neither entered a runtime on the UI thread nor ran the
-            // future inline.
-            assert!(!tilo_rt::in_runtime());
-            assert!(request.try_take().is_none());
-
-            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
-            assert!(scope.accepts(&event));
-            let (ran_on, name, ran_on_ui) = request.try_take().unwrap();
-            assert_ne!(ran_on, ui_thread);
-            assert_eq!(ran_on, tilo_rt::app().thread_id());
-            assert_eq!(name.as_deref(), Some("tilo-rt"));
-            assert!(!ran_on_ui);
-            // The UI thread can never block on the runtime either.
-            assert!(matches!(
-                tilo_rt::app().block_on(async {}),
-                Err(tilo_rt::Error::UiThread)
-            ));
-        });
-    }
-
-    #[test]
-    fn spawned_results_wake_the_event_loop_and_stale_runs_are_aborted() {
-        on_ui_thread(|scope, wakes| {
-            let mut request = LatestRequest::new();
-            let (started, started_rx) = mpsc::channel();
-            let (_never, hold) = tokio::sync::oneshot::channel::<()>();
-            let (dropped, dropped_rx) = mpsc::channel();
-            let guard = DropSignal(dropped);
-            assert!(request.spawn(async move {
-                let _guard = guard;
-                started.send(()).unwrap();
-                let _ = hold.await;
-                "stale"
-            }));
-            started_rx.recv_timeout(WAKE_DEADLINE).unwrap();
-            // A newer request supersedes the parked one: it is aborted, and
-            // only the newer result reaches the UI.
-            assert!(request.spawn(async { "fresh" }));
-            dropped_rx.recv_timeout(WAKE_DEADLINE).unwrap();
-            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
-            assert!(scope.accepts(&event));
-            assert_eq!(request.try_take(), Some("fresh"));
-
-            let task = LatestTask::new("idle");
-            let state = task.state();
-            let (release, gate) = tokio::sync::oneshot::channel::<()>();
-            assert!(task.spawn("loading", async move {
-                let _ = gate.await;
-                "loaded"
-            }));
-            // The running state is published before the future runs.
-            assert_eq!(state.get(), "loading");
-            release.send(()).unwrap();
-            let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
-            assert!(scope.accepts(&event));
-            assert_eq!(state.get(), "loaded");
-        });
-    }
 
     struct DropSignal(Sender<()>);
 

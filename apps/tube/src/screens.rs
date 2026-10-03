@@ -5,9 +5,9 @@
 //! so these functions are pure views.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::time::UNIX_EPOCH;
 use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
@@ -96,14 +96,14 @@ pub const NAV_RAIL_W: f64 = 86.0;
 /// foreground comfortable headroom in both themes (white ≈ 6.3:1 dark, black
 /// ≈ 8.3:1 light) while still reading unmistakably as "accent / selected".
 pub fn selected_accent_fill(theme: &Theme) -> SelectedStyle {
-    SelectedStyle::on(theme.accent_hover)
+    SelectedStyle::on(theme, theme.accent_hover)
 }
 
 /// Selected nav-rail item. The active item gets a strong accent fill (so it
 /// reads as "you are here") with a contrasting icon + label, instead of the
 /// old accent-coloured glyphs floating on a near-white slate-200 chip.
 pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
-    SelectedStyle::on(theme.accent_hover)
+    SelectedStyle::on(theme, theme.accent_hover)
 }
 
 /// "On" status pill (`SponsorBlock` / `DeArrow` indicators in the top bar). The
@@ -113,7 +113,7 @@ pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
 pub fn status_pill_on(theme: &Theme) -> SelectedStyle {
     // accent[3] (indigo-700 in dark) is dark enough that white text gets ~7.9:1
     // while still reading as the accent family.
-    SelectedStyle::on(theme.tokens.colors.accent.stops[3])
+    SelectedStyle::on(theme, theme.tokens.colors.accent.stops[3])
 }
 
 // ---------------------------------------------------------------------------
@@ -2766,7 +2766,7 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = SystemTime::now()
+    let current = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
     format!("Last synced {}", ui::format::relative(current - time))
@@ -2953,38 +2953,39 @@ mod selected_contrast_tests {
     }
 
     #[test]
-    fn selected_accent_fill_is_readable() {
-        for (name, t) in themes() {
-            let s = selected_accent_fill(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] selected chip/pill contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+    fn selected_and_active_fills_are_readable_in_every_theme() {
+        // Case `selected_accent_fill_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = selected_accent_fill(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] selected chip/pill contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
-    }
-
-    #[test]
-    fn selected_nav_item_is_readable() {
-        for (name, t) in themes() {
-            let s = selected_nav_item(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] selected nav-item contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+        // Case `selected_nav_item_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = selected_nav_item(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] selected nav-item contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
-    }
-
-    #[test]
-    fn status_pill_on_is_readable() {
-        for (name, t) in themes() {
-            let s = status_pill_on(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] on status-pill contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+        // Case `status_pill_on_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = status_pill_on(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] on status-pill contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
     }
 }
@@ -2995,13 +2996,8 @@ mod search_screen_tests {
     use crate::model::Route;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
     use taffy::prelude::*;
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
     use ui::widget::Widget;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point};
     use vello_encoding::DrawTag;
 
     /// A tiny valid PNG (4×4 opaque green) so a test can seed the image store
@@ -3015,226 +3011,160 @@ mod search_screen_tests {
         ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
-    /// Search preserves query/result context after the top bar scrolls away,
-    /// and its type-filter chips remain available to narrow by kind.
     #[test]
-    fn search_screen_has_type_chips_and_result_context() {
-        use crate::model::Route;
-
-        fn has_id(w: &dyn Widget, id: &str) -> bool {
-            if w.test_id() == Some(id) {
-                return true;
-            }
-            w.children().iter().any(|c| has_id(*c, id))
-        }
-
-        let mut model = crate::sample::model();
-        let mut v = model.videos[0].clone();
-        v.id = "only".into();
-        model.videos = vec![v];
-        model.search_hits_query = "q".into();
-        model.search_hits = vec!["only".into()];
-        model.route = Route::Search("q".into());
-
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let mut screen = search(&model, &theme, &bus, Imgs::none(), "q");
-
-        let (w, h) = (1280.0f32, 800.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        assert!(
-            has_id(&screen, "search_type_chips"),
-            "the Video·Playlist·Creator chips are present"
-        );
-        assert!(
-            has_id(&screen, "search_results_summary"),
-            "a sparse result set retains visible result-count context"
-        );
-        assert!(
-            has_id(&screen, "sparse_video_result"),
-            "a lone result uses the centered, constrained desktop composition"
-        );
-        for label in ["video", "playlist", "creator"] {
-            assert!(
-                has_id(&screen, &format!("type_chip_{label}")),
-                "the {label} type chip is present",
-            );
-        }
-    }
-
-    #[test]
-    fn palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint() {
-        fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children()
-                .iter()
-                .find_map(|child| rect_for_id(*child, id))
-        }
-
-        let mut model = crate::sample::model();
-        model.palette_open = true;
-        model.palette_query = "rust".into();
-        let palette_query = ui::LocalState::new(model.palette_query.clone());
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let mut palette =
-            command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
-        let (w, h) = (560.0f32, 720.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .expect("root layout node");
-        let mut tr = TextRenderer::new();
-        let map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w),
-                    height: AvailableSpace::Definite(h),
-                },
-                |known, available, node_id, _, _| {
-                    map.get(&node_id).map_or(taffy::Size::ZERO, |ptr| unsafe {
-                        (**ptr).measure(known, available, &mut tr)
-                    })
-                },
-            )
-            .expect("palette layout");
-        palette.apply_layout(&taffy, child, Point::ORIGIN);
-        let card = rect_for_id(&palette, "palette_card").expect("palette card rect");
-        assert!(
-            card.x0 >= 16.0 && card.x1 <= 544.0,
-            "card has safe side insets: {card:?}"
-        );
-        assert!(
-            (card.width() - 526.4).abs() < 1.0,
-            "94% narrow width preserves the 560px max-width composition: {card:?}"
-        );
-    }
-
-    /// Rendered through the real `search` screen with an image store that has
-    /// decoded the result's thumbnail URL, a search-result card must emit an
-    /// IMAGE draw (the real still), not just the gradient poster — the same
-    /// `video_card` image path Home/Trending use.
-    #[test]
-    fn search_result_row_paints_the_fetched_thumbnail() {
-        let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
-        let store = ui::ImageStore::new(&fetcher);
-
-        let mut model = crate::sample::model();
-        let mut v = model.videos[0].clone();
-        v.thumbnail_url = "https://i.ytimg.com/vi/testresult/hqdefault.jpg".to_string();
-        let vid = v.id.clone();
-        let thumb = v.thumbnail_url.clone();
-        model.videos = vec![v];
-        model.search_hits_query = "q".to_string();
-        model.search_hits = vec![vid];
-        model.route = Route::Search("q".to_string());
-
-        // Pre-warm the store so the build captures the decoded image.
-        store.get(&thumb);
-        store.block_until_idle(Duration::from_secs(5));
-        assert!(
-            store.get(&thumb).is_some(),
-            "the result thumbnail decoded + cached"
-        );
-
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let imgs = Imgs(Some(&store));
-        let mut screen = search(&model, &theme, &bus, imgs, "q");
-
-        // Lay the real screen out in a definite viewport, then draw it.
-        let (w, h) = (1280.0f32, 800.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn search_screen_lays_out_chips_inset_and_thumbnails() {
+        // Case `search_screen_has_type_chips_and_result_context`:
+        // Search preserves query/result context after the top bar scrolls away,
+        // and its type-filter chips remain available to narrow by kind.
         {
-            let map = node_map.clone();
-            let trr = &mut tr;
+            use crate::model::Route;
+
+            fn has_id(w: &dyn Widget, id: &str) -> bool {
+                if w.test_id() == Some(id) {
+                    return true;
+                }
+                w.children().iter().any(|c| has_id(*c, id))
+            }
+
+            let mut model = crate::sample::model();
+            let mut v = model.videos[0].clone();
+            v.id = "only".into();
+            model.videos = vec![v];
+            model.search_hits_query = "q".into();
+            model.search_hits = vec!["only".into()];
+            model.route = Route::Search("q".into());
+
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let mut screen = search(&model, &theme, &bus, Imgs::none(), "q");
+
+            let (w, h) = (1280.0f32, 800.0f32);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
             taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(w),
+                            height: length(h),
+                        },
+                        ..Default::default()
                     },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
+                    &[child],
                 )
                 .unwrap();
+
+            assert!(
+                has_id(&screen, "search_type_chips"),
+                "the Video·Playlist·Creator chips are present"
+            );
+            assert!(
+                has_id(&screen, "search_results_summary"),
+                "a sparse result set retains visible result-count context"
+            );
+            assert!(
+                has_id(&screen, "sparse_video_result"),
+                "a lone result uses the centered, constrained desktop composition"
+            );
+            for label in ["video", "playlist", "creator"] {
+                assert!(
+                    has_id(&screen, &format!("type_chip_{label}")),
+                    "the {label} type chip is present",
+                );
+            }
         }
-        screen.apply_layout(&taffy, child, Point::ORIGIN);
+        // Case `palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint`.
+        {
+            fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+                if w.test_id() == Some(id) {
+                    return Some(w.get_rect());
+                }
+                w.children()
+                    .iter()
+                    .find_map(|child| rect_for_id(*child, id))
+            }
 
-        // The thumbnail resolves its decoded image lazily in `sync` (from the
-        // pre-warmed store), so run it — the real per-frame path — before drawing.
-        let mut doc = automerge::AutoCommit::new();
-        let root_obj = automerge::ROOT;
-        screen.sync(&mut doc, &root_obj);
+            let mut model = crate::sample::model();
+            model.palette_open = true;
+            model.palette_query = "rust".into();
+            let palette_query = ui::LocalState::new(model.palette_query.clone());
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let palette =
+                command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
+            let palette = ui::headless::Framed::new(
+                ui::State::new(),
+                palette,
+                ui::headless::viewport((560.0, 720.0)),
+                theme,
+            );
+            let card = rect_for_id(&*palette, "palette_card").expect("palette card rect");
+            assert!(
+                card.x0 >= 16.0 && card.x1 <= 544.0,
+                "card has safe side insets: {card:?}"
+            );
+            assert!(
+                (card.width() - 526.4).abs() < 1.0,
+                "94% narrow width preserves the 560px max-width composition: {card:?}"
+            );
+        }
+        // Case `search_result_row_paints_the_fetched_thumbnail`:
+        // Rendered through the real `search` screen with an image store that has
+        // decoded the result's thumbnail URL, a search-result card must emit an
+        // IMAGE draw (the real still), not just the gradient poster — the same
+        // `video_card` image path Home/Trending use.
+        {
+            let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
+            let store = ui::ImageStore::new(&fetcher);
 
-        let mut scene = Scene::new();
-        screen.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let images = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::IMAGE)
-            .count();
-        assert!(
-            images >= 1,
-            "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
-        );
+            let mut model = crate::sample::model();
+            let mut v = model.videos[0].clone();
+            v.thumbnail_url = "https://i.ytimg.com/vi/testresult/hqdefault.jpg".to_string();
+            let vid = v.id.clone();
+            let thumb = v.thumbnail_url.clone();
+            model.videos = vec![v];
+            model.search_hits_query = "q".to_string();
+            model.search_hits = vec![vid];
+            model.route = Route::Search("q".to_string());
+
+            // Pre-warm the store so the build captures the decoded image.
+            store.get(&thumb);
+            store.block_until_idle(tilo_test_env::hang_bound());
+            assert!(
+                store.get(&thumb).is_some(),
+                "the result thumbnail decoded + cached"
+            );
+
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let imgs = Imgs(Some(&store));
+            let screen = search(&model, &theme, &bus, imgs, "q");
+
+            // Lay the real screen out in a definite viewport, then draw it. The
+            // thumbnail resolves its decoded image lazily in `sync` (from the
+            // pre-warmed store), which the production frame runs before drawing.
+            let screen = ui::headless::Framed::new(
+                ui::State::new(),
+                screen,
+                ui::headless::viewport((1280.0, 800.0)),
+                theme,
+            );
+            let scene = ui::headless::Framed::harness(&screen).scene();
+            let images = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::IMAGE)
+                .count();
+            assert!(
+                images >= 1,
+                "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
+            );
+        }
     }
 }

@@ -1,7 +1,8 @@
 //! The non-blocking streaming worker.
 //!
 //! All network + extraction work — real `YouTube` Music search and audio-stream
-//! resolution — runs on a background thread so the UI thread never blocks. The
+//! resolution — runs on a background thread so the UI thread never blocks (in
+//! a browser page, which has no threads, as app tasks one request at a time). The
 //! app talks to it with two plain channels: it *sends* [`StreamRequest`]s
 //! (fire-and-forget) and *drains* [`StreamUpdate`]s once per frame via
 //! [`StreamWorker::poll`] (a non-blocking `try_iter`). The worker owns a
@@ -129,6 +130,15 @@ pub struct StreamWorker {
     tx: SyncSender<StreamRequest>,
     rx: Receiver<StreamUpdate>,
     startup_error: Option<String>,
+    /// Where there are no threads (a browser page): the backend and the
+    /// requests, answered one at a time as app tasks.
+    tasks: Option<Tasks>,
+}
+
+struct Tasks {
+    backend: std::sync::Arc<dyn MusicBackend>,
+    requests: std::sync::Arc<std::sync::Mutex<Receiver<StreamRequest>>>,
+    updates: Sender<StreamUpdate>,
 }
 
 impl StreamWorker {
@@ -156,19 +166,38 @@ impl StreamWorker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        let startup_error = std::thread::Builder::new()
-            .name("music-stream".into())
-            .spawn(move || run_worker(&req_rx, &up_tx, force_offline))
-            .err()
-            .map(|error| {
-                tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
-                format!("could not start music worker: {error}")
-            });
+        if !matches!(
+            ui::rt::availability(ui::rt::Feature::Threads),
+            ui::rt::Availability::Available
+        ) {
+            let backend: std::sync::Arc<dyn MusicBackend> =
+                std::sync::Arc::from(open_backend(&up_tx, force_offline));
+            return Self {
+                tx: req_tx,
+                rx: up_rx,
+                startup_error: None,
+                tasks: Some(Tasks {
+                    backend,
+                    requests: std::sync::Arc::new(std::sync::Mutex::new(req_rx)),
+                    updates: up_tx,
+                }),
+            };
+        }
+
+        let startup_error = ui::rt::spawn_thread("music-stream", move || {
+            run_worker(&req_rx, &up_tx, force_offline);
+        })
+        .err()
+        .map(|error| {
+            tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
+            format!("could not start music worker: {error}")
+        });
 
         Self {
             tx: req_tx,
             rx: up_rx,
             startup_error,
+            tasks: None,
         }
     }
 
@@ -189,7 +218,22 @@ impl StreamWorker {
                 "music worker is busy; wait for the current request or try again".to_string()
             }
             TrySendError::Disconnected(_) => "music worker is unavailable".to_string(),
-        })
+        })?;
+        if let Some(tasks) = &self.tasks {
+            let (backend, requests, updates) = (
+                std::sync::Arc::clone(&tasks.backend),
+                std::sync::Arc::clone(&tasks.requests),
+                tasks.updates.clone(),
+            );
+            // One queued request per task, answered in order.
+            drop(ui::rt::app().spawn_blocking(move || {
+                let next = requests.lock().ok().and_then(|queue| queue.try_recv().ok());
+                if let Some(request) = next {
+                    handle_request(backend.as_ref(), &updates, request);
+                }
+            }));
+        }
+        Ok(())
     }
 
     /// Non-blocking drain of any updates ready this frame.
@@ -205,6 +249,7 @@ impl StreamWorker {
             tx,
             rx,
             startup_error: Some("test worker startup failure".to_string()),
+            tasks: None,
         }
     }
 }
@@ -240,6 +285,13 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
 }
 
 fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, force_offline: bool) {
+    let backend = open_backend(up_tx, force_offline);
+    while let Ok(request) = req_rx.recv() {
+        handle_request(backend.as_ref(), up_tx, request);
+    }
+}
+
+fn open_backend(up_tx: &Sender<StreamUpdate>, force_offline: bool) -> Box<dyn MusicBackend> {
     // Build the data source once. `preferred_backend` picks live rustypipe if
     // compiled + reachable, else the offline sample.
     let backend = if force_offline {
@@ -256,10 +308,7 @@ fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, fo
         name: backend.name().to_string(),
         live: backend.is_live(),
     });
-
-    while let Ok(request) = req_rx.recv() {
-        handle_request(backend.as_ref(), up_tx, request);
-    }
+    backend
 }
 
 #[allow(
@@ -382,95 +431,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_announces_backend_and_offline_resolve_fails_gracefully() {
-        let w = StreamWorker::spawn_offline();
-        // Pin the hermetic backend: a unit test must never depend on the host's
-        // network or spend the live request deadline probing a synthetic id.
-        w.request(StreamRequest::Resolve {
-            track_id: "tk_x".into(),
-            video_id: "synthetic".into(),
-            request_id: 1,
-        })
-        .expect("worker request is accepted");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn stream_worker_is_bounded_honest_and_non_blocking() {
+        // Phase `worker_announces_backend_and_offline_resolve_fails_gracefully`.
+        {
+            let w = StreamWorker::spawn_offline();
+            // Pin the hermetic backend: a unit test must never depend on the host's
+            // network or spend the live request deadline probing a synthetic id.
+            w.request(StreamRequest::Resolve {
+                track_id: "tk_x".into(),
+                video_id: "synthetic".into(),
+                request_id: 1,
+            })
+            .expect("worker request is accepted");
 
-        // Drain with a bounded wait — the worker replies on its own thread. A
-        // It breaks out the instant a terminal update lands.
-        let mut announced = false;
-        let mut failed_or_resolved = false;
-        for _ in 0..2000 {
-            for up in w.poll() {
-                match up {
-                    StreamUpdate::Backend { .. } => announced = true,
-                    StreamUpdate::ResolveFailed { track_id, .. } => {
-                        assert_eq!(track_id, "tk_x");
-                        failed_or_resolved = true;
+            // Drain with a bounded wait — the worker replies on its own thread. A
+            // It breaks out the instant a terminal update lands.
+            let mut announced = false;
+            let mut failed_or_resolved = false;
+            for _ in 0..2000 {
+                for up in w.poll() {
+                    match up {
+                        StreamUpdate::Backend { .. } => announced = true,
+                        StreamUpdate::ResolveFailed { track_id, .. } => {
+                            assert_eq!(track_id, "tk_x");
+                            failed_or_resolved = true;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
+                if announced && failed_or_resolved {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            if announced && failed_or_resolved {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            assert!(announced, "worker announced its backend");
+            assert!(
+                failed_or_resolved,
+                "resolve produced a terminal update, no hang"
+            );
         }
-        assert!(announced, "worker announced its backend");
-        assert!(
-            failed_or_resolved,
-            "resolve produced a terminal update, no hang"
-        );
-    }
 
-    #[test]
-    fn unavailable_worker_rejects_enqueue_instead_of_silently_losing_work() {
-        let worker = StreamWorker::unavailable_for_test();
-        let error = worker
-            .request(StreamRequest::Search {
-                query: "anything".into(),
-                request_id: 1,
-            })
-            .expect_err("startup failure must be surfaced to the caller");
-        assert!(error.contains("startup failure"));
-    }
+        // Phase `unavailable_worker_rejects_enqueue_instead_of_silently_losing_work`.
+        {
+            let worker = StreamWorker::unavailable_for_test();
+            let error = worker
+                .request(StreamRequest::Search {
+                    query: "anything".into(),
+                    request_id: 1,
+                })
+                .expect_err("startup failure must be surfaced to the caller");
+            assert!(error.contains("startup failure"));
+        }
 
-    #[test]
-    fn request_boundary_rejects_oversized_values() {
-        let worker = StreamWorker::spawn_offline();
-        let error = worker
-            .request(StreamRequest::Search {
-                query: "x".repeat(MAX_QUERY_BYTES + 1),
-                request_id: 1,
-            })
-            .expect_err("oversized query must be refused before enqueue");
-        assert!(error.contains("limited"));
+        // Phase `request_boundary_rejects_oversized_values`.
+        {
+            let worker = StreamWorker::spawn_offline();
+            let error = worker
+                .request(StreamRequest::Search {
+                    query: "x".repeat(MAX_QUERY_BYTES + 1),
+                    request_id: 1,
+                })
+                .expect_err("oversized query must be refused before enqueue");
+            assert!(error.contains("limited"));
 
-        let error = worker
-            .request(StreamRequest::Resolve {
-                track_id: "track".into(),
-                video_id: "v".repeat(MAX_EXTERNAL_ID_BYTES + 1),
-                request_id: 2,
-            })
-            .expect_err("oversized external id must be refused before enqueue");
-        assert!(error.contains("too long"));
-    }
+            let error = worker
+                .request(StreamRequest::Resolve {
+                    track_id: "track".into(),
+                    video_id: "v".repeat(MAX_EXTERNAL_ID_BYTES + 1),
+                    request_id: 2,
+                })
+                .expect_err("oversized external id must be refused before enqueue");
+            assert!(error.contains("too long"));
+        }
 
-    #[test]
-    fn request_queue_is_bounded_and_never_blocks_the_caller() {
-        let (tx, request_rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
-        let (_update_tx, rx) = std::sync::mpsc::channel();
-        let worker = StreamWorker {
-            tx,
-            rx,
-            startup_error: None,
-        };
-        for _ in 0..REQUEST_QUEUE_LIMIT {
-            worker
+        // Phase `request_queue_is_bounded_and_never_blocks_the_caller`.
+        {
+            let (tx, request_rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
+            let (_update_tx, rx) = std::sync::mpsc::channel();
+            let worker = StreamWorker {
+                tx,
+                rx,
+                startup_error: None,
+                tasks: None,
+            };
+            for _ in 0..REQUEST_QUEUE_LIMIT {
+                worker
+                    .request(StreamRequest::Home)
+                    .expect("capacity remains available");
+            }
+            let error = worker
                 .request(StreamRequest::Home)
-                .expect("capacity remains available");
+                .expect_err("one more request is back-pressured");
+            assert!(error.contains("busy"));
+            drop(request_rx);
         }
-        let error = worker
-            .request(StreamRequest::Home)
-            .expect_err("one more request is back-pressured");
-        assert!(error.contains("busy"));
-        drop(request_rx);
     }
 }

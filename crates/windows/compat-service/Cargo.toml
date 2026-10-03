@@ -11,8 +11,8 @@ name = "compat_service"
 path = "src/lib.rs"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 collab-types = { path = "../../collab/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }
 launcher = { path = "../../packaging/launcher" }
@@ -24,9 +24,11 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 windows-vm = { path = "../windows-vm" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

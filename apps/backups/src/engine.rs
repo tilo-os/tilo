@@ -12,7 +12,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const REPOSITORY_DIR: &str = ".tilo-backups";
@@ -73,8 +73,10 @@ pub struct BackupEntry {
     pub size: u64,
     pub sha256: Option<String>,
     pub link_target: Option<PathBuf>,
-    #[cfg(unix)]
-    pub mode: u32,
+    /// Unix permission bits; `null` on platforms without them. The key is
+    /// required in every manifest.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub mode: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,7 +151,7 @@ pub fn create_snapshot(
     let (source, destination) = validate_paths(source, destination)?;
     let snapshots = prepare_repository(&destination)?.join(SNAPSHOTS_DIR);
     fs::create_dir_all(&snapshots)?;
-    let now = SystemTime::now()
+    let now = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| BackupError::InvalidSnapshot("System clock is before 1970".into()))?
         .as_secs();
@@ -200,11 +202,7 @@ fn build_snapshot(
         validate_relative(relative)?;
         let target = data.join(relative);
         let metadata = fs::symlink_metadata(item.path())?;
-        #[cfg(unix)]
-        let mode = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode()
-        };
+        let mode = host_fs::mode(&metadata);
         if metadata.is_dir() {
             fs::create_dir(&target)?;
             entries.push(BackupEntry {
@@ -213,7 +211,6 @@ fn build_snapshot(
                 size: 0,
                 sha256: None,
                 link_target: None,
-                #[cfg(unix)]
                 mode,
             });
         } else if metadata.is_file() {
@@ -228,7 +225,6 @@ fn build_snapshot(
                 size,
                 sha256: Some(digest),
                 link_target: None,
-                #[cfg(unix)]
                 mode,
             });
         } else if metadata.file_type().is_symlink() {
@@ -240,7 +236,6 @@ fn build_snapshot(
                 size: 0,
                 sha256: None,
                 link_target: Some(link_target),
-                #[cfg(unix)]
                 mode,
             });
         } else {
@@ -484,10 +479,10 @@ fn restore_into_stage(
                 on_progress(&progress);
             }
         }
-        #[cfg(unix)]
-        if !matches!(entry.kind, EntryKind::Symlink) {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&to, fs::Permissions::from_mode(entry.mode))?;
+        if !matches!(entry.kind, EntryKind::Symlink)
+            && let Some(mode) = entry.mode
+        {
+            host_fs::set_mode(&to, mode)?;
         }
     }
     Ok(Verification {
@@ -715,22 +710,28 @@ fn integrity<T>(path: &Path, message: &str) -> Result<T> {
     )))
 }
 
-#[cfg(unix)]
 fn create_symlink(target: &Path, path: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, path)?;
+    if !host_fs::HAS_SYMLINKS {
+        return Err(BackupError::InvalidSource(
+            "Symbolic links are not supported on this platform".into(),
+        ));
+    }
+    host_fs::symlink(target, path)?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn create_symlink(_target: &Path, _path: &Path) -> Result<()> {
-    Err(BackupError::InvalidSource(
-        "Symbolic links are not supported on this platform".into(),
-    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_entries_require_the_mode_key() {
+        let entry = r#"{"path":"a","kind":"file","size":0,"sha256":null,"link_target":null"#;
+        assert!(serde_json::from_str::<BackupEntry>(&format!("{entry}}}")).is_err());
+        let parsed: BackupEntry =
+            serde_json::from_str(&format!("{entry},\"mode\":null}}")).unwrap();
+        assert_eq!(parsed.mode, None);
+    }
 
     #[test]
     fn create_verify_and_restore_round_trip() {
@@ -767,7 +768,19 @@ mod tests {
         );
     }
 
+    /// Recursive destinations, corrupt snapshots, targets inside the repository,
+    /// non-empty folders and a failed stage publish are all refused without
+    /// clobbering data; each case uses its own temp dir.
     #[test]
+    fn unsafe_or_corrupt_operations_are_refused_without_writing() {
+        rejects_recursive_destinations();
+        corruption_is_reported_and_not_restored();
+        restore_refuses_a_target_inside_the_repository_before_writing_it();
+        restore_refuses_nonempty_folder_by_default();
+        failed_stage_publish_restores_the_previous_target();
+    }
+
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn rejects_recursive_destinations() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -778,7 +791,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn corruption_is_reported_and_not_restored() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -804,7 +817,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_a_target_inside_the_repository_before_writing_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -824,7 +837,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_nonempty_folder_by_default() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -842,7 +855,7 @@ mod tests {
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn failed_stage_publish_restores_the_previous_target() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("restore");
@@ -865,8 +878,19 @@ mod tests {
         assert!(stage.join("restored").exists());
     }
 
-    #[cfg(unix)]
+    /// Source symlinks are stored as links, a malicious restore ancestor link is
+    /// replaced, and a repository symlink is rejected; each case uses its own
+    /// temp dir.
     #[test]
+    #[cfg(unix)]
+    fn symlinks_are_preserved_or_rejected_but_never_followed() {
+        source_symlinks_are_preserved_without_following_them();
+        overwrite_replaces_a_malicious_symlink_ancestor_without_following_it();
+        repository_symlink_is_rejected();
+    }
+
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
+    #[cfg(unix)]
     fn source_symlinks_are_preserved_without_following_them() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -892,8 +916,8 @@ mod tests {
         );
     }
 
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
-    #[test]
     fn overwrite_replaces_a_malicious_symlink_ancestor_without_following_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -911,8 +935,8 @@ mod tests {
         assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
 
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
-    #[test]
     fn repository_symlink_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");

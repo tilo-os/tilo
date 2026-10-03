@@ -19,6 +19,13 @@ license.workspace = true
 name = "tilo-launcher"
 path = "src/main.rs"
 
+[[bin]]
+name = "managed-tree-fixture"
+path = "tests/fixtures/managed-tree/main.rs"
+test = false
+bench = false
+required-features = ["managed-tree-test"]
+
 [lib]
 name = "launcher"
 path = "src/lib.rs"
@@ -28,9 +35,13 @@ path = "src/lib.rs"
 # system store's in `package-store`) in a release build. Debug builds always
 # honour them; shipped images never enable this.
 dev-overrides = ["package-store/dev-overrides"]
+# Explicit opt-in Linux process-tree qualification fixture.
+managed-tree-test = []
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
+fnv.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's
@@ -67,11 +78,15 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 runtime-identity = { path = "../../runtime/runtime-identity" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The egress gate and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
+# Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),
+# which the launcher's filtered accessibility proxy forwards.
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests whose subject is the environment itself (session variables, service
@@ -83,7 +98,7 @@ hex.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
+tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 
 [[test]]
 name = "it"

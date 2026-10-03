@@ -57,17 +57,25 @@ for architecture in windows_host["architectures"]:
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
 # Imager's native Windows release includes `ui`, and with it the host
-# services crate that owns the clipboard backends. The Wayland clipboard
-# backend consumes Unix file descriptors, so it must never enter non-Linux
-# builds.
-for manifest in ("crates/sdk/ui-core/Cargo.toml", "crates/sdk/tilo-host/Cargo.toml"):
-    ui_manifest = tomllib.loads((ROOT / manifest).read_text())
-    assert "smithay-clipboard" not in ui_manifest["dependencies"], manifest
-host_manifest = tomllib.loads((ROOT / "crates/sdk/tilo-host/Cargo.toml").read_text())
-linux_host_dependencies = host_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
-assert "smithay-clipboard" in linux_host_dependencies
+# services that re-export the clipboard crate. The Wayland clipboard backend
+# consumes Unix file descriptors, so it must stay on the Linux target of
+# `tilo-clipboard` and never enter non-Linux builds through ui or tilo-host.
+for manifest in (
+    "crates/sdk/ui-core/Cargo.toml",
+    "crates/sdk/tilo-host/Cargo.toml",
+    "crates/platform/tilo-clipboard/Cargo.toml",
+):
+    parsed = tomllib.loads((ROOT / manifest).read_text())
+    assert "smithay-clipboard" not in parsed.get("dependencies", {}), manifest
+clipboard_manifest = tomllib.loads(
+    (ROOT / "crates/platform/tilo-clipboard/Cargo.toml").read_text()
+)
+linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "linux")'][
+    "dependencies"
+]
+assert "smithay-clipboard" in linux_clipboard_dependencies
 
-session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
+session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()

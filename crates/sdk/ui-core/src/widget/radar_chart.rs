@@ -5,10 +5,10 @@
     reason = "polar projection is bounded floating-point geometry"
 )]
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -412,7 +412,6 @@ impl RadarChart {
 }
 
 impl Widget for RadarChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -663,19 +662,8 @@ impl Widget for RadarChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -686,8 +674,8 @@ impl Widget for RadarChart {
                     self.pointer = point;
                     self.update_hover();
                     if self.toggle_legend_at(point) || self.activate_hovered() {
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -696,7 +684,8 @@ impl Widget for RadarChart {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -707,8 +696,8 @@ impl Widget for RadarChart {
                 ..
             } => {
                 if self.toggle_legend_at(self.pointer) || self.activate_hovered() {
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -720,8 +709,8 @@ impl Widget for RadarChart {
                 } else {
                     self.move_keyboard_inspection(action);
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -786,8 +775,8 @@ impl Widget for RadarChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -835,34 +824,37 @@ impl Widget for RadarChart {
 mod tests {
     use super::*;
     #[test]
-    fn axes_never_accept_a_zero_maximum() {
-        assert!(RadarAxis::new("x", "X", 0.0).max > 0.0);
-    }
+    fn radar_axes_and_legend_validate_and_expose_state() {
+        // Case `axes_never_accept_a_zero_maximum`.
+        {
+            assert!(RadarAxis::new("x", "X", 0.0).max > 0.0);
+        }
 
-    #[test]
-    fn legend_visibility_is_programmatic_observable_and_excludes_inspection() {
-        let axes = vec![
-            RadarAxis::new("a", "A", 10.0),
-            RadarAxis::new("b", "B", 10.0),
-            RadarAxis::new("c", "C", 10.0),
-        ];
-        let mut chart = RadarChart::new(
-            axes,
-            vec![RadarSeries::new(
-                "current",
-                "Current",
-                Color::from_rgb8(1, 2, 3),
-                vec![1.0, 2.0, 3.0],
-            )],
-        );
-        assert!(chart.set_series_visible("current", false));
-        assert!(!chart.is_series_visible("current"));
-        assert!(!chart.inspect("current", "a"));
-        assert_eq!(
-            chart.take_visibility_changed(),
-            Some(("current".to_owned(), false))
-        );
-        assert!(chart.toggle_series("current"));
-        assert!(chart.inspect("current", "a"));
+        // Case `legend_visibility_is_programmatic_observable_and_excludes_inspection`.
+        {
+            let axes = vec![
+                RadarAxis::new("a", "A", 10.0),
+                RadarAxis::new("b", "B", 10.0),
+                RadarAxis::new("c", "C", 10.0),
+            ];
+            let mut chart = RadarChart::new(
+                axes,
+                vec![RadarSeries::new(
+                    "current",
+                    "Current",
+                    Color::from_rgb8(1, 2, 3),
+                    vec![1.0, 2.0, 3.0],
+                )],
+            );
+            assert!(chart.set_series_visible("current", false));
+            assert!(!chart.is_series_visible("current"));
+            assert!(!chart.inspect("current", "a"));
+            assert_eq!(
+                chart.take_visibility_changed(),
+                Some(("current".to_owned(), false))
+            );
+            assert!(chart.toggle_series("current"));
+            assert!(chart.inspect("current", "a"));
+        }
     }
 }

@@ -12,9 +12,11 @@
 )]
 
 use std::collections::BTreeMap;
+use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -793,22 +795,29 @@ where
         output_dir: &File,
         mut remaining: usize,
     ) -> Result<Vec<[u8; 32]>, ComputeExecutionError> {
-        let pinned_dir = PathBuf::from(format!("/proc/self/fd/{}", output_dir.as_raw_fd()));
-        let mut paths = fs::read_dir(&pinned_dir)
-            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
+        let names = output_names(output_dir)
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
-        paths.sort_by_key(std::fs::DirEntry::file_name);
-        if paths.len() > MAX_COMPUTE_OUTPUTS {
+        if names.len() > MAX_COMPUTE_OUTPUTS {
             return Err(ComputeExecutionError::InvalidOutput);
         }
-        let mut outputs = Vec::with_capacity(paths.len());
-        for entry in paths {
-            let mut file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(entry.path())
-                .map_err(|_| ComputeExecutionError::InvalidOutput)?;
+        let mut outputs = Vec::with_capacity(names.len());
+        for name in names {
+            let name =
+                CString::new(name.as_bytes()).map_err(|_| ComputeExecutionError::InvalidOutput)?;
+            // SAFETY: name is NUL-terminated and output_dir owns the pinned
+            // output directory descriptor established before sandbox launch.
+            let fd = unsafe {
+                libc::openat(
+                    output_dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(ComputeExecutionError::InvalidOutput);
+            }
+            // SAFETY: openat returned a fresh owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(fd) };
             if !file
                 .metadata()
                 .map_err(|_| ComputeExecutionError::InvalidOutput)?
@@ -897,6 +906,81 @@ fn verify_installed_payload(
         &package.package_id_hex,
     )
     .map_err(|error| ComputeExecutionError::Staging(error.to_string()))
+}
+
+/// Owns a `DIR` stream from `fdopendir` and closes it exactly once.
+struct DirectoryStream(*mut libc::DIR);
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: this stream exclusively owns the descriptor from fdopendir.
+        unsafe {
+            libc::closedir(self.0);
+        }
+    }
+}
+fn output_names(output_dir: &File) -> io::Result<Vec<OsString>> {
+    // fdopendir assumes ownership of the descriptor it receives, so duplicate
+    // the held capability before transferring it. Enumeration and subsequent
+    // opens remain relative to output_dir even if its path is replaced.
+    let fd = unsafe { libc::fcntl(output_dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is a newly duplicated live directory descriptor whose
+    // ownership transfers to DIR on success.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        let error = io::Error::last_os_error();
+        // SAFETY: fdopendir did not take ownership after reporting failure.
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(error);
+    }
+    let stream = DirectoryStream(stream);
+    // The descriptor was opened before the sandbox wrote its outputs. POSIX
+    // leaves entries added since opendir/rewinddir unspecified, and tmpfs
+    // really does hide them, so refresh the stream before enumerating.
+    // SAFETY: stream remains live for the duration of this call.
+    unsafe {
+        libc::rewinddir(stream.0);
+    }
+    let mut names = Vec::new();
+    loop {
+        clear_errno();
+        // SAFETY: stream remains live for the duration of this call.
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(0) {
+                return Err(error);
+            }
+            break;
+        }
+        // SAFETY: d_name is NUL-terminated and remains valid until readdir.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn clear_errno() {
+    // SAFETY: errno is thread-local.
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clear_errno() {
+    // SAFETY: errno is thread-local.
+    unsafe {
+        *libc::__error() = 0;
+    }
 }
 
 fn copy_payload_snapshot(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -1236,280 +1320,283 @@ mod tests {
     }
 
     #[test]
-    fn exact_eligible_worker_accepts_bounded_catalogued_job() {
-        assert_eq!(admit_compute_job(&spec(), &worker(), 200), Ok(()));
-    }
+    fn compute_jobs_are_admitted_exactly_and_move_monotonically() {
+        // Phase `exact_eligible_worker_accepts_bounded_catalogued_job`.
+        {
+            assert_eq!(admit_compute_job(&spec(), &worker(), 200), Ok(()));
+        }
+        // Phase `wrong_app_target_expiry_and_low_power_fail_closed`.
+        {
+            let mut candidate = worker();
+            candidate.apps.clear();
+            assert_eq!(
+                admit_compute_job(&spec(), &candidate, 200),
+                Err(ComputeError::WorkerUnavailable)
+            );
+            assert_eq!(
+                spec().validate_for([9; 32], 200),
+                Err(ComputeError::InvalidBinding)
+            );
+            assert_eq!(
+                spec().validate_for([3; 32], 1_000),
+                Err(ComputeError::InvalidBinding)
+            );
+            candidate = worker();
+            candidate.power = PowerAvailability::Battery(10);
+            assert_eq!(
+                admit_compute_job(&spec(), &candidate, 200),
+                Err(ComputeError::WorkerUnavailable)
+            );
+            candidate = worker();
+            candidate.accelerators.clear();
+            assert_eq!(
+                admit_compute_job(&spec(), &candidate, 200),
+                Err(ComputeError::WorkerUnavailable)
+            );
+        }
+        // Phase `lifecycle_is_monotonic_and_terminal`.
+        {
+            let mut lifecycle = ComputeJobLifecycle::new([1; 16]).unwrap();
+            lifecycle.advance(1, ComputeJobPhase::Running).unwrap();
+            assert_eq!(
+                lifecycle.advance(1, ComputeJobPhase::Cancelled),
+                Err(ComputeError::OutOfOrder)
+            );
+            lifecycle
+                .advance(
+                    2,
+                    ComputeJobPhase::Completed {
+                        outputs: vec![[7; 32]],
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                lifecycle.advance(3, ComputeJobPhase::Cancelled),
+                Err(ComputeError::InvalidTransition)
+            );
+        }
+        // Phase `executor_hashes_outputs_and_rejects_replay`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let content = MemoryContent::default();
+            let input = b"source frame".to_vec();
+            let input_digest = *blake3::hash(&input).as_bytes();
+            content.insert(input_digest, input);
+            let mut job = spec();
+            job.inputs = vec![input_digest];
+            let sandbox = FakeSandbox::success(true);
+            let launches = Arc::clone(&sandbox.launches);
+            let executor = make_executor(root.path(), &mut job, content.clone(), sandbox);
 
-    #[test]
-    fn wrong_app_target_expiry_and_low_power_fail_closed() {
-        let mut candidate = worker();
-        candidate.apps.clear();
-        assert_eq!(
-            admit_compute_job(&spec(), &candidate, 200),
-            Err(ComputeError::WorkerUnavailable)
-        );
-        assert_eq!(
-            spec().validate_for([9; 32], 200),
-            Err(ComputeError::InvalidBinding)
-        );
-        assert_eq!(
-            spec().validate_for([3; 32], 1_000),
-            Err(ComputeError::InvalidBinding)
-        );
-        candidate = worker();
-        candidate.power = PowerAvailability::Battery(10);
-        assert_eq!(
-            admit_compute_job(&spec(), &candidate, 200),
-            Err(ComputeError::WorkerUnavailable)
-        );
-        candidate = worker();
-        candidate.accelerators.clear();
-        assert_eq!(
-            admit_compute_job(&spec(), &candidate, 200),
-            Err(ComputeError::WorkerUnavailable)
-        );
-    }
-
-    #[test]
-    fn lifecycle_is_monotonic_and_terminal() {
-        let mut lifecycle = ComputeJobLifecycle::new([1; 16]).unwrap();
-        lifecycle.advance(1, ComputeJobPhase::Running).unwrap();
-        assert_eq!(
-            lifecycle.advance(1, ComputeJobPhase::Cancelled),
-            Err(ComputeError::OutOfOrder)
-        );
-        lifecycle
-            .advance(
-                2,
+            let result = executor
+                .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+                .unwrap();
+            let expected = *blake3::hash(b"rendered").as_bytes();
+            assert_eq!(
+                result.lifecycle.phase,
                 ComputeJobPhase::Completed {
-                    outputs: vec![[7; 32]],
+                    outputs: vec![expected]
+                }
+            );
+            assert_eq!(content.get(expected).unwrap(), Some(b"rendered".to_vec()));
+            assert_eq!(launches.load(Ordering::Acquire), 1);
+            assert_eq!(
+                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::Replay)
+            );
+            assert_eq!(launches.load(Ordering::Acquire), 1);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn compute_launches_fail_closed_on_bad_routes_inputs_and_payloads() {
+        // Phase `route_gpu_and_requester_argv_fail_before_launch`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut job = spec();
+            job.inputs.clear();
+            let sandbox = FakeSandbox::success(false);
+            let launches = Arc::clone(&sandbox.launches);
+            let executor = make_executor(root.path(), &mut job, MemoryContent::default(), sandbox);
+            assert_eq!(
+                executor.execute([9; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::RouteMismatch)
+            );
+            assert_eq!(
+                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::GpuUnavailable)
+            );
+            assert_eq!(launches.load(Ordering::Acquire), 0);
+
+            job.limits.gpu = false;
+            job.arguments.push("/host/path".into());
+            assert_eq!(
+                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::Admission(
+                    ComputeError::RequesterArgumentsForbidden
+                ))
+            );
+            assert_eq!(launches.load(Ordering::Acquire), 0);
+        }
+        // Phase `digest_mismatch_and_oversize_input_are_terminal_without_launch`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let content = MemoryContent::default();
+            let mut job = spec();
+            job.limits.gpu = false;
+            let claimed = [8; 32];
+            job.inputs = vec![claimed];
+            content.insert(claimed, b"different bytes".to_vec());
+            let sandbox = FakeSandbox::success(false);
+            let launches = Arc::clone(&sandbox.launches);
+            let executor = make_executor(root.path(), &mut job, content, sandbox);
+            assert_eq!(
+                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::InputDigestMismatch)
+            );
+            assert!(matches!(
+                executor.lifecycle(job.job_id).unwrap().phase,
+                ComputeJobPhase::Failed { .. }
+            ));
+            assert_eq!(launches.load(Ordering::Acquire), 0);
+
+            let second_root = tempfile::tempdir().unwrap();
+            let content = MemoryContent::default();
+            let oversized = vec![0_u8; 17 * 1024 * 1024];
+            let digest = *blake3::hash(&oversized).as_bytes();
+            content.insert(digest, oversized);
+            let mut second = spec();
+            second.job_id = [9; 16];
+            second.limits.gpu = false;
+            second.limits.memory_bytes = 16 * 1024 * 1024;
+            second.inputs = vec![digest];
+            let executor = make_executor(
+                second_root.path(),
+                &mut second,
+                content,
+                FakeSandbox::success(false),
+            );
+            assert_eq!(
+                executor.execute([2; 32], 7, &second, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::InputsTooLarge)
+            );
+        }
+        // Phase `cancellation_and_timeout_are_monotonic_terminal_results`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut cancelled_job = spec();
+            cancelled_job.inputs.clear();
+            cancelled_job.limits.gpu = false;
+            let sandbox = FakeSandbox::success(false);
+            let launches = Arc::clone(&sandbox.launches);
+            let executor = make_executor(
+                root.path(),
+                &mut cancelled_job,
+                MemoryContent::default(),
+                sandbox,
+            );
+            let cancellation = CaptureCancellation::default();
+            cancellation.cancel();
+            let result = executor
+                .execute([2; 32], 7, &cancelled_job, 200, cancellation)
+                .unwrap();
+            assert_eq!(result.lifecycle.phase, ComputeJobPhase::Cancelled);
+            assert_eq!(result.lifecycle.sequence, 2);
+            assert_eq!(launches.load(Ordering::Acquire), 0);
+
+            let timeout_root = tempfile::tempdir().unwrap();
+            let mut timeout_job = spec();
+            timeout_job.job_id = [6; 16];
+            timeout_job.inputs.clear();
+            timeout_job.limits.gpu = false;
+            let executor = make_executor(
+                timeout_root.path(),
+                &mut timeout_job,
+                MemoryContent::default(),
+                FakeSandbox {
+                    gpu: false,
+                    termination: FakeTermination::Timeout,
+                    output: None,
+                    replace_output_with_symlink: false,
+                    launches: Arc::new(AtomicUsize::new(0)),
                 },
-            )
-            .unwrap();
-        assert_eq!(
-            lifecycle.advance(3, ComputeJobPhase::Cancelled),
-            Err(ComputeError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn executor_hashes_outputs_and_rejects_replay() {
-        let root = tempfile::tempdir().unwrap();
-        let content = MemoryContent::default();
-        let input = b"source frame".to_vec();
-        let input_digest = *blake3::hash(&input).as_bytes();
-        content.insert(input_digest, input);
-        let mut job = spec();
-        job.inputs = vec![input_digest];
-        let sandbox = FakeSandbox::success(true);
-        let launches = Arc::clone(&sandbox.launches);
-        let executor = make_executor(root.path(), &mut job, content.clone(), sandbox);
-
-        let result = executor
-            .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
-            .unwrap();
-        let expected = *blake3::hash(b"rendered").as_bytes();
-        assert_eq!(
-            result.lifecycle.phase,
-            ComputeJobPhase::Completed {
-                outputs: vec![expected]
-            }
-        );
-        assert_eq!(content.get(expected).unwrap(), Some(b"rendered".to_vec()));
-        assert_eq!(launches.load(Ordering::Acquire), 1);
-        assert_eq!(
-            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::Replay)
-        );
-        assert_eq!(launches.load(Ordering::Acquire), 1);
-    }
-
-    #[test]
-    fn route_gpu_and_requester_argv_fail_before_launch() {
-        let root = tempfile::tempdir().unwrap();
-        let mut job = spec();
-        job.inputs.clear();
-        let sandbox = FakeSandbox::success(false);
-        let launches = Arc::clone(&sandbox.launches);
-        let executor = make_executor(root.path(), &mut job, MemoryContent::default(), sandbox);
-        assert_eq!(
-            executor.execute([9; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::RouteMismatch)
-        );
-        assert_eq!(
-            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::GpuUnavailable)
-        );
-        assert_eq!(launches.load(Ordering::Acquire), 0);
-
-        job.limits.gpu = false;
-        job.arguments.push("/host/path".into());
-        assert_eq!(
-            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::Admission(
-                ComputeError::RequesterArgumentsForbidden
-            ))
-        );
-        assert_eq!(launches.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn digest_mismatch_and_oversize_input_are_terminal_without_launch() {
-        let root = tempfile::tempdir().unwrap();
-        let content = MemoryContent::default();
-        let mut job = spec();
-        job.limits.gpu = false;
-        let claimed = [8; 32];
-        job.inputs = vec![claimed];
-        content.insert(claimed, b"different bytes".to_vec());
-        let sandbox = FakeSandbox::success(false);
-        let launches = Arc::clone(&sandbox.launches);
-        let executor = make_executor(root.path(), &mut job, content, sandbox);
-        assert_eq!(
-            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::InputDigestMismatch)
-        );
-        assert!(matches!(
-            executor.lifecycle(job.job_id).unwrap().phase,
-            ComputeJobPhase::Failed { .. }
-        ));
-        assert_eq!(launches.load(Ordering::Acquire), 0);
-
-        let second_root = tempfile::tempdir().unwrap();
-        let content = MemoryContent::default();
-        let oversized = vec![0_u8; 17 * 1024 * 1024];
-        let digest = *blake3::hash(&oversized).as_bytes();
-        content.insert(digest, oversized);
-        let mut second = spec();
-        second.job_id = [9; 16];
-        second.limits.gpu = false;
-        second.limits.memory_bytes = 16 * 1024 * 1024;
-        second.inputs = vec![digest];
-        let executor = make_executor(
-            second_root.path(),
-            &mut second,
-            content,
-            FakeSandbox::success(false),
-        );
-        assert_eq!(
-            executor.execute([2; 32], 7, &second, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::InputsTooLarge)
-        );
-    }
-
-    #[test]
-    fn cancellation_and_timeout_are_monotonic_terminal_results() {
-        let root = tempfile::tempdir().unwrap();
-        let mut cancelled_job = spec();
-        cancelled_job.inputs.clear();
-        cancelled_job.limits.gpu = false;
-        let sandbox = FakeSandbox::success(false);
-        let launches = Arc::clone(&sandbox.launches);
-        let executor = make_executor(
-            root.path(),
-            &mut cancelled_job,
-            MemoryContent::default(),
-            sandbox,
-        );
-        let cancellation = CaptureCancellation::default();
-        cancellation.cancel();
-        let result = executor
-            .execute([2; 32], 7, &cancelled_job, 200, cancellation)
-            .unwrap();
-        assert_eq!(result.lifecycle.phase, ComputeJobPhase::Cancelled);
-        assert_eq!(result.lifecycle.sequence, 2);
-        assert_eq!(launches.load(Ordering::Acquire), 0);
-
-        let timeout_root = tempfile::tempdir().unwrap();
-        let mut timeout_job = spec();
-        timeout_job.job_id = [6; 16];
-        timeout_job.inputs.clear();
-        timeout_job.limits.gpu = false;
-        let executor = make_executor(
-            timeout_root.path(),
-            &mut timeout_job,
-            MemoryContent::default(),
-            FakeSandbox {
-                gpu: false,
-                termination: FakeTermination::Timeout,
-                output: None,
-                replace_output_with_symlink: false,
-                launches: Arc::new(AtomicUsize::new(0)),
-            },
-        );
-        let result = executor
-            .execute(
-                [2; 32],
-                7,
-                &timeout_job,
-                200,
-                CaptureCancellation::default(),
-            )
-            .unwrap();
-        assert_eq!(
-            result.lifecycle.phase,
-            ComputeJobPhase::Failed {
-                code: "timeout".into()
-            }
-        );
-        assert_eq!(result.lifecycle.sequence, 2);
-    }
-
-    #[test]
-    fn modified_installed_payload_never_reaches_sandbox() {
-        let root = tempfile::tempdir().unwrap();
-        let mut job = spec();
-        job.inputs.clear();
-        job.limits.gpu = false;
-        let package = installed_fixture(root.path(), &mut job);
-        fs::write(package.payload_root.join("bin/worker"), b"tampered").unwrap();
-        let sandbox = FakeSandbox::success(false);
-        let launches = Arc::clone(&sandbox.launches);
-        let executor = ComputeWorker::new(
-            worker(),
-            root.path().join("data"),
-            root.path().join("state"),
-            MemoryContent::default(),
-            FakeCatalogue(package),
-            sandbox,
-        );
-        assert_eq!(
-            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
-            Err(ComputeExecutionError::PackageDigestMismatch)
-        );
-        assert_eq!(launches.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn replaced_output_directory_cannot_traverse_staged_inputs() {
-        let root = tempfile::tempdir().unwrap();
-        let content = MemoryContent::default();
-        let bytes = b"private input".to_vec();
-        let digest = *blake3::hash(&bytes).as_bytes();
-        content.insert(digest, bytes);
-        let mut job = spec();
-        job.inputs = vec![digest];
-        job.limits.gpu = false;
-        let executor = make_executor(
-            root.path(),
-            &mut job,
-            content,
-            FakeSandbox {
-                gpu: false,
-                termination: FakeTermination::Success,
-                output: None,
-                replace_output_with_symlink: true,
-                launches: Arc::new(AtomicUsize::new(0)),
-            },
-        );
-        let result = executor
-            .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
-            .unwrap();
-        assert_eq!(
-            result.lifecycle.phase,
-            ComputeJobPhase::Completed {
-                outputs: Vec::new()
-            }
-        );
+            );
+            let result = executor
+                .execute(
+                    [2; 32],
+                    7,
+                    &timeout_job,
+                    200,
+                    CaptureCancellation::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                result.lifecycle.phase,
+                ComputeJobPhase::Failed {
+                    code: "timeout".into()
+                }
+            );
+            assert_eq!(result.lifecycle.sequence, 2);
+        }
+        // Phase `modified_installed_payload_never_reaches_sandbox`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut job = spec();
+            job.inputs.clear();
+            job.limits.gpu = false;
+            let package = installed_fixture(root.path(), &mut job);
+            fs::write(package.payload_root.join("bin/worker"), b"tampered").unwrap();
+            let sandbox = FakeSandbox::success(false);
+            let launches = Arc::clone(&sandbox.launches);
+            let executor = ComputeWorker::new(
+                worker(),
+                root.path().join("data"),
+                root.path().join("state"),
+                MemoryContent::default(),
+                FakeCatalogue(package),
+                sandbox,
+            );
+            assert_eq!(
+                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                Err(ComputeExecutionError::PackageDigestMismatch)
+            );
+            assert_eq!(launches.load(Ordering::Acquire), 0);
+        }
+        // Phase `replaced_output_directory_cannot_traverse_staged_inputs`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let content = MemoryContent::default();
+            let bytes = b"private input".to_vec();
+            let digest = *blake3::hash(&bytes).as_bytes();
+            content.insert(digest, bytes);
+            let mut job = spec();
+            job.inputs = vec![digest];
+            job.limits.gpu = false;
+            let executor = make_executor(
+                root.path(),
+                &mut job,
+                content,
+                FakeSandbox {
+                    gpu: false,
+                    termination: FakeTermination::Success,
+                    output: None,
+                    replace_output_with_symlink: true,
+                    launches: Arc::new(AtomicUsize::new(0)),
+                },
+            );
+            let result = executor
+                .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+                .unwrap();
+            assert_eq!(
+                result.lifecycle.phase,
+                ComputeJobPhase::Completed {
+                    outputs: Vec::new()
+                }
+            );
+        }
     }
 }

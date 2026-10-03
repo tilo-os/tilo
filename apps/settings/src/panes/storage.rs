@@ -3,8 +3,9 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
@@ -15,9 +16,21 @@ use ui::theme::Theme;
 use ui::widget::{Button, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
+use ui::i18n::ArgValue;
+
+use crate::i18n::{t, t_args};
 use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
+
+fn category_label(category: StorageCategory) -> String {
+    t(match category {
+        StorageCategory::InstalledApps => "settings-storage-cat-apps",
+        StorageCategory::AppData => "settings-storage-cat-data",
+        StorageCategory::Cache => "settings-storage-cat-cache",
+        StorageCategory::SyncedFiles => "settings-storage-cat-synced",
+    })
+}
 
 // These are edge-triggered, machine-local command latches, not settings.
 // Buttons may mutate them directly because the `.edit` namespace is never
@@ -85,7 +98,7 @@ impl StoragePane {
             let _ = sender.send(result);
         });
         if self.sync_snapshot.is_none() {
-            self.sync_message = Some("Loading synced storage…".into());
+            self.sync_message = Some(t("settings-storage-loading"));
         }
         self.snapshot_result = Some(receiver);
     }
@@ -147,7 +160,7 @@ impl StoragePane {
     fn overview_card(&self) -> El {
         let totals = self.snapshot.totals();
         card(
-            "Storage use",
+            &t("settings-storage-use"),
             rows(
                 [
                     StorageCategory::InstalledApps,
@@ -159,7 +172,7 @@ impl StoragePane {
                 .map(|category| {
                     let value = if category == StorageCategory::SyncedFiles {
                         self.sync_snapshot.as_ref().map_or_else(
-                            || "Not available".into(),
+                            || t("settings-storage-unavailable"),
                             |snapshot| {
                                 ui::format::bytes_si(
                                     snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
@@ -167,11 +180,11 @@ impl StoragePane {
                             },
                         )
                     } else if self.snapshot.unavailable.contains(&category) {
-                        "Not available".into()
+                        t("settings-storage-unavailable")
                     } else {
                         ui::format::bytes_si(*totals.get(&category).unwrap_or(&0))
                     };
-                    value_row(category.label(), &value)
+                    value_row(&category_label(category), &value)
                 })
                 .collect(),
             ),
@@ -179,66 +192,76 @@ impl StoragePane {
     }
 
     fn synced_card(&self) -> El {
-        match &self.sync_snapshot {
-            Some(snapshot) => {
-                let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
-                let remote: u64 = snapshot
-                    .workspaces
-                    .iter()
-                    .map(|w| w.remote_only_bytes)
-                    .sum();
-                let reclaimable: u64 = snapshot
-                    .workspaces
-                    .iter()
-                    .map(|w| w.reclaimable_bytes)
-                    .sum();
-                let mut sync_rows = vec![
-                    value_row("On this device", &ui::format::bytes_si(local)),
-                    value_row("On other devices only", &ui::format::bytes_si(remote)),
-                    value_row("Safe to free", &ui::format::bytes_si(reclaimable)),
-                ];
-                if let Some(message) = &self.sync_message {
-                    sync_rows.push(caption(message));
-                }
-                sync_rows.extend(
-                    snapshot
-                        .files
-                        .iter()
-                        .filter(|f| f.reclaimable_bytes > 0)
-                        .take(8)
-                        .map(|f| {
-                            value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
-                        }),
-                );
-                if reclaimable > 0 && !self.sync_busy {
-                    card_with_action(
-                        "Synced storage",
-                        Box::new(Button::new(
-                            "storage.sync.free",
-                            &format!("Free {}", ui::format::bytes_si(reclaimable)),
-                            Some(SYNC_FREE_KEY),
-                        )),
-                        rows(sync_rows),
-                    )
-                } else {
-                    sync_rows.push(caption(if self.sync_busy {
-                        "Verifying remote copies and freeing local space…"
-                    } else if snapshot.online {
-                        "Nothing is safely reclaimable. Dirty, pinned, shared, and unverified content stays local."
-                    } else {
-                        "You are offline. Local synced content stays available and cannot be reclaimed."
-                    }));
-                    card("Synced storage", rows(sync_rows))
-                }
+        if let Some(snapshot) = &self.sync_snapshot {
+            let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
+            let remote: u64 = snapshot
+                .workspaces
+                .iter()
+                .map(|w| w.remote_only_bytes)
+                .sum();
+            let reclaimable: u64 = snapshot
+                .workspaces
+                .iter()
+                .map(|w| w.reclaimable_bytes)
+                .sum();
+            let mut sync_rows = vec![
+                value_row(
+                    &t("settings-storage-on-device"),
+                    &ui::format::bytes_si(local),
+                ),
+                value_row(
+                    &t("settings-storage-remote-only"),
+                    &ui::format::bytes_si(remote),
+                ),
+                value_row(
+                    &t("settings-storage-safe-to-free"),
+                    &ui::format::bytes_si(reclaimable),
+                ),
+            ];
+            if let Some(message) = &self.sync_message {
+                sync_rows.push(caption(message));
             }
-            None => card(
-                "Synced storage",
+            sync_rows.extend(
+                snapshot
+                    .files
+                    .iter()
+                    .filter(|f| f.reclaimable_bytes > 0)
+                    .take(8)
+                    .map(|f| {
+                        value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
+                    }),
+            );
+            if reclaimable > 0 && !self.sync_busy {
+                let free = t_args(
+                    "settings-storage-free",
+                    &[("size", ui::format::bytes_si(reclaimable).into())],
+                );
+                card_with_action(
+                    &t("settings-storage-synced-card"),
+                    Box::new(
+                        Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
+                            .content_sized(),
+                    ),
+                    rows(sync_rows),
+                )
+            } else {
+                sync_rows.push(caption(&t(if self.sync_busy {
+                    "settings-storage-reclaiming"
+                } else if snapshot.online {
+                    "settings-storage-nothing-reclaimable"
+                } else {
+                    "settings-storage-offline"
+                })));
+                card(&t("settings-storage-synced-card"), rows(sync_rows))
+            }
+        } else {
+            let fallback = t("settings-storage-accounting-unavailable");
+            card(
+                &t("settings-storage-synced-card"),
                 rows(vec![caption(
-                    self.sync_message
-                        .as_deref()
-                        .unwrap_or("Sync storage accounting is not available."),
+                    self.sync_message.as_deref().unwrap_or(&fallback),
                 )]),
-            ),
+            )
         }
     }
 
@@ -251,16 +274,20 @@ impl StoragePane {
             .map(|e| {
                 value_row(
                     &e.owner,
-                    &format!("{} · {}", ui::format::bytes_si(e.bytes), e.category.label()),
+                    &t_args(
+                        "settings-storage-item-meta",
+                        &[
+                            ("size", ui::format::bytes_si(e.bytes).into()),
+                            ("category", category_label(e.category).into()),
+                        ],
+                    ),
                 )
             })
             .collect();
         card(
-            "Largest items",
+            &t("settings-storage-largest"),
             if self.snapshot.entries.is_empty() {
-                rows(vec![caption(
-                    "No Tilo application storage was found on this device.",
-                )])
+                rows(vec![caption(&t("settings-storage-no-apps"))])
             } else {
                 rows(largest_rows)
             },
@@ -270,53 +297,59 @@ impl StoragePane {
     fn cleanup_card(&self) -> El {
         match &self.cleanup {
             Some(preview) if !preview.items.is_empty() => {
-                let action = Box::new(Button::new(
-                    "storage.clean",
-                    &format!("Remove {}", ui::format::bytes_si(preview.total_bytes)),
-                    Some(CLEAN_KEY),
-                ));
-                let mut preview_rows = vec![caption(
-                    "Only the cache items listed below will be removed. App data, synced files, and installed packages are never part of this action.",
-                )];
+                let remove = t_args(
+                    "settings-storage-remove",
+                    &[("size", ui::format::bytes_si(preview.total_bytes).into())],
+                );
+                let action = Box::new(
+                    Button::new("storage.clean", &remove, Some(CLEAN_KEY)).content_sized(),
+                );
+                let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
+                let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(
                         i.path
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or("Cache item"),
+                            .unwrap_or(cache_item.as_str()),
                         &ui::format::bytes_si(i.bytes),
                     )
                 }));
-                card_with_action("Cache cleanup preview", action, rows(preview_rows))
+                card_with_action(
+                    &t("settings-storage-cleanup-preview"),
+                    action,
+                    rows(preview_rows),
+                )
             }
             _ => card(
-                "Cache cleanup",
-                rows(vec![caption("There is no application cache to clean.")]),
+                &t("settings-storage-cleanup"),
+                rows(vec![caption(&t("settings-storage-cleanup-empty"))]),
             ),
         }
     }
 
     fn tools_card() -> El {
+        let open_disks = t("settings-storage-open-disks");
+        let open_backups = t("settings-storage-open-backups");
         card(
-            "Storage tools",
+            &t("settings-storage-tools"),
             rows(vec![
                 crate::widgets::setting_row_described(
-                    "Disks",
-                    "Partitions, formatting, drive health, and removable media",
-                    Box::new(Button::new("storage.disks", "Open Disks", Some(DISKS_KEY))),
+                    &t("settings-storage-disks"),
+                    &t("settings-storage-disks-desc"),
+                    Box::new(
+                        Button::new("storage.disks", &open_disks, Some(DISKS_KEY)).content_sized(),
+                    ),
                 ),
                 crate::widgets::setting_row_described(
-                    "Backups",
-                    "Backup history, schedules, retention, and restore",
-                    Box::new(Button::new(
-                        "storage.backups",
-                        "Open Backups",
-                        Some(BACKUPS_KEY),
-                    )),
+                    &t("settings-storage-backups"),
+                    &t("settings-storage-backups-desc"),
+                    Box::new(
+                        Button::new("storage.backups", &open_backups, Some(BACKUPS_KEY))
+                            .content_sized(),
+                    ),
                 ),
-                caption(
-                    "These open the exact specialist workspace through the shell. Settings does not duplicate destructive disk or restore workflows.",
-                ),
+                caption(&t("settings-storage-tools-caption")),
             ]),
         )
     }
@@ -345,7 +378,8 @@ impl Widget for StoragePane {
         clippy::too_many_lines,
         reason = "one pass deliberately coordinates the storage snapshot and each independent command latch"
     )]
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -372,20 +406,24 @@ impl Widget for StoragePane {
                     Ok(Ok(snapshot)) => {
                         self.sync_snapshot = Some(snapshot);
                         self.snapshot_result = None;
-                        if self.sync_message.as_deref() == Some("Loading synced storage…") {
+                        if self.sync_message.as_deref()
+                            == Some(t("settings-storage-loading").as_str())
+                        {
                             self.sync_message = None;
                         }
                     }
                     Ok(Err(error)) => {
                         self.sync_snapshot = None;
                         self.snapshot_result = None;
-                        self.sync_message =
-                            Some(format!("Sync storage service unavailable: {error}"));
+                        self.sync_message = Some(t_args(
+                            "settings-storage-service-unavailable",
+                            &[("error", error.into())],
+                        ));
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         self.sync_snapshot = None;
                         self.snapshot_result = None;
-                        self.sync_message = Some("Sync storage service ended unexpectedly.".into());
+                        self.sync_message = Some(t("settings-storage-service-ended"));
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
@@ -396,51 +434,55 @@ impl Widget for StoragePane {
                         self.sync_busy = false;
                         self.sync_result = None;
                         self.refresh_sync();
-                        self.sync_message = Some(
-                            if report.queued_files > 0 && report.evicted_files > 0 {
-                                format!(
-                                    "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
-                                    ui::format::bytes_si(report.freed_bytes),
-                                    report.evicted_files,
-                                    report.queued_files
+                        self.sync_message =
+                            Some(if report.queued_files > 0 && report.evicted_files > 0 {
+                                t_args(
+                                    "settings-storage-freed-queued",
+                                    &[
+                                        ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                        ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                        ("queued", ArgValue::Number(report.queued_files as f64)),
+                                    ],
                                 )
                             } else if report.queued_files > 0 {
-                                format!(
-                                    "{} synced file(s) queued for verified background reclamation; nothing is counted as free until GC confirms it.",
-                                    report.queued_files
+                                t_args(
+                                    "settings-storage-queued-only",
+                                    &[("queued", ArgValue::Number(report.queued_files as f64))],
                                 )
                             } else {
-                                format!(
-                                    "Freed {} from {} synced files.",
-                                    ui::format::bytes_si(report.freed_bytes),
-                                    report.evicted_files
+                                t_args(
+                                    "settings-storage-freed",
+                                    &[
+                                        ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                        ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                    ],
                                 )
-                            },
-                        );
+                            });
                         self.finish_local_operation(
                             crate::actions::StorageOperation::FreeSyncedFiles,
-                            Ok("Synced-file reclamation completed.".into()),
+                            Ok(t("settings-storage-reclaim-done")),
                         );
                     }
                     Ok(Err(error)) => {
                         self.sync_busy = false;
                         self.sync_result = None;
-                        self.sync_message = Some(format!("Nothing was removed: {error}"));
+                        let message = t_args(
+                            "settings-storage-nothing-removed",
+                            &[("error", error.into())],
+                        );
+                        self.sync_message = Some(message.clone());
                         self.finish_local_operation(
                             crate::actions::StorageOperation::FreeSyncedFiles,
-                            Err(format!("Nothing was removed: {error}")),
+                            Err(message),
                         );
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         self.sync_busy = false;
                         self.sync_result = None;
-                        self.sync_message = Some(
-                        "The sync storage request ended unexpectedly; nothing was assumed removed."
-                            .into(),
-                    );
+                        self.sync_message = Some(t("settings-storage-request-ended"));
                         self.finish_local_operation(
                             crate::actions::StorageOperation::FreeSyncedFiles,
-                            Err("Sync storage service ended unexpectedly.".into()),
+                            Err(t("settings-storage-service-ended")),
                         );
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -460,18 +502,21 @@ impl Widget for StoragePane {
                                 .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
                             self.finish_local_operation(
                                 crate::actions::StorageOperation::CleanupCaches,
-                                Ok("Application caches cleaned.".into()),
+                                Ok(t("settings-storage-cleaned")),
                             );
                         }
                         Err(error) => self.finish_local_operation(
                             crate::actions::StorageOperation::CleanupCaches,
-                            Err(format!("Could not clean application caches: {error}")),
+                            Err(t_args(
+                                "settings-storage-clean-failed",
+                                &[("error", error.to_string().into())],
+                            )),
                         ),
                     }
                 } else {
                     self.finish_local_operation(
                         crate::actions::StorageOperation::CleanupCaches,
-                        Err("No reclaimable application cache is available.".into()),
+                        Err(t("settings-storage-no-cache")),
                     );
                 }
             }
@@ -493,7 +538,7 @@ impl Widget for StoragePane {
                 } else {
                     self.finish_local_operation(
                         crate::actions::StorageOperation::FreeSyncedFiles,
-                        Err("No reclaimable synced files are available.".into()),
+                        Err(t("settings-storage-no-reclaimable")),
                     );
                 }
             }
@@ -504,7 +549,7 @@ impl Widget for StoragePane {
                 });
                 self.finish_local_operation(
                     crate::actions::StorageOperation::OpenDisks,
-                    result.map(|()| "Opened Disks.".into()),
+                    result.map(|()| t("settings-storage-opened-disks")),
                 );
             }
             if read_bool(state, root, BACKUPS_KEY).unwrap_or(false) {
@@ -514,7 +559,7 @@ impl Widget for StoragePane {
                 });
                 self.finish_local_operation(
                     crate::actions::StorageOperation::OpenBackups,
-                    result.map(|()| "Opened Backups.".into()),
+                    result.map(|()| t("settings-storage-opened-backups")),
                 );
             }
             if let Some(c) = &mut self.composed {
@@ -583,33 +628,12 @@ impl Widget for StoragePane {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -637,47 +661,51 @@ impl Widget for StoragePane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
-    fn pane_reports_only_real_roots() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
-        std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-        let pane = StoragePane::with_roots(StorageRoots {
-            app_payloads: None,
-            room_data: None,
-            app_cache: Some(cache),
-            sync_replica: None,
-        });
-        assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
-        assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
-    }
+    fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {
+        // Case `pane_reports_only_real_roots`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
+            std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
+            let pane = StoragePane::with_roots(StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: Some(cache),
+                sync_replica: None,
+            });
+            assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
+            assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
+        }
 
-    #[test]
-    fn settings_submits_only_authority_approved_reclaimable_files() {
-        let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
-            workspace: "work".into(),
-            app: None,
-            logical_path: format!("/{identity}"),
-            identity: identity.into(),
-            inode: 1,
-            version: "v".into(),
-            logical_bytes: 10,
-            hydrated_bytes: 10,
-            remote_only: false,
-            dirty: reclaimable_bytes == 0,
-            pinned: false,
-            in_flight: false,
-            remotely_durable: reclaimable_bytes > 0,
-            reclaimable_bytes,
-        };
-        let snapshot = SyncStorageSnapshot {
-            online: true,
-            files: vec![file("clean", 10), file("dirty", 0)],
-            ..SyncStorageSnapshot::default()
-        };
-        let selected = reclaimable_selections(&snapshot);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].identity, "clean");
+        // Case `settings_submits_only_authority_approved_reclaimable_files`.
+        {
+            let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
+                workspace: "work".into(),
+                app: None,
+                logical_path: format!("/{identity}"),
+                identity: identity.into(),
+                inode: 1,
+                version: "v".into(),
+                logical_bytes: 10,
+                hydrated_bytes: 10,
+                remote_only: false,
+                dirty: reclaimable_bytes == 0,
+                pinned: false,
+                in_flight: false,
+                remotely_durable: reclaimable_bytes > 0,
+                reclaimable_bytes,
+            };
+            let snapshot = SyncStorageSnapshot {
+                online: true,
+                files: vec![file("clean", 10), file("dirty", 0)],
+                ..SyncStorageSnapshot::default()
+            };
+            let selected = reclaimable_selections(&snapshot);
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].identity, "clean");
+        }
     }
 }

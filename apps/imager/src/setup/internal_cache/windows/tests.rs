@@ -1,59 +1,65 @@
 use super::*;
+/// Private ACEs, ancestor rights, raw Unicode and path boundary.
 #[test]
-fn private_aces_refuse_every_untrusted_grant_and_unknown_mask() {
-    assert!(!allowed_ace(false, 1, true));
-    assert!(!allowed_ace(true, 0x8000_0000, true));
-    assert!(allowed_ace(true, 0x001f_01ff, true));
-}
-#[test]
-fn ancestors_allow_read_and_add_directory_but_not_replacement() {
-    assert!(allowed_ace(false, 0x0012_0089, false));
-    assert!(allowed_ace(false, 4, false));
-    for mask in [2, 16, 64, 256, 0x10000, 0x40000, 0x80000] {
-        assert!(!allowed_ace(false, mask, false), "{mask:x}");
+fn windows_aces_and_names_are_strict_lossless_and_bounded() {
+    // Phase `private_aces_refuse_every_untrusted_grant_and_unknown_mask`.
+    {
+        assert!(!allowed_ace(false, 1, true));
+        assert!(!allowed_ace(true, 0x8000_0000, true));
+        assert!(allowed_ace(true, 0x001f_01ff, true));
+    }
+
+    // Phase `ancestors_allow_read_and_add_directory_but_not_replacement`.
+    {
+        assert!(allowed_ace(false, 0x0012_0089, false));
+        assert!(allowed_ace(false, 4, false));
+        for mask in [2, 16, 64, 256, 0x10000, 0x40000, 0x80000] {
+            assert!(!allowed_ace(false, mask, false), "{mask:x}");
+        }
+    }
+
+    // Phase `raw_unicode_and_surrogates_are_lossless_but_aliases_refuse`.
+    {
+        let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
+        raw.push(0xd800);
+        let parsed = windows_directory_path(raw).unwrap();
+        assert_eq!(parsed.names[1], [0xd800]);
+        for path in [
+            "C:relative",
+            "C:/bad",
+            "C:\\a\\..\\b",
+            "C:\\a ",
+            "C:\\COM¹",
+            "C:\\con.txt",
+            "C:\\a~1",
+            "C:\\a:b",
+        ] {
+            assert!(
+                windows_directory_path(path.encode_utf16()).is_err(),
+                "{path}"
+            );
+        }
+        assert!(windows_directory_path(format!("C:\\{}", "a".repeat(255)).encode_utf16()).is_ok());
+        assert!(windows_directory_path(format!("C:\\{}", "a".repeat(256)).encode_utf16()).is_err());
+        assert!(windows_directory_path(std::iter::repeat_n(65, 4097)).is_err());
+    }
+
+    // Phase `cache_suffix_must_still_fit_the_verifier_path_boundary`.
+    {
+        let okay = format!("C:\\{}", vec!["x"; 61].join("\\"));
+        assert!(windows_cache_path(okay.encode_utf16()).is_ok());
+        let too_many = format!("C:\\{}", vec!["x"; 62].join("\\"));
+        assert!(windows_cache_path(too_many.encode_utf16()).is_err());
+        let near_limit = format!("C:\\{}", vec!["x".repeat(250); 16].join("\\"));
+        assert!(windows_directory_path(near_limit.encode_utf16()).is_ok());
+        assert!(windows_cache_path(near_limit.encode_utf16()).is_err());
     }
 }
-#[test]
-fn raw_unicode_and_surrogates_are_lossless_but_aliases_refuse() {
-    let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
-    raw.push(0xd800);
-    let parsed = windows_directory_path(raw).unwrap();
-    assert_eq!(parsed.names[1], [0xd800]);
-    for path in [
-        "C:relative",
-        "C:/bad",
-        "C:\\a\\..\\b",
-        "C:\\a ",
-        "C:\\COM¹",
-        "C:\\con.txt",
-        "C:\\a~1",
-        "C:\\a:b",
-    ] {
-        assert!(
-            windows_directory_path(path.encode_utf16()).is_err(),
-            "{path}"
-        );
-    }
-    assert!(windows_directory_path(format!("C:\\{}", "a".repeat(255)).encode_utf16()).is_ok());
-    assert!(windows_directory_path(format!("C:\\{}", "a".repeat(256)).encode_utf16()).is_err());
-    assert!(windows_directory_path(std::iter::repeat_n(65, 4097)).is_err());
-}
-
-#[test]
-fn cache_suffix_must_still_fit_the_verifier_path_boundary() {
-    let okay = format!("C:\\{}", vec!["x"; 61].join("\\"));
-    assert!(windows_cache_path(okay.encode_utf16()).is_ok());
-    let too_many = format!("C:\\{}", vec!["x"; 62].join("\\"));
-    assert!(windows_cache_path(too_many.encode_utf16()).is_err());
-    let near_limit = format!("C:\\{}", vec!["x".repeat(250); 16].join("\\"));
-    assert!(windows_directory_path(near_limit.encode_utf16()).is_ok());
-    assert!(windows_cache_path(near_limit.encode_utf16()).is_err());
-}
-
 // Native Windows fixtures: UNRUN until explicit platform qualification authorization.
 #[cfg(windows)]
 mod native {
     use super::super::{native::fixture_acquire, *};
+    use crate::setup::internal_cache::layout;
     use crate::{
         release::InternalRelease,
         setup::{
@@ -74,7 +80,7 @@ mod native {
     fn directory() -> tempfile::TempDir {
         // No /tmp fallback: native fixtures need the qualified current-user
         // cache filesystem and safe ancestry, just like the production provider.
-        tempfile::tempdir_in(xdg_paths::cache_dir().unwrap()).unwrap()
+        tempfile::tempdir_in(tilo_paths::cache_dir().unwrap()).unwrap()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("tilo-internal-install").join(s.manifest_sha256())
@@ -153,187 +159,341 @@ mod native {
             )
             .unwrap();
     }
+    /// Failed preparation, session revocation, fresh settlement and zero-record cancellation.
     #[test]
-    fn failed_post_scan_preparation_cannot_publish_or_retire_rejected_records() {
-        use sha2::{Digest, Sha256};
-        fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
-            let mut entries: Vec<_> = fs::read_dir(path)
-                .unwrap()
-                .map(|e| {
-                    let e = e.unwrap();
-                    (e.file_name(), fs::read(e.path()).unwrap())
-                })
-                .collect();
-            entries.sort();
-            entries
-        }
-        // Each case has a genuine authenticated full component. Native bootstrap
-        // and record decoding succeed; only common history/prefix validation
-        // distinguishes the independently valid control from the two failures.
-        for case in 0..3 {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut b, &s, 1);
-            finish(&mut a, &s, 0);
-            let leaf = a.provider.ownership().leaf;
-            drop(a);
-            drop(b);
-            let journal = root(dir.path(), &s).join("journal-0");
-            if case > 0 {
-                let old = journal.join(if case == 1 {
-                    "record-0000000002"
-                } else {
-                    "record-0000000001"
-                });
-                let mut bytes = fs::read(&old).unwrap();
-                if case == 1 {
-                    bytes[147..155].copy_from_slice(&3u64.to_le_bytes());
-                } else {
-                    bytes[179] ^= 1;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_preparation_and_settlement_never_grant_publication() {
+        isolated(
+            "failed_post_scan_preparation_cannot_publish_or_retire_rejected_records",
+            || {
+                use sha2::{Digest, Sha256};
+                fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+                    let mut entries: Vec<_> = fs::read_dir(path)
+                        .unwrap()
+                        .map(|e| {
+                            let e = e.unwrap();
+                            (e.file_name(), fs::read(e.path()).unwrap())
+                        })
+                        .collect();
+                    entries.sort();
+                    entries
                 }
-                let checksum = Sha256::digest(&bytes[..bytes.len() - 32]);
-                let end = bytes.len();
-                bytes[end - 32..].copy_from_slice(&checksum);
-                fs::write(&old, bytes).unwrap();
-                if case == 1 {
-                    fs::rename(old, journal.join("record-0000000003")).unwrap();
-                }
-            }
-            let partial = root(dir.path(), &s).join("payload").join(leaf);
-            let final_path = root(dir.path(), &s)
-                .join("payload")
-                .join(s.bundle().component(0).unwrap().filename);
-            let before_payload = fs::read(&partial).unwrap();
-            let before_records = snapshot(&journal);
-            let [mut a, b] = parts(dir.path(), &s);
-            {
-                let mut session = Session::new(&s, 0, 3, &mut a.provider).unwrap();
-                let result = session.prepare(&s, &mut a.file, &AtomicBool::new(false));
-                if case == 0 {
-                    assert!(result.is_ok());
-                } else {
-                    let error = match result {
-                        Err(e) => e,
-                        Ok(_) => panic!("rejected history prepared"),
-                    };
-                    assert!(error.contains(if case == 1 {
-                        "Conflicting checkpoint history"
+                // Each case has a genuine authenticated full component. Native bootstrap
+                // and record decoding succeed; only common history/prefix validation
+                // distinguishes the independently valid control from the two failures.
+                for case in 0..3 {
+                    let dir = directory();
+                    let s = selected();
+                    let [mut a, mut b] = parts(dir.path(), &s);
+                    prepare(&mut b, &s, 1);
+                    finish(&mut a, &s, 0);
+                    let leaf = a.provider.ownership().leaf;
+                    drop(a);
+                    drop(b);
+                    let journal = root(dir.path(), &s).join("journal-0");
+                    if case > 0 {
+                        let old = journal.join(if case == 1 {
+                            "record-0000000002"
+                        } else {
+                            "record-0000000001"
+                        });
+                        let mut bytes = fs::read(&old).unwrap();
+                        if case == 1 {
+                            bytes[layout::GENERATION..layout::EPOCH]
+                                .copy_from_slice(&3u64.to_le_bytes());
+                        } else {
+                            bytes[layout::DIGEST] ^= 1;
+                        }
+                        let checksum = Sha256::digest(&bytes[..bytes.len() - 32]);
+                        let end = bytes.len();
+                        bytes[end - 32..].copy_from_slice(&checksum);
+                        fs::write(&old, bytes).unwrap();
+                        if case == 1 {
+                            fs::rename(old, journal.join("record-0000000003")).unwrap();
+                        }
+                    }
+                    let partial = root(dir.path(), &s).join("payload").join(leaf);
+                    let final_path = root(dir.path(), &s)
+                        .join("payload")
+                        .join(s.bundle().component(0).unwrap().filename);
+                    let before_payload = fs::read(&partial).unwrap();
+                    let before_records = snapshot(&journal);
+                    let [mut a, b] = parts(dir.path(), &s);
+                    {
+                        let mut session = Session::new(&s, 0, 3, &mut a.provider).unwrap();
+                        let result = session.prepare(&s, &mut a.file, &AtomicBool::new(false));
+                        if case == 0 {
+                            assert!(result.is_ok());
+                        } else {
+                            let error = match result {
+                                Err(e) => e,
+                                Ok(_) => panic!("rejected history prepared"),
+                            };
+                            assert!(error.contains(if case == 1 {
+                                "Conflicting checkpoint history"
+                            } else {
+                                "Checkpoint prefix digest mismatch"
+                            }));
+                        }
+                    }
+                    if case == 0 {
+                        let mut final_file = a.publish(&AtomicBool::new(false)).unwrap();
+                        assert!(!final_file.has_retained_residue());
+                        final_file.verify(&AtomicBool::new(false)).unwrap();
+                        assert!(!partial.exists());
+                        assert_eq!(fs::read(&final_path).unwrap(), before_payload);
+                        assert!(snapshot(&journal).is_empty());
                     } else {
-                        "Checkpoint prefix digest mismatch"
-                    }));
+                        assert!(a.provider.retain(&[]).is_err());
+                        assert!(a.publish(&AtomicBool::new(false)).is_err());
+                        assert!(!final_path.exists());
+                        assert_eq!(fs::read(&partial).unwrap(), before_payload);
+                        assert_eq!(snapshot(&journal), before_records);
+                    }
+                    drop(b);
                 }
-            }
-            if case == 0 {
-                let mut final_file = a.publish(&AtomicBool::new(false)).unwrap();
-                assert!(!final_file.has_retained_residue());
-                final_file.verify(&AtomicBool::new(false)).unwrap();
-                assert!(!partial.exists());
-                assert_eq!(fs::read(&final_path).unwrap(), before_payload);
-                assert!(snapshot(&journal).is_empty());
-            } else {
-                assert!(a.provider.retain(&[]).is_err());
+            },
+        );
+
+        isolated(
+            "failed_new_session_revokes_prior_native_preparation_success",
+            || {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut b, &s, 1);
+                finish(&mut a, &s, 0);
+                let partial = root(dir.path(), &s)
+                    .join("payload")
+                    .join(a.provider.ownership().leaf);
+                assert!(Session::new(&s, 0, 0, &mut a.provider).is_err());
                 assert!(a.publish(&AtomicBool::new(false)).is_err());
-                assert!(!final_path.exists());
-                assert_eq!(fs::read(&partial).unwrap(), before_payload);
-                assert_eq!(snapshot(&journal), before_records);
-            }
-            drop(b);
-        }
-    }
-    #[test]
-    fn failed_new_session_revokes_prior_native_preparation_success() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut b, &s, 1);
-        finish(&mut a, &s, 0);
-        let partial = root(dir.path(), &s)
-            .join("payload")
-            .join(a.provider.ownership().leaf);
-        assert!(Session::new(&s, 0, 0, &mut a.provider).is_err());
-        assert!(a.publish(&AtomicBool::new(false)).is_err());
-        assert_eq!(fs::read(partial).unwrap(), vec![b'E'; 4096]);
-        assert!(
-            !root(dir.path(), &s)
-                .join("payload")
-                .join(s.bundle().component(0).unwrap().filename)
-                .exists()
+                assert_eq!(fs::read(partial).unwrap(), vec![b'E'; 4096]);
+                assert!(
+                    !root(dir.path(), &s)
+                        .join("payload")
+                        .join(s.bundle().component(0).unwrap().filename)
+                        .exists()
+                );
+                drop(b);
+            },
         );
-        drop(b);
-    }
-    #[test]
-    fn fresh_settlement_never_grants_final_publication_or_reusable_freshness() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        a.file.write_all(&vec![b'E'; 4096]).unwrap();
-        a.file.sync_all().unwrap();
-        assert!(a.publish(&AtomicBool::new(false)).is_err());
-        assert!(
-            crate::setup::internal_cache::initialize_fresh(&s, 1, &mut b.provider, &mut b.file)
-                .is_err()
+
+        isolated(
+            "fresh_settlement_never_grants_final_publication_or_reusable_freshness",
+            || {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                a.file.write_all(&vec![b'E'; 4096]).unwrap();
+                a.file.sync_all().unwrap();
+                assert!(a.publish(&AtomicBool::new(false)).is_err());
+                assert!(
+                    crate::setup::internal_cache::initialize_fresh(
+                        &s,
+                        1,
+                        &mut b.provider,
+                        &mut b.file
+                    )
+                    .is_err()
+                );
+                assert!(b.provider.retain(&[]).is_err());
+            },
         );
-        assert!(b.provider.retain(&[]).is_err());
+
+        isolated(
+            "cancellation_during_zero_record_settles_owned_creation_then_remains_terminal",
+            || {
+                use std::sync::{Arc, atomic::Ordering};
+                let dir = directory();
+                let s = selected();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let flag = cancel.clone();
+                super::HOOK.with(|h| {
+                    *h.borrow_mut() = Some(Box::new(move |stage| {
+                        if stage == "record-created" {
+                            flag.store(true, Ordering::Release);
+                        }
+                    }))
+                });
+                let result = fixture_acquire(dir.path(), &s)
+                    .unwrap()
+                    .bootstrap(&s, &cancel);
+                super::HOOK.with(|h| *h.borrow_mut() = None);
+                assert!(result.is_err());
+                assert!(cancel.load(Ordering::Acquire));
+                assert_eq!(
+                    fs::read_dir(root(dir.path(), &s).join("payload"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    fs::read_dir(root(dir.path(), &s).join("journal-0"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut a, &s, 0);
+                prepare(&mut b, &s, 1);
+            },
+        );
     }
+    /// Process lock, raw Unicode ancestry, handle sharing and reparse refusal.
     #[test]
-    fn cancellation_during_zero_record_settles_owned_creation_then_remains_terminal() {
-        use std::sync::{Arc, atomic::Ordering};
-        let dir = directory();
-        let s = selected();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = cancel.clone();
-        super::HOOK.with(|h| {
-            *h.borrow_mut() = Some(Box::new(move |stage| {
-                if stage == "record-created" {
-                    flag.store(true, Ordering::Release);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_locks_handles_and_ancestry_refuse_substitution() {
+        isolated(
+            "independent_process_lock_is_retained_by_either_component_and_final",
+            || {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut b, &s, 1);
+                finish(&mut a, &s, 0);
+                let final_file = a.publish(&AtomicBool::new(false)).unwrap();
+                assert!(!final_file.has_retained_residue());
+                drop(b);
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "setup::internal_cache::windows::tests::native::lock_probe",
+                        "--ignored",
+                    ])
+                    .env("TILO_CACHE_LOCK_PROBE", dir.path())
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // libtest exits 0 when `--exact` selects nothing; require the child ran.
+                assert!(
+                    stdout.contains("test result: ok. 1 passed"),
+                    "the child ran no test: {stdout}"
+                );
+                drop(final_file);
+                assert!(fixture_acquire(dir.path(), &s).is_ok());
+            },
+        );
+
+        isolated(
+            "raw_unicode_cache_ancestry_survives_close_and_resume",
+            || {
+                let dir = directory();
+                let path = dir
+                    .path()
+                    .join(std::ffi::OsString::from_wide(&[0x7528, 0x6237, 0xd800]));
+                fs::create_dir(&path).unwrap();
+                let s = selected();
+                let [mut a, mut b] = parts(&path, &s);
+                prepare(&mut b, &s, 1);
+                {
+                    let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
+                    let mut prepared = session
+                        .prepare(&s, &mut a.file, &AtomicBool::new(false))
+                        .unwrap();
+                    start_prefix(&mut prepared, b"EEEE");
                 }
-            }))
-        });
-        let result = fixture_acquire(dir.path(), &s)
-            .unwrap()
-            .bootstrap(&s, &cancel);
-        super::HOOK.with(|h| *h.borrow_mut() = None);
-        assert!(result.is_err());
-        assert!(cancel.load(Ordering::Acquire));
-        assert_eq!(
-            fs::read_dir(root(dir.path(), &s).join("payload"))
-                .unwrap()
-                .count(),
-            1
+                drop(a);
+                drop(b);
+                let [mut a, b] = parts(&path, &s);
+                let mut session = Session::new(&s, 0, 2, &mut a.provider).unwrap();
+                let prepared = session
+                    .prepare(&s, &mut a.file, &AtomicBool::new(false))
+                    .unwrap();
+                assert_eq!(prepared.committed(), 4);
+                drop(prepared);
+                drop(session);
+                drop(b);
+            },
         );
-        assert_eq!(
-            fs::read_dir(root(dir.path(), &s).join("journal-0"))
-                .unwrap()
-                .count(),
-            1
+
+        isolated(
+            "writable_and_final_handles_enforce_sharing_and_parent_pins",
+            || {
+                use std::os::windows::fs::OpenOptionsExt;
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut b, &s, 1);
+                finish(&mut a, &s, 0);
+                let path = root(dir.path(), &s)
+                    .join("payload")
+                    .join(a.provider.ownership().leaf);
+                assert!(
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .share_mode(7)
+                        .open(&path)
+                        .is_err()
+                );
+                assert!(fs::rename(root(dir.path(), &s), dir.path().join("moved")).is_err());
+                let final_file = a.publish(&AtomicBool::new(false)).unwrap();
+                let final_path = root(dir.path(), &s)
+                    .join("payload")
+                    .join(s.bundle().component(0).unwrap().filename);
+                assert!(
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .share_mode(7)
+                        .open(&final_path)
+                        .is_err()
+                );
+                assert!(fs::remove_file(&final_path).is_err());
+                drop(final_file);
+                drop(b);
+            },
         );
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut a, &s, 0);
-        prepare(&mut b, &s, 1);
-    }
-    #[test]
-    fn independent_process_lock_is_retained_by_either_component_and_final() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut b, &s, 1);
-        finish(&mut a, &s, 0);
-        let final_file = a.publish(&AtomicBool::new(false)).unwrap();
-        assert!(!final_file.has_retained_residue());
-        drop(b);
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "setup::internal_cache::windows::tests::native::lock_probe",
-                "--ignored",
-            ])
-            .env("TILO_CACHE_LOCK_PROBE", dir.path())
-            .status()
-            .unwrap();
-        assert!(status.success());
-        drop(final_file);
-        assert!(fixture_acquire(dir.path(), &s).is_ok());
+
+        isolated(
+            "hardlinks_reparse_and_unknown_residue_are_refused_untouched",
+            || {
+                use std::os::windows::fs::symlink_dir;
+                for case in 0..3 {
+                    let dir = directory();
+                    let s = selected();
+                    let [mut a, mut b] = parts(dir.path(), &s);
+                    prepare(&mut a, &s, 0);
+                    prepare(&mut b, &s, 1);
+                    let path = root(dir.path(), &s)
+                        .join("payload")
+                        .join(a.provider.ownership().leaf);
+                    drop(a);
+                    drop(b);
+                    match case {
+                        0 => fs::hard_link(&path, dir.path().join("alias")).unwrap(),
+                        1 => {
+                            let payload = root(dir.path(), &s).join("payload");
+                            fs::rename(&payload, dir.path().join("saved")).unwrap();
+                            symlink_dir(dir.path().join("saved"), &payload).unwrap();
+                        }
+                        _ => fs::write(root(dir.path(), &s).join("payload/unknown"), b"keep")
+                            .unwrap(),
+                    }
+                    let result = fixture_acquire(dir.path(), &s)
+                        .and_then(|r| r.bootstrap(&s, &AtomicBool::new(false)));
+                    assert!(result.is_err());
+                    assert!(path.exists());
+                    if case == 2 {
+                        assert_eq!(
+                            fs::read(root(dir.path(), &s).join("payload/unknown")).unwrap(),
+                            b"keep"
+                        );
+                    }
+                }
+            },
+        );
     }
     #[test]
     #[ignore = "subprocess fixture invoked with a held parent lease"]
@@ -342,292 +502,282 @@ mod native {
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
+    /// Flush faults, crash boundaries, reset fences and zero-record residue.
     #[test]
-    fn raw_unicode_cache_ancestry_survives_close_and_resume() {
-        let dir = directory();
-        let path = dir
-            .path()
-            .join(std::ffi::OsString::from_wide(&[0x7528, 0x6237, 0xd800]));
-        fs::create_dir(&path).unwrap();
-        let s = selected();
-        let [mut a, mut b] = parts(&path, &s);
-        prepare(&mut b, &s, 1);
-        {
-            let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
-            let mut prepared = session
-                .prepare(&s, &mut a.file, &AtomicBool::new(false))
-                .unwrap();
-            start_prefix(&mut prepared, b"EEEE");
-        }
-        drop(a);
-        drop(b);
-        let [mut a, b] = parts(&path, &s);
-        let mut session = Session::new(&s, 0, 2, &mut a.provider).unwrap();
-        let prepared = session
-            .prepare(&s, &mut a.file, &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(prepared.committed(), 4);
-        drop(prepared);
-        drop(session);
-        drop(b);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_record_faults_and_crashes_recover_without_claiming_success() {
+        isolated(
+            "record_flush_faults_leave_bounded_residue_and_never_claim_success",
+            || {
+                for stage in ["record-created", "record-written", "record-flushed"] {
+                    let dir = directory();
+                    let s = selected();
+                    super::FAULT.with(|v| *v.borrow_mut() = Some(stage));
+                    assert!(
+                        fixture_acquire(dir.path(), &s)
+                            .unwrap()
+                            .bootstrap(&s, &AtomicBool::new(false))
+                            .is_err()
+                    );
+                    super::FAULT.with(|v| *v.borrow_mut() = None);
+                    let result = fixture_acquire(dir.path(), &s)
+                        .unwrap()
+                        .bootstrap(&s, &AtomicBool::new(false));
+                    if stage == "record-created" {
+                        assert!(result.is_err());
+                    } else {
+                        assert!(result.is_ok());
+                    }
+                    assert_eq!(
+                        fs::read_dir(root(dir.path(), &s).join("journal-0"))
+                            .unwrap()
+                            .count(),
+                        1
+                    );
+                }
+            },
+        );
+
+        isolated(
+            "final_crash_boundaries_recover_final_before_stale_partial_records",
+            || {
+                for stage in ["final-renamed", "writer-closed", "final-verified"] {
+                    let dir = directory();
+                    let s = selected();
+                    let [mut a, mut b] = parts(dir.path(), &s);
+                    prepare(&mut b, &s, 1);
+                    finish(&mut a, &s, 0);
+                    super::FAULT.with(|v| *v.borrow_mut() = Some(stage));
+                    assert!(a.publish(&AtomicBool::new(false)).is_err());
+                    super::FAULT.with(|v| *v.borrow_mut() = None);
+                    drop(b);
+                    let [a, b] = fixture_acquire(dir.path(), &s)
+                        .unwrap()
+                        .bootstrap(&s, &AtomicBool::new(false))
+                        .unwrap();
+                    match a {
+                        Component::Final(mut f) => f.verify(&AtomicBool::new(false)).unwrap(),
+                        _ => panic!("final recovery required"),
+                    };
+                    drop(b);
+                }
+            },
+        );
+
+        isolated("reset_fence_survives_before_and_after_truncation", || {
+            for truncate in [false, true] {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut b, &s, 1);
+                {
+                    let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
+                    let mut prepared = session
+                        .prepare(&s, &mut a.file, &AtomicBool::new(false))
+                        .unwrap();
+                    start_prefix(&mut prepared, b"EEEE");
+                    use sha2::{Digest, Sha256};
+                    prepared
+                        .observer
+                        .boundary(
+                            prepared.id,
+                            prepared.file,
+                            Candidate {
+                                length: 0,
+                                digest: Sha256::digest([]).into(),
+                                kind: Kind::Reset,
+                            },
+                        )
+                        .unwrap();
+                    if truncate {
+                        prepared.file.set_len(0).unwrap();
+                        prepared.file.sync_all().unwrap();
+                    }
+                }
+                drop(a);
+                drop(b);
+                let [mut a, b] = parts(dir.path(), &s);
+                let mut session = Session::new(&s, 0, 2, &mut a.provider).unwrap();
+                let prepared = session
+                    .prepare(&s, &mut a.file, &AtomicBool::new(false))
+                    .unwrap();
+                assert_eq!(prepared.committed(), 0);
+                assert_eq!(prepared.file.metadata().unwrap().len(), 0);
+                drop(prepared);
+                drop(session);
+                drop(b);
+            }
+        });
+
+        isolated(
+            "creation_before_zero_record_is_unknown_residue_even_when_empty",
+            || {
+                let dir = directory();
+                let s = selected();
+                super::FAULT.with(|v| *v.borrow_mut() = Some("partial-flushed"));
+                assert!(
+                    fixture_acquire(dir.path(), &s)
+                        .unwrap()
+                        .bootstrap(&s, &AtomicBool::new(false))
+                        .is_err()
+                );
+                super::FAULT.with(|v| *v.borrow_mut() = None);
+                assert!(
+                    fixture_acquire(dir.path(), &s)
+                        .unwrap()
+                        .bootstrap(&s, &AtomicBool::new(false))
+                        .is_err()
+                );
+                assert_eq!(
+                    fs::read_dir(root(dir.path(), &s).join("payload"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
+            },
+        );
     }
+    /// Cancellation, visitor errors, collisions, sharing failure and reopen substitution.
     #[test]
-    fn record_flush_faults_leave_bounded_residue_and_never_claim_success() {
-        for stage in ["record-created", "record-written", "record-flushed"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_cancellation_collisions_and_reopen_keep_residue_honest() {
+        isolated(
+            "cancellation_preserves_owned_prefix_and_discard_is_explicit",
+            || {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut a, &s, 0);
+                prepare(&mut b, &s, 1);
+                let path = root(dir.path(), &s)
+                    .join("payload")
+                    .join(a.provider.ownership().leaf);
+                assert!(a.publish(&AtomicBool::new(true)).is_err());
+                assert!(path.exists());
+                drop(b);
+                let [a, b] = parts(dir.path(), &s);
+                a.discard(3, &AtomicBool::new(false)).unwrap();
+                assert!(!path.exists());
+                drop(b);
+            },
+        );
+
+        isolated("fresh_scan_stops_immediately_on_visitor_error", || {
             let dir = directory();
             let s = selected();
-            super::FAULT.with(|v| *v.borrow_mut() = Some(stage));
+            let [mut a, mut b] = parts(dir.path(), &s);
+            prepare(&mut a, &s, 0);
+            prepare(&mut b, &s, 1);
+            let mut calls = 0;
             assert!(
-                fixture_acquire(dir.path(), &s)
-                    .unwrap()
-                    .bootstrap(&s, &AtomicBool::new(false))
+                a.provider
+                    .scan(&mut |_| {
+                        calls += 1;
+                        Err("visitor stop".into())
+                    })
                     .is_err()
             );
-            super::FAULT.with(|v| *v.borrow_mut() = None);
-            let result = fixture_acquire(dir.path(), &s)
-                .unwrap()
-                .bootstrap(&s, &AtomicBool::new(false));
-            if stage == "record-created" {
-                assert!(result.is_err());
-            } else {
-                assert!(result.is_ok());
-            }
+            assert_eq!(calls, 1);
+            assert!(a.provider.retain(&[]).is_err());
             assert_eq!(
                 fs::read_dir(root(dir.path(), &s).join("journal-0"))
                     .unwrap()
                     .count(),
                 1
             );
-        }
-    }
-    #[test]
-    fn final_crash_boundaries_recover_final_before_stale_partial_records() {
-        for stage in ["final-renamed", "writer-closed", "final-verified"] {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut b, &s, 1);
-            finish(&mut a, &s, 0);
-            super::FAULT.with(|v| *v.borrow_mut() = Some(stage));
-            assert!(a.publish(&AtomicBool::new(false)).is_err());
-            super::FAULT.with(|v| *v.borrow_mut() = None);
-            drop(b);
-            let [a, b] = fixture_acquire(dir.path(), &s)
-                .unwrap()
-                .bootstrap(&s, &AtomicBool::new(false))
-                .unwrap();
-            match a {
-                Component::Final(mut f) => f.verify(&AtomicBool::new(false)).unwrap(),
-                _ => panic!("final recovery required"),
-            };
-            drop(b);
-        }
-    }
-    #[test]
-    fn cancellation_preserves_owned_prefix_and_discard_is_explicit() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut a, &s, 0);
-        prepare(&mut b, &s, 1);
-        let path = root(dir.path(), &s)
-            .join("payload")
-            .join(a.provider.ownership().leaf);
-        assert!(a.publish(&AtomicBool::new(true)).is_err());
-        assert!(path.exists());
-        drop(b);
-        let [a, b] = parts(dir.path(), &s);
-        a.discard(3, &AtomicBool::new(false)).unwrap();
-        assert!(!path.exists());
-        drop(b);
-    }
-    #[test]
-    fn reset_fence_survives_before_and_after_truncation() {
-        for truncate in [false, true] {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut b, &s, 1);
-            {
-                let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
-                let mut prepared = session
-                    .prepare(&s, &mut a.file, &AtomicBool::new(false))
-                    .unwrap();
-                start_prefix(&mut prepared, b"EEEE");
-                use sha2::{Digest, Sha256};
-                prepared
-                    .observer
-                    .boundary(
-                        prepared.id,
-                        prepared.file,
-                        Candidate {
-                            length: 0,
-                            digest: Sha256::digest([]).into(),
-                            kind: Kind::Reset,
-                        },
-                    )
-                    .unwrap();
-                if truncate {
-                    prepared.file.set_len(0).unwrap();
-                    prepared.file.sync_all().unwrap();
-                }
-            }
-            drop(a);
-            drop(b);
-            let [mut a, b] = parts(dir.path(), &s);
-            let mut session = Session::new(&s, 0, 2, &mut a.provider).unwrap();
-            let prepared = session
-                .prepare(&s, &mut a.file, &AtomicBool::new(false))
-                .unwrap();
-            assert_eq!(prepared.committed(), 0);
-            assert_eq!(prepared.file.metadata().unwrap().len(), 0);
-            drop(prepared);
-            drop(session);
-            drop(b);
-        }
-    }
-    #[test]
-    fn creation_before_zero_record_is_unknown_residue_even_when_empty() {
-        let dir = directory();
-        let s = selected();
-        super::FAULT.with(|v| *v.borrow_mut() = Some("partial-flushed"));
-        assert!(
-            fixture_acquire(dir.path(), &s)
-                .unwrap()
-                .bootstrap(&s, &AtomicBool::new(false))
-                .is_err()
-        );
-        super::FAULT.with(|v| *v.borrow_mut() = None);
-        assert!(
-            fixture_acquire(dir.path(), &s)
-                .unwrap()
-                .bootstrap(&s, &AtomicBool::new(false))
-                .is_err()
-        );
-        assert_eq!(
-            fs::read_dir(root(dir.path(), &s).join("payload"))
-                .unwrap()
-                .count(),
-            1
-        );
-    }
-    #[test]
-    fn fresh_scan_stops_immediately_on_visitor_error() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut a, &s, 0);
-        prepare(&mut b, &s, 1);
-        let mut calls = 0;
-        assert!(
-            a.provider
-                .scan(&mut |_| {
-                    calls += 1;
-                    Err("visitor stop".into())
-                })
-                .is_err()
-        );
-        assert_eq!(calls, 1);
-        assert!(a.provider.retain(&[]).is_err());
-        assert_eq!(
-            fs::read_dir(root(dir.path(), &s).join("journal-0"))
-                .unwrap()
-                .count(),
-            1
-        );
-    }
-    #[test]
-    fn no_replace_collision_authenticates_winner_and_preserves_invalid_leaf() {
-        for valid in [false, true] {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut b, &s, 1);
-            finish(&mut a, &s, 0);
-            let own = a.provider.ownership();
-            let payload = root(dir.path(), &s).join("payload");
-            let final_path = payload.join(s.bundle().component(0).unwrap().filename);
-            let bytes = vec![if valid { b'E' } else { b'X' }; 4096];
-            super::super::native::fixture_file(&final_path, &bytes).unwrap();
-            let result = a.publish(&AtomicBool::new(false));
-            assert_eq!(result.is_ok(), valid);
-            if let Ok(final_file) = result {
-                assert!(final_file.has_retained_residue());
-            }
-            assert_eq!(fs::read(&final_path).unwrap(), bytes);
-            assert!(payload.join(own.leaf).exists());
-            drop(b);
-        }
-    }
+        });
 
-    #[test]
-    fn writable_and_final_handles_enforce_sharing_and_parent_pins() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut b, &s, 1);
-        finish(&mut a, &s, 0);
-        let path = root(dir.path(), &s)
-            .join("payload")
-            .join(a.provider.ownership().leaf);
-        assert!(
-            fs::OpenOptions::new()
-                .write(true)
-                .share_mode(7)
-                .open(&path)
-                .is_err()
-        );
-        assert!(fs::rename(root(dir.path(), &s), dir.path().join("moved")).is_err());
-        let final_file = a.publish(&AtomicBool::new(false)).unwrap();
-        let final_path = root(dir.path(), &s)
-            .join("payload")
-            .join(s.bundle().component(0).unwrap().filename);
-        assert!(
-            fs::OpenOptions::new()
-                .write(true)
-                .share_mode(7)
-                .open(&final_path)
-                .is_err()
-        );
-        assert!(fs::remove_file(&final_path).is_err());
-        drop(final_file);
-        drop(b);
-    }
-    #[test]
-    fn hardlinks_reparse_and_unknown_residue_are_refused_untouched() {
-        use std::os::windows::fs::symlink_dir;
-        for case in 0..3 {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut a, &s, 0);
-            prepare(&mut b, &s, 1);
-            let path = root(dir.path(), &s)
-                .join("payload")
-                .join(a.provider.ownership().leaf);
-            drop(a);
-            drop(b);
-            match case {
-                0 => fs::hard_link(&path, dir.path().join("alias")).unwrap(),
-                1 => {
+        isolated(
+            "no_replace_collision_authenticates_winner_and_preserves_invalid_leaf",
+            || {
+                for valid in [false, true] {
+                    let dir = directory();
+                    let s = selected();
+                    let [mut a, mut b] = parts(dir.path(), &s);
+                    prepare(&mut b, &s, 1);
+                    finish(&mut a, &s, 0);
+                    let own = a.provider.ownership();
                     let payload = root(dir.path(), &s).join("payload");
-                    fs::rename(&payload, dir.path().join("saved")).unwrap();
-                    symlink_dir(dir.path().join("saved"), &payload).unwrap();
+                    let final_path = payload.join(s.bundle().component(0).unwrap().filename);
+                    let bytes = vec![if valid { b'E' } else { b'X' }; 4096];
+                    super::super::native::fixture_file(&final_path, &bytes).unwrap();
+                    let result = a.publish(&AtomicBool::new(false));
+                    assert_eq!(result.is_ok(), valid);
+                    if let Ok(final_file) = result {
+                        assert!(final_file.has_retained_residue());
+                    }
+                    assert_eq!(fs::read(&final_path).unwrap(), bytes);
+                    assert!(payload.join(own.leaf).exists());
+                    drop(b);
                 }
-                _ => fs::write(root(dir.path(), &s).join("payload/unknown"), b"keep").unwrap(),
-            }
-            let result = fixture_acquire(dir.path(), &s)
-                .and_then(|r| r.bootstrap(&s, &AtomicBool::new(false)));
-            assert!(result.is_err());
-            assert!(path.exists());
-            if case == 2 {
-                assert_eq!(
-                    fs::read(root(dir.path(), &s).join("payload/unknown")).unwrap(),
-                    b"keep"
+            },
+        );
+
+        isolated(
+            "journal_delete_sharing_failure_keeps_checkpoint_residue",
+            || {
+                use std::os::windows::fs::OpenOptionsExt;
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut a, &s, 0);
+                prepare(&mut b, &s, 1);
+                let record = root(dir.path(), &s).join("journal-0/record-0000000001");
+                let blocker = fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .open(&record)
+                    .unwrap();
+                let error = a.discard(3, &AtomicBool::new(false)).unwrap_err();
+                assert!(error.contains("discard incomplete"));
+                assert!(record.exists());
+                drop(blocker);
+                drop(b);
+            },
+        );
+
+        isolated(
+            "close_reopen_substitution_with_authentic_bytes_is_rejected",
+            || {
+                let dir = directory();
+                let s = selected();
+                let [mut a, mut b] = parts(dir.path(), &s);
+                prepare(&mut b, &s, 1);
+                finish(&mut a, &s, 0);
+                let path = root(dir.path(), &s)
+                    .join("payload")
+                    .join(s.bundle().component(0).unwrap().filename);
+                let captured = path.clone();
+                super::HOOK.with(|h| {
+                    *h.borrow_mut() = Some(Box::new(move |stage| {
+                        if stage == "writer-closed" {
+                            fs::rename(&captured, captured.with_extension("saved")).unwrap();
+                            super::super::native::fixture_file(&captured, &vec![b'E'; 4096])
+                                .unwrap();
+                        }
+                    }))
+                });
+                let result = a.publish(&AtomicBool::new(false));
+                super::HOOK.with(|h| *h.borrow_mut() = None);
+                assert!(
+                    matches!(result, Err(e) if e.contains("close/reopen identity/security changed"))
                 );
-            }
-        }
+                assert_eq!(fs::read(&path).unwrap(), vec![b'E'; 4096]);
+                assert_eq!(
+                    fs::read_dir(root(dir.path(), &s).join("journal-0"))
+                        .unwrap()
+                        .count(),
+                    2
+                );
+                drop(b);
+            },
+        );
     }
     // These independent SDK observations deliberately do not call production
     // security(), trusted(), descriptor(), current_user(), or allowed_ace().
@@ -975,63 +1125,110 @@ mod native {
             );
         }
     }
+    /// Protected creation, ancestry replacement grants and permissive ACLs.
     #[test]
-    fn protected_creation_excludes_effective_inheritance_from_preconfigured_parent() {
-        use windows_sys::Win32::{
-            Security::{CONTAINER_INHERIT_ACE, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE},
-            Storage::FileSystem::FILE_ALL_ACCESS,
-        };
-        let dir = directory();
-        let s = selected();
-        let user = security_observation::user();
-        security_observation::parent_acl(dir.path(), "(A;OICIIO;FA;;;WD)");
-        let before = security_observation::inspect(dir.path());
-        assert_eq!(before.owner, user);
-        assert!(before.aces.iter().any(|a| a.sid == "S-1-1-0"
-            && a.kind == 0
-            && a.mask == FILE_ALL_ACCESS
-            && u32::from(a.flags)
-                & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)
-                == OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE));
-        // An ordinary child positively demonstrates that this parent really
-        // transmits an effective Everyone grant; it is outside the cache namespace.
-        let ordinary = dir.path().join("inheritance-control");
-        fs::create_dir(&ordinary).unwrap();
-        fs::write(ordinary.join("sentinel"), b"inherited").unwrap();
-        for path in [&ordinary, &ordinary.join("sentinel")] {
-            let inherited = security_observation::inspect(path);
-            assert!(!inherited.protected);
-            assert!(inherited.aces.iter().any(|a| a.kind == 0
-                && a.sid == "S-1-1-0"
-                && a.mask == FILE_ALL_ACCESS
-                && u32::from(a.flags) & INHERIT_ONLY_ACE == 0));
-        }
-        let parts = parts(dir.path(), &s); // Must reach real exclusive private creation.
-        inspect_private_descendants(dir.path(), &s, &parts, &user);
-        assert_eq!(security_observation::inspect(dir.path()), before);
-    }
-    #[test]
-    fn effective_ancestry_replacement_grant_refuses_without_descriptor_or_object_changes() {
-        let dir = directory();
-        let s = selected();
-        fs::write(dir.path().join("sentinel"), b"unchanged").unwrap();
-        security_observation::parent_acl(dir.path(), "(A;;0x40;;;WD)");
-        let facts = security_observation::inspect(dir.path());
-        assert_eq!(facts.owner, security_observation::user());
-        assert!(
-            facts
-                .aces
-                .iter()
-                .any(|a| a.kind == 0 && a.sid == "S-1-1-0" && a.mask == 0x40 && a.flags == 0)
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_cache_acls_are_protected_and_never_repaired() {
+        isolated(
+            "protected_creation_excludes_effective_inheritance_from_preconfigured_parent",
+            || {
+                use windows_sys::Win32::{
+                    Security::{CONTAINER_INHERIT_ACE, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE},
+                    Storage::FileSystem::FILE_ALL_ACCESS,
+                };
+                let dir = directory();
+                let s = selected();
+                let user = security_observation::user();
+                security_observation::parent_acl(dir.path(), "(A;OICIIO;FA;;;WD)");
+                let before = security_observation::inspect(dir.path());
+                assert_eq!(before.owner, user);
+                assert!(before.aces.iter().any(|a| a.sid == "S-1-1-0"
+                    && a.kind == 0
+                    && a.mask == FILE_ALL_ACCESS
+                    && u32::from(a.flags)
+                        & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)
+                        == OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE));
+                // An ordinary child positively demonstrates that this parent really
+                // transmits an effective Everyone grant; it is outside the cache namespace.
+                let ordinary = dir.path().join("inheritance-control");
+                fs::create_dir(&ordinary).unwrap();
+                fs::write(ordinary.join("sentinel"), b"inherited").unwrap();
+                for path in [&ordinary, &ordinary.join("sentinel")] {
+                    let inherited = security_observation::inspect(path);
+                    assert!(!inherited.protected);
+                    assert!(inherited.aces.iter().any(|a| a.kind == 0
+                        && a.sid == "S-1-1-0"
+                        && a.mask == FILE_ALL_ACCESS
+                        && u32::from(a.flags) & INHERIT_ONLY_ACE == 0));
+                }
+                let parts = parts(dir.path(), &s); // Must reach real exclusive private creation.
+                inspect_private_descendants(dir.path(), &s, &parts, &user);
+                assert_eq!(security_observation::inspect(dir.path()), before);
+            },
         );
-        let before = security_tree(dir.path());
-        let error = match fixture_acquire(dir.path(), &s) {
-            Err(e) => e,
-            Ok(_) => panic!("replacement authority accepted"),
-        };
-        assert!(error.contains("Unsafe cache ACL rights"), "{error}");
-        assert_eq!(security_tree(dir.path()), before);
-        assert!(!dir.path().join("tilo-internal-install").exists());
+
+        isolated(
+            "effective_ancestry_replacement_grant_refuses_without_descriptor_or_object_changes",
+            || {
+                let dir = directory();
+                let s = selected();
+                fs::write(dir.path().join("sentinel"), b"unchanged").unwrap();
+                security_observation::parent_acl(dir.path(), "(A;;0x40;;;WD)");
+                let facts = security_observation::inspect(dir.path());
+                assert_eq!(facts.owner, security_observation::user());
+                assert!(
+                    facts.aces.iter().any(|a| a.kind == 0
+                        && a.sid == "S-1-1-0"
+                        && a.mask == 0x40
+                        && a.flags == 0)
+                );
+                let before = security_tree(dir.path());
+                let error = match fixture_acquire(dir.path(), &s) {
+                    Err(e) => e,
+                    Ok(_) => panic!("replacement authority accepted"),
+                };
+                assert!(error.contains("Unsafe cache ACL rights"), "{error}");
+                assert_eq!(security_tree(dir.path()), before);
+                assert!(!dir.path().join("tilo-internal-install").exists());
+            },
+        );
+
+        isolated(
+            "existing_permissive_or_unprotected_acl_refuses_without_repair",
+            || {
+                for protected in [false, true] {
+                    let dir = directory();
+                    let s = selected();
+                    let [mut a, mut b] = parts(dir.path(), &s);
+                    prepare(&mut a, &s, 0);
+                    prepare(&mut b, &s, 1);
+                    drop(a);
+                    drop(b);
+                    let path = root(dir.path(), &s).join("payload");
+                    super::super::native::fixture_acl(&path, protected).unwrap();
+                    let before = security_tree(&root(dir.path(), &s));
+                    for _ in 0..2 {
+                        let error = match fixture_acquire(dir.path(), &s) {
+                            Err(e) => e,
+                            Ok(_) => panic!("unsafe existing private ACL accepted"),
+                        };
+                        assert!(
+                            error.contains(if protected {
+                                "Private ACL contains foreign principal"
+                            } else {
+                                "Private DACL not protected"
+                            }),
+                            "{error}"
+                        );
+                        assert_eq!(security_tree(&root(dir.path(), &s)), before);
+                    }
+                    assert_eq!(fs::read_dir(path).unwrap().count(), 2);
+                }
+            },
+        );
     }
     #[test]
     #[ignore = "UNRUN: externally provision a dedicated SYSTEM-owned local ancestry with protected current-user/SYSTEM/Administrators full-access DACL; no account or privilege changes in fixture"]
@@ -1087,88 +1284,6 @@ mod native {
         assert_eq!(security_tree(&path), before);
     }
     #[test]
-    fn existing_permissive_or_unprotected_acl_refuses_without_repair() {
-        for protected in [false, true] {
-            let dir = directory();
-            let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut a, &s, 0);
-            prepare(&mut b, &s, 1);
-            drop(a);
-            drop(b);
-            let path = root(dir.path(), &s).join("payload");
-            super::super::native::fixture_acl(&path, protected).unwrap();
-            let before = security_tree(&root(dir.path(), &s));
-            for _ in 0..2 {
-                let error = match fixture_acquire(dir.path(), &s) {
-                    Err(e) => e,
-                    Ok(_) => panic!("unsafe existing private ACL accepted"),
-                };
-                assert!(
-                    error.contains(if protected {
-                        "Private ACL contains foreign principal"
-                    } else {
-                        "Private DACL not protected"
-                    }),
-                    "{error}"
-                );
-                assert_eq!(security_tree(&root(dir.path(), &s)), before);
-            }
-            assert_eq!(fs::read_dir(path).unwrap().count(), 2);
-        }
-    }
-    #[test]
-    fn journal_delete_sharing_failure_keeps_checkpoint_residue() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut a, &s, 0);
-        prepare(&mut b, &s, 1);
-        let record = root(dir.path(), &s).join("journal-0/record-0000000001");
-        let blocker = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(&record)
-            .unwrap();
-        let error = a.discard(3, &AtomicBool::new(false)).unwrap_err();
-        assert!(error.contains("discard incomplete"));
-        assert!(record.exists());
-        drop(blocker);
-        drop(b);
-    }
-    #[test]
-    fn close_reopen_substitution_with_authentic_bytes_is_rejected() {
-        let dir = directory();
-        let s = selected();
-        let [mut a, mut b] = parts(dir.path(), &s);
-        prepare(&mut b, &s, 1);
-        finish(&mut a, &s, 0);
-        let path = root(dir.path(), &s)
-            .join("payload")
-            .join(s.bundle().component(0).unwrap().filename);
-        let captured = path.clone();
-        super::HOOK.with(|h| {
-            *h.borrow_mut() = Some(Box::new(move |stage| {
-                if stage == "writer-closed" {
-                    fs::rename(&captured, captured.with_extension("saved")).unwrap();
-                    super::super::native::fixture_file(&captured, &vec![b'E'; 4096]).unwrap();
-                }
-            }))
-        });
-        let result = a.publish(&AtomicBool::new(false));
-        super::HOOK.with(|h| *h.borrow_mut() = None);
-        assert!(matches!(result, Err(e) if e.contains("close/reopen identity/security changed")));
-        assert_eq!(fs::read(&path).unwrap(), vec![b'E'; 4096]);
-        assert_eq!(
-            fs::read_dir(root(dir.path(), &s).join("journal-0"))
-                .unwrap()
-                .count(),
-            2
-        );
-        drop(b);
-    }
-    #[test]
     #[ignore = "Requires an externally provisioned quota-limited NTFS/ReFS cache; never fill a host volume"]
     fn disk_full_does_not_acknowledge_or_delete_residue() {
         // Provision enough space for acquisition, but less than the 4096-byte payload.
@@ -1189,6 +1304,21 @@ mod native {
         prepare(&mut a, &s, 0);
         assert_eq!(a.file.metadata().unwrap().len(), 0);
         drop(b);
+    }
+
+    /// Runs one merged phase on a fresh thread so the thread-local fault and
+    /// cancellation hooks start clean, exactly as when the phase was its own
+    /// test; a failing phase re-raises its original panic payload.
+    fn isolated(phase: &str, body: impl FnOnce() + Send) {
+        std::thread::scope(|scope| {
+            let handle = std::thread::Builder::new()
+                .name(phase.to_owned())
+                .spawn_scoped(scope, body)
+                .expect("spawn isolated test phase");
+            if let Err(panic) = handle.join() {
+                std::panic::resume_unwind(panic);
+            }
+        });
     }
 }
 

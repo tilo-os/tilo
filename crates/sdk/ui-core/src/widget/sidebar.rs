@@ -874,6 +874,7 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use vello::kurbo::Affine;
 
     fn wide() -> Rect {
@@ -884,385 +885,395 @@ mod tests {
     }
 
     #[test]
-    fn wide_docks_and_insets_content_right_side() {
-        let mut d = SidebarDrawer::new().right().docked_width(300.0);
-        let content = d.resolve(wide());
-        assert!(d.is_docked(), "wide width docks");
-        assert!(d.is_open(), "docked default is open");
-        assert!(
-            (content.x0 - wide().x0).abs() < 0.5,
-            "content keeps the left edge"
-        );
-        assert!(
-            (wide().x1 - content.x1 - 300.0).abs() < 0.5,
-            "content right edge inset by the docked sidebar width"
-        );
-        assert_eq!(d.scrim_rect(), Rect::ZERO, "docked draws no scrim");
-        assert!((d.sidebar_rect().x1 - wide().x1).abs() < 0.5);
-        assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn narrow_overlays_closed_by_default_full_width_content() {
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        let content = d.resolve(narrow());
-        assert!(d.is_overlay(), "narrow width overlays");
-        assert!(!d.is_open(), "overlay default is closed");
-        assert!(
-            (content.width() - narrow().width()).abs() < 0.5,
-            "closed overlay leaves the content full-width"
-        );
-        assert_eq!(d.scrim_rect(), Rect::ZERO, "closed overlay draws no scrim");
-        assert!(
-            d.sidebar_rect().x0 >= narrow().x1 - 0.5,
-            "closed right drawer is off-screen to the right"
-        );
-    }
-
-    #[test]
-    fn toggle_open_overlay_paints_scrim_and_slides_in() {
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        d.resolve(narrow());
-        d.toggle();
-        d.snap(true); // settle deterministically
-        d.resolve(narrow());
-        assert!(d.is_open());
-        assert!(d.scrim_rect().width() > 0.0, "open overlay lays a scrim");
-        assert!(
-            (d.sidebar_rect().x1 - narrow().x1).abs() < 0.5,
-            "revealed right drawer is flush to the right edge"
-        );
-    }
-
-    #[test]
-    fn scrim_tap_dismisses_overlay_but_a_tap_on_the_drawer_does_not() {
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        d.resolve(narrow());
-        d.open();
-        d.snap(true);
-        d.resolve(narrow());
-        // A tap on the drawer panel must NOT dismiss.
-        assert!(!d.press_dismisses(d.sidebar_rect().center()));
-        assert!(d.is_open());
-        // Left of the drawer, in the scrim region.
-        let scrim_pt = Point::new(narrow().x0 + 20.0, 400.0);
-        assert!(d.scrim_contains(scrim_pt));
-        assert!(d.press_dismisses(scrim_pt));
-        assert!(!d.is_open());
-    }
-
-    #[test]
-    fn left_side_mirrors_right() {
-        let mut d = SidebarDrawer::new().left().docked_width(280.0);
-        let content = d.resolve(wide());
-        assert!(d.is_docked() && d.is_open());
-        assert!(
-            (content.x0 - wide().x0 - 280.0).abs() < 0.5,
-            "left drawer insets content from the LEFT"
-        );
-        assert!((d.sidebar_rect().x0 - wide().x0).abs() < 0.5);
-    }
-
-    #[test]
-    fn rail_leaves_a_thin_strip_when_collapsed_docked() {
-        let mut d = SidebarDrawer::new()
-            .left()
-            .docked_width(280.0)
-            .rail_width(56.0)
-            .closed();
-        let content = d.resolve(wide());
-        assert!(
-            (content.x0 - wide().x0 - 56.0).abs() < 0.5,
-            "collapsed rail insets the content by the rail width, not the full drawer"
-        );
-        d.open();
-        d.snap(true);
-        d.resolve(wide());
-        let content = d.content_rect();
-        assert!(
-            (content.x0 - wide().x0 - 280.0).abs() < 0.5,
-            "opening a railed drawer reveals the full docked width"
-        );
-    }
-
-    #[test]
-    fn breakpoint_crossing_reverts_a_stale_toggle_to_the_width_default() {
-        let mut d = SidebarDrawer::new().right();
-        d.resolve(wide()); // docked, open by default
-        d.close(); // user collapses it while docked
-        d.resolve(wide());
-        assert!(!d.is_open(), "explicit collapse holds while docked");
-        // Shrink below the breakpoint, then grow back.
-        d.resolve(narrow());
-        d.resolve(wide());
-        assert!(
-            d.is_open(),
-            "crossing the breakpoint reverts to the width-driven default (docked open)"
-        );
-    }
-
-    #[test]
-    fn overlay_flap_slides_across_frames_from_the_tick_path() {
-        // The reveal must SLIDE across successive ticks, not snap.
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        d.resolve(narrow());
-        d.snap(false); // deterministic closed start
-        assert_eq!(d.reveal(), 0.0);
-        d.open();
-
-        d.tick(false);
-        assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
-
-        std::thread::sleep(crate::time::Duration::from_millis(16));
-        d.tick(false);
-        let r = d.reveal();
-        assert!(
-            r > 0.0 && r < 1.0,
-            "after one ~16ms frame the flap is mid-slide (reveal {r})"
-        );
-        assert!(
-            d.is_animating(),
-            "a mid-slide drawer keeps requesting frames"
-        );
-
-        for _ in 0..300 {
-            std::thread::sleep(crate::time::Duration::from_millis(1));
-            d.tick(false);
-            if !d.is_animating() {
-                break;
-            }
+    fn sidebar_docks_wide_overlays_narrow_and_mirrors_sides() {
+        // Case `wide_docks_and_insets_content_right_side`.
+        {
+            let mut d = SidebarDrawer::new().right().docked_width(300.0);
+            let content = d.resolve(wide());
+            assert!(d.is_docked(), "wide width docks");
+            assert!(d.is_open(), "docked default is open");
+            assert!(
+                (content.x0 - wide().x0).abs() < 0.5,
+                "content keeps the left edge"
+            );
+            assert!(
+                (wide().x1 - content.x1 - 300.0).abs() < 0.5,
+                "content right edge inset by the docked sidebar width"
+            );
+            assert_eq!(d.scrim_rect(), Rect::ZERO, "docked draws no scrim");
+            assert!((d.sidebar_rect().x1 - wide().x1).abs() < 0.5);
+            assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
         }
-        assert!(
-            (d.reveal() - 1.0).abs() < 0.01,
-            "the slide settles fully open (reveal {})",
-            d.reveal()
-        );
-    }
 
-    #[test]
-    fn reduce_motion_snaps_instead_of_sliding() {
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        d.resolve(narrow());
-        d.snap(false);
-        d.open();
-        d.tick(true);
-        assert_eq!(
-            d.reveal(),
-            1.0,
-            "reduced motion snaps the reveal to its target"
-        );
-        assert!(!d.is_animating());
-    }
+        // Case `narrow_overlays_closed_by_default_full_width_content`.
+        {
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            let content = d.resolve(narrow());
+            assert!(d.is_overlay(), "narrow width overlays");
+            assert!(!d.is_open(), "overlay default is closed");
+            assert!(
+                (content.width() - narrow().width()).abs() < 0.5,
+                "closed overlay leaves the content full-width"
+            );
+            assert_eq!(d.scrim_rect(), Rect::ZERO, "closed overlay draws no scrim");
+            assert!(
+                d.sidebar_rect().x0 >= narrow().x1 - 0.5,
+                "closed right drawer is off-screen to the right"
+            );
+        }
 
-    #[test]
-    fn draw_toggle_and_scrim_emit_into_the_scene() {
-        let mut d = SidebarDrawer::new().right().overlay_width(320.0);
-        d.resolve(narrow());
-        d.open();
-        d.snap(true);
-        d.resolve(narrow());
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        d.draw_scrim(&mut scene, Affine::IDENTITY);
-        d.draw_toggle(
-            &mut scene,
-            Affine::IDENTITY,
-            &theme,
-            Rect::new(10.0, 10.0, 54.0, 38.0),
-            false,
-        );
-        assert!(
-            scene.encoding().draw_tags.len() >= 3,
-            "toggle + scrim must paint"
-        );
-    }
+        // Case `left_side_mirrors_right`.
+        {
+            let mut d = SidebarDrawer::new().left().docked_width(280.0);
+            let content = d.resolve(wide());
+            assert!(d.is_docked() && d.is_open());
+            assert!(
+                (content.x0 - wide().x0 - 280.0).abs() < 0.5,
+                "left drawer insets content from the LEFT"
+            );
+            assert!((d.sidebar_rect().x0 - wide().x0).abs() < 0.5);
+        }
 
-    /// HIG §9.6: once the host hands the drawer its theme, the authored
-    /// breakpoint and text-sized widths grow by `ui_scale × text_growth`
-    /// and the icon rail by `ui_scale` alone; a host that never calls
-    /// `scale_for` lays out exactly what it authored.
-    #[test]
-    fn scale_for_grows_text_sized_extents_and_leaves_the_icon_rail() {
-        let authored = || {
-            SidebarDrawer::new()
-                .breakpoint(760.0)
-                .docked_width(240.0)
-                .overlay_width(320.0)
+        // Case `rail_leaves_a_thin_strip_when_collapsed_docked`.
+        {
+            let mut d = SidebarDrawer::new()
+                .left()
+                .docked_width(280.0)
                 .rail_width(56.0)
-        };
-        let mut plain = authored();
-        plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(plain.layout(), SplitLayout::Docked);
-        assert_eq!(
-            plain.sidebar_rect().width(),
-            240.0,
-            "authored geometry until scaled"
-        );
-        assert_eq!(
-            (
-                plain.resolved_breakpoint(),
-                plain.resolved_overlay_width(),
-                plain.resolved_rail_width()
-            ),
-            (760.0, 320.0, 56.0)
-        );
+                .closed();
+            let content = d.resolve(wide());
+            assert!(
+                (content.x0 - wide().x0 - 56.0).abs() < 0.5,
+                "collapsed rail insets the content by the rail width, not the full drawer"
+            );
+            d.open();
+            d.snap(true);
+            d.resolve(wide());
+            let content = d.content_rect();
+            assert!(
+                (content.x0 - wide().x0 - 280.0).abs() < 0.5,
+                "opening a railed drawer reveals the full docked width"
+            );
+        }
 
-        let mut large = authored();
-        large.scale_for(&Theme::dark().with_text_scale(2.0));
-        assert_eq!(
-            (
-                large.resolved_breakpoint(),
-                large.resolved_docked_width(),
-                large.resolved_overlay_width()
-            ),
-            (1520.0, 480.0, 640.0)
-        );
-        assert_eq!(
-            large.resolved_rail_width(),
-            56.0,
-            "an icon rail never grows with the text"
-        );
-        large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(
-            large.layout(),
-            SplitLayout::Overlay,
-            "a 1000 px window at 2× has the room a 500 px window has at 1×"
-        );
-        large.open();
-        large.snap(true);
-        large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(
-            large.sidebar_rect().width(),
-            640.0,
-            "the overlay drawer lays out at the resolved width"
-        );
-
-        let mut smaller = authored();
-        smaller.scale_for(&Theme::dark().with_text_scale(0.75));
-        assert_eq!(
-            smaller.resolved_docked_width(),
-            240.0,
-            "text never shrinks a pane"
-        );
-
-        let mut dense = authored();
-        dense.scale_for(&Theme::dark().with_ui_scale(1.5));
-        assert!(
-            (dense.resolved_rail_width() - 84.0).abs() < 1e-9,
-            "ui_scale grows the rail too"
-        );
-        assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
-
-        // A docked icon rail (firewall / backups) keeps its width at 2× text,
-        // and a per-frame setter keeps the sizing its builder chose.
-        let mut glyphs = SidebarDrawer::new()
-            .icon_docked_width(56.0)
-            .overlay_width(288.0);
-        glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
-        assert_eq!(glyphs.resolved_docked_width(), 56.0);
-        assert_eq!(glyphs.resolved_overlay_width(), 576.0);
-        glyphs.set_docked_width(64.0);
-        assert_eq!(
-            glyphs.resolved_docked_width(),
-            64.0,
-            "still an icon rail after a setter"
-        );
+        // Case `breakpoint_crossing_reverts_a_stale_toggle_to_the_width_default`.
+        {
+            let mut d = SidebarDrawer::new().right();
+            d.resolve(wide()); // docked, open by default
+            d.close(); // user collapses it while docked
+            d.resolve(wide());
+            assert!(!d.is_open(), "explicit collapse holds while docked");
+            // Shrink below the breakpoint, then grow back.
+            d.resolve(narrow());
+            d.resolve(wide());
+            assert!(
+                d.is_open(),
+                "crossing the breakpoint reverts to the width-driven default (docked open)"
+            );
+        }
     }
 
     #[test]
-    fn navigation_uses_painted_rows_for_mouse_pen_and_touch_hit_testing() {
-        let nav = SidebarNav::new(
-            Rect::new(20.0, 10.0, 260.0, 700.0),
-            vec![
-                SidebarNavSection::new(
-                    "LIBRARY",
-                    vec![
-                        SidebarNavItem::new("all", "All items").selected(true),
-                        SidebarNavItem::new("favourites", "Favourites"),
-                    ],
+    fn overlay_drawer_slides_with_scrim_and_dismisses_on_scrim_only() {
+        // Case `toggle_open_overlay_paints_scrim_and_slides_in`.
+        {
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            d.resolve(narrow());
+            d.toggle();
+            d.snap(true); // settle deterministically
+            d.resolve(narrow());
+            assert!(d.is_open());
+            assert!(d.scrim_rect().width() > 0.0, "open overlay lays a scrim");
+            assert!(
+                (d.sidebar_rect().x1 - narrow().x1).abs() < 0.5,
+                "revealed right drawer is flush to the right edge"
+            );
+        }
+
+        // Case `scrim_tap_dismisses_overlay_but_a_tap_on_the_drawer_does_not`.
+        {
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            d.resolve(narrow());
+            d.open();
+            d.snap(true);
+            d.resolve(narrow());
+            // A tap on the drawer panel must NOT dismiss.
+            assert!(!d.press_dismisses(d.sidebar_rect().center()));
+            assert!(d.is_open());
+            // Left of the drawer, in the scrim region.
+            let scrim_pt = Point::new(narrow().x0 + 20.0, 400.0);
+            assert!(d.scrim_contains(scrim_pt));
+            assert!(d.press_dismisses(scrim_pt));
+            assert!(!d.is_open());
+        }
+
+        // Case `overlay_flap_slides_across_frames_from_the_tick_path`.
+        {
+            // The reveal must SLIDE across successive ticks, not snap.
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            d.resolve(narrow());
+            d.snap(false); // deterministic closed start
+            assert_eq!(d.reveal(), 0.0);
+            d.open();
+
+            d.tick(false);
+            assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
+
+            std::thread::sleep(crate::time::Duration::from_millis(16));
+            d.tick(false);
+            let r = d.reveal();
+            assert!(
+                r > 0.0 && r < 1.0,
+                "after one ~16ms frame the flap is mid-slide (reveal {r})"
+            );
+            assert!(
+                d.is_animating(),
+                "a mid-slide drawer keeps requesting frames"
+            );
+
+            let deadline = crate::time::now() + HANG_BOUND;
+            while crate::time::now() < deadline {
+                std::thread::sleep(crate::time::Duration::from_millis(1));
+                d.tick(false);
+                if !d.is_animating() {
+                    break;
+                }
+            }
+            assert!(
+                (d.reveal() - 1.0).abs() < 0.01,
+                "the slide settles fully open (reveal {})",
+                d.reveal()
+            );
+        }
+
+        // Case `reduce_motion_snaps_instead_of_sliding`.
+        {
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            d.resolve(narrow());
+            d.snap(false);
+            d.open();
+            d.tick(true);
+            assert_eq!(
+                d.reveal(),
+                1.0,
+                "reduced motion snaps the reveal to its target"
+            );
+            assert!(!d.is_animating());
+        }
+
+        // Case `draw_toggle_and_scrim_emit_into_the_scene`.
+        {
+            let mut d = SidebarDrawer::new().right().overlay_width(320.0);
+            d.resolve(narrow());
+            d.open();
+            d.snap(true);
+            d.resolve(narrow());
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            d.draw_scrim(&mut scene, Affine::IDENTITY);
+            d.draw_toggle(
+                &mut scene,
+                Affine::IDENTITY,
+                &theme,
+                Rect::new(10.0, 10.0, 54.0, 38.0),
+                false,
+            );
+            assert!(
+                scene.encoding().draw_tags.len() >= 3,
+                "toggle + scrim must paint"
+            );
+        }
+
+        // Case `scale_for_grows_text_sized_extents_and_leaves_the_icon_rail`.
+        // HIG §9.6: once the host hands the drawer its theme, the authored
+        // breakpoint and text-sized widths grow by `ui_scale × text_growth`
+        // and the icon rail by `ui_scale` alone; a host that never calls
+        // `scale_for` lays out exactly what it authored.
+        {
+            let authored = || {
+                SidebarDrawer::new()
+                    .breakpoint(760.0)
+                    .docked_width(240.0)
+                    .overlay_width(320.0)
+                    .rail_width(56.0)
+            };
+            let mut plain = authored();
+            plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+            assert_eq!(plain.layout(), SplitLayout::Docked);
+            assert_eq!(
+                plain.sidebar_rect().width(),
+                240.0,
+                "authored geometry until scaled"
+            );
+            assert_eq!(
+                (
+                    plain.resolved_breakpoint(),
+                    plain.resolved_overlay_width(),
+                    plain.resolved_rail_width()
                 ),
-                SidebarNavSection::new("TOOLS", vec![SidebarNavItem::new("import", "Import")]),
-            ],
-        );
-        let all = nav.row_rect(0, 0);
-        let favourites = nav.row_rect(0, 1);
-        let import = nav.row_rect(1, 0);
-        assert!(all.height() >= 44.0);
-        assert_eq!(nav.hit_test(all.center()), Some("all"));
-        assert_eq!(nav.hit_test(favourites.center()), Some("favourites"));
-        assert_eq!(nav.hit_test(import.center()), Some("import"));
-        assert_eq!(nav.hit_test(Point::new(21.0, 11.0)), None);
+                (760.0, 320.0, 56.0)
+            );
+
+            let mut large = authored();
+            large.scale_for(&Theme::dark().with_text_scale(2.0));
+            assert_eq!(
+                (
+                    large.resolved_breakpoint(),
+                    large.resolved_docked_width(),
+                    large.resolved_overlay_width()
+                ),
+                (1520.0, 480.0, 640.0)
+            );
+            assert_eq!(
+                large.resolved_rail_width(),
+                56.0,
+                "an icon rail never grows with the text"
+            );
+            large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+            assert_eq!(
+                large.layout(),
+                SplitLayout::Overlay,
+                "a 1000 px window at 2× has the room a 500 px window has at 1×"
+            );
+            large.open();
+            large.snap(true);
+            large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+            assert_eq!(
+                large.sidebar_rect().width(),
+                640.0,
+                "the overlay drawer lays out at the resolved width"
+            );
+
+            let mut smaller = authored();
+            smaller.scale_for(&Theme::dark().with_text_scale(0.75));
+            assert_eq!(
+                smaller.resolved_docked_width(),
+                240.0,
+                "text never shrinks a pane"
+            );
+
+            let mut dense = authored();
+            dense.scale_for(&Theme::dark().with_ui_scale(1.5));
+            assert!(
+                (dense.resolved_rail_width() - 84.0).abs() < 1e-9,
+                "ui_scale grows the rail too"
+            );
+            assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
+
+            // A docked icon rail (firewall / backups) keeps its width at 2× text,
+            // and a per-frame setter keeps the sizing its builder chose.
+            let mut glyphs = SidebarDrawer::new()
+                .icon_docked_width(56.0)
+                .overlay_width(288.0);
+            glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
+            assert_eq!(glyphs.resolved_docked_width(), 56.0);
+            assert_eq!(glyphs.resolved_overlay_width(), 576.0);
+            glyphs.set_docked_width(64.0);
+            assert_eq!(
+                glyphs.resolved_docked_width(),
+                64.0,
+                "still an icon rail after a setter"
+            );
+        }
     }
 
     #[test]
-    fn navigation_never_hits_rows_below_a_short_mobile_drawer() {
-        let nav = SidebarNav::new(
-            Rect::new(0.0, 0.0, 280.0, 118.0),
-            vec![SidebarNavSection::new(
+    fn navigation_rows_hit_test_scroll_and_describe_the_painted_model() {
+        // Case `navigation_uses_painted_rows_for_mouse_pen_and_touch_hit_testing`.
+        {
+            let nav = SidebarNav::new(
+                Rect::new(20.0, 10.0, 260.0, 700.0),
+                vec![
+                    SidebarNavSection::new(
+                        "LIBRARY",
+                        vec![
+                            SidebarNavItem::new("all", "All items").selected(true),
+                            SidebarNavItem::new("favourites", "Favourites"),
+                        ],
+                    ),
+                    SidebarNavSection::new("TOOLS", vec![SidebarNavItem::new("import", "Import")]),
+                ],
+            );
+            let all = nav.row_rect(0, 0);
+            let favourites = nav.row_rect(0, 1);
+            let import = nav.row_rect(1, 0);
+            assert!(all.height() >= 44.0);
+            assert_eq!(nav.hit_test(all.center()), Some("all"));
+            assert_eq!(nav.hit_test(favourites.center()), Some("favourites"));
+            assert_eq!(nav.hit_test(import.center()), Some("import"));
+            assert_eq!(nav.hit_test(Point::new(21.0, 11.0)), None);
+        }
+
+        // Case `navigation_never_hits_rows_below_a_short_mobile_drawer`.
+        {
+            let nav = SidebarNav::new(
+                Rect::new(0.0, 0.0, 280.0, 118.0),
+                vec![SidebarNavSection::new(
+                    "VAULT",
+                    vec![
+                        SidebarNavItem::new("visible", "Visible"),
+                        SidebarNavItem::new("clipped", "Clipped"),
+                        SidebarNavItem::new("offscreen", "Off screen"),
+                    ],
+                )],
+            );
+
+            assert_eq!(nav.hit_test(Point::new(40.0, 76.0)), Some("visible"));
+            assert_eq!(nav.hit_test(Point::new(40.0, 122.0)), None);
+            assert_eq!(nav.hit_test(Point::new(40.0, 168.0)), None);
+        }
+
+        // Case `navigation_scroll_reaches_clipped_mobile_rows_and_clamps_after_resize`.
+        {
+            let sections = vec![SidebarNavSection::new(
                 "VAULT",
                 vec![
-                    SidebarNavItem::new("visible", "Visible"),
-                    SidebarNavItem::new("clipped", "Clipped"),
-                    SidebarNavItem::new("offscreen", "Off screen"),
+                    SidebarNavItem::new("one", "One"),
+                    SidebarNavItem::new("two", "Two"),
+                    SidebarNavItem::new("three", "Three"),
+                    SidebarNavItem::new("four", "Four"),
                 ],
-            )],
-        );
+            )];
+            let nav = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 118.0), sections.clone())
+                .with_scroll_offset(f64::MAX);
+            assert_eq!(nav.scroll_offset(), nav.max_scroll_offset());
+            assert_eq!(nav.hit_test(Point::new(40.0, 96.0)), Some("four"));
 
-        assert_eq!(nav.hit_test(Point::new(40.0, 76.0)), Some("visible"));
-        assert_eq!(nav.hit_test(Point::new(40.0, 122.0)), None);
-        assert_eq!(nav.hit_test(Point::new(40.0, 168.0)), None);
-    }
+            let resized = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 400.0), sections)
+                .with_scroll_offset(nav.scroll_offset());
+            assert_eq!(resized.scroll_offset(), 0.0);
+        }
 
-    #[test]
-    fn navigation_scroll_reaches_clipped_mobile_rows_and_clamps_after_resize() {
-        let sections = vec![SidebarNavSection::new(
-            "VAULT",
-            vec![
-                SidebarNavItem::new("one", "One"),
-                SidebarNavItem::new("two", "Two"),
-                SidebarNavItem::new("three", "Three"),
-                SidebarNavItem::new("four", "Four"),
-            ],
-        )];
-        let nav = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 118.0), sections.clone())
-            .with_scroll_offset(f64::MAX);
-        assert_eq!(nav.scroll_offset(), nav.max_scroll_offset());
-        assert_eq!(nav.hit_test(Point::new(40.0, 96.0)), Some("four"));
+        // Case `navigation_semantics_share_labels_selection_and_actions_with_paint_model`.
+        {
+            use crate::a11y::Role;
 
-        let resized = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 400.0), sections)
-            .with_scroll_offset(nav.scroll_offset());
-        assert_eq!(resized.scroll_offset(), 0.0);
-    }
+            let nav = SidebarNav::new(
+                Rect::new(0.0, 0.0, 280.0, 300.0),
+                vec![SidebarNavSection::new(
+                    "VAULT",
+                    vec![
+                        SidebarNavItem::new("all", "All items")
+                            .badge("12")
+                            .selected(true),
+                        SidebarNavItem::new("favorites", "Favorites").badge("3"),
+                    ],
+                )],
+            );
+            let node = nav.accessibility("Vault navigation", |id| format!("filter:{id}"));
 
-    #[test]
-    fn navigation_semantics_share_labels_selection_and_actions_with_paint_model() {
-        use crate::a11y::Role;
-
-        let nav = SidebarNav::new(
-            Rect::new(0.0, 0.0, 280.0, 300.0),
-            vec![SidebarNavSection::new(
-                "VAULT",
-                vec![
-                    SidebarNavItem::new("all", "All items")
-                        .badge("12")
-                        .selected(true),
-                    SidebarNavItem::new("favorites", "Favorites").badge("3"),
-                ],
-            )],
-        );
-        let node = nav.accessibility("Vault navigation", |id| format!("filter:{id}"));
-
-        assert_eq!(node.role, Role::List);
-        assert_eq!(node.name.as_deref(), Some("Vault navigation"));
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(node.children[0].name.as_deref(), Some("All items"));
-        assert_eq!(node.children[0].description.as_deref(), Some("VAULT, 12"));
-        assert_eq!(
-            node.children[0].action_target.as_deref(),
-            Some("filter:all")
-        );
-        assert!(node.children[0].state.selected);
-        assert!(!node.children[1].state.selected);
-        assert!(node.children.iter().all(|child| child.state.focusable));
+            assert_eq!(node.role, Role::List);
+            assert_eq!(node.name.as_deref(), Some("Vault navigation"));
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(node.children[0].name.as_deref(), Some("All items"));
+            assert_eq!(node.children[0].description.as_deref(), Some("VAULT, 12"));
+            assert_eq!(
+                node.children[0].action_target.as_deref(),
+                Some("filter:all")
+            );
+            assert!(node.children[0].state.selected);
+            assert!(!node.children[1].state.selected);
+            assert!(node.children.iter().all(|child| child.state.focusable));
+        }
     }
 }

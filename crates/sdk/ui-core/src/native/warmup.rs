@@ -165,20 +165,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_fonts_shape_the_startup_probe() {
-        let mut font_system = crate::font_catalog::fixture_font_system();
-        assert!(shape_canonical_strings(&mut font_system) > 0);
-    }
-
-    /// The default is on: an unset variable must not silently skip the win.
-    #[test]
-    fn enabled_unless_explicitly_switched_off() {
-        assert!(enabled_by(None));
-        assert!(enabled_by(Some("")));
-        assert!(enabled_by(Some("1")));
-        assert!(enabled_by(Some("vello")));
-        for off in ["off", "0", "false", "no", " OFF ", "No"] {
-            assert!(!enabled_by(Some(off)), "{off:?} disables warmup");
+    fn warmup_is_on_unless_switched_off_and_shapes_bundled_fonts() {
+        // phase: bundled_fonts_shape_the_startup_probe
+        {
+            let mut font_system = crate::font_catalog::fixture_font_system();
+            assert!(shape_canonical_strings(&mut font_system) > 0);
+        }
+        // phase: enabled_unless_explicitly_switched_off
+        // The default is on: an unset variable must not silently skip the win.
+        {
+            assert!(enabled_by(None));
+            assert!(enabled_by(Some("")));
+            assert!(enabled_by(Some("1")));
+            assert!(enabled_by(Some("vello")));
+            for off in ["off", "0", "false", "no", " OFF ", "No"] {
+                assert!(!enabled_by(Some(off)), "{off:?} disables warmup");
+            }
         }
     }
 }

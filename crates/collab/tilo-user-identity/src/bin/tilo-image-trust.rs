@@ -1,11 +1,8 @@
 //! Offline tooling for the human-root -> device -> immutable-image trust chain.
 
 use std::{
-    ffi::CString,
     fs::{DirBuilder, OpenOptions},
     io::{Read, Write},
-    os::fd::FromRawFd as _,
-    os::unix::ffi::OsStrExt as _,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -23,20 +20,13 @@ use tilo_user_identity::{
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
+#[cfg(target_os = "linux")]
 fn open_without_symlinks(
     path: &Path,
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> std::io::Result<std::fs::File> {
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         std::io::Error::new(
@@ -44,31 +34,21 @@ fn open_without_symlinks(
             "artifact path contains an embedded NUL byte",
         )
     })?;
-    let flags = u64::try_from(flags)
-        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: u64::from(mode),
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: path and open_how remain live for this syscall. A successful
-    // descriptor is uniquely transferred into File below.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
-    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    tilo_user_identity::nofollow::open(None, &path, flags, mode, false)
+}
+
+/// Only Linux's `openat2` refuses symlinks at every step of the path, so
+/// elsewhere the tool opens no artifact.
+#[cfg(not(target_os = "linux"))]
+fn open_without_symlinks(
+    _path: &Path,
+    _flags: libc::c_int,
+    _mode: libc::mode_t,
+) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening an artifact without following symlinks needs Linux's openat2",
+    ))
 }
 
 fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
@@ -714,15 +694,15 @@ fn install_trust(
         ));
     }
 
-    atomic_file::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
+    tilo_files::native::atomic::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
         .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("revocations.bin"),
         &canonical_bytes(&entries).map_err(|error| error.to_string())?,
         0o600,
     )
     .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("endorsement.bin"),
         &canonical_bytes(&endorsement).map_err(|error| error.to_string())?,
         0o600,
@@ -736,13 +716,22 @@ fn install_trust(
     let next_generation = recorded_generation
         .unwrap_or(endorsement.generation)
         .max(endorsement.generation);
-    atomic_file::write_with_mode(&generation_state, &next_generation.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(&trust_dir.join("time.state"), &now_ns.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &generation_state,
+        &next_generation.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &trust_dir.join("time.state"),
+        &now_ns.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     // This marker switches the update path from inert to fail-closed. Publish
     // it only after every validated artifact is durable.
-    atomic_file::write_with_mode(&required, b"armed\n", 0o600).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_with_mode(&required, b"armed\n", 0o600)
+        .map_err(|error| error.to_string())
 }
 
 fn arm(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
@@ -836,18 +825,21 @@ fn verify_common(
             ));
         }
         if expected_generation > floor || recorded.is_none() {
-            atomic_file::write_with_mode(&state, &expected_generation.to_le_bytes(), 0o600)
-                .map_err(|error| {
-                    format!("cannot record generation in {}: {error}", state.display())
-                })?;
+            tilo_files::native::atomic::write_with_mode(
+                &state,
+                &expected_generation.to_le_bytes(),
+                0o600,
+            )
+            .map_err(|error| format!("cannot record generation in {}: {error}", state.display()))?;
         }
     }
     if let Some(state) = time_state {
         let recorded = read_generation_floor(&state)?;
         if recorded.is_none_or(|floor| now_ns > floor) {
-            atomic_file::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600).map_err(
-                |error| format!("cannot record trusted time in {}: {error}", state.display()),
-            )?;
+            tilo_files::native::atomic::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600)
+                .map_err(|error| {
+                    format!("cannot record trusted time in {}: {error}", state.display())
+                })?;
         }
     }
     Ok(())
@@ -951,11 +943,22 @@ fn run() -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn disable_core_dumps() -> bool {
+    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 }
+}
+
+/// No portable equivalent; refusing keeps keys out of core dumps.
+#[cfg(not(target_os = "linux"))]
+fn disable_core_dumps() -> bool {
+    false
+}
+
 fn main() -> std::process::ExitCode {
     // Grant and endorsement commands may load human-root or device keys. Fail
     // before parsing them unless the process can make itself non-dumpable.
-    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
-    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+    if !disable_core_dumps() {
         eprintln!("tilo-image-trust: could not disable core dumps");
         return std::process::ExitCode::FAILURE;
     }
@@ -970,15 +973,82 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
+    /// The artifact writer refuses output the reader cannot accept; the canonical reader rejects
+    /// symlinks; the live trust reader rejects exposed or aliased artifacts; the required marker must
+    /// be exact, private and unaliased.
     #[test]
-    fn artifact_writer_refuses_output_the_reader_cannot_accept() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let output = temp.path().join("oversized.artifact");
-        let bytes = vec![0_u8; usize::try_from(MAX_ARTIFACT_BYTES).unwrap() + 1];
-        let error = write_new_bytes(&output, &bytes).expect_err("oversized artifact must fail");
-        assert!(error.contains("artifact size limit"));
-        assert!(!output.exists());
+    fn trust_artifacts_are_written_and_read_only_as_exact_private_files() {
+        // Phase: artifact_writer_refuses_output_the_reader_cannot_accept.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let output = temp.path().join("oversized.artifact");
+            let bytes = vec![0_u8; usize::try_from(MAX_ARTIFACT_BYTES).unwrap() + 1];
+            let error = write_new_bytes(&output, &bytes).expect_err("oversized artifact must fail");
+            assert!(error.contains("artifact size limit"));
+            assert!(!output.exists());
+        }
+
+        // Phase: canonical_artifact_reader_rejects_symlinks.
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let artifact = temp.path().join("artifact");
+            let link = temp.path().join("artifact-link");
+            fs::write(&artifact, b"fixture").expect("artifact fixture");
+            symlink(&artifact, &link).expect("artifact symlink");
+            assert!(read_bounded(&link).is_err());
+
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+            assert!(read_bounded(&linked_parent.join("artifact")).is_err());
+            assert!(read_private_bounded(&linked_parent.join("artifact")).is_err());
+        }
+
+        // Phase: live_trust_reader_rejects_exposed_or_aliased_artifacts.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let artifact = temp.path().join("root.pub");
+            tilo_files::native::atomic::write_with_mode(&artifact, &[7; 32], 0o600)
+                .expect("private trust artifact");
+            assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
+
+            fs::set_permissions(&artifact, fs::Permissions::from_mode(0o640))
+                .expect("expose trust artifact");
+            assert!(read_private_bounded(&artifact).is_err());
+            fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600))
+                .expect("restore private trust artifact");
+            fs::hard_link(&artifact, temp.path().join("root-alias.pub"))
+                .expect("alias trust artifact");
+            assert!(read_private_bounded(&artifact).is_err());
+        }
+
+        // Phase: required_marker_must_be_exact_private_and_unaliased.
+        {
+            let temp = tempfile::tempdir().expect("temporary trust directory");
+            let marker = temp.path().join("required");
+            assert!(!required_marker_is_armed(&marker).expect("absent marker"));
+
+            tilo_files::native::atomic::write_with_mode(&marker, b"armed\n", 0o600)
+                .expect("valid marker");
+            assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
+            let linked_parent = temp.path().join("linked-parent");
+            std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
+            assert!(required_marker_is_armed(&linked_parent.join("required")).is_err());
+
+            fs::write(&marker, b"wrong\n").expect("corrupt marker contents");
+            assert!(required_marker_is_armed(&marker).is_err());
+            fs::write(&marker, b"armed\n").expect("restore marker contents");
+            fs::set_permissions(&marker, fs::Permissions::from_mode(0o640)).expect("expose marker");
+            assert!(required_marker_is_armed(&marker).is_err());
+            fs::set_permissions(&marker, fs::Permissions::from_mode(0o600))
+                .expect("restore marker mode");
+
+            fs::hard_link(&marker, temp.path().join("required-alias")).expect("alias marker");
+            assert!(required_marker_is_armed(&marker).is_err());
+        }
     }
+
     use ed25519_dalek::Signer;
     use std::fs;
     use tilo_user_identity::{
@@ -987,70 +1057,51 @@ mod tests {
         sign_device_cert, sign_revocation_entry,
     };
 
+    /// The bootc status parser requires the staged schema and its field parser uses fixed bounded
+    /// selectors.
     #[test]
-    fn bootc_status_parser_requires_the_staged_schema() {
-        assert_eq!(
-            parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
-            None
-        );
-        assert_eq!(
-            parse_bootc_status_bytes(
-                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
-            )
-            .unwrap(),
-            Some(("sha256:abc".into(), "sha512:def".into()))
-        );
-        assert!(parse_bootc_status_bytes(b"not-json").is_err());
-        assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
-        assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
-        assert!(
-            parse_bootc_status_bytes(
-                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
-            )
-            .is_err()
-        );
-    }
+    fn bootc_status_is_parsed_only_through_the_staged_schema() {
+        // Phase: bootc_status_parser_requires_the_staged_schema.
+        {
+            assert_eq!(
+                parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
+                None
+            );
+            assert_eq!(
+                parse_bootc_status_bytes(
+                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
+                )
+                .unwrap(),
+                Some(("sha256:abc".into(), "sha512:def".into()))
+            );
+            assert!(parse_bootc_status_bytes(b"not-json").is_err());
+            assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
+            assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
+            assert!(
+                parse_bootc_status_bytes(
+                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
+                )
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn bootc_status_field_parser_uses_fixed_bounded_selectors() {
-        let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(status, "booted-image").unwrap(),
-            "registry/tilo:current"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "staged-composefs").unwrap(),
-            "sha512:staged"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "rollback-image").unwrap(),
-            ""
-        );
-        assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
-    }
-
-    #[test]
-    fn required_marker_must_be_exact_private_and_unaliased() {
-        let temp = tempfile::tempdir().expect("temporary trust directory");
-        let marker = temp.path().join("required");
-        assert!(!required_marker_is_armed(&marker).expect("absent marker"));
-
-        atomic_file::write_with_mode(&marker, b"armed\n", 0o600).expect("valid marker");
-        assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
-        let linked_parent = temp.path().join("linked-parent");
-        std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
-        assert!(required_marker_is_armed(&linked_parent.join("required")).is_err());
-
-        fs::write(&marker, b"wrong\n").expect("corrupt marker contents");
-        assert!(required_marker_is_armed(&marker).is_err());
-        fs::write(&marker, b"armed\n").expect("restore marker contents");
-        fs::set_permissions(&marker, fs::Permissions::from_mode(0o640)).expect("expose marker");
-        assert!(required_marker_is_armed(&marker).is_err());
-        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600))
-            .expect("restore marker mode");
-
-        fs::hard_link(&marker, temp.path().join("required-alias")).expect("alias marker");
-        assert!(required_marker_is_armed(&marker).is_err());
+        // Phase: bootc_status_field_parser_uses_fixed_bounded_selectors.
+        {
+            let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(status, "booted-image").unwrap(),
+                "registry/tilo:current"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "staged-composefs").unwrap(),
+                "sha512:staged"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-image").unwrap(),
+                ""
+            );
+            assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
+        }
     }
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = std::ffi::OsString> {
@@ -1061,202 +1112,183 @@ mod tests {
             .into_iter()
     }
 
+    /// The generation floor rejects symlinks and shared state and the generation lock rejects an
+    /// aliased inode.
     #[test]
-    fn canonical_artifact_reader_rejects_symlinks() {
-        use std::os::unix::fs::symlink;
+    fn generation_state_refuses_symlinks_sharing_and_aliases() {
+        // Phase: generation_floor_rejects_symlinks_and_shared_state.
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
 
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let artifact = temp.path().join("artifact");
-        let link = temp.path().join("artifact-link");
-        fs::write(&artifact, b"fixture").expect("artifact fixture");
-        symlink(&artifact, &link).expect("artifact symlink");
-        assert!(read_bounded(&link).is_err());
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let state = temp.path().join("generation");
+            let link = temp.path().join("generation-link");
+            tilo_files::native::atomic::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
+                .expect("generation fixture");
+            symlink(&state, &link).expect("generation symlink");
+            assert!(read_generation_floor(&link).is_err());
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).expect("generation parent symlink");
+            assert!(read_generation_floor(&linked_parent.join("generation")).is_err());
 
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
-        assert!(read_bounded(&linked_parent.join("artifact")).is_err());
-        assert!(read_private_bounded(&linked_parent.join("artifact")).is_err());
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o660))
+                .expect("make generation state group writable");
+            assert!(read_generation_floor(&state).is_err());
+
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o600))
+                .expect("restore private generation state");
+            fs::hard_link(&state, temp.path().join("generation-alias"))
+                .expect("alias generation state");
+            assert!(read_generation_floor(&state).is_err());
+        }
+
+        // Phase: generation_lock_rejects_an_aliased_inode.
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).expect("lock parent symlink");
+            assert!(lock_generation_state(&linked_parent.join("other-generation")).is_err());
+            assert!(!temp.path().join("other-generation.lock").exists());
+
+            let state = temp.path().join("generation");
+            drop(lock_generation_state(&state).expect("create generation lock"));
+            let lock = temp.path().join("generation.lock");
+            fs::hard_link(&lock, temp.path().join("generation-lock-alias"))
+                .expect("alias generation lock");
+            assert!(lock_generation_state(&state).is_err());
+        }
     }
 
+    /// External signers complete a grant and endorsement without key files, and trust rotation
+    /// cannot roll back the root or revocations.
     #[test]
-    fn live_trust_reader_rejects_exposed_or_aliased_artifacts() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let artifact = temp.path().join("root.pub");
-        atomic_file::write_with_mode(&artifact, &[7; 32], 0o600).expect("private trust artifact");
-        assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn trust_changes_are_signed_externally_and_never_roll_back() {
+        // Phase: external_signers_complete_grant_and_endorsement_without_key_files.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let cert_path = temp.path().join("device.cert");
+            let unsigned_grant = temp.path().join("unsigned.grant");
+            let grant_digest = temp.path().join("grant.digest");
+            let grant_signature = temp.path().join("grant.signature");
+            let grant = temp.path().join("grant");
+            let unsigned_endorsement = temp.path().join("unsigned.endorsement");
+            let endorsement_digest = temp.path().join("endorsement.digest");
+            let endorsement_signature = temp.path().join("endorsement.signature");
+            let endorsement_path = temp.path().join("endorsement");
+            let (root, user) = UserIdentity::generate("Ada", 10);
+            let (device, device_identity) = DeviceIdentity::generate("builder", 11);
+            let mut cert = DeviceCert {
+                user_public_key: user.public_key,
+                device_public_key: device_identity.public_key,
+                device_label: device_identity.label,
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 12,
+                expires_at_ns: Some(100),
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).expect("sign device cert");
+            write_device_cert(&cert_path, &cert).expect("write device cert");
 
-        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o640))
-            .expect("expose trust artifact");
-        assert!(read_private_bounded(&artifact).is_err());
-        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600))
-            .expect("restore private trust artifact");
-        fs::hard_link(&artifact, temp.path().join("root-alias.pub")).expect("alias trust artifact");
-        assert!(read_private_bounded(&artifact).is_err());
-    }
+            prepare_grant(arguments(&[
+                cert_path.to_str().unwrap(),
+                "15",
+                "80",
+                unsigned_grant.to_str().unwrap(),
+                grant_digest.to_str().unwrap(),
+            ]))
+            .expect("prepare grant");
+            fs::write(
+                &grant_signature,
+                root.sign(&fs::read(&grant_digest).unwrap()).to_bytes(),
+            )
+            .unwrap();
+            attach_grant(arguments(&[
+                unsigned_grant.to_str().unwrap(),
+                grant_signature.to_str().unwrap(),
+                grant.to_str().unwrap(),
+            ]))
+            .expect("attach externally produced root signature");
 
-    #[test]
-    fn generation_floor_rejects_symlinks_and_shared_state() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
+            prepare_endorsement(arguments(&[
+                cert_path.to_str().unwrap(),
+                grant.to_str().unwrap(),
+                "abababababababababababababababababababababababababababababababab",
+                "7",
+                "20",
+                unsigned_endorsement.to_str().unwrap(),
+                endorsement_digest.to_str().unwrap(),
+            ]))
+            .expect("prepare endorsement");
+            fs::write(
+                &endorsement_signature,
+                device
+                    .sign(&fs::read(&endorsement_digest).unwrap())
+                    .to_bytes(),
+            )
+            .unwrap();
+            attach_endorsement(arguments(&[
+                unsigned_endorsement.to_str().unwrap(),
+                endorsement_signature.to_str().unwrap(),
+                endorsement_path.to_str().unwrap(),
+            ]))
+            .expect("attach externally produced device signature");
+            let endorsement: ImageEndorsement = decode_artifact(&endorsement_path).unwrap();
+            verify_image_endorsement_at(&endorsement, &user.public_key, 20)
+                .expect("external signing ceremony produces a valid complete chain");
+            assert!(!temp.path().join("root.key").exists());
+            assert!(!temp.path().join("device.key").exists());
+        }
 
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let state = temp.path().join("generation");
-        let link = temp.path().join("generation-link");
-        atomic_file::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
-            .expect("generation fixture");
-        symlink(&state, &link).expect("generation symlink");
-        assert!(read_generation_floor(&link).is_err());
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).expect("generation parent symlink");
-        assert!(read_generation_floor(&linked_parent.join("generation")).is_err());
+        // Phase: trust_rotation_cannot_rollback_root_or_revocations.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let trust_dir = temp.path();
+            let (root, user) = UserIdentity::generate("Ada", 10);
+            fs::write(trust_dir.join("root.pub"), user.public_key).expect("installed root");
 
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o660))
-            .expect("make generation state group writable");
-        assert!(read_generation_floor(&state).is_err());
+            let mut installed = RevocationEntry {
+                user_public_key: user.public_key,
+                revoked_device_public_key: [42; 32],
+                revoked_at_ns: 50,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut installed, &root).expect("sign installed revocation");
+            fs::write(
+                trust_dir.join("revocations.bin"),
+                canonical_bytes(&vec![installed.clone()]).expect("encode installed revocations"),
+            )
+            .expect("installed revocations");
 
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o600))
-            .expect("restore private generation state");
-        fs::hard_link(&state, temp.path().join("generation-alias"))
-            .expect("alias generation state");
-        assert!(read_generation_floor(&state).is_err());
-    }
+            assert!(
+                validate_rotation_continuity(trust_dir, &user.public_key, &[]).is_err(),
+                "an empty replacement must not un-revoke a device"
+            );
+            let mut weakened = installed.clone();
+            weakened.revoked_at_ns = 60;
+            sign_revocation_entry(&mut weakened, &root).expect("sign weakened cutoff");
+            assert!(
+                validate_rotation_continuity(trust_dir, &user.public_key, &[weakened]).is_err(),
+                "a later cutoff must not restore signatures from the revoked interval"
+            );
+            let mut strengthened = installed;
+            strengthened.revoked_at_ns = 40;
+            sign_revocation_entry(&mut strengthened, &root).expect("sign earlier cutoff");
+            validate_rotation_continuity(trust_dir, &user.public_key, &[strengthened])
+                .expect("an earlier revocation cutoff is monotonic");
 
-    #[test]
-    fn generation_lock_rejects_an_aliased_inode() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).expect("lock parent symlink");
-        assert!(lock_generation_state(&linked_parent.join("other-generation")).is_err());
-        assert!(!temp.path().join("other-generation.lock").exists());
-
-        let state = temp.path().join("generation");
-        drop(lock_generation_state(&state).expect("create generation lock"));
-        let lock = temp.path().join("generation.lock");
-        fs::hard_link(&lock, temp.path().join("generation-lock-alias"))
-            .expect("alias generation lock");
-        assert!(lock_generation_state(&state).is_err());
-    }
-
-    #[test]
-    fn external_signers_complete_grant_and_endorsement_without_key_files() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let cert_path = temp.path().join("device.cert");
-        let unsigned_grant = temp.path().join("unsigned.grant");
-        let grant_digest = temp.path().join("grant.digest");
-        let grant_signature = temp.path().join("grant.signature");
-        let grant = temp.path().join("grant");
-        let unsigned_endorsement = temp.path().join("unsigned.endorsement");
-        let endorsement_digest = temp.path().join("endorsement.digest");
-        let endorsement_signature = temp.path().join("endorsement.signature");
-        let endorsement_path = temp.path().join("endorsement");
-        let (root, user) = UserIdentity::generate("Ada", 10);
-        let (device, device_identity) = DeviceIdentity::generate("builder", 11);
-        let mut cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: device_identity.public_key,
-            device_label: device_identity.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 12,
-            expires_at_ns: Some(100),
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).expect("sign device cert");
-        write_device_cert(&cert_path, &cert).expect("write device cert");
-
-        prepare_grant(arguments(&[
-            cert_path.to_str().unwrap(),
-            "15",
-            "80",
-            unsigned_grant.to_str().unwrap(),
-            grant_digest.to_str().unwrap(),
-        ]))
-        .expect("prepare grant");
-        fs::write(
-            &grant_signature,
-            root.sign(&fs::read(&grant_digest).unwrap()).to_bytes(),
-        )
-        .unwrap();
-        attach_grant(arguments(&[
-            unsigned_grant.to_str().unwrap(),
-            grant_signature.to_str().unwrap(),
-            grant.to_str().unwrap(),
-        ]))
-        .expect("attach externally produced root signature");
-
-        prepare_endorsement(arguments(&[
-            cert_path.to_str().unwrap(),
-            grant.to_str().unwrap(),
-            "abababababababababababababababababababababababababababababababab",
-            "7",
-            "20",
-            unsigned_endorsement.to_str().unwrap(),
-            endorsement_digest.to_str().unwrap(),
-        ]))
-        .expect("prepare endorsement");
-        fs::write(
-            &endorsement_signature,
-            device
-                .sign(&fs::read(&endorsement_digest).unwrap())
-                .to_bytes(),
-        )
-        .unwrap();
-        attach_endorsement(arguments(&[
-            unsigned_endorsement.to_str().unwrap(),
-            endorsement_signature.to_str().unwrap(),
-            endorsement_path.to_str().unwrap(),
-        ]))
-        .expect("attach externally produced device signature");
-        let endorsement: ImageEndorsement = decode_artifact(&endorsement_path).unwrap();
-        verify_image_endorsement_at(&endorsement, &user.public_key, 20)
-            .expect("external signing ceremony produces a valid complete chain");
-        assert!(!temp.path().join("root.key").exists());
-        assert!(!temp.path().join("device.key").exists());
-    }
-
-    #[test]
-    fn trust_rotation_cannot_rollback_root_or_revocations() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let trust_dir = temp.path();
-        let (root, user) = UserIdentity::generate("Ada", 10);
-        fs::write(trust_dir.join("root.pub"), user.public_key).expect("installed root");
-
-        let mut installed = RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: [42; 32],
-            revoked_at_ns: 50,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut installed, &root).expect("sign installed revocation");
-        fs::write(
-            trust_dir.join("revocations.bin"),
-            canonical_bytes(&vec![installed.clone()]).expect("encode installed revocations"),
-        )
-        .expect("installed revocations");
-
-        assert!(
-            validate_rotation_continuity(trust_dir, &user.public_key, &[]).is_err(),
-            "an empty replacement must not un-revoke a device"
-        );
-        let mut weakened = installed.clone();
-        weakened.revoked_at_ns = 60;
-        sign_revocation_entry(&mut weakened, &root).expect("sign weakened cutoff");
-        assert!(
-            validate_rotation_continuity(trust_dir, &user.public_key, &[weakened]).is_err(),
-            "a later cutoff must not restore signatures from the revoked interval"
-        );
-        let mut strengthened = installed;
-        strengthened.revoked_at_ns = 40;
-        sign_revocation_entry(&mut strengthened, &root).expect("sign earlier cutoff");
-        validate_rotation_continuity(trust_dir, &user.public_key, &[strengthened])
-            .expect("an earlier revocation cutoff is monotonic");
-
-        let (_other_root, other_user) = UserIdentity::generate("Mallory", 11);
-        assert!(
-            validate_rotation_continuity(trust_dir, &other_user.public_key, &[]).is_err(),
-            "ordinary rotation must not replace the pinned human root"
-        );
+            let (_other_root, other_user) = UserIdentity::generate("Mallory", 11);
+            assert!(
+                validate_rotation_continuity(trust_dir, &other_user.public_key, &[]).is_err(),
+                "ordinary rotation must not replace the pinned human root"
+            );
+        }
     }
 
     #[test]
@@ -1406,7 +1438,7 @@ mod tests {
             update_lock.to_str().expect("update lock"),
         ]))
         .expect("rotate an armed trust store under the update lock");
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             &trust_dir.join("generation.state"),
             &8_u64.to_le_bytes(),
             0o600,
@@ -1461,8 +1493,12 @@ mod tests {
             fs::read(&time_state_path).expect("read trusted time state"),
             50_u64.to_le_bytes()
         );
-        atomic_file::write_with_mode(&generation_state_path, &8_u64.to_le_bytes(), 0o600)
-            .expect("advance generation state");
+        tilo_files::native::atomic::write_with_mode(
+            &generation_state_path,
+            &8_u64.to_le_bytes(),
+            0o600,
+        )
+        .expect("advance generation state");
         assert!(
             verify_common(
                 arguments(&[
@@ -1482,7 +1518,7 @@ mod tests {
             .is_err(),
             "a valid older endorsement must not cross the recorded rollback floor"
         );
-        atomic_file::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
+        tilo_files::native::atomic::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
             .expect("advance trusted-time state");
         let clock_error = verify_common(
             arguments(&[

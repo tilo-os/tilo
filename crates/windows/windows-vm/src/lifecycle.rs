@@ -222,60 +222,61 @@ mod tests {
     }
 
     #[test]
-    fn status_exposes_phase_and_managed_session_without_waking_guest() {
-        let directory = TempDir::new().unwrap();
-        let service = service(
-            &directory,
-            Backend {
-                state: DomainState::ShutOff,
+    fn lifecycle_status_and_actions_are_typed_and_never_wake_or_duplicate() {
+        // Phase `status_exposes_phase_and_managed_session_without_waking_guest`.
+        {
+            let directory = TempDir::new().unwrap();
+            let service = service(
+                &directory,
+                Backend {
+                    state: DomainState::ShutOff,
+                    actions: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+            let status = service.status().unwrap();
+            assert_eq!(status.domain, DomainState::ShutOff);
+            assert_eq!(status.managed_session, ManagedSessionState::Ready);
+            assert_eq!(
+                status.appliance.license,
+                crate::LicenseState::DigitallyActivated
+            );
+        }
+        // Phase `lifecycle_actions_are_typed_and_do_not_create_another_domain`.
+        {
+            let directory = TempDir::new().unwrap();
+            let backend = Backend {
+                state: DomainState::Running,
                 actions: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
-        let status = service.status().unwrap();
-        assert_eq!(status.domain, DomainState::ShutOff);
-        assert_eq!(status.managed_session, ManagedSessionState::Ready);
-        assert_eq!(
-            status.appliance.license,
-            crate::LicenseState::DigitallyActivated
-        );
-    }
-
-    #[test]
-    fn lifecycle_actions_are_typed_and_do_not_create_another_domain() {
-        let directory = TempDir::new().unwrap();
-        let backend = Backend {
-            state: DomainState::Running,
-            actions: Arc::new(Mutex::new(Vec::new())),
-        };
-        let actions = backend.actions.clone();
-        let service = service(&directory, backend);
-        service.action(LifecycleAction::Shutdown).unwrap();
-        service.action(LifecycleAction::Resume).unwrap();
-        assert_eq!(
-            *actions.lock().unwrap(),
-            vec![LifecycleAction::Shutdown, LifecycleAction::Resume]
-        );
-    }
-
-    #[test]
-    fn unprovisioned_start_is_rejected_before_backend_call() {
-        let directory = TempDir::new().unwrap();
-        let store = ProvisioningStore::new(directory.path().join("state.json"));
-        let service = WindowsVmService::new(
-            ApplianceConfig::recommended(
-                "01234567-89ab-cdef-0123-456789abcdef",
-                "/var/lib/tilo/windows/system.qcow2",
-                "/var/lib/tilo/windows/nvram.fd",
-            ),
-            store,
-            Backend {
-                state: DomainState::Absent,
-                actions: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
-        assert!(matches!(
-            service.action(LifecycleAction::Start),
-            Err(LifecycleError::NotProvisioned)
-        ));
+            };
+            let actions = backend.actions.clone();
+            let service = service(&directory, backend);
+            service.action(LifecycleAction::Shutdown).unwrap();
+            service.action(LifecycleAction::Resume).unwrap();
+            assert_eq!(
+                *actions.lock().unwrap(),
+                vec![LifecycleAction::Shutdown, LifecycleAction::Resume]
+            );
+        }
+        // Phase `unprovisioned_start_is_rejected_before_backend_call`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = ProvisioningStore::new(directory.path().join("state.json"));
+            let service = WindowsVmService::new(
+                ApplianceConfig::recommended(
+                    "01234567-89ab-cdef-0123-456789abcdef",
+                    "/var/lib/tilo/windows/system.qcow2",
+                    "/var/lib/tilo/windows/nvram.fd",
+                ),
+                store,
+                Backend {
+                    state: DomainState::Absent,
+                    actions: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+            assert!(matches!(
+                service.action(LifecycleAction::Start),
+                Err(LifecycleError::NotProvisioned)
+            ));
+        }
     }
 }

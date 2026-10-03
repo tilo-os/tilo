@@ -390,79 +390,78 @@ type = "gui"
     }
 
     #[test]
-    fn a_full_archive_carries_each_distinct_blob_once() {
-        let (_dir, packed) = packed();
-        let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let mut blobs = BTreeMap::new();
-        let tapp = read(bytes.as_slice(), &mut blobs).unwrap();
-        assert_eq!(tapp.meta, packed.meta);
-        assert!(tapp.is_complete());
-        assert_eq!(blobs.len(), 2, "two files share one blob");
-        assert_eq!(tapp.carried.values().sum::<u64>(), 50_005);
-    }
-
-    #[test]
-    fn a_thin_archive_is_metadata_only() {
-        let (_dir, packed) = packed();
-        let thin = to_bytes(&packed.meta, None).unwrap();
-        let full = to_bytes(&packed.meta, Some(&packed)).unwrap();
-        assert!(
-            thin.len() < 8 * 1024,
-            "thin archive is {} bytes",
-            thin.len()
-        );
-        assert!(full.len() > 50_000);
-        let tapp = read(thin.as_slice(), &mut DiscardBlobs).unwrap();
-        assert_eq!(tapp.meta, packed.meta);
-        assert_eq!(tapp.missing().len(), 2);
-    }
-
-    #[test]
-    fn a_sink_can_refuse_on_the_metadata_before_any_blob() {
-        struct Refuse {
-            blobs: usize,
+    fn tapp_archives_carry_verified_blobs_and_fail_closed() {
+        // phase: a_full_archive_carries_each_distinct_blob_once
+        {
+            let (_dir, packed) = packed();
+            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let mut blobs = BTreeMap::new();
+            let tapp = read(bytes.as_slice(), &mut blobs).unwrap();
+            assert_eq!(tapp.meta, packed.meta);
+            assert!(tapp.is_complete());
+            assert_eq!(blobs.len(), 2, "two files share one blob");
+            assert_eq!(tapp.carried.values().sum::<u64>(), 50_005);
         }
-        impl BlobSink for Refuse {
-            fn metadata(&mut self, _meta: &PackageMeta) -> io::Result<()> {
-                Err(io::Error::new(io::ErrorKind::PermissionDenied, "untrusted"))
-            }
-            fn accept(&mut self, _: &BlobHash, _: u64, _: &mut dyn Read) -> io::Result<()> {
-                self.blobs += 1;
-                Ok(())
-            }
+        // phase: a_thin_archive_is_metadata_only
+        {
+            let (_dir, packed) = packed();
+            let thin = to_bytes(&packed.meta, None).unwrap();
+            let full = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            assert!(
+                thin.len() < 8 * 1024,
+                "thin archive is {} bytes",
+                thin.len()
+            );
+            assert!(full.len() > 50_000);
+            let tapp = read(thin.as_slice(), &mut DiscardBlobs).unwrap();
+            assert_eq!(tapp.meta, packed.meta);
+            assert_eq!(tapp.missing().len(), 2);
         }
-        let (_dir, packed) = packed();
-        let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let mut sink = Refuse { blobs: 0 };
-        assert!(read(bytes.as_slice(), &mut sink).is_err());
-        assert_eq!(sink.blobs, 0, "no payload reaches a sink that refused");
-    }
-
-    #[test]
-    fn a_blob_that_does_not_match_its_name_is_refused() {
-        let (_dir, packed) = packed();
-        let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-        // The README's five bytes are unique in the archive; flip one.
-        let at = bytes
-            .windows(5)
-            .rposition(|window| window == b"hello")
-            .unwrap();
-        bytes[at] = b'j';
-        let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-        assert!(matches!(error, TappError::BlobHashMismatch(_)), "{error}");
-    }
-
-    #[test]
-    fn an_unsupported_format_fails_closed() {
-        let (_dir, packed) = packed();
-        let mut bytes = to_bytes(&packed.meta, None).unwrap();
-        let marker = b"format = 1\n";
-        let at = bytes
-            .windows(marker.len())
-            .position(|window| window == marker)
-            .unwrap();
-        bytes[at + marker.len() - 2] = b'2';
-        let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-        assert!(matches!(error, TappError::UnsupportedFormat(2)), "{error}");
+        // phase: a_sink_can_refuse_on_the_metadata_before_any_blob
+        {
+            struct Refuse {
+                blobs: usize,
+            }
+            impl BlobSink for Refuse {
+                fn metadata(&mut self, _meta: &PackageMeta) -> io::Result<()> {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "untrusted"))
+                }
+                fn accept(&mut self, _: &BlobHash, _: u64, _: &mut dyn Read) -> io::Result<()> {
+                    self.blobs += 1;
+                    Ok(())
+                }
+            }
+            let (_dir, packed) = packed();
+            let bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let mut sink = Refuse { blobs: 0 };
+            assert!(read(bytes.as_slice(), &mut sink).is_err());
+            assert_eq!(sink.blobs, 0, "no payload reaches a sink that refused");
+        }
+        // phase: a_blob_that_does_not_match_its_name_is_refused
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            // The README's five bytes are unique in the archive; flip one.
+            let at = bytes
+                .windows(5)
+                .rposition(|window| window == b"hello")
+                .unwrap();
+            bytes[at] = b'j';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::BlobHashMismatch(_)), "{error}");
+        }
+        // phase: an_unsupported_format_fails_closed
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, None).unwrap();
+            let marker = b"format = 1\n";
+            let at = bytes
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            bytes[at + marker.len() - 2] = b'2';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::UnsupportedFormat(2)), "{error}");
+        }
     }
 }

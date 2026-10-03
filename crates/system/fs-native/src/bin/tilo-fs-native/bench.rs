@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use fs_content::ChunkTier;
 use fs_native::capture::{CaptureConfig, EpochCapture};
-use fs_native::chunking::{ChunkTier, Manifest};
 use fs_native::hydrate::{Fetcher, Hydrator, HydratorConfig, PlaceholderSpec};
 use fs_native::journal::{ChangeJournal, JournalBatch, JournalConfig, JournalEntry, JournalOp};
 use fs_native::probe::{self, K5Params};
@@ -453,12 +453,12 @@ fn bench_hash(quick: bool) {
     );
     for tier in [ChunkTier::Small, ChunkTier::Medium, ChunkTier::Large] {
         let t = Instant::now();
-        let (m, _) = Manifest::build_in_tier(&data, tier);
+        let (m, _) = fs_content::build_in_tier(&data, tier);
         let d = t.elapsed();
         println!(
             "  {tier:?}: {} chunks, avg {} KiB, {:.0} MB/s",
-            m.chunks.len(),
-            len.checked_div(m.chunks.len() as u64).unwrap_or(0) / KIB,
+            m.chunks().len(),
+            len.checked_div(m.chunks().len() as u64).unwrap_or(0) / KIB,
             mbps(len, d)
         );
     }

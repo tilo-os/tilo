@@ -1,0 +1,41 @@
+[package]
+name = "tilo-oauth"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The one OAuth 2.0 client for installed apps: authorization code with PKCE over a loopback redirect, token exchange, refresh and revocation."
+
+[dependencies]
+# PKCE S256 challenge (RFC 7636) and its URL-safe base64.
+sha2.workspace = true
+base64.workspace = true
+# State and verifier randomness from the OS CSPRNG.
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Authorization URLs and token request bodies are form-encoded.
+url.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
+test-http = { path = "../../dev/test-http", optional = true }
+workspace-hack = { version = "0.1" }
+
+[features]
+default = ["client"]
+# The blocking HTTPS token client. Without it the crate is the pure pieces
+# (descriptors, PKCE, URLs, token parsing, the loopback listener), for
+# builds that must stay free of the TLS/HTTP stack.
+client = ["dep:reqwest", "dep:tilo-net"]
+# `tilo_oauth::fake`: a fake authorization server and browser. Consumers
+# enable it from [dev-dependencies] for end-to-end sign-in tests.
+fake = ["dep:test-http"]
+
+[dev-dependencies]
+test-http = { path = "../../dev/test-http" }
+hex.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

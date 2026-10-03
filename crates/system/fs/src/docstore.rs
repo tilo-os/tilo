@@ -6,7 +6,7 @@
 //! and a *version* a small [`VersionManifest`] of change hashes chained to
 //! the previous version (so a save appends only new changes, and dedups).
 //! [`DocStore::checkout`] replays a manifest for exact time-travel;
-//! [`DocStore::diff_versions`] runs [`qdoc::diff`] over two checkouts —
+//! [`DocStore::diff_versions`] runs [`tilo_doc::diff`] over two checkouts —
 //! `.odt` and `.docx` diff the same way, sharing one model.
 
 use anyhow::{Result, anyhow};
@@ -130,28 +130,28 @@ impl<'a> DocStore<'a> {
         Ok(vref)
     }
 
-    /// Convenience: commit a `qdoc::Document` (the ergonomic office-doc handle).
+    /// Convenience: commit a `tilo_doc::Document` (the ergonomic office-doc handle).
     ///
     /// # Errors
     ///
     /// Returns an error if the document fails to reload as an automerge document, or [`Self::commit`] fails.
     pub async fn commit_document(
         &mut self,
-        doc: &mut qdoc::Document,
+        doc: &mut tilo_doc::Document,
         author: &str,
     ) -> Result<VersionRef> {
         let mut ac = AutoCommit::load(&doc.save()).map_err(|e| anyhow!("load document: {e}"))?;
         self.commit(&mut ac, author).await
     }
 
-    /// Convenience: commit a `qdoc::Workbook` — also an automerge document, so `.xlsx`/`.ods` version the same way `.docx`/`.odt` do.
+    /// Convenience: commit a `tilo_doc::Workbook` — also an automerge document, so `.xlsx`/`.ods` version the same way `.docx`/`.odt` do.
     ///
     /// # Errors
     ///
     /// Returns an error if the workbook fails to reload as an automerge document, or [`Self::commit`] fails.
     pub async fn commit_workbook(
         &mut self,
-        wb: &mut qdoc::Workbook,
+        wb: &mut tilo_doc::Workbook,
         author: &str,
     ) -> Result<VersionRef> {
         let mut ac = AutoCommit::load(&wb.save()).map_err(|e| anyhow!("load workbook: {e}"))?;
@@ -191,26 +191,26 @@ impl<'a> DocStore<'a> {
         self.checkout(vref.manifest_hash).await
     }
 
-    /// As [`Self::checkout_version`], wrapped into the ergonomic `qdoc::Document` handle.
+    /// As [`Self::checkout_version`], wrapped into the ergonomic `tilo_doc::Document` handle.
     ///
     /// # Errors
     ///
     /// Returns an error if [`Self::checkout_version`] fails or the replayed document can't be rewrapped.
-    pub async fn checkout_document(&self, version: usize) -> Result<qdoc::Document> {
+    pub async fn checkout_document(&self, version: usize) -> Result<tilo_doc::Document> {
         let mut ac = self.checkout_version(version).await?;
         let bytes = ac.save();
-        qdoc::Document::load(&bytes).map_err(|e| anyhow!("rewrap document: {e}"))
+        tilo_doc::Document::load(&bytes).map_err(|e| anyhow!("rewrap document: {e}"))
     }
 
-    /// As [`Self::checkout_version`], wrapped into the ergonomic `qdoc::Workbook` handle.
+    /// As [`Self::checkout_version`], wrapped into the ergonomic `tilo_doc::Workbook` handle.
     ///
     /// # Errors
     ///
     /// Returns an error if [`Self::checkout_version`] fails or the replayed document can't be rewrapped.
-    pub async fn checkout_workbook(&self, version: usize) -> Result<qdoc::Workbook> {
+    pub async fn checkout_workbook(&self, version: usize) -> Result<tilo_doc::Workbook> {
         let mut ac = self.checkout_version(version).await?;
         let bytes = ac.save();
-        qdoc::Workbook::load(&bytes).map_err(|e| anyhow!("rewrap workbook: {e}"))
+        tilo_doc::Workbook::load(&bytes).map_err(|e| anyhow!("rewrap workbook: {e}"))
     }
 
     async fn replay(&self, manifest: &VersionManifest) -> Result<AutoCommit> {
@@ -231,36 +231,42 @@ impl<'a> DocStore<'a> {
         Ok(doc)
     }
 
-    /// Structural diff between two committed versions — both share block identities, so the diff aligns by id (see [`qdoc::diff`]).
+    /// Structural diff between two committed versions — both share block identities, so the diff aligns by id (see [`tilo_doc::diff`]).
     ///
     /// # Errors
     ///
     /// Returns an error if either version fails to check out or open as a document.
-    pub async fn diff_versions(&self, from: usize, to: usize) -> Result<qdoc::DocDiff> {
+    pub async fn diff_versions(&self, from: usize, to: usize) -> Result<tilo_doc::DocDiff> {
         let a = self.checkout_version(from).await?;
         let b = self.checkout_version(to).await?;
-        let ca = qdoc::model::open(&a, &automerge::ROOT).map_err(|e| anyhow!("open old: {e}"))?;
-        let cb = qdoc::model::open(&b, &automerge::ROOT).map_err(|e| anyhow!("open new: {e}"))?;
-        let sa = qdoc::DocRef { doc: &a, c: &ca }.materialize();
-        let sb = qdoc::DocRef { doc: &b, c: &cb }.materialize();
-        Ok(qdoc::diff_snapshots(&sa, &sb))
+        let ca =
+            tilo_doc::model::open(&a, &automerge::ROOT).map_err(|e| anyhow!("open old: {e}"))?;
+        let cb =
+            tilo_doc::model::open(&b, &automerge::ROOT).map_err(|e| anyhow!("open new: {e}"))?;
+        let sa = tilo_doc::DocRef { doc: &a, c: &ca }.materialize();
+        let sb = tilo_doc::DocRef { doc: &b, c: &cb }.materialize();
+        Ok(tilo_doc::diff_snapshots(&sa, &sb))
     }
 
-    /// Structural spreadsheet diff — sheets align by id, cells by A1 ref (see [`qdoc::diff_workbooks`]).
+    /// Structural spreadsheet diff — sheets align by id, cells by A1 ref (see [`tilo_doc::diff_workbooks`]).
     ///
     /// # Errors
     ///
     /// Returns an error if either version fails to check out or open as a workbook.
-    pub async fn diff_workbook_versions(&self, from: usize, to: usize) -> Result<qdoc::SheetDiff> {
+    pub async fn diff_workbook_versions(
+        &self,
+        from: usize,
+        to: usize,
+    ) -> Result<tilo_doc::SheetDiff> {
         let a = self.checkout_version(from).await?;
         let b = self.checkout_version(to).await?;
-        let ca = qdoc::sheet::model::open(&a, &automerge::ROOT)
+        let ca = tilo_doc::sheet::model::open(&a, &automerge::ROOT)
             .map_err(|e| anyhow!("open old workbook: {e}"))?;
-        let cb = qdoc::sheet::model::open(&b, &automerge::ROOT)
+        let cb = tilo_doc::sheet::model::open(&b, &automerge::ROOT)
             .map_err(|e| anyhow!("open new workbook: {e}"))?;
-        let sa = qdoc::sheet::model::materialize(&a, &ca);
-        let sb = qdoc::sheet::model::materialize(&b, &cb);
-        Ok(qdoc::diff_workbooks(&sa, &sb))
+        let sa = tilo_doc::sheet::model::materialize(&a, &ca);
+        let sb = tilo_doc::sheet::model::materialize(&b, &cb);
+        Ok(tilo_doc::diff_workbooks(&sa, &sb))
     }
 }
 
@@ -268,227 +274,232 @@ impl<'a> DocStore<'a> {
 mod tests {
     use super::*;
 
-    /// Import real `.docx` bytes as v0, edit as v1, then checkout + diff — proves reconstruction from content-addressed history.
     #[tokio::test]
-    async fn commits_versions_as_change_history_and_diffs() {
-        let reg = qdoc_codecs::builtin_registry();
-        let docx = super::super::tests::sample_docx();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn document_and_workbook_versions_commit_as_diffable_history_and_export() {
+        // Phase `commits_versions_as_change_history_and_diffs`.
+        // Import real `.docx` bytes as v0, edit as v1, then checkout + diff — proves reconstruction from content-addressed history.
+        {
+            let reg = tilo_doc_codecs::builtin_registry();
+            let docx = super::super::tests::sample_docx();
 
-        let mut doc = qdoc::Document::new();
-        reg.provider_for_ext("docx")
-            .unwrap()
-            .import(
-                &docx,
-                &mut doc.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
+            let mut doc = tilo_doc::Document::new();
+            reg.provider_for_ext("docx")
+                .unwrap()
+                .import(
+                    &docx,
+                    &mut doc.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
 
-        let store = ContentStore::memory();
-        let mut ds = DocStore::new(&store);
+            let store = ContentStore::memory();
+            let mut ds = DocStore::new(&store);
 
-        let v0 = ds.commit_document(&mut doc, "alice").await.unwrap();
-        assert!(
-            v0.change_count >= 1,
-            "a version records the CRDT change history, not a blob"
-        );
-        let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
-        assert!(m0.parent.is_none(), "first version has no parent");
+            let v0 = ds.commit_document(&mut doc, "alice").await.unwrap();
+            assert!(
+                v0.change_count >= 1,
+                "a version records the CRDT change history, not a blob"
+            );
+            let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
+            assert!(m0.parent.is_none(), "first version has no parent");
 
-        let hid = doc
-            .blocks_in_order()
-            .into_iter()
-            .find(|id| doc.block_kind(id).as_deref() == Some("heading"))
-            .unwrap();
-        let hlen = doc.block_text(&hid).unwrap_or_default().chars().count();
-        doc.splice_text(&hid, hlen, 0, " (DRAFT)");
+            let hid = doc
+                .blocks_in_order()
+                .into_iter()
+                .find(|id| doc.block_kind(id).as_deref() == Some("heading"))
+                .unwrap();
+            let hlen = doc.block_text(&hid).unwrap_or_default().chars().count();
+            doc.splice_text(&hid, hlen, 0, " (DRAFT)");
 
-        let v1 = ds.commit_document(&mut doc, "alice").await.unwrap();
-        let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
-        assert_eq!(
-            m1.parent,
-            Some(*v0.manifest_hash.as_bytes()),
-            "v1 chains to v0"
-        );
-        assert!(
-            v1.change_count > v0.change_count,
-            "the edit added new changes"
-        );
-        assert!(
-            m1.change_hashes.starts_with(&m0.change_hashes),
-            "unchanged history is reused, not re-saved"
-        );
+            let v1 = ds.commit_document(&mut doc, "alice").await.unwrap();
+            let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
+            assert_eq!(
+                m1.parent,
+                Some(*v0.manifest_hash.as_bytes()),
+                "v1 chains to v0"
+            );
+            assert!(
+                v1.change_count > v0.change_count,
+                "the edit added new changes"
+            );
+            assert!(
+                m1.change_hashes.starts_with(&m0.change_hashes),
+                "unchanged history is reused, not re-saved"
+            );
 
-        let mut back0 = ds.checkout_version(0).await.unwrap();
-        let c0 = qdoc::model::open(&back0, &automerge::ROOT).unwrap();
-        let heading0 = qdoc::model::block_text(&back0, &c0, &hid).unwrap();
-        assert_eq!(heading0, "Quarterly Report", "v0 has the original heading");
-        let _ = back0.save();
+            let mut back0 = ds.checkout_version(0).await.unwrap();
+            let c0 = tilo_doc::model::open(&back0, &automerge::ROOT).unwrap();
+            let heading0 = tilo_doc::model::block_text(&back0, &c0, &hid).unwrap();
+            assert_eq!(heading0, "Quarterly Report", "v0 has the original heading");
+            let _ = back0.save();
 
-        let back1 = ds.checkout_document(1).await.unwrap();
-        assert!(
-            back1
-                .materialize()
+            let back1 = ds.checkout_document(1).await.unwrap();
+            assert!(
+                back1
+                    .materialize()
+                    .blocks
+                    .iter()
+                    .any(|b| b.kind == "heading" && b.text == "Quarterly Report (DRAFT)"),
+                "v1 has the edited heading"
+            );
+
+            let diff = ds.diff_versions(0, 1).await.unwrap();
+            assert_eq!(
+                diff.summary.changed, 1,
+                "one block changed between versions"
+            );
+            assert_eq!(diff.summary.added, 0);
+            assert_eq!(diff.summary.removed, 0);
+            let ch = diff
                 .blocks
                 .iter()
-                .any(|b| b.kind == "heading" && b.text == "Quarterly Report (DRAFT)"),
-            "v1 has the edited heading"
-        );
+                .find(|b| b.op == tilo_doc::BlockOp::Changed)
+                .unwrap();
+            assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
 
-        let diff = ds.diff_versions(0, 1).await.unwrap();
-        assert_eq!(
-            diff.summary.changed, 1,
-            "one block changed between versions"
-        );
-        assert_eq!(diff.summary.added, 0);
-        assert_eq!(diff.summary.removed, 0);
-        let ch = diff
-            .blocks
-            .iter()
-            .find(|b| b.op == qdoc::BlockOp::Changed)
-            .unwrap();
-        assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
+            let v2 = ds.commit_document(&mut doc, "alice").await.unwrap();
+            let m2 = ds.load_manifest(v2.manifest_hash).await.unwrap();
+            assert_eq!(
+                m2.change_hashes, m1.change_hashes,
+                "no edit → identical change set"
+            );
+        }
+        // Phase `checked_out_version_exports_back_to_docx`.
+        // A version can be exported back to a valid `.docx` that carries the edit.
+        {
+            let reg = tilo_doc_codecs::builtin_registry();
+            let docx = super::super::tests::sample_docx();
+            let mut doc = tilo_doc::Document::new();
+            reg.provider_for_ext("docx")
+                .unwrap()
+                .import(
+                    &docx,
+                    &mut doc.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
 
-        let v2 = ds.commit_document(&mut doc, "alice").await.unwrap();
-        let m2 = ds.load_manifest(v2.manifest_hash).await.unwrap();
-        assert_eq!(
-            m2.change_hashes, m1.change_hashes,
-            "no edit → identical change set"
-        );
-    }
+            let store = ContentStore::memory();
+            let mut ds = DocStore::new(&store);
+            ds.commit_document(&mut doc, "bob").await.unwrap();
 
-    /// A version can be exported back to a valid `.docx` that carries the edit.
-    #[tokio::test]
-    async fn checked_out_version_exports_back_to_docx() {
-        let reg = qdoc_codecs::builtin_registry();
-        let docx = super::super::tests::sample_docx();
-        let mut doc = qdoc::Document::new();
-        reg.provider_for_ext("docx")
-            .unwrap()
-            .import(
-                &docx,
-                &mut doc.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
+            let hid = doc
+                .blocks_in_order()
+                .into_iter()
+                .find(|id| doc.block_kind(id).as_deref() == Some("heading"))
+                .unwrap();
+            let hlen = doc.block_text(&hid).unwrap_or_default().chars().count();
+            doc.splice_text(&hid, hlen, 0, " v2");
+            ds.commit_document(&mut doc, "bob").await.unwrap();
 
-        let store = ContentStore::memory();
-        let mut ds = DocStore::new(&store);
-        ds.commit_document(&mut doc, "bob").await.unwrap();
+            let back = ds.checkout_document(1).await.unwrap();
+            let out = reg
+                .provider_for_ext("docx")
+                .unwrap()
+                .export(back.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut reopened = tilo_doc::Document::new();
+            reg.provider_for_ext("docx")
+                .unwrap()
+                .import(
+                    &out,
+                    &mut reopened.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            assert!(
+                reopened
+                    .materialize()
+                    .blocks
+                    .iter()
+                    .any(|b| b.text == "Quarterly Report v2"),
+                "exported version reopens with the edit"
+            );
+        }
+        // Phase `commits_workbook_versions_as_change_history_and_diffs`.
+        // A spreadsheet gets the same treatment as a text document: content-addressed, versioned CRDT history with exact reconstruction.
+        {
+            let mut wb = tilo_doc::Workbook::new();
+            let s = wb.add_sheet("Sheet1");
+            wb.set_cell(&s, "A1", tilo_doc::CellInput::number("10"));
+            wb.set_cell(
+                &s,
+                "A2",
+                tilo_doc::CellInput::formula("A1*2", "20", tilo_doc::CellType::Number),
+            );
 
-        let hid = doc
-            .blocks_in_order()
-            .into_iter()
-            .find(|id| doc.block_kind(id).as_deref() == Some("heading"))
-            .unwrap();
-        let hlen = doc.block_text(&hid).unwrap_or_default().chars().count();
-        doc.splice_text(&hid, hlen, 0, " v2");
-        ds.commit_document(&mut doc, "bob").await.unwrap();
+            let store = ContentStore::memory();
+            let mut ds = DocStore::new(&store);
 
-        let back = ds.checkout_document(1).await.unwrap();
-        let out = reg
-            .provider_for_ext("docx")
-            .unwrap()
-            .export(back.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut reopened = qdoc::Document::new();
-        reg.provider_for_ext("docx")
-            .unwrap()
-            .import(
-                &out,
-                &mut reopened.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        assert!(
-            reopened
-                .materialize()
-                .blocks
-                .iter()
-                .any(|b| b.text == "Quarterly Report v2"),
-            "exported version reopens with the edit"
-        );
-    }
+            let v0 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
+            assert!(
+                v0.change_count >= 1,
+                "a version records the CRDT change history, not a blob"
+            );
+            let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
+            assert!(m0.parent.is_none(), "first version has no parent");
 
-    /// A spreadsheet gets the same treatment as a text document: content-addressed, versioned CRDT history with exact reconstruction.
-    #[tokio::test]
-    async fn commits_workbook_versions_as_change_history_and_diffs() {
-        let mut wb = qdoc::Workbook::new();
-        let s = wb.add_sheet("Sheet1");
-        wb.set_cell(&s, "A1", qdoc::CellInput::number("10"));
-        wb.set_cell(
-            &s,
-            "A2",
-            qdoc::CellInput::formula("A1*2", "20", qdoc::CellType::Number),
-        );
+            wb.set_cell(&s, "A1", tilo_doc::CellInput::number("15"));
+            wb.set_cell(
+                &s,
+                "B1",
+                tilo_doc::CellInput::formula("A1+A2", "35", tilo_doc::CellType::Number),
+            );
 
-        let store = ContentStore::memory();
-        let mut ds = DocStore::new(&store);
+            let v1 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
+            let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
+            assert_eq!(
+                m1.parent,
+                Some(*v0.manifest_hash.as_bytes()),
+                "v1 chains to v0"
+            );
+            assert!(
+                v1.change_count > v0.change_count,
+                "the edit added new changes"
+            );
+            assert!(
+                m1.change_hashes.starts_with(&m0.change_hashes),
+                "unchanged history is reused, not re-saved"
+            );
 
-        let v0 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
-        assert!(
-            v0.change_count >= 1,
-            "a version records the CRDT change history, not a blob"
-        );
-        let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
-        assert!(m0.parent.is_none(), "first version has no parent");
+            let back0 = ds.checkout_workbook(0).await.unwrap();
+            let snap0 = back0.materialize();
+            let sheet0 = snap0.sheet_by_name("Sheet1").unwrap();
+            assert_eq!(
+                sheet0.cell("A1").unwrap().value,
+                "10",
+                "v0 has the original A1"
+            );
+            assert!(sheet0.cell("B1").is_none(), "v0 predates B1");
 
-        wb.set_cell(&s, "A1", qdoc::CellInput::number("15"));
-        wb.set_cell(
-            &s,
-            "B1",
-            qdoc::CellInput::formula("A1+A2", "35", qdoc::CellType::Number),
-        );
-
-        let v1 = ds.commit_workbook(&mut wb, "alice").await.unwrap();
-        let m1 = ds.load_manifest(v1.manifest_hash).await.unwrap();
-        assert_eq!(
-            m1.parent,
-            Some(*v0.manifest_hash.as_bytes()),
-            "v1 chains to v0"
-        );
-        assert!(
-            v1.change_count > v0.change_count,
-            "the edit added new changes"
-        );
-        assert!(
-            m1.change_hashes.starts_with(&m0.change_hashes),
-            "unchanged history is reused, not re-saved"
-        );
-
-        let back0 = ds.checkout_workbook(0).await.unwrap();
-        let snap0 = back0.materialize();
-        let sheet0 = snap0.sheet_by_name("Sheet1").unwrap();
-        assert_eq!(
-            sheet0.cell("A1").unwrap().value,
-            "10",
-            "v0 has the original A1"
-        );
-        assert!(sheet0.cell("B1").is_none(), "v0 predates B1");
-
-        let diff = ds.diff_workbook_versions(0, 1).await.unwrap();
-        assert_eq!(diff.summary.cells_changed, 1, "one cell changed (A1)");
-        assert_eq!(diff.summary.cells_added, 1, "one cell added (B1)");
-        let sheet = diff.changed_sheets().next().unwrap();
-        let a1 = sheet.cells.iter().find(|c| c.reference == "A1").unwrap();
-        assert_eq!(a1.op, qdoc::CellOp::Changed);
-        assert_eq!(a1.old.as_ref().unwrap().value, "10");
-        assert_eq!(a1.new.as_ref().unwrap().value, "15");
-        let b1 = sheet.cells.iter().find(|c| c.reference == "B1").unwrap();
-        assert_eq!(b1.op, qdoc::CellOp::Added);
-        assert_eq!(
-            b1.new.as_ref().unwrap().formula.as_deref(),
-            Some("A1+A2"),
-            "added formula preserved in the diff"
-        );
+            let diff = ds.diff_workbook_versions(0, 1).await.unwrap();
+            assert_eq!(diff.summary.cells_changed, 1, "one cell changed (A1)");
+            assert_eq!(diff.summary.cells_added, 1, "one cell added (B1)");
+            let sheet = diff.changed_sheets().next().unwrap();
+            let a1 = sheet.cells.iter().find(|c| c.reference == "A1").unwrap();
+            assert_eq!(a1.op, tilo_doc::CellOp::Changed);
+            assert_eq!(a1.old.as_ref().unwrap().value, "10");
+            assert_eq!(a1.new.as_ref().unwrap().value, "15");
+            let b1 = sheet.cells.iter().find(|c| c.reference == "B1").unwrap();
+            assert_eq!(b1.op, tilo_doc::CellOp::Added);
+            assert_eq!(
+                b1.new.as_ref().unwrap().formula.as_deref(),
+                Some("A1+A2"),
+                "added formula preserved in the diff"
+            );
+        }
     }
 
     /// Two peers co-edit the same file, merge, and converge; committing reuses the seed history (common prefix dedups) on both sides.
     #[tokio::test]
     async fn two_replicas_of_a_file_coedit_and_converge_incrementally() {
-        let reg = qdoc_codecs::builtin_registry();
+        let reg = tilo_doc_codecs::builtin_registry();
         let docx = super::super::tests::sample_docx();
-        let mut base = qdoc::Document::new();
+        let mut base = tilo_doc::Document::new();
         reg.provider_for_ext("docx")
             .unwrap()
             .import(

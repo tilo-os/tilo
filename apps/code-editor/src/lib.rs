@@ -50,6 +50,7 @@ mod lint;
 pub mod lsp;
 pub mod model;
 pub mod native_fixture;
+pub mod resource;
 mod sample_project;
 mod search;
 pub mod search_provider;
@@ -117,6 +118,8 @@ pub fn parse_path_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+pub use resource::{CodeEditor, CodeEditorShell};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,47 +132,42 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_path_is_the_project_to_open() {
-        assert_eq!(parse_path_arg(&args(&["."])), Some(PathBuf::from(".")));
-        assert_eq!(
-            parse_path_arg(&args(&["/home/me/tilo"])),
-            Some(PathBuf::from("/home/me/tilo"))
-        );
-        assert_eq!(
-            parse_path_arg(&args(&["crates/session/shell/src/main.rs"])),
-            Some(PathBuf::from("crates/session/shell/src/main.rs"))
-        );
-    }
-
-    #[test]
-    fn the_explicit_flag_works_in_both_spellings() {
-        assert_eq!(
-            parse_path_arg(&args(&["--path", "/a"])),
-            Some(PathBuf::from("/a"))
-        );
-        assert_eq!(
-            parse_path_arg(&args(&["--path=/b"])),
-            Some(PathBuf::from("/b"))
-        );
-    }
-
-    #[test]
-    fn no_arguments_means_no_project() {
-        assert_eq!(parse_path_arg(&args(&[])), None);
-    }
-
-    #[test]
-    fn a_flags_value_is_not_mistaken_for_a_path() {
-        // `--shots out.png` must not open a project called "out.png".
-        assert_eq!(parse_path_arg(&args(&["--shots", "out.png"])), None);
-        assert_eq!(
-            parse_path_arg(&args(&["--viewport", "800x600", "--sidebar-open"])),
-            None
-        );
-        // …but a real path after them still resolves.
-        assert_eq!(
-            parse_path_arg(&args(&["--sidebar-open", "/a/b"])),
-            Some(PathBuf::from("/a/b"))
-        );
+    fn parse_path_arg_resolves_the_project_path() {
+        let cases: &[(&str, &[&str], Option<&str>)] = &[
+            // A bare path is the project to open.
+            ("bare dot", &["."], Some(".")),
+            ("bare absolute", &["/home/me/tilo"], Some("/home/me/tilo")),
+            (
+                "bare relative file",
+                &["crates/session/shell/src/main.rs"],
+                Some("crates/session/shell/src/main.rs"),
+            ),
+            // The explicit flag works in both spellings.
+            ("--path separate value", &["--path", "/a"], Some("/a")),
+            ("--path= joined value", &["--path=/b"], Some("/b")),
+            // No arguments means no project.
+            ("no arguments", &[], None),
+            // A flag's value is not mistaken for a path: `--shots out.png`
+            // must not open a project called "out.png".
+            ("--shots value", &["--shots", "out.png"], None),
+            (
+                "--viewport value then bare flag",
+                &["--viewport", "800x600", "--sidebar-open"],
+                None,
+            ),
+            // …but a real path after them still resolves.
+            (
+                "path after bare flag",
+                &["--sidebar-open", "/a/b"],
+                Some("/a/b"),
+            ),
+        ];
+        for (name, list, want) in cases {
+            assert_eq!(
+                parse_path_arg(&args(list)),
+                want.map(PathBuf::from),
+                "case {name}"
+            );
+        }
     }
 }

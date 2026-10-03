@@ -153,6 +153,8 @@ extern crate runtime_dylib;
 /// PNG), or when the arguments are invalid — including a malformed shot
 /// option, which is never silently ignored.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // This spec imports an older calendar file once. The framework shell
+    // opens an empty record and would leave that history behind.
     ui::launch::run(&launch_spec())?;
     Ok(())
 }
@@ -160,7 +162,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn launch_spec() -> LaunchSpec {
     LaunchSpec::new_with_args("so.tilo.calendar", live_root)
         .max_positionals(1)
-        .open_state(calendar::store::open_state)
         .shot_root(shot_root)
         .shot_handler(render_shot)
         .shot_viewport(shot_viewport)
@@ -552,131 +553,134 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_declared_scenario_resolves_to_a_state() {
-        for name in SHOT_SCENARIOS {
-            assert!(ShotState::scenario(name).is_some(), "{name} has no state");
+    fn shot_scenarios_and_popover_flags_resolve_to_their_states() {
+        // Case `every_declared_scenario_resolves_to_a_state`.
+        {
+            for name in SHOT_SCENARIOS {
+                assert!(ShotState::scenario(name).is_some(), "{name} has no state");
+            }
+            assert!(ShotState::scenario("nope").is_none());
         }
-        assert!(ShotState::scenario("nope").is_none());
-    }
-
-    #[test]
-    fn scenarios_cover_every_view_the_editor_and_the_empty_and_error_states() {
-        let month = ShotState::scenario("month").unwrap();
-        assert_eq!(month.view, Some(View::Month));
-        assert!(month.calendar_screen, "the view scenarios close the editor");
-        let popover = ShotState::scenario("calendar_popover").unwrap();
-        assert!(popover.new_event);
-        assert_eq!(popover.popover, Some(FormPopoverShot::Calendar));
-        let empty = ShotState::scenario("empty_week").unwrap();
-        assert!(empty.empty);
-        assert_eq!(empty.view, Some(View::Week));
-        let error = ShotState::scenario("sync_error").unwrap();
-        assert_eq!(error.sync_state.as_deref(), Some("error"));
-        assert_eq!(
-            ShotState::scenario("narrow_drawer")
-                .unwrap()
-                .default_viewport(),
-            NARROW_SHOTS_VIEWPORT
-        );
-    }
-
-    #[test]
-    fn the_date_grid_wins_when_both_popover_flags_are_given() {
-        let both = ShotState::resolve(
-            None,
-            &ShotOptions {
-                calendar_popover: true,
-                date_popover: true,
-                ..ShotOptions::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(both.popover, Some(FormPopoverShot::Date));
-        assert!(both.new_event);
-        let calendar = ShotState::resolve(
-            None,
-            &ShotOptions {
-                calendar_popover: true,
-                ..ShotOptions::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(calendar.popover, Some(FormPopoverShot::Calendar));
-        // A flag overrides the scenario's own popover.
-        let overridden = ShotState::resolve(
-            Some("time_popover"),
-            &ShotOptions {
-                date_popover: true,
-                ..ShotOptions::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(overridden.popover, Some(FormPopoverShot::Date));
-    }
-
-    #[test]
-    fn malformed_shot_options_are_errors_not_silent_fallbacks() {
-        let d = ShotOptions::default;
-        let bad = [
-            ShotOptions {
-                view: Some("tomorrow"),
-                ..d()
-            },
-            ShotOptions {
-                screen: Some("settings"),
-                ..d()
-            },
-            ShotOptions {
-                sync_state: Some("lost"),
-                ..d()
-            },
-            ShotOptions {
-                task_picker: Some("colour"),
-                ..d()
-            },
-            ShotOptions {
-                scroll_hour: Some("99"),
-                ..d()
-            },
-            ShotOptions {
-                scroll_hour: Some("noon"),
-                ..d()
-            },
-            ShotOptions {
-                resize_from: Some("wide"),
-                ..d()
-            },
-        ];
-        for opts in bad {
-            assert!(
-                ShotState::resolve(None, &opts).is_err(),
-                "{opts:?} was accepted"
+        // Case `scenarios_cover_every_view_the_editor_and_the_empty_and_error_states`.
+        {
+            let month = ShotState::scenario("month").unwrap();
+            assert_eq!(month.view, Some(View::Month));
+            assert!(month.calendar_screen, "the view scenarios close the editor");
+            let popover = ShotState::scenario("calendar_popover").unwrap();
+            assert!(popover.new_event);
+            assert_eq!(popover.popover, Some(FormPopoverShot::Calendar));
+            let empty = ShotState::scenario("empty_week").unwrap();
+            assert!(empty.empty);
+            assert_eq!(empty.view, Some(View::Week));
+            let error = ShotState::scenario("sync_error").unwrap();
+            assert_eq!(error.sync_state.as_deref(), Some("error"));
+            assert_eq!(
+                ShotState::scenario("narrow_drawer")
+                    .unwrap()
+                    .default_viewport(),
+                NARROW_SHOTS_VIEWPORT
             );
         }
-        assert!(ShotState::resolve(Some("nope"), &d()).is_err());
-        let good = ShotState::resolve(
-            None,
-            &ShotOptions {
-                view: Some("week"),
-                sync_state: Some("offline"),
-                task_picker: Some("priority"),
-                scroll_hour: Some("9"),
-                resize_from: Some("390x844"),
-                ..d()
-            },
-        )
-        .unwrap();
-        assert_eq!(good.view, Some(View::Week));
-        assert_eq!(good.sync_state.as_deref(), Some("offline"));
-        assert_eq!(good.task_picker.as_deref(), Some("priority"));
-        assert_eq!(good.scroll_hour, Some(9.0));
-        assert_eq!(good.resize_from, Some((390, 844)));
+        // Case `the_date_grid_wins_when_both_popover_flags_are_given`.
+        {
+            let both = ShotState::resolve(
+                None,
+                &ShotOptions {
+                    calendar_popover: true,
+                    date_popover: true,
+                    ..ShotOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(both.popover, Some(FormPopoverShot::Date));
+            assert!(both.new_event);
+            let calendar = ShotState::resolve(
+                None,
+                &ShotOptions {
+                    calendar_popover: true,
+                    ..ShotOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(calendar.popover, Some(FormPopoverShot::Calendar));
+            // A flag overrides the scenario's own popover.
+            let overridden = ShotState::resolve(
+                Some("time_popover"),
+                &ShotOptions {
+                    date_popover: true,
+                    ..ShotOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(overridden.popover, Some(FormPopoverShot::Date));
+        }
     }
 
     #[test]
-    fn wxh_parses_both_separators_and_rejects_garbage() {
-        assert_eq!(parse_wxh("1280x720"), Some((1280, 720)));
-        assert_eq!(parse_wxh("390X844"), Some((390, 844)));
-        assert_eq!(parse_wxh("wide"), None);
+    fn malformed_shot_options_and_viewport_sizes_are_rejected() {
+        // Case `malformed_shot_options_are_errors_not_silent_fallbacks`.
+        {
+            let d = ShotOptions::default;
+            let bad = [
+                ShotOptions {
+                    view: Some("tomorrow"),
+                    ..d()
+                },
+                ShotOptions {
+                    screen: Some("settings"),
+                    ..d()
+                },
+                ShotOptions {
+                    sync_state: Some("lost"),
+                    ..d()
+                },
+                ShotOptions {
+                    task_picker: Some("colour"),
+                    ..d()
+                },
+                ShotOptions {
+                    scroll_hour: Some("99"),
+                    ..d()
+                },
+                ShotOptions {
+                    scroll_hour: Some("noon"),
+                    ..d()
+                },
+                ShotOptions {
+                    resize_from: Some("wide"),
+                    ..d()
+                },
+            ];
+            for opts in bad {
+                assert!(
+                    ShotState::resolve(None, &opts).is_err(),
+                    "{opts:?} was accepted"
+                );
+            }
+            assert!(ShotState::resolve(Some("nope"), &d()).is_err());
+            let good = ShotState::resolve(
+                None,
+                &ShotOptions {
+                    view: Some("week"),
+                    sync_state: Some("offline"),
+                    task_picker: Some("priority"),
+                    scroll_hour: Some("9"),
+                    resize_from: Some("390x844"),
+                    ..d()
+                },
+            )
+            .unwrap();
+            assert_eq!(good.view, Some(View::Week));
+            assert_eq!(good.sync_state.as_deref(), Some("offline"));
+            assert_eq!(good.task_picker.as_deref(), Some("priority"));
+            assert_eq!(good.scroll_hour, Some(9.0));
+            assert_eq!(good.resize_from, Some((390, 844)));
+        }
+        // Case `wxh_parses_both_separators_and_rejects_garbage`.
+        {
+            assert_eq!(parse_wxh("1280x720"), Some((1280, 720)));
+            assert_eq!(parse_wxh("390X844"), Some((390, 844)));
+            assert_eq!(parse_wxh("wide"), None);
+        }
     }
 }

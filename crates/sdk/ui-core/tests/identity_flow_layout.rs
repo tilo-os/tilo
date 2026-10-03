@@ -8,7 +8,7 @@
 //!
 //! Every screen is mounted in the headless frame pipeline at a real
 //! viewport, in every shipped theme family, and rasterised to
-//! `$QUICK_UI_SCREENSHOT_DIR/identity_<screen>_<theme>.png` when that
+//! `$TILO_UI_SCREENSHOT_DIR/identity_<screen>_<theme>.png` when that
 //! variable is set — the same opt-in the visual-journey tests use.
 //!
 //! The geometry assertion runs unconditionally: a screen must own the
@@ -37,8 +37,8 @@ use tilo_ui::headless::{FrameHarness, SemanticExpectation};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::QrWidget;
 use tilo_ui::widget::identity_flow::{
-    IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityStore, MemoryIdentityStore,
-    mint_invite_for_broker,
+    IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityStore, InviteBrokerLocator,
+    InviteTerms, MemoryIdentityStore, mint_invite_for_broker,
 };
 use tilo_ui::winit::dpi::PhysicalPosition;
 use tilo_ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
@@ -142,16 +142,20 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
         .unwrap_or_else(SystemTime::now);
     let authority = tempfile::tempdir()?;
     let env = mint_invite_for_broker(
-        ChannelId::new(),
-        "engineering",
-        owner_pk,
+        InviteTerms {
+            channel: ChannelId::new(),
+            channel_name: "engineering".into(),
+            owner_pubkey: owner_pk,
+            inviter_label: "Alice".into(),
+            role: Role::Editor,
+            expires_at,
+        },
         &owner_sk,
-        "Alice",
-        Role::Editor,
-        expires_at,
-        "127.0.0.1:4433",
-        vec![0x2a; 64],
-        authority.path(),
+        InviteBrokerLocator {
+            endpoint: "127.0.0.1:4433".into(),
+            certificate: vec![0x2a; 64],
+            authority_root: authority.path().into(),
+        },
     )?;
     let url = env.to_url()?;
     flow.invite_mint.last_envelope = Some(env);
@@ -162,7 +166,7 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
 }
 
 fn write_shot(harness: &FrameHarness, name: &str) {
-    if let Some(dir) = std::env::var_os("QUICK_UI_SCREENSHOT_DIR") {
+    if let Some(dir) = tilo_ui::env::var_os("TILO_UI_SCREENSHOT_DIR") {
         let path = Path::new(&dir).join(format!("{name}.png"));
         harness.render_window_png(&path);
         eprintln!("wrote {}", path.display());
@@ -416,18 +420,22 @@ fn identity_fields_are_shared_text_inputs_reached_by_tab_typing_and_paste() {
     let (owner_sk, owner_pk) = generate_keypair();
     let authority = tempfile::tempdir().expect("private invite authority");
     let url = mint_invite_for_broker(
-        ChannelId::new(),
-        "design",
-        owner_pk,
+        InviteTerms {
+            channel: ChannelId::new(),
+            channel_name: "design".into(),
+            owner_pubkey: owner_pk,
+            inviter_label: "Alice".into(),
+            role: Role::Editor,
+            expires_at: SystemTime::now()
+                .checked_add(Duration::from_secs(3600))
+                .unwrap_or_else(SystemTime::now),
+        },
         &owner_sk,
-        "Alice",
-        Role::Editor,
-        SystemTime::now()
-            .checked_add(Duration::from_secs(3600))
-            .unwrap_or_else(SystemTime::now),
-        "127.0.0.1:4433",
-        vec![0x2a; 64],
-        authority.path(),
+        InviteBrokerLocator {
+            endpoint: "127.0.0.1:4433".into(),
+            certificate: vec![0x2a; 64],
+            authority_root: authority.path().into(),
+        },
     )
     .and_then(|env| env.to_url())
     .expect("mint an invite");

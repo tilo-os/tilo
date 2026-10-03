@@ -227,154 +227,155 @@ mod tests {
     }
 
     #[test]
-    fn a_grant_added_after_load_takes_effect_without_reloading_by_hand() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        write_caps(&path, &[read_grant("/w/docs")]);
+    fn capability_file_changes_take_effect_during_the_mount() {
+        // Phase `a_grant_added_after_load_takes_effect_without_reloading_by_hand`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            write_caps(&path, &[read_grant("/w/docs")]);
 
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        let handle = file.handle();
-        assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
-        assert!(
-            !handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
-            "the second subtree must be denied before it is granted, or the test proves nothing"
-        );
+            let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            let handle = file.handle();
+            assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
+            assert!(
+                !handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
+                "the second subtree must be denied before it is granted, or the test proves nothing"
+            );
 
-        // The grant the user makes a minute into the session.
-        write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
-        assert_eq!(file.refresh(), Refresh::Reloaded(2));
+            // The grant the user makes a minute into the session.
+            write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
+            assert_eq!(file.refresh(), Refresh::Reloaded(2));
 
-        assert!(
-            handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
-            "a grant made after the mount came up must reach the same handle the mount holds"
-        );
-        assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
+            assert!(
+                handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
+                "a grant made after the mount came up must reach the same handle the mount holds"
+            );
+            assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
+        }
+        // Phase `a_revoked_grant_stops_working_without_a_remount`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
+
+            let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            let handle = file.handle();
+            assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
+
+            write_caps(&path, &[read_grant("/w/docs")]);
+            assert_eq!(file.refresh(), Refresh::Reloaded(1));
+
+            assert!(
+                !handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
+                "revoking a capability must take effect on the live mount"
+            );
+            assert!(
+                handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
+                "revoking one capability must not disturb the others"
+            );
+        }
+        // Phase `an_unchanged_file_is_not_reparsed`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            write_caps(&path, &[read_grant("/w/docs")]);
+            let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            assert_eq!(file.refresh(), Refresh::Unchanged);
+            assert_eq!(file.refresh(), Refresh::Unchanged);
+        }
+        // Phase `a_capability_that_expires_mid_mount_stops_permitting`.
+        // An expiry must lapse during the mount, true only if the bound ACL reads the live clock, not the load-time instant.
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+
+            write_caps(
+                &path,
+                &[read_grant("/w/docs").expiring(collab_types::Expiry::AtUnix(now + 3600))],
+            );
+            let live = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            assert!(live.handle().permits(&ALICE, "/w/docs/a.md", Access::Read));
+
+            write_caps(
+                &path,
+                &[read_grant("/w/docs").expiring(collab_types::Expiry::AtUnix(now - 1))],
+            );
+            let lapsed = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            assert!(
+                !lapsed
+                    .handle()
+                    .permits(&ALICE, "/w/docs/a.md", Access::Read),
+                "an expiry in the past must not permit"
+            );
+        }
     }
 
     #[test]
-    fn a_revoked_grant_stops_working_without_a_remount() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
+    fn missing_deleted_malformed_or_empty_capability_files_fail_closed() {
+        // Phase `a_deleted_file_denies_everything`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            write_caps(&path, &[read_grant("/w/docs")]);
+            let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            let handle = file.handle();
+            assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
 
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        let handle = file.handle();
-        assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
+            std::fs::remove_file(&path).unwrap();
+            assert_eq!(file.refresh(), Refresh::Revoked);
+            assert!(
+                !handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
+                "an absent capability list must deny, not keep serving the last one it saw"
+            );
+            // Idempotent: still missing, still denying, and not re-reported.
+            assert_eq!(file.refresh(), Refresh::Unchanged);
 
-        write_caps(&path, &[read_grant("/w/docs")]);
-        assert_eq!(file.refresh(), Refresh::Reloaded(1));
+            // And it recovers when the file comes back.
+            write_caps(&path, &[read_grant("/w/docs")]);
+            assert_eq!(file.refresh(), Refresh::Reloaded(1));
+            assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
+        }
+        // Phase `a_malformed_file_keeps_the_last_good_list_and_retries`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            write_caps(&path, &[read_grant("/w/docs")]);
+            let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
+            let handle = file.handle();
 
-        assert!(
-            !handle.permits(&ALICE, "/w/plans/b.md", Access::Read),
-            "revoking a capability must take effect on the live mount"
-        );
-        assert!(
-            handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
-            "revoking one capability must not disturb the others"
-        );
-    }
+            // What a reader sees if it catches an in-place rewrite midway.
+            std::fs::write(&path, b"[{\"subject\"").unwrap();
+            assert!(matches!(file.refresh(), Refresh::Failed(_)));
+            assert!(
+                handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
+                "a half-written file must not revoke every capability on the machine"
+            );
+            // Not latched: the next tick retries rather than treating truncated bytes as current.
+            assert!(matches!(file.refresh(), Refresh::Failed(_)));
 
-    #[test]
-    fn an_unchanged_file_is_not_reparsed() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        write_caps(&path, &[read_grant("/w/docs")]);
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        assert_eq!(file.refresh(), Refresh::Unchanged);
-        assert_eq!(file.refresh(), Refresh::Unchanged);
-    }
-
-    #[test]
-    fn a_deleted_file_denies_everything() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        write_caps(&path, &[read_grant("/w/docs")]);
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        let handle = file.handle();
-        assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
-
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(file.refresh(), Refresh::Revoked);
-        assert!(
-            !handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
-            "an absent capability list must deny, not keep serving the last one it saw"
-        );
-        // Idempotent: still missing, still denying, and not re-reported.
-        assert_eq!(file.refresh(), Refresh::Unchanged);
-
-        // And it recovers when the file comes back.
-        write_caps(&path, &[read_grant("/w/docs")]);
-        assert_eq!(file.refresh(), Refresh::Reloaded(1));
-        assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
-    }
-
-    #[test]
-    fn a_malformed_file_keeps_the_last_good_list_and_retries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        write_caps(&path, &[read_grant("/w/docs")]);
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        let handle = file.handle();
-
-        // What a reader sees if it catches an in-place rewrite midway.
-        std::fs::write(&path, b"[{\"subject\"").unwrap();
-        assert!(matches!(file.refresh(), Refresh::Failed(_)));
-        assert!(
-            handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
-            "a half-written file must not revoke every capability on the machine"
-        );
-        // Not latched: the next tick retries rather than treating truncated bytes as current.
-        assert!(matches!(file.refresh(), Refresh::Failed(_)));
-
-        write_caps(&path, &[read_grant("/w/plans")]);
-        assert_eq!(file.refresh(), Refresh::Reloaded(1));
-        assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
-        assert!(!handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
-    }
-
-    #[test]
-    fn a_missing_file_refuses_to_load_rather_than_binding_nothing() {
-        let err = CapabilityFile::load("/nonexistent/tilo-caps.json", ALICE, Vec::new())
-            .expect_err("a missing list must not load as an unenforced mount");
-        assert!(matches!(err, CapsError::Read { .. }), "got {err:?}");
-    }
-
-    #[test]
-    fn an_empty_list_is_a_valid_total_denial() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        std::fs::write(&path, b"[]").unwrap();
-        let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("an empty list is valid");
-        assert!(!file.handle().permits(&ALICE, "/", Access::Read));
-    }
-
-    // An expiry must lapse during the mount, true only if the bound ACL reads the live clock, not the load-time instant.
-    #[test]
-    fn a_capability_that_expires_mid_mount_stops_permitting() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-
-        write_caps(
-            &path,
-            &[read_grant("/w/docs").expiring(collab_types::Expiry::AtUnix(now + 3600))],
-        );
-        let live = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        assert!(live.handle().permits(&ALICE, "/w/docs/a.md", Access::Read));
-
-        write_caps(
-            &path,
-            &[read_grant("/w/docs").expiring(collab_types::Expiry::AtUnix(now - 1))],
-        );
-        let lapsed = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
-        assert!(
-            !lapsed
-                .handle()
-                .permits(&ALICE, "/w/docs/a.md", Access::Read),
-            "an expiry in the past must not permit"
-        );
+            write_caps(&path, &[read_grant("/w/plans")]);
+            assert_eq!(file.refresh(), Refresh::Reloaded(1));
+            assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
+            assert!(!handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
+        }
+        // Phase `a_missing_file_refuses_to_load_rather_than_binding_nothing`.
+        {
+            let err = CapabilityFile::load("/nonexistent/tilo-caps.json", ALICE, Vec::new())
+                .expect_err("a missing list must not load as an unenforced mount");
+            assert!(matches!(err, CapsError::Read { .. }), "got {err:?}");
+        }
+        // Phase `an_empty_list_is_a_valid_total_denial`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            std::fs::write(&path, b"[]").unwrap();
+            let file =
+                CapabilityFile::load(&path, ALICE, Vec::new()).expect("an empty list is valid");
+            assert!(!file.handle().permits(&ALICE, "/", Access::Read));
+        }
     }
 }

@@ -1,0 +1,105 @@
+[package]
+name = "ui-examples"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Interactive, screenshot, and perf scenarios for the Tilo UI toolkit"
+autoexamples = false
+autotests = false
+
+[features]
+# Mirror tilo-ui's defaults so `--no-default-features` on this package still
+# strips the toolkit's native/broker stack (presentation-feedback probes).
+default = ["tilo-ui/native", "tilo-ui/broker-transport"]
+# Forward host features the scenario binaries need from tilo-ui.
+portal = ["tilo-ui/portal"]
+notifications = ["tilo-ui/notifications"]
+webview-wpe = ["tilo-ui/webview-wpe"]
+presentation-feedback = ["tilo-ui/presentation-feedback"]
+
+[dependencies]
+# Scenarios used to live as [[example]] targets of tilo-ui and therefore
+# inherited its dependency graph. Keep the same direct crates they `use`.
+accesskit = "0.25.0"
+tilo-files = { path = "../../platform/tilo-files" }
+automerge.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+collab-types = { path = "../../collab/collab-types" }
+getrandom.workspace = true
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+pollster.workspace = true
+tilo-doc = { path = "../../doc/tilo-doc" }
+serde_json.workspace = true
+taffy = { workspace = true, features = ["content_size"] }
+tempfile.workspace = true
+threshold-identity = { path = "../../collab/threshold-identity" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-automerge.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-ui = { path = "../../sdk/ui-core", default-features = false }
+vello.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "ui-lab"
+path = "examples/ui_lab.rs"
+test = true
+
+[[example]]
+name = "ui-shots"
+path = "examples/ui_shots.rs"
+test = true
+
+[[example]]
+name = "ui-perf"
+path = "examples/ui_perf.rs"
+test = true
+
+[[example]]
+name = "search-latency"
+path = "examples/search_latency.rs"
+
+[[example]]
+name = "ui-managed-history-probe"
+path = "examples/managed_history_probe.rs"
+
+[[example]]
+name = "ui-native-input-probe"
+path = "examples/native_input_probe.rs"
+
+[[example]]
+name = "native-file-picker"
+path = "examples/native_file_picker.rs"
+required-features = ["portal"]
+
+[[example]]
+name = "windows-host"
+path = "examples/windows_host.rs"
+required-features = ["notifications"]
+
+[[example]]
+name = "ui-wpe"
+path = "examples/ui_wpe.rs"
+required-features = ["webview-wpe"]
+
+[[example]]
+name = "card-composition-shots"
+path = "examples/card_composition_shots.rs"
+
+[[example]]
+name = "form-composition-shots"
+path = "examples/form_composition_shots.rs"
+
+[[example]]
+name = "manual-composition-shots"
+path = "examples/manual_composition_shots.rs"
+
+[[example]]
+name = "block-editor-typing"
+path = "examples/block_editor_typing.rs"

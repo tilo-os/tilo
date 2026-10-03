@@ -29,8 +29,10 @@
 //! [`TextInput`]: crate::widget::TextInput
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -38,7 +40,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -164,6 +166,7 @@ pub struct RichTextEditor {
     layout: Option<RichTextLayout>,
     layout_width: f32,
     layout_dirty: bool,
+    layout_epoch: Option<Arc<()>>,
     redraw: bool,
 
     // --- interaction ---
@@ -201,6 +204,7 @@ impl RichTextEditor {
             layout: None,
             layout_width: 0.0,
             layout_dirty: true,
+            layout_epoch: None,
             redraw: true,
             focused: false,
             last_cursor: Point::ZERO,
@@ -526,27 +530,35 @@ impl RichTextEditor {
         if let Some(pr) = preedit_range {
             underlines.push((pr.start, pr.end));
         }
-        RichTextLayout::shape(
+        let browser_emoji = tr.browser_color_emoji_installed();
+        let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            base_bold,
-            size,
-            width,
+            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             underlines,
             strikes,
-            1.0,
-        )
+            browser_emoji,
+        );
+        tr.note_browser_rich_layout(&layout);
+        layout
     }
 
     fn ensure_layout(&mut self, tr: &mut TextRenderer, width: f32) {
-        let stale =
-            self.layout.is_none() || self.layout_dirty || (self.layout_width - width).abs() > 0.5;
+        let epoch_stale = self
+            .layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, tr.layout_epoch()));
+        let stale = self.layout.is_none()
+            || self.layout_dirty
+            || (self.layout_width - width).abs() > 0.5
+            || epoch_stale;
         if stale {
             self.layout = Some(self.shape(tr, width.max(1.0)));
             self.layout_width = width;
             self.layout_dirty = false;
+            self.layout_epoch = Some(Arc::clone(tr.layout_epoch()));
         }
     }
 
@@ -834,7 +846,10 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 impl Widget for RichTextEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         let Some(field) = Self::ensure_map(state, path, &self.key) else {
             return;
         };
@@ -1002,31 +1017,21 @@ impl Widget for RichTextEditor {
         self.redraw = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        let shift = modifiers.state().shift_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+        let shift = ctx.modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_move(point, handled);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_move(point, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_primary_press(shift, node_id, focus_target, handled);
+                self.handle_primary_press(shift, ctx.node_id, ctx.focus_target, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1034,7 +1039,7 @@ impl Widget for RichTextEditor {
                 ..
             } => {
                 if self.drag_select.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
@@ -1043,8 +1048,8 @@ impl Widget for RichTextEditor {
                 }
                 self.preedit.clear();
                 self.preedit_cursor = None;
-                self.insert_str(state, s);
-                *handled = true;
+                self.insert_str(ctx.state, s);
+                *ctx.handled = true;
             }
             WindowEvent::Ime(Ime::Preedit(s, cursor)) => {
                 if !self.focused {
@@ -1054,7 +1059,7 @@ impl Widget for RichTextEditor {
                 self.preedit_cursor = *cursor;
                 self.redraw = true;
                 self.layout_dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1069,7 +1074,14 @@ impl Widget for RichTextEditor {
                 if !self.focused {
                     return;
                 }
-                self.handle_key_press(logical_key, text.as_deref(), ctrl, shift, state, handled);
+                self.handle_key_press(
+                    logical_key,
+                    text.as_deref(),
+                    ctrl,
+                    shift,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -1131,6 +1143,61 @@ impl Widget for RichTextEditor {
         self.layout_dirty
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_optional_value(Some(self.text.clone()))
+                .with_text_selection(self.core.selection().anchor, self.core.selection().cursor)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        use crate::a11y::Action;
+        let (state, _) = crate::doc::document(state, path);
+
+        match action {
+            Action::SetValue(value) => {
+                let cleaned = value
+                    .chars()
+                    .filter_map(|c| match c {
+                        '\n' | '\r' => Some(' '),
+                        c if c.is_control() => None,
+                        c => Some(c),
+                    })
+                    .collect::<String>();
+                self.core.set_selection(0, self.text.len());
+                let edit = self.core.insert(&cleaned);
+                self.apply_edit(state, &edit);
+                true
+            }
+            Action::SetSelection { anchor, focus } => {
+                let byte_at = |character_index: usize| {
+                    crate::text_break::grapheme_indices(&self.text)
+                        .nth(character_index)
+                        .map_or(self.text.len(), |(byte, _)| byte)
+                };
+                self.core.set_selection(byte_at(*anchor), byte_at(*focus));
+                self.goal_x = None;
+                self.redraw = true;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for RichTextEditor {
     fn needs_commit(&self) -> bool {
         self.last_edit_time
             .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
@@ -1164,58 +1231,6 @@ impl Widget for RichTextEditor {
                 .place_position(TextPosition::with_affinity(c, affinity), true);
         }
     }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_optional_value(Some(self.text.clone()))
-                .with_text_selection(self.core.selection().anchor, self.core.selection().cursor)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                }),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        use crate::a11y::Action;
-
-        match action {
-            Action::SetValue(value) => {
-                let cleaned = value
-                    .chars()
-                    .filter_map(|c| match c {
-                        '\n' | '\r' => Some(' '),
-                        c if c.is_control() => None,
-                        c => Some(c),
-                    })
-                    .collect::<String>();
-                self.core.set_selection(0, self.text.len());
-                let edit = self.core.insert(&cleaned);
-                self.apply_edit(state, &edit);
-                true
-            }
-            Action::SetSelection { anchor, focus } => {
-                let byte_at = |character_index: usize| {
-                    crate::text_break::grapheme_indices(&self.text)
-                        .nth(character_index)
-                        .map_or(self.text.len(), |(byte, _)| byte)
-                };
-                self.core.set_selection(byte_at(*anchor), byte_at(*focus));
-                self.goal_x = None;
-                self.redraw = true;
-                true
-            }
-            _ => false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1223,6 +1238,7 @@ mod tests {
     use super::*;
     use crate::State;
     use vello::kurbo::Affine;
+    use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, SmolStr};
 
     fn setup() -> (State, RichTextEditor) {
@@ -1304,14 +1320,16 @@ mod tests {
         let mut ft = None;
         ed.handle_event(
             ev,
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -1391,503 +1409,554 @@ mod tests {
     }
 
     #[test]
-    fn typing_inserts_into_the_crdt_text() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "hello");
-        assert_eq!(ed.text(), "hello");
-        assert_eq!(ed.caret(), 5);
-        let tid = crdt_text_obj(&state);
-        assert_eq!(
-            state.doc.text(&tid).unwrap(),
-            "hello",
-            "characters land in the CRDT Text"
-        );
-    }
+    fn typing_and_deletion_edit_the_crdt_text() {
+        // Case `typing_inserts_into_the_crdt_text`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "hello");
+            assert_eq!(ed.text(), "hello");
+            assert_eq!(ed.caret(), 5);
+            let tid = crdt_text_obj(&state);
+            assert_eq!(
+                state.doc.text(&tid).unwrap(),
+                "hello",
+                "characters land in the CRDT Text"
+            );
+        }
 
-    #[test]
-    fn arrow_and_word_motion_walk_the_caret() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "hi there");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowLeft),
-            mods(false, false),
-        );
-        assert_eq!(ed.caret(), 7);
-        // Ctrl+Left → previous word boundary ("there" starts at byte 3).
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowLeft),
-            mods(true, false),
-        );
-        assert_eq!(ed.caret(), 3);
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(false, false),
-        );
-        assert_eq!(ed.caret(), 0);
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::End),
-            mods(false, false),
-        );
-        assert_eq!(ed.caret(), 8);
-    }
-
-    #[test]
-    fn shift_arrow_selects_then_typing_replaces_selection() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "abcdef");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(false, false),
-        );
-        for _ in 0..3 {
+        // Case `backspace_char_and_word_and_delete`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "one two");
             press(
                 &mut ed,
                 &mut state,
-                &named_ev(NamedKey::ArrowRight),
-                mods(false, true),
+                &named_ev(NamedKey::Backspace),
+                mods(false, false),
             );
+            assert_eq!(ed.text(), "one tw");
+            // Ctrl+Backspace deletes the rest of the word.
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Backspace),
+                mods(true, false),
+            );
+            assert_eq!(ed.text(), "one ");
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Home),
+                mods(false, false),
+            );
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Delete),
+                mods(false, false),
+            );
+            assert_eq!(ed.text(), "ne ");
         }
-        assert_eq!(ed.selection(), 0..3, "shift+right extends the selection");
-        type_str(&mut ed, &mut state, "X");
-        assert_eq!(ed.text(), "Xdef", "typing over a selection replaces it");
-    }
 
-    #[test]
-    fn backspace_char_and_word_and_delete() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "one two");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Backspace),
-            mods(false, false),
-        );
-        assert_eq!(ed.text(), "one tw");
-        // Ctrl+Backspace deletes the rest of the word.
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Backspace),
-            mods(true, false),
-        );
-        assert_eq!(ed.text(), "one ");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(false, false),
-        );
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Delete),
-            mods(false, false),
-        );
-        assert_eq!(ed.text(), "ne ");
-    }
-
-    #[test]
-    fn enter_is_a_noop_and_pasted_newlines_fold_to_spaces() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "a");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Enter),
-            mods(false, false),
-        );
-        type_str(&mut ed, &mut state, "b");
-        // Single-paragraph: Enter inserted nothing; the buffer stays one line.
-        assert_eq!(ed.text(), "ab");
-        // A commit carrying a newline (e.g. a multi-line paste) folds to a space.
-        press(
-            &mut ed,
-            &mut state,
-            &WindowEvent::Ime(Ime::Commit("x\ny".to_string())),
-            mods(false, false),
-        );
-        assert_eq!(ed.text(), "abx y");
-    }
-
-    #[test]
-    fn rich_editor_preedit_honours_internal_caret_and_candidate_anchor() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "ab");
-        ed.core.set_caret(1);
-        let composition = "漢字";
-        press(
-            &mut ed,
-            &mut state,
-            &WindowEvent::Ime(Ime::Preedit(
-                composition.into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            mods(false, false),
-        );
-        assert_eq!(ed.text(), "ab", "preedit is display-only");
-        layout(&mut ed, 400.0, 80.0);
-        let (_, _, display_caret, preedit) = ed.display_state();
-        assert_eq!(display_caret, 1 + "漢".len());
-        assert_eq!(preedit, Some(1..1 + composition.len()));
-        assert!(Widget::ime_cursor_rect(&ed).is_some());
-
-        press(
-            &mut ed,
-            &mut state,
-            &WindowEvent::Ime(Ime::Commit(composition.into())),
-            mods(false, false),
-        );
-        assert_eq!(ed.text(), "a漢字b");
-        assert!(ed.preedit.is_empty());
-    }
-
-    #[test]
-    fn rich_editor_arrows_follow_rtl_visual_direction() {
-        let (mut state, mut ed) = setup();
-        let text = "שלום";
-        type_str(&mut ed, &mut state, text);
-        layout(&mut ed, 400.0, 80.0);
-        ed.core.set_caret(0);
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowLeft),
-            mods(false, false),
-        );
-        assert_eq!(ed.caret(), text.chars().next().unwrap().len_utf8());
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowRight),
-            mods(false, false),
-        );
-        assert_eq!(ed.caret(), 0);
-    }
-
-    #[test]
-    fn rich_editor_arrows_retain_mixed_bidi_affinity() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "abc אבג xyz");
-        layout(&mut ed, 400.0, 80.0);
-        let shaped = ed.layout.as_ref().unwrap();
-        let (_, top, height) = shaped.caret_geometry(0);
-        let y = top + height * 0.5;
-        let mut positions = Vec::new();
-        for x in 0..=width_columns(shaped.width()) {
-            let position = shaped.hit_position(column_px(x), y);
-            if positions.last() != Some(&position) {
-                positions.push(position);
-            }
+        // Case `enter_is_a_noop_and_pasted_newlines_fold_to_spaces`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "a");
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Enter),
+                mods(false, false),
+            );
+            type_str(&mut ed, &mut state, "b");
+            // Single-paragraph: Enter inserted nothing; the buffer stays one line.
+            assert_eq!(ed.text(), "ab");
+            // A commit carrying a newline (e.g. a multi-line paste) folds to a space.
+            press(
+                &mut ed,
+                &mut state,
+                &WindowEvent::Ime(Ime::Commit("x\ny".to_string())),
+                mods(false, false),
+            );
+            assert_eq!(ed.text(), "abx y");
         }
-        let (a, b) = positions
-            .iter()
-            .find_map(|a| {
-                let ax = shaped.caret_geometry_at(*a).0;
-                positions
-                    .iter()
-                    .find(|b| {
-                        a.byte == b.byte
-                            && a.affinity != b.affinity
-                            && (ax - shaped.caret_geometry_at(**b).0).abs() > 1.0
-                    })
-                    .map(|b| (*a, *b))
-            })
-            .expect("mixed BiDi exposes an ambiguous boundary");
-        let (left, right) = if shaped.caret_geometry_at(a).0 < shaped.caret_geometry_at(b).0 {
-            (a, b)
-        } else {
-            (b, a)
-        };
 
-        ed.core.set_caret_position(left);
-        for _ in 0..16 {
-            if ed.caret_position() == right {
-                break;
+        // Case `rich_editor_preedit_honours_internal_caret_and_candidate_anchor`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "ab");
+            ed.core.set_caret(1);
+            let composition = "漢字";
+            press(
+                &mut ed,
+                &mut state,
+                &WindowEvent::Ime(Ime::Preedit(
+                    composition.into(),
+                    Some(("漢".len(), "漢".len())),
+                )),
+                mods(false, false),
+            );
+            assert_eq!(ed.text(), "ab", "preedit is display-only");
+            layout(&mut ed, 400.0, 80.0);
+            let (_, _, display_caret, preedit) = ed.display_state();
+            assert_eq!(display_caret, 1 + "漢".len());
+            assert_eq!(preedit, Some(1..1 + composition.len()));
+            assert!(Widget::ime_cursor_rect(&ed).is_some());
+
+            press(
+                &mut ed,
+                &mut state,
+                &WindowEvent::Ime(Ime::Commit(composition.into())),
+                mods(false, false),
+            );
+            assert_eq!(ed.text(), "a漢字b");
+            assert!(ed.preedit.is_empty());
+        }
+    }
+
+    #[test]
+    fn caret_motion_and_selection_follow_words_lines_and_visual_bidi() {
+        // Case `arrow_and_word_motion_walk_the_caret`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "hi there");
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowLeft),
+                mods(false, false),
+            );
+            assert_eq!(ed.caret(), 7);
+            // Ctrl+Left → previous word boundary ("there" starts at byte 3).
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowLeft),
+                mods(true, false),
+            );
+            assert_eq!(ed.caret(), 3);
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Home),
+                mods(false, false),
+            );
+            assert_eq!(ed.caret(), 0);
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::End),
+                mods(false, false),
+            );
+            assert_eq!(ed.caret(), 8);
+        }
+
+        // Case `shift_arrow_selects_then_typing_replaces_selection`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "abcdef");
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Home),
+                mods(false, false),
+            );
+            for _ in 0..3 {
+                press(
+                    &mut ed,
+                    &mut state,
+                    &named_ev(NamedKey::ArrowRight),
+                    mods(false, true),
+                );
             }
+            assert_eq!(ed.selection(), 0..3, "shift+right extends the selection");
+            type_str(&mut ed, &mut state, "X");
+            assert_eq!(ed.text(), "Xdef", "typing over a selection replaces it");
+        }
+
+        // Case `select_all_via_ctrl_a`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "pick me");
+            press(&mut ed, &mut state, &char_ev("a"), mods(true, false));
+            assert_eq!(ed.selection(), 0..7);
+        }
+
+        // Case `rich_editor_arrows_follow_rtl_visual_direction`.
+        {
+            let (mut state, mut ed) = setup();
+            let text = "שלום";
+            type_str(&mut ed, &mut state, text);
+            layout(&mut ed, 400.0, 80.0);
+            ed.core.set_caret(0);
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowLeft),
+                mods(false, false),
+            );
+            assert_eq!(ed.caret(), text.chars().next().unwrap().len_utf8());
             press(
                 &mut ed,
                 &mut state,
                 &named_ev(NamedKey::ArrowRight),
                 mods(false, false),
             );
+            assert_eq!(ed.caret(), 0);
         }
-        assert_eq!(ed.caret_position(), right);
-        assert_eq!(left.byte, right.byte);
-        assert_ne!(left.affinity, right.affinity);
-    }
 
-    #[test]
-    fn select_all_via_ctrl_a() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "pick me");
-        press(&mut ed, &mut state, &char_ev("a"), mods(true, false));
-        assert_eq!(ed.selection(), 0..7);
-    }
+        // Case `rich_editor_arrows_retain_mixed_bidi_affinity`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "abc אבג xyz");
+            layout(&mut ed, 400.0, 80.0);
+            let shaped = ed.layout.as_ref().unwrap();
+            let (_, top, height) = shaped.caret_geometry(0);
+            let y = top + height * 0.5;
+            let mut positions = Vec::new();
+            for x in 0..=width_columns(shaped.width()) {
+                let position = shaped.hit_position(column_px(x), y);
+                if positions.last() != Some(&position) {
+                    positions.push(position);
+                }
+            }
+            let (a, b) = positions
+                .iter()
+                .find_map(|a| {
+                    let ax = shaped.caret_geometry_at(*a).0;
+                    positions
+                        .iter()
+                        .find(|b| {
+                            a.byte == b.byte
+                                && a.affinity != b.affinity
+                                && (ax - shaped.caret_geometry_at(**b).0).abs() > 1.0
+                        })
+                        .map(|b| (*a, *b))
+                })
+                .expect("mixed BiDi exposes an ambiguous boundary");
+            let (left, right) = if shaped.caret_geometry_at(a).0 < shaped.caret_geometry_at(b).0 {
+                (a, b)
+            } else {
+                (b, a)
+            };
 
-    #[test]
-    fn bold_toggle_writes_and_clears_an_automerge_mark() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "abcdef");
-        // Select "abc" (Home + 3× shift-right) and bold it via the production
-        // toolbar method (the same one Ctrl+B invokes).
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(false, false),
-        );
-        for _ in 0..3 {
+            ed.core.set_caret_position(left);
+            for _ in 0..16 {
+                if ed.caret_position() == right {
+                    break;
+                }
+                press(
+                    &mut ed,
+                    &mut state,
+                    &named_ev(NamedKey::ArrowRight),
+                    mods(false, false),
+                );
+            }
+            assert_eq!(ed.caret_position(), right);
+            assert_eq!(left.byte, right.byte);
+            assert_ne!(left.affinity, right.affinity);
+        }
+
+        // Case `arrow_down_up_move_across_wrapped_lines`.
+        {
+            let (mut state, mut ed) = setup();
+            // A single paragraph long enough to wrap at a narrow width.
+            type_str(
+                &mut ed,
+                &mut state,
+                "alpha bravo charlie delta echo foxtrot golf hotel india",
+            );
+            layout(&mut ed, 160.0, 240.0);
             press(
                 &mut ed,
                 &mut state,
-                &named_ev(NamedKey::ArrowRight),
-                mods(false, true),
+                &named_ev(NamedKey::Home),
+                mods(true, false),
             );
-        }
-        ed.toggle_bold(&mut state.doc);
-        let tid = crdt_text_obj(&state);
-        let marks = state.doc.marks(&tid).unwrap();
-        let bold: Vec<_> = marks.iter().filter(|m| m.name.as_str() == "bold").collect();
-        assert_eq!(bold.len(), 1, "one bold mark written");
-        assert_eq!(
-            (bold[0].start, bold[0].end),
-            (0, 3),
-            "bold covers the selected chars"
-        );
-
-        // A fresh editor reads the mark back as a byte-range MarkSpan.
-        let mut ed2 = RichTextEditor::new("doc");
-        ed2.sync(&mut state.doc, &state.root);
-        assert!(
-            ed2.marks
-                .iter()
-                .any(|s| s.mark == Mark::Bold && s.range == (0..3)),
-            "the bold span round-trips through the CRDT: {:?}",
-            ed2.marks
-        );
-
-        // Toggling the same selection again removes the mark.
-        ed.toggle_bold(&mut state.doc);
-        let marks = state.doc.marks(&tid).unwrap();
-        assert!(
-            marks
-                .iter()
-                .all(|m| m.name.as_str() != "bold" || m.value == ScalarValue::Boolean(false)),
-            "toggling the covered range again clears bold"
-        );
-    }
-
-    #[test]
-    fn block_style_persists_to_the_crdt() {
-        let (mut state, mut ed) = setup();
-        ed.set_block_style(&mut state.doc, RichBlockStyle::Heading);
-        assert_eq!(ed.block_style(), RichBlockStyle::Heading);
-        // A fresh editor reads the persisted style.
-        let mut ed2 = RichTextEditor::new("doc");
-        ed2.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            ed2.block_style(),
-            RichBlockStyle::Heading,
-            "style survives via the CRDT"
-        );
-    }
-
-    #[test]
-    fn caret_state_round_trips_for_undo_restore() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "abcdef");
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(false, false),
-        );
-        for _ in 0..2 {
+            assert_eq!(ed.caret(), 0);
             press(
                 &mut ed,
                 &mut state,
-                &named_ev(NamedKey::ArrowRight),
-                mods(false, true),
+                &named_ev(NamedKey::ArrowDown),
+                mods(false, false),
+            );
+            let down = ed.caret();
+            assert!(
+                down > 0,
+                "ArrowDown moves to a lower wrapped line, got {down}"
+            );
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowUp),
+                mods(false, false),
+            );
+            assert!(
+                ed.caret() < down,
+                "ArrowUp moves back toward the first line, got {}",
+                ed.caret()
             );
         }
-        let saved = Widget::get_state(&ed).unwrap();
-        // A rebuild resets the caret; set_state restores it.
-        let mut ed2 = RichTextEditor::new("doc");
-        ed2.sync(&mut state.doc, &state.root);
-        Widget::set_state(&mut ed2, &saved);
-        assert_eq!(
-            ed2.selection(),
-            0..2,
-            "caret + selection restore across a rebuild"
-        );
     }
 
     #[test]
-    fn click_seats_caret_and_double_click_selects_a_word() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "hello world");
-        layout(&mut ed, 400.0, 80.0);
-        let origin = ed.text_origin();
-        // A click at the very start seats the caret at the beginning.
-        press(
-            &mut ed,
-            &mut state,
-            &mouse_move(origin.x, origin.y + 4.0),
-            mods(false, false),
+    fn marks_block_style_and_caret_state_persist() {
+        // Case `bold_toggle_writes_and_clears_an_automerge_mark`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "abcdef");
+            // Select "abc" (Home + 3× shift-right) and bold it via the production
+            // toolbar method (the same one Ctrl+B invokes).
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Home),
+                mods(false, false),
+            );
+            for _ in 0..3 {
+                press(
+                    &mut ed,
+                    &mut state,
+                    &named_ev(NamedKey::ArrowRight),
+                    mods(false, true),
+                );
+            }
+            ed.toggle_bold(&mut state.doc);
+            let tid = crdt_text_obj(&state);
+            let marks = state.doc.marks(&tid).unwrap();
+            let bold: Vec<_> = marks.iter().filter(|m| m.name.as_str() == "bold").collect();
+            assert_eq!(bold.len(), 1, "one bold mark written");
+            assert_eq!(
+                (bold[0].start, bold[0].end),
+                (0, 3),
+                "bold covers the selected chars"
+            );
+
+            // A fresh editor reads the mark back as a byte-range MarkSpan.
+            let mut ed2 = RichTextEditor::new("doc");
+            ed2.sync(&mut state.doc, &state.root);
+            assert!(
+                ed2.marks
+                    .iter()
+                    .any(|s| s.mark == Mark::Bold && s.range == (0..3)),
+                "the bold span round-trips through the CRDT: {:?}",
+                ed2.marks
+            );
+
+            // Toggling the same selection again removes the mark.
+            ed.toggle_bold(&mut state.doc);
+            let marks = state.doc.marks(&tid).unwrap();
+            assert!(
+                marks
+                    .iter()
+                    .all(|m| m.name.as_str() != "bold" || m.value == ScalarValue::Boolean(false)),
+                "toggling the covered range again clears bold"
+            );
+        }
+
+        // Case `block_style_persists_to_the_crdt`.
+        {
+            let (mut state, mut ed) = setup();
+            ed.set_block_style(&mut state.doc, RichBlockStyle::Heading);
+            assert_eq!(ed.block_style(), RichBlockStyle::Heading);
+            // A fresh editor reads the persisted style.
+            let mut ed2 = RichTextEditor::new("doc");
+            ed2.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                ed2.block_style(),
+                RichBlockStyle::Heading,
+                "style survives via the CRDT"
+            );
+        }
+
+        // Case `caret_state_round_trips_for_undo_restore`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "abcdef");
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::Home),
+                mods(false, false),
+            );
+            for _ in 0..2 {
+                press(
+                    &mut ed,
+                    &mut state,
+                    &named_ev(NamedKey::ArrowRight),
+                    mods(false, true),
+                );
+            }
+            let saved = crate::undo::get_state(&ed).unwrap();
+            // A rebuild resets the caret; set_state restores it.
+            let mut ed2 = RichTextEditor::new("doc");
+            ed2.sync(&mut state.doc, &state.root);
+            crate::undo::set_state(&mut ed2, &saved);
+            assert_eq!(
+                ed2.selection(),
+                0..2,
+                "caret + selection restore across a rebuild"
+            );
+        }
+    }
+
+    #[test]
+    fn pointer_clicks_seat_the_caret_and_select_words_and_lines() {
+        // Case `click_seats_caret_and_double_click_selects_a_word`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "hello world");
+            layout(&mut ed, 400.0, 80.0);
+            let origin = ed.text_origin();
+            // A click at the very start seats the caret at the beginning.
+            press(
+                &mut ed,
+                &mut state,
+                &mouse_move(origin.x, origin.y + 4.0),
+                mods(false, false),
+            );
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            press(&mut ed, &mut state, &left_release(), mods(false, false));
+            assert!(
+                ed.caret() <= 1,
+                "click at the start seats the caret near 0, got {}",
+                ed.caret()
+            );
+            // A double-click inside "hello" selects the whole word.
+            let p = mouse_move(origin.x + 12.0, origin.y + 4.0);
+            press(&mut ed, &mut state, &p, mods(false, false));
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            press(&mut ed, &mut state, &left_release(), mods(false, false));
+            press(&mut ed, &mut state, &p, mods(false, false));
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            assert_eq!(
+                ed.selection(),
+                0..5,
+                "double-click selects the word under the pointer"
+            );
+        }
+
+        // Case `double_click_drag_expands_by_words_and_triple_click_selects_the_line`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "hello world");
+            layout(&mut ed, 400.0, 80.0);
+            let origin = ed.text_origin();
+            let hello = mouse_move(origin.x + 12.0, origin.y + 4.0);
+            let world = mouse_move(origin.x + 90.0, origin.y + 4.0);
+
+            press(&mut ed, &mut state, &hello, mods(false, false));
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            press(&mut ed, &mut state, &left_release(), mods(false, false));
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            press(&mut ed, &mut state, &world, mods(false, false));
+            assert_eq!(
+                ed.selection(),
+                0..11,
+                "dragging from a double-click expands in whole-word units"
+            );
+
+            press(&mut ed, &mut state, &left_release(), mods(false, false));
+            press(&mut ed, &mut state, &hello, mods(false, false));
+            press(&mut ed, &mut state, &left_press(), mods(false, false));
+            assert_eq!(
+                ed.selection(),
+                0..11,
+                "triple-click selects the paragraph's whole logical line"
+            );
+        }
+
+        // Case `text_cursor_over_the_body_and_focusable`.
+        {
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "x");
+            layout(&mut ed, 400.0, 80.0);
+            assert!(Widget::is_focusable(&ed));
+            let inside = ed.content_rect().center();
+            assert_eq!(
+                Widget::cursor_shape(&ed, inside),
+                Some(winit::window::CursorIcon::Text)
+            );
+        }
+
+        // Case `accessibility_reports_a_text_input`.
+        {
+            use crate::a11y::{AccessibleTextSelection, Action, Role};
+            let (mut state, mut ed) = setup();
+            type_str(&mut ed, &mut state, "a👩‍👩‍👧‍👦b");
+            ed.core.set_selection(1, 1 + "👩‍👩‍👧‍👦".len());
+            let node = Widget::accessibility(&ed).unwrap();
+            assert_eq!(node.role, Role::TextInput);
+            assert_eq!(node.value.as_deref(), Some("a👩‍👩‍👧‍👦b"));
+            assert_eq!(
+                node.text_selection,
+                Some(AccessibleTextSelection {
+                    anchor: 1,
+                    focus: 1 + "👩‍👩‍👧‍👦".len(),
+                })
+            );
+            assert!(node.state.focusable);
+
+            assert!(Widget::perform_action(
+                &mut ed,
+                &Action::SetSelection {
+                    anchor: 1,
+                    focus: 2,
+                },
+                &mut state.doc,
+                &state.root,
+            ));
+            assert_eq!(ed.selection(), 1..1 + "👩‍👩‍👧‍👦".len());
+            assert!(Widget::perform_action(
+                &mut ed,
+                &Action::SetValue("replacement".into()),
+                &mut state.doc,
+                &state.root,
+            ));
+            assert_eq!(ed.text(), "replacement");
+            assert_eq!(
+                state.doc.text(ed.text_obj.as_ref().unwrap()).unwrap(),
+                "replacement"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_browser_rich_text_reshapes_after_font_generation_changes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let mut editor = RichTextEditor::new("doc");
+        editor.text = "مَرْحَبًا".to_owned();
+        editor.ensure_layout(&mut renderer, 300.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
         );
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        press(&mut ed, &mut state, &left_release(), mods(false, false));
+        renderer.browser_font_failed();
+        editor.ensure_layout(&mut renderer, 300.0);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer
+            .install_browser_font(
+                "NotoSansArabic[wght].ttf",
+                std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+            )
+            .unwrap();
+        editor.ensure_layout(&mut renderer, 300.0);
         assert!(
-            ed.caret() <= 1,
-            "click at the start seats the caret near 0, got {}",
-            ed.caret()
-        );
-        // A double-click inside "hello" selects the whole word.
-        let p = mouse_move(origin.x + 12.0, origin.y + 4.0);
-        press(&mut ed, &mut state, &p, mods(false, false));
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        press(&mut ed, &mut state, &left_release(), mods(false, false));
-        press(&mut ed, &mut state, &p, mods(false, false));
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        assert_eq!(
-            ed.selection(),
-            0..5,
-            "double-click selects the word under the pointer"
-        );
-    }
-
-    #[test]
-    fn double_click_drag_expands_by_words_and_triple_click_selects_the_line() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "hello world");
-        layout(&mut ed, 400.0, 80.0);
-        let origin = ed.text_origin();
-        let hello = mouse_move(origin.x + 12.0, origin.y + 4.0);
-        let world = mouse_move(origin.x + 90.0, origin.y + 4.0);
-
-        press(&mut ed, &mut state, &hello, mods(false, false));
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        press(&mut ed, &mut state, &left_release(), mods(false, false));
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        press(&mut ed, &mut state, &world, mods(false, false));
-        assert_eq!(
-            ed.selection(),
-            0..11,
-            "dragging from a double-click expands in whole-word units"
-        );
-
-        press(&mut ed, &mut state, &left_release(), mods(false, false));
-        press(&mut ed, &mut state, &hello, mods(false, false));
-        press(&mut ed, &mut state, &left_press(), mods(false, false));
-        assert_eq!(
-            ed.selection(),
-            0..11,
-            "triple-click selects the paragraph's whole logical line"
-        );
-    }
-
-    #[test]
-    fn arrow_down_up_move_across_wrapped_lines() {
-        let (mut state, mut ed) = setup();
-        // A single paragraph long enough to wrap at a narrow width.
-        type_str(
-            &mut ed,
-            &mut state,
-            "alpha bravo charlie delta echo foxtrot golf hotel india",
-        );
-        layout(&mut ed, 160.0, 240.0);
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::Home),
-            mods(true, false),
-        );
-        assert_eq!(ed.caret(), 0);
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        let down = ed.caret();
-        assert!(
-            down > 0,
-            "ArrowDown moves to a lower wrapped line, got {down}"
-        );
-        press(
-            &mut ed,
-            &mut state,
-            &named_ev(NamedKey::ArrowUp),
-            mods(false, false),
-        );
-        assert!(
-            ed.caret() < down,
-            "ArrowUp moves back toward the first line, got {}",
-            ed.caret()
-        );
-    }
-
-    #[test]
-    fn text_cursor_over_the_body_and_focusable() {
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "x");
-        layout(&mut ed, 400.0, 80.0);
-        assert!(Widget::is_focusable(&ed));
-        let inside = ed.content_rect().center();
-        assert_eq!(
-            Widget::cursor_shape(&ed, inside),
-            Some(winit::window::CursorIcon::Text)
-        );
-    }
-
-    #[test]
-    fn accessibility_reports_a_text_input() {
-        use crate::a11y::{AccessibleTextSelection, Action, Role};
-        let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "a👩‍👩‍👧‍👦b");
-        ed.core.set_selection(1, 1 + "👩‍👩‍👧‍👦".len());
-        let node = Widget::accessibility(&ed).unwrap();
-        assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("a👩‍👩‍👧‍👦b"));
-        assert_eq!(
-            node.text_selection,
-            Some(AccessibleTextSelection {
-                anchor: 1,
-                focus: 1 + "👩‍👩‍👧‍👦".len(),
-            })
-        );
-        assert!(node.state.focusable);
-
-        assert!(Widget::perform_action(
-            &mut ed,
-            &Action::SetSelection {
-                anchor: 1,
-                focus: 2,
-            },
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_eq!(ed.selection(), 1..1 + "👩‍👩‍👧‍👦".len());
-        assert!(Widget::perform_action(
-            &mut ed,
-            &Action::SetValue("replacement".into()),
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_eq!(ed.text(), "replacement");
-        assert_eq!(
-            state.doc.text(ed.text_obj.as_ref().unwrap()).unwrap(),
-            "replacement"
+            editor
+                .layout
+                .as_ref()
+                .unwrap()
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
         );
     }
 }

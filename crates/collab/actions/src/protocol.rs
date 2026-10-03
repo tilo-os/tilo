@@ -94,8 +94,26 @@ fn validate_resource<S: BuildHasher>(
         }
         let encoded = match &action.input {
             ActionInput::Immediate(encoded) => Some(encoded),
-            ActionInput::Prompted { .. } => None,
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => None,
         };
+        if let Err(error) = action.validate_deferred_shape() {
+            violations.push(issue(&address, &error.to_string()));
+        }
+        if let ActionInput::Deferred { type_id, .. } = &action.input {
+            if action.kind == crate::OperationKind::Document && !registry.contains(type_id) {
+                violations.push(issue(&address, "document action type is not registered"));
+            }
+            if action
+                .operation_type
+                .as_ref()
+                .is_some_and(|declared| declared != type_id)
+            {
+                violations.push(issue(
+                    &address,
+                    "deferred operation type does not match its declaration",
+                ));
+            }
+        }
         if action.kind == crate::OperationKind::Document && action.operation_type.is_some() {
             violations.push(issue(
                 &address,
@@ -208,7 +226,15 @@ mod tests {
         ResourceViewSpec,
     };
 
+    /// Duplicate, unhandled and unsafe surface entries are rejected, and explicit resource-view
+    /// cardinality and bindings are validated.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn protocol_surfaces_are_validated_before_publication() {
+        rejects_duplicate_unhandled_and_unsafe_surface_entries();
+        validates_explicit_resource_view_cardinality_and_bindings();
+    }
+
     fn rejects_duplicate_unhandled_and_unsafe_surface_entries() {
         let unsafe_effect =
             ActionSpec::operation("erase", "Erase", OperationKind::Effect, "test.erase", &())
@@ -239,7 +265,6 @@ mod tests {
         assert!(text.contains("not registered"));
     }
 
-    #[test]
     fn validates_explicit_resource_view_cardinality_and_bindings() {
         let open =
             ActionSpec::operation("open", "Open", OperationKind::View, "test.open", &()).unwrap();

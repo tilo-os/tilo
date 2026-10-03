@@ -2,9 +2,11 @@
 name = "neighbour-wire"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Peer-sync wire vocabulary exchanged between Tilo peers: the NeighbourMsg envelope and the pure helpers that classify it."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "neighbour_wire"
@@ -16,9 +18,9 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 # Signed document envelopes, presence and artifact ids ride inside messages.
-collab-types = { path = "../collab-types" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
 # Device certificates and revocations for identity announcements.
-tilo-user-identity = { path = "../tilo-user-identity" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # Host retention channels are BLAKE3 digests of the message route.
 blake3.workspace = true
 
@@ -32,3 +34,7 @@ ed25519-dalek.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

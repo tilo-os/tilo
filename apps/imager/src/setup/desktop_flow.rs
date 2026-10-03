@@ -512,7 +512,7 @@ fn launch_live_download(
     release: DesktopRelease,
     cancel: Arc<AtomicBool>,
 ) -> Result<DownloadReceiver, String> {
-    let cache = xdg_paths::cache_dir()
+    let cache = tilo_paths::cache_dir()
         .ok_or("No private cache directory is available for the Desktop package.")?
         .join("tilo-imager-desktop");
     let (sender, receiver) = mpsc::channel();
@@ -631,145 +631,157 @@ mod tests {
         flow
     }
 
+    /// Readiness, recheck, download, progress and authorization outcomes.
     #[test]
-    fn readiness_publishes_exact_host_version_and_already_installed_status() {
-        let flow = ready_flow(InstalledPackage::Installed {
-            version: "0.1.9-1.fc44".into(),
-        });
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn desktop_install_rechecks_downloads_and_reports_distinct_outcomes() {
+        // Phase `readiness_publishes_exact_host_version_and_already_installed_status`.
+        {
+            let flow = ready_flow(InstalledPackage::Installed {
+                version: "0.1.9-1.fc44".into(),
+            });
 
-        let DesktopFlowState::Ready(selection) = flow.state() else {
-            panic!("matching installed package should still be ready for verification")
-        };
-        assert_eq!(selection.host, "fedora 44 (aarch64)");
-        assert_eq!(selection.release.version, "0.1.9-1.fc44");
-        assert!(selection.already_installed);
-    }
+            let DesktopFlowState::Ready(selection) = flow.state() else {
+                panic!("matching installed package should still be ready for verification")
+            };
+            assert_eq!(selection.host, "fedora 44 (aarch64)");
+            assert_eq!(selection.release.version, "0.1.9-1.fc44");
+            assert!(selection.already_installed);
+        }
 
-    #[test]
-    fn install_rechecks_and_requires_review_when_selected_version_changes() {
-        let mut flow = ready_flow(InstalledPackage::Absent);
-        flow.start_install().unwrap();
-        assert!(matches!(flow.state(), DesktopFlowState::Checking));
-
-        flow.apply_probe(Ok(DesktopProbeSnapshot {
-            host: host(InstalledPackage::Absent),
-            releases: vec![release("0.2.0-1.fc44")],
-        }));
-
-        let DesktopFlowState::Ready(selection) = flow.state() else {
-            panic!("changed release must return to review")
-        };
-        assert_eq!(selection.release.version, "0.2.0-1.fc44");
-        assert!(!flow.has_pending_operation());
-    }
-
-    #[test]
-    fn matching_recheck_downloads_then_tracks_native_progress_to_completion() {
-        let mut flow = ready_flow(InstalledPackage::Absent);
-        flow.start_install().unwrap();
-        flow.apply_probe(Ok(DesktopProbeSnapshot {
-            host: host(InstalledPackage::Absent),
-            releases: vec![release("0.1.9-1.fc44")],
-        }));
-        assert!(matches!(flow.state(), DesktopFlowState::Downloading(_)));
-
-        flow.apply_download(Ok(PathBuf::from("/tmp/verified.rpm")));
-        assert!(matches!(flow.state(), DesktopFlowState::Authorizing(_)));
-        flow.apply_install_event(DesktopInstallEvent::Preparing);
-        assert!(matches!(flow.state(), DesktopFlowState::Preparing(_)));
-        flow.apply_install_event(DesktopInstallEvent::Installing);
-        assert!(matches!(flow.state(), DesktopFlowState::Installing(_)));
-        flow.apply_install_event(DesktopInstallEvent::Verifying);
-        assert!(matches!(flow.state(), DesktopFlowState::Verifying(_)));
-        flow.apply_install_event(DesktopInstallEvent::Complete(InstalledDesktop {
-            version: "0.1.9-1.fc44".into(),
-            session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
-        }));
-        assert!(matches!(flow.state(), DesktopFlowState::Installed { .. }));
-    }
-
-    #[test]
-    fn authorization_outcomes_and_package_failure_are_distinct_and_retry_rechecks() {
-        for (event, expected) in [
-            (
-                DesktopInstallEvent::AuthorizationCancelled,
-                DesktopFailureKind::AuthorizationCancelled,
-            ),
-            (
-                DesktopInstallEvent::AuthorizationRefused,
-                DesktopFailureKind::AuthorizationRefused,
-            ),
-            (
-                DesktopInstallEvent::Failed("package manager failed".into()),
-                DesktopFailureKind::NativeTransaction,
-            ),
-        ] {
+        // Phase `install_rechecks_and_requires_review_when_selected_version_changes`.
+        {
             let mut flow = ready_flow(InstalledPackage::Absent);
-            flow.apply_install_event(event);
-            assert!(matches!(
-                flow.state(),
-                DesktopFlowState::Failed { kind, .. } if *kind == expected
-            ));
-            flow.retry().unwrap();
+            flow.start_install().unwrap();
             assert!(matches!(flow.state(), DesktopFlowState::Checking));
+
+            flow.apply_probe(Ok(DesktopProbeSnapshot {
+                host: host(InstalledPackage::Absent),
+                releases: vec![release("0.2.0-1.fc44")],
+            }));
+
+            let DesktopFlowState::Ready(selection) = flow.state() else {
+                panic!("changed release must return to review")
+            };
+            assert_eq!(selection.release.version, "0.2.0-1.fc44");
+            assert!(!flow.has_pending_operation());
+        }
+
+        // Phase `matching_recheck_downloads_then_tracks_native_progress_to_completion`.
+        {
+            let mut flow = ready_flow(InstalledPackage::Absent);
+            flow.start_install().unwrap();
+            flow.apply_probe(Ok(DesktopProbeSnapshot {
+                host: host(InstalledPackage::Absent),
+                releases: vec![release("0.1.9-1.fc44")],
+            }));
+            assert!(matches!(flow.state(), DesktopFlowState::Downloading(_)));
+
+            flow.apply_download(Ok(PathBuf::from("/tmp/verified.rpm")));
+            assert!(matches!(flow.state(), DesktopFlowState::Authorizing(_)));
+            flow.apply_install_event(DesktopInstallEvent::Preparing);
+            assert!(matches!(flow.state(), DesktopFlowState::Preparing(_)));
+            flow.apply_install_event(DesktopInstallEvent::Installing);
+            assert!(matches!(flow.state(), DesktopFlowState::Installing(_)));
+            flow.apply_install_event(DesktopInstallEvent::Verifying);
+            assert!(matches!(flow.state(), DesktopFlowState::Verifying(_)));
+            flow.apply_install_event(DesktopInstallEvent::Complete(InstalledDesktop {
+                version: "0.1.9-1.fc44".into(),
+                session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+            }));
+            assert!(matches!(flow.state(), DesktopFlowState::Installed { .. }));
+        }
+
+        // Phase `authorization_outcomes_and_package_failure_are_distinct_and_retry_rechecks`.
+        {
+            for (event, expected) in [
+                (
+                    DesktopInstallEvent::AuthorizationCancelled,
+                    DesktopFailureKind::AuthorizationCancelled,
+                ),
+                (
+                    DesktopInstallEvent::AuthorizationRefused,
+                    DesktopFailureKind::AuthorizationRefused,
+                ),
+                (
+                    DesktopInstallEvent::Failed("package manager failed".into()),
+                    DesktopFailureKind::NativeTransaction,
+                ),
+            ] {
+                let mut flow = ready_flow(InstalledPackage::Absent);
+                flow.apply_install_event(event);
+                assert!(matches!(
+                    flow.state(),
+                    DesktopFlowState::Failed { kind, .. } if *kind == expected
+                ));
+                flow.retry().unwrap();
+                assert!(matches!(flow.state(), DesktopFlowState::Checking));
+            }
         }
     }
 
+    /// Cancellation and disconnection.
     #[test]
-    fn download_cancellation_is_not_reported_as_native_transaction_cancellation() {
-        let mut flow = ready_flow(InstalledPackage::Absent);
-        flow.begin_download_for_test();
-        assert!(flow.cancel_download());
-        flow.apply_download(Err("Desktop package download cancelled.".into()));
+    fn desktop_download_cancellation_and_worker_loss_are_reported_truthfully() {
+        // Phase `download_cancellation_is_not_reported_as_native_transaction_cancellation`.
+        {
+            let mut flow = ready_flow(InstalledPackage::Absent);
+            flow.begin_download_for_test();
+            assert!(flow.cancel_download());
+            flow.apply_download(Err("Desktop package download cancelled.".into()));
 
-        assert!(matches!(
-            flow.state(),
-            DesktopFlowState::Failed {
-                kind: DesktopFailureKind::DownloadCancelled,
-                ..
-            }
-        ));
-    }
+            assert!(matches!(
+                flow.state(),
+                DesktopFlowState::Failed {
+                    kind: DesktopFailureKind::DownloadCancelled,
+                    ..
+                }
+            ));
+        }
 
-    #[test]
-    fn accepted_download_cancellation_wins_over_a_queued_success() {
-        INSTALL_LAUNCHES.store(0, Ordering::SeqCst);
-        let mut flow = DesktopFlow::without_start(DesktopRuntime {
-            launch_probe: disconnected_probe,
-            launch_download: disconnected_download,
-            launch_install: counting_install,
-        });
-        flow.apply_probe(Ok(DesktopProbeSnapshot {
-            host: host(InstalledPackage::Absent),
-            releases: vec![release("0.1.9-1.fc44")],
-        }));
-        flow.begin_download_for_test();
+        // Phase `accepted_download_cancellation_wins_over_a_queued_success`.
+        {
+            INSTALL_LAUNCHES.store(0, Ordering::SeqCst);
+            let mut flow = DesktopFlow::without_start(DesktopRuntime {
+                launch_probe: disconnected_probe,
+                launch_download: disconnected_download,
+                launch_install: counting_install,
+            });
+            flow.apply_probe(Ok(DesktopProbeSnapshot {
+                host: host(InstalledPackage::Absent),
+                releases: vec![release("0.1.9-1.fc44")],
+            }));
+            flow.begin_download_for_test();
 
-        assert!(flow.cancel_download());
-        flow.apply_download(Ok(PathBuf::from("/tmp/already-queued.rpm")));
+            assert!(flow.cancel_download());
+            flow.apply_download(Ok(PathBuf::from("/tmp/already-queued.rpm")));
 
-        assert_eq!(INSTALL_LAUNCHES.load(Ordering::SeqCst), 0);
-        assert!(matches!(
-            flow.state(),
-            DesktopFlowState::Failed {
-                kind: DesktopFailureKind::DownloadCancelled,
-                ..
-            }
-        ));
-    }
+            assert_eq!(INSTALL_LAUNCHES.load(Ordering::SeqCst), 0);
+            assert!(matches!(
+                flow.state(),
+                DesktopFlowState::Failed {
+                    kind: DesktopFailureKind::DownloadCancelled,
+                    ..
+                }
+            ));
+        }
 
-    #[test]
-    fn a_disconnected_operation_reports_worker_loss_without_blocking() {
-        let mut flow = DesktopFlow::without_start(runtime());
-        flow.start_check().unwrap();
+        // Phase `a_disconnected_operation_reports_worker_loss_without_blocking`.
+        {
+            let mut flow = DesktopFlow::without_start(runtime());
+            flow.start_check().unwrap();
 
-        assert!(flow.poll());
-        assert!(matches!(
-            flow.state(),
-            DesktopFlowState::Failed {
-                kind: DesktopFailureKind::WorkerLost,
-                ..
-            }
-        ));
+            assert!(flow.poll());
+            assert!(matches!(
+                flow.state(),
+                DesktopFlowState::Failed {
+                    kind: DesktopFailureKind::WorkerLost,
+                    ..
+                }
+            ));
+        }
     }
 }

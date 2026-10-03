@@ -4,15 +4,14 @@ use super::migration_journal::{PersistenceBoundary, persistence_result};
 use super::migration_journal_log::{Log, read_record};
 use super::migration_native::{Plan, PlanEntry};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Seek},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
-    time::SystemTime,
 };
+use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 const MAGIC: &[u8; 8] = b"TILOJL3\n";
 
 // Finite history for this bounded inventory: eight conservative recovery
@@ -211,7 +210,7 @@ impl<'a> NativeJournal<'a> {
             _ => return Err(changed("native destination must be fresh")),
         }
         let header = Header {
-            operation: format!("{}-{:?}", std::process::id(), SystemTime::now()),
+            operation: format!("{}-{:?}", std::process::id(), ui::time::wall()),
             source: plan.identity.clone(),
             revision: plan.revision()?,
             selected_root: plan.identity.root.clone(),
@@ -753,152 +752,127 @@ mod tests {
         (temp, plan, destination, path)
     }
 
+    /// Append and replay budgets.
     #[test]
-    fn repeated_directory_receipts_stop_before_exceeding_total_append_budget() {
-        let (_temp, plan, destination, path) = fixture();
-        let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
-        let root = PinnedDirectory::open_absolute(&destination).unwrap();
-        // One-entry plan: 3 inventory frames + 8 recovery envelopes of 8 frames.
-        // The initial incomplete root receipt has already consumed frame 4.
-        for _ in 0..63 {
-            journal
-                .record_directory(&plan.entries[0].entry, &root, false)
-                .unwrap();
-        }
-        let before = std::fs::read(&path).unwrap();
-        assert!(
-            journal
-                .record_directory(&plan.entries[0].entry, &root, false)
-                .is_err()
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(destination.is_dir());
-    }
-
-    #[test]
-    fn repeated_outcomes_reserve_whole_group_before_append() {
-        let (_temp, plan, destination, path) = fixture();
-        let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
-        for _ in 0..31 {
-            journal.finish(&plan, &CopyReport::default()).unwrap();
-        }
-        let before = std::fs::read(&path).unwrap();
-        assert!(journal.finish(&plan, &CopyReport::default()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(destination.is_dir());
-    }
-
-    #[test]
-    fn total_replay_budget_refuses_repeated_directory_and_outcome_history_before_repair() {
-        use super::super::migration_journal_log::write_record;
-        for directory in [true, false] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_journal_budgets_refuse_before_exceeding_limits() {
+        // Phase `repeated_directory_receipts_stop_before_exceeding_total_append_budget`.
+        {
             let (_temp, plan, destination, path) = fixture();
-            let journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
-            let receipt = journal.receipts.values().next().unwrap().clone();
-            let mut seq = journal.log.sequence;
-            drop(journal);
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&path)
-                .unwrap();
-            if directory {
-                for _ in 0..64 {
-                    write_record(
-                        &mut file,
-                        &mut seq,
-                        &Record::Receipt {
-                            receipt: receipt.clone(),
-                        },
-                    )
+            let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
+            let root = PinnedDirectory::open_absolute(&destination).unwrap();
+            // One-entry plan: 3 inventory frames + 8 recovery envelopes of 8 frames.
+            // The initial incomplete root receipt has already consumed frame 4.
+            for _ in 0..63 {
+                journal
+                    .record_directory(&plan.entries[0].entry, &root, false)
                     .unwrap();
-                }
-            } else {
-                for _ in 0..32 {
-                    write_record(
-                        &mut file,
-                        &mut seq,
-                        &Record::OutcomeStart {
-                            cancelled: false,
-                            scan_completed: false,
-                        },
-                    )
-                    .unwrap();
-                    write_record(&mut file, &mut seq, &Record::CommitOutcome).unwrap();
-                }
             }
-            file.write_all(b"torn").unwrap();
-            drop(file);
             let before = std::fs::read(&path).unwrap();
-            let contacted = std::cell::Cell::new(false);
-            let result = NativeJournal::open(&plan, &path, &RUNNING, || {
-                contacted.set(true);
-                Ok(())
-            });
-            assert!(result.is_err(), "unbounded history accepted");
-            assert!(!contacted.get());
+            assert!(
+                journal
+                    .record_directory(&plan.entries[0].entry, &root, false)
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(destination.is_dir());
+        }
+
+        // Phase `repeated_outcomes_reserve_whole_group_before_append`.
+        {
+            let (_temp, plan, destination, path) = fixture();
+            let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
+            for _ in 0..31 {
+                journal.finish(&plan, &CopyReport::default()).unwrap();
+            }
+            let before = std::fs::read(&path).unwrap();
+            assert!(journal.finish(&plan, &CopyReport::default()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(destination.is_dir());
+        }
+
+        // Phase `total_replay_budget_refuses_repeated_directory_and_outcome_history_before_repair`.
+        {
+            use super::super::migration_journal_log::write_record;
+            for directory in [true, false] {
+                let (_temp, plan, destination, path) = fixture();
+                let journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
+                let receipt = journal.receipts.values().next().unwrap().clone();
+                let mut seq = journal.log.sequence;
+                drop(journal);
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                if directory {
+                    for _ in 0..64 {
+                        write_record(
+                            &mut file,
+                            &mut seq,
+                            &Record::Receipt {
+                                receipt: receipt.clone(),
+                            },
+                        )
+                        .unwrap();
+                    }
+                } else {
+                    for _ in 0..32 {
+                        write_record(
+                            &mut file,
+                            &mut seq,
+                            &Record::OutcomeStart {
+                                cancelled: false,
+                                scan_completed: false,
+                            },
+                        )
+                        .unwrap();
+                        write_record(&mut file, &mut seq, &Record::CommitOutcome).unwrap();
+                    }
+                }
+                file.write_all(b"torn").unwrap();
+                drop(file);
+                let before = std::fs::read(&path).unwrap();
+                let contacted = std::cell::Cell::new(false);
+                let result = NativeJournal::open(&plan, &path, &RUNNING, || {
+                    contacted.set(true);
+                    Ok(())
+                });
+                assert!(result.is_err(), "unbounded history accepted");
+                assert!(!contacted.get());
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                assert!(destination.is_dir());
+            }
+        }
+
+        // Phase `total_append_byte_budget_preserves_existing_outcome`.
+        {
+            let (_temp, plan, destination, path) = fixture();
+            let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
+            let report = CopyReport {
+                failed: vec![(PathBuf::new(), "x".repeat(100_000))],
+                ..CopyReport::default()
+            };
+            journal.finish(&plan, &report).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            assert!(journal.finish(&plan, &report).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);
             assert!(destination.is_dir());
         }
     }
 
+    /// Cancelled replay, cancelled append and relocated journals.
     #[test]
-    fn total_append_byte_budget_preserves_existing_outcome() {
-        let (_temp, plan, destination, path) = fixture();
-        let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
-        let report = CopyReport {
-            failed: vec![(PathBuf::new(), "x".repeat(100_000))],
-            ..CopyReport::default()
-        };
-        journal.finish(&plan, &report).unwrap();
-        let before = std::fs::read(&path).unwrap();
-        assert!(journal.finish(&plan, &report).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(destination.is_dir());
-    }
-
-    #[test]
-    fn cancelled_replay_preserves_torn_history_without_source_validation() {
-        let (_temp, plan, destination, path) = fixture();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"torn")
-            .unwrap();
-        let before = std::fs::read(&path).unwrap();
-        let contacted = std::cell::Cell::new(false);
-        let cancel = AtomicBool::new(true);
-        let result = NativeJournal::open(&plan, &path, &cancel, || {
-            contacted.set(true);
-            Ok(())
-        });
-        assert!(matches!(result, Err(ref e) if e.kind() == io::ErrorKind::Interrupted));
-        assert!(!contacted.get());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(destination.is_dir());
-    }
-
-    #[test]
-    fn cancelled_receipt_append_preserves_history_and_output() {
-        let (_temp, plan, destination, path) = fixture();
-        let cancel = AtomicBool::new(false);
-        let mut journal = NativeJournal::open(&plan, &path, &cancel, || Ok(())).unwrap();
-        let root = PinnedDirectory::open_absolute(&destination).unwrap();
-        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        let before = std::fs::read(&path).unwrap();
-        assert!(
-            journal
-                .record_directory(&plan.entries[0].entry, &root, false)
-                .is_err()
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert!(destination.is_dir());
-    }
-
-    #[test]
-    fn relocated_journal_during_source_validation_is_not_repaired() {
-        for replace in [false, true] {
-            let (_temp, plan, _destination, path) = fixture();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_journal_cancellation_and_relocation_preserve_history() {
+        // Phase `cancelled_replay_preserves_torn_history_without_source_validation`.
+        {
+            let (_temp, plan, destination, path) = fixture();
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
@@ -906,27 +880,68 @@ mod tests {
                 .write_all(b"torn")
                 .unwrap();
             let before = std::fs::read(&path).unwrap();
-            let moved = path.with_extension("moved");
-            let result = NativeJournal::open(&plan, &path, &RUNNING, || {
-                std::fs::rename(&path, &moved)?;
-                if replace {
-                    std::fs::write(&path, b"replacement journal owned by user")?;
-                }
+            let contacted = std::cell::Cell::new(false);
+            let cancel = AtomicBool::new(true);
+            let result = NativeJournal::open(&plan, &path, &cancel, || {
+                contacted.set(true);
                 Ok(())
             });
-            assert!(result.is_err(), "relocated journal was accepted");
-            assert_eq!(
-                std::fs::read(&moved).unwrap(),
-                before,
-                "relocated original was truncated"
+            assert!(matches!(result, Err(ref e) if e.kind() == io::ErrorKind::Interrupted));
+            assert!(!contacted.get());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(destination.is_dir());
+        }
+
+        // Phase `cancelled_receipt_append_preserves_history_and_output`.
+        {
+            let (_temp, plan, destination, path) = fixture();
+            let cancel = AtomicBool::new(false);
+            let mut journal = NativeJournal::open(&plan, &path, &cancel, || Ok(())).unwrap();
+            let root = PinnedDirectory::open_absolute(&destination).unwrap();
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            let before = std::fs::read(&path).unwrap();
+            assert!(
+                journal
+                    .record_directory(&plan.entries[0].entry, &root, false)
+                    .is_err()
             );
-            if replace {
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(destination.is_dir());
+        }
+
+        // Phase `relocated_journal_during_source_validation_is_not_repaired`.
+        {
+            for replace in [false, true] {
+                let (_temp, plan, _destination, path) = fixture();
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap()
+                    .write_all(b"torn")
+                    .unwrap();
+                let before = std::fs::read(&path).unwrap();
+                let moved = path.with_extension("moved");
+                let result = NativeJournal::open(&plan, &path, &RUNNING, || {
+                    std::fs::rename(&path, &moved)?;
+                    if replace {
+                        std::fs::write(&path, b"replacement journal owned by user")?;
+                    }
+                    Ok(())
+                });
+                assert!(result.is_err(), "relocated journal was accepted");
                 assert_eq!(
-                    std::fs::read(&path).unwrap(),
-                    b"replacement journal owned by user"
+                    std::fs::read(&moved).unwrap(),
+                    before,
+                    "relocated original was truncated"
                 );
-            } else {
-                assert!(!path.exists());
+                if replace {
+                    assert_eq!(
+                        std::fs::read(&path).unwrap(),
+                        b"replacement journal owned by user"
+                    );
+                } else {
+                    assert!(!path.exists());
+                }
             }
         }
     }

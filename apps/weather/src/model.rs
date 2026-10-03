@@ -340,83 +340,85 @@ mod tests {
     }
 
     #[test]
-    fn add_then_dedup_by_coords() {
-        let mut m = WeatherModel::default();
-        let i0 = m.add_location(loc());
-        assert_eq!(i0, 0);
-        let i1 = m.add_location(loc());
-        assert_eq!(i1, 0, "near-identical coords must dedup");
-        assert_eq!(m.locations.len(), 1);
+    fn locations_add_dedup_and_select_relative() {
+        // Case `add_then_dedup_by_coords`.
+        {
+            let mut m = WeatherModel::default();
+            let i0 = m.add_location(loc());
+            assert_eq!(i0, 0);
+            let i1 = m.add_location(loc());
+            assert_eq!(i1, 0, "near-identical coords must dedup");
+            assert_eq!(m.locations.len(), 1);
+        }
+        // Case `select_relative_wraps`.
+        {
+            let mut m = WeatherModel::default();
+            m.locations.push(loc());
+            m.locations
+                .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
+            m.selected = 0;
+            m.select_relative(-1);
+            assert_eq!(m.selected, 1, "wrap to last");
+            m.select_relative(1);
+            assert_eq!(m.selected, 0, "wrap to first");
+        }
     }
 
     #[test]
-    fn select_relative_wraps() {
-        let mut m = WeatherModel::default();
-        m.locations.push(loc());
-        m.locations
-            .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
-        m.selected = 0;
-        m.select_relative(-1);
-        assert_eq!(m.selected, 1, "wrap to last");
-        m.select_relative(1);
-        assert_eq!(m.selected, 0, "wrap to first");
-    }
-
-    #[test]
-    fn remove_keeps_selection_valid() {
-        let mut m = WeatherModel::default();
-        m.locations.push(loc());
-        m.locations
-            .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
-        m.selected = 1;
-        m.remove_location(1);
-        assert_eq!(m.selected, 0);
-        assert_eq!(m.locations.len(), 1);
-    }
-
-    #[test]
-    fn remove_above_selection_keeps_same_place_in_view() {
-        let mut m = WeatherModel::default();
-        let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
-        let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
-        let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
-        let c_id = c.id;
-        m.locations = vec![a, b, c];
-        m.selected = 2; // "C" is in view.
-        m.remove_location(0); // delete "A" above it.
-        assert_eq!(
-            m.selected_location().unwrap().id,
-            c_id,
-            "selection tracks the place, not the slot"
-        );
-    }
-
-    #[test]
-    fn move_location_reorders_and_keeps_selection_on_place() {
-        let mut m = WeatherModel::default();
-        let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
-        let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
-        let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
-        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
-        m.locations = vec![a, b, c];
-        m.selected = 0; // "A" in view.
-        // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
-        assert!(m.move_location(0, 2));
-        assert_eq!(m.locations[0].id, b_id, "B shifted to the front");
-        assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");
-        assert_eq!(m.locations[2].id, a_id, "A landed at the end");
-        assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
-        // Moving C to the front.
-        let c_pos = m.locations.iter().position(|l| l.id == c_id).unwrap();
-        assert!(m.move_location(c_pos, 0));
-        assert_eq!(m.locations[0].id, c_id);
-    }
-
-    #[test]
-    fn move_location_rejects_out_of_range() {
-        let mut m = WeatherModel::default();
-        m.locations.push(loc());
-        assert!(!m.move_location(0, 5));
-        assert!(!m.move_location(0, 0));
+    fn location_removal_and_moves_keep_selection_on_place() {
+        // Case `remove_keeps_selection_valid`.
+        {
+            let mut m = WeatherModel::default();
+            m.locations.push(loc());
+            m.locations
+                .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
+            m.selected = 1;
+            m.remove_location(1);
+            assert_eq!(m.selected, 0);
+            assert_eq!(m.locations.len(), 1);
+        }
+        // Case `remove_above_selection_keeps_same_place_in_view`.
+        {
+            let mut m = WeatherModel::default();
+            let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
+            let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
+            let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
+            let c_id = c.id;
+            m.locations = vec![a, b, c];
+            m.selected = 2; // "C" is in view.
+            m.remove_location(0); // delete "A" above it.
+            assert_eq!(
+                m.selected_location().unwrap().id,
+                c_id,
+                "selection tracks the place, not the slot"
+            );
+        }
+        // Case `move_location_reorders_and_keeps_selection_on_place`.
+        {
+            let mut m = WeatherModel::default();
+            let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
+            let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
+            let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
+            let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+            m.locations = vec![a, b, c];
+            m.selected = 0; // "A" in view.
+            // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
+            assert!(m.move_location(0, 2));
+            assert_eq!(m.locations[0].id, b_id, "B shifted to the front");
+            assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");
+            assert_eq!(m.locations[2].id, a_id, "A landed at the end");
+            assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
+            // Moving C to the front.
+            let c_pos = m.locations.iter().position(|l| l.id == c_id).unwrap();
+            assert!(m.move_location(c_pos, 0));
+            assert_eq!(m.locations[0].id, c_id);
+        }
+        // Case `move_location_rejects_out_of_range`.
+        {
+            let mut m = WeatherModel::default();
+            m.locations.push(loc());
+            assert!(!m.move_location(0, 5));
+            assert!(!m.move_location(0, 0));
+        }
     }
 }

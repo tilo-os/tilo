@@ -44,9 +44,13 @@ use std::path::PathBuf;
 
 use crate::model::{Currency, DateStyle, TimeStyle};
 
+fn locale() -> ui::storage::Settings {
+    ui::storage::Settings::section("locale")
+}
+
 /// Where the shared per-user settings live.
 pub fn settings_path() -> Option<PathBuf> {
-    settings_store::settings_path()
+    locale().path()
 }
 
 /// Measurement system. Sheets doesn't use this directly, but it is part of
@@ -119,32 +123,26 @@ impl GlobalSettings {
         serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
     }
 
-    /// Load from the shared path. Returns defaults if the file is absent.
+    /// Load from the shared settings document (on the web, the page's
+    /// profile). Defaults for anything absent.
     pub fn load() -> Self {
-        let Some(path) = settings_path() else {
-            return Self::default();
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_json(&text),
-            Err(_) => Self::default(),
-        }
+        Self::from_json(&serde_json::Value::Object(locale().document()).to_string())
     }
 
-    /// Persist to the shared path, preserving foreign keys. Creates the
-    /// `tilo` config directory if needed. Returns the path written.
+    /// Persist the `locale` section to the shared settings document,
+    /// preserving every other section.
     ///
     /// # Errors
     ///
-    /// Returns an error if no config directory is available, or if creating
-    /// the `tilo` config directory or writing the settings file fails.
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = settings_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// Returns an error if there is no settings document, or the write
+    /// fails.
+    pub fn save(&self) -> std::io::Result<()> {
+        match serde_json::to_value(self.locale).map_err(std::io::Error::other)? {
+            serde_json::Value::Object(values) => locale().update(values),
+            _ => Err(std::io::Error::other(
+                "the locale is not a settings section",
+            )),
         }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, self.to_json_merged(&existing))?;
-        Ok(path)
     }
 }
 
@@ -190,73 +188,78 @@ impl Default for EffectiveLocale {
 mod tests {
     use super::*;
 
+    /// Settings defaults, locale parsing, unknown keys, malformed fallback and document layering.
     #[test]
-    fn defaults_when_file_missing_or_empty() {
-        let g = GlobalSettings::from_json("");
-        assert_eq!(g.locale.currency, Currency::USD);
-        assert_eq!(g.locale.date_format, DateStyle::Iso);
-        assert_eq!(g.locale.measurement, Measurement::Metric);
-    }
+    fn settings_load_layer_and_round_trip() {
+        // Case `defaults_when_file_missing_or_empty`.
+        {
+            let g = GlobalSettings::from_json("");
+            assert_eq!(g.locale.currency, Currency::USD);
+            assert_eq!(g.locale.date_format, DateStyle::Iso);
+            assert_eq!(g.locale.measurement, Measurement::Metric);
+        }
 
-    #[test]
-    fn parses_locale_section() {
-        let json = r#"{"version":1,"locale":{"currency":"EUR","date_format":"EU","time_format":"H12","measurement":"Imperial"}}"#;
-        let g = GlobalSettings::from_json(json);
-        assert_eq!(g.locale.currency, Currency::EUR);
-        assert_eq!(g.locale.date_format, DateStyle::Eu);
-        assert_eq!(g.locale.time_format, TimeStyle::H12);
-        assert_eq!(g.locale.measurement, Measurement::Imperial);
-    }
+        // Case `parses_locale_section`.
+        {
+            let json = r#"{"version":1,"locale":{"currency":"EUR","date_format":"EU","time_format":"H12","measurement":"Imperial"}}"#;
+            let g = GlobalSettings::from_json(json);
+            assert_eq!(g.locale.currency, Currency::EUR);
+            assert_eq!(g.locale.date_format, DateStyle::Eu);
+            assert_eq!(g.locale.time_format, TimeStyle::H12);
+            assert_eq!(g.locale.measurement, Measurement::Imperial);
+        }
 
-    #[test]
-    fn unknown_keys_round_trip_intact() {
-        // A foreign app stored a "weather" section; saving sheets settings
-        // must not drop it.
-        let existing = r#"{"version":1,"weather":{"city":"Berlin"},"locale":{"currency":"GBP"}}"#;
-        let mut g = GlobalSettings::from_json(existing);
-        g.locale.currency = Currency::JPY;
-        let out = g.to_json_merged(existing);
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["weather"]["city"], "Berlin");
-        assert_eq!(v["locale"]["currency"], "JPY");
-    }
+        // Case `unknown_keys_round_trip_intact`.
+        {
+            // A foreign app stored a "weather" section; saving sheets settings
+            // must not drop it.
+            let existing =
+                r#"{"version":1,"weather":{"city":"Berlin"},"locale":{"currency":"GBP"}}"#;
+            let mut g = GlobalSettings::from_json(existing);
+            g.locale.currency = Currency::JPY;
+            let out = g.to_json_merged(existing);
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["weather"]["city"], "Berlin");
+            assert_eq!(v["locale"]["currency"], "JPY");
+        }
 
-    #[test]
-    fn malformed_json_falls_back() {
-        let g = GlobalSettings::from_json("{not json");
-        assert_eq!(g.locale, Locale::default());
-    }
+        // Case `malformed_json_falls_back`.
+        {
+            let g = GlobalSettings::from_json("{not json");
+            assert_eq!(g.locale, Locale::default());
+        }
 
-    #[test]
-    fn doc_override_layers_over_global() {
-        let global = Locale {
-            currency: Currency::USD,
-            date_format: DateStyle::Iso,
-            time_format: TimeStyle::H24,
-            measurement: Measurement::Metric,
-        };
-        // Document overrides only the currency.
-        let doc = DocSettings {
-            currency: Some(Currency::EUR),
-            ..Default::default()
-        };
-        let eff = EffectiveLocale::resolve(&global, &doc);
-        assert_eq!(eff.currency, Currency::EUR); // override wins
-        assert_eq!(eff.date_format, DateStyle::Iso); // inherited from global
-        assert_eq!(eff.time_format, TimeStyle::H24); // inherited from global
-    }
+        // Case `doc_override_layers_over_global`.
+        {
+            let global = Locale {
+                currency: Currency::USD,
+                date_format: DateStyle::Iso,
+                time_format: TimeStyle::H24,
+                measurement: Measurement::Metric,
+            };
+            // Document overrides only the currency.
+            let doc = DocSettings {
+                currency: Some(Currency::EUR),
+                ..Default::default()
+            };
+            let eff = EffectiveLocale::resolve(&global, &doc);
+            assert_eq!(eff.currency, Currency::EUR); // override wins
+            assert_eq!(eff.date_format, DateStyle::Iso); // inherited from global
+            assert_eq!(eff.time_format, TimeStyle::H24); // inherited from global
+        }
 
-    #[test]
-    fn empty_doc_settings_inherit_everything() {
-        let global = Locale {
-            currency: Currency::GBP,
-            date_format: DateStyle::Long,
-            time_format: TimeStyle::H12,
-            measurement: Measurement::Imperial,
-        };
-        let eff = EffectiveLocale::resolve(&global, &DocSettings::default());
-        assert_eq!(eff.currency, Currency::GBP);
-        assert_eq!(eff.date_format, DateStyle::Long);
-        assert_eq!(eff.time_format, TimeStyle::H12);
+        // Case `empty_doc_settings_inherit_everything`.
+        {
+            let global = Locale {
+                currency: Currency::GBP,
+                date_format: DateStyle::Long,
+                time_format: TimeStyle::H12,
+                measurement: Measurement::Imperial,
+            };
+            let eff = EffectiveLocale::resolve(&global, &DocSettings::default());
+            assert_eq!(eff.currency, Currency::GBP);
+            assert_eq!(eff.date_format, DateStyle::Long);
+            assert_eq!(eff.time_format, TimeStyle::H12);
+        }
     }
 }

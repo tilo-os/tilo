@@ -270,7 +270,9 @@ fn schedule_refresh() {
                             if fresh
                                 && let Some(path) = listing_cache_path()
                                 && let Ok(encoded) = serde_json::to_vec(&listing)
-                                && let Err(e) = atomic_file::write_creating_parent(&path, &encoded)
+                                && let Err(e) = tilo_files::native::atomic::write_creating_parent(
+                                    &path, &encoded,
+                                )
                             {
                                 eprintln!("[catalogue] could not save search cache: {e}");
                             }
@@ -365,7 +367,7 @@ pub fn install_and_launch(
         push_failure(
             &package_id,
             &display_name,
-            "this system has no app catalogue (app is missing)".to_string(),
+            crate::shell::i18n::t("catalogue-error-missing"),
         );
         return;
     };
@@ -381,14 +383,20 @@ pub fn install_and_launch(
                 push_failure(
                     &package_id,
                     &display_name,
-                    format!("could not run the app catalogue: {e}"),
+                    crate::shell::i18n::t_args(
+                        "catalogue-error-run",
+                        &[("error", e.to_string().into())],
+                    ),
                 );
                 return;
             }
             Ok(o) if !o.status.success() => {
                 let detail = safe_diagnostic(&o.stderr);
                 let detail = if detail.is_empty() {
-                    format!("the app catalogue exited {}", o.status)
+                    crate::shell::i18n::t_args(
+                        "catalogue-error-exited",
+                        &[("status", o.status.to_string().into())],
+                    )
                 } else {
                     detail
                 };
@@ -410,7 +418,7 @@ pub fn install_and_launch(
         push_failure(
             &identity.0,
             &identity.1,
-            "could not start loading it".to_string(),
+            crate::shell::i18n::t("catalogue-error-spawn"),
         );
     }
 }
@@ -434,123 +442,135 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
 mod tests {
     use super::*;
 
-    /// Pinned against the exact JSON `app` prints;
-    /// `app-cli`'s own test pins the other half.
     #[test]
-    fn the_listing_envelope_parses_the_binarys_field_names() {
-        let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
-            "description":"a spreadsheet","category":"Office","version":"2.0.0",
-            "registry":"main","download_url":"https://x/y.tapp","trust":"verified"}],
-            "unreachable":[{"name":"mirror","detail":"connection refused"}]}"#;
-        let listing = parse_listing(json).expect("the envelope must parse");
-        assert_eq!(listing.apps.len(), 1);
-        let app = &listing.apps[0];
-        assert_eq!(app.package_id, "so.tilo.sheets");
-        assert_eq!(app.display_name, "Sheets");
-        assert_eq!(app.category.as_deref(), Some("Office"));
-        assert_eq!(app.version, "2.0.0");
-        assert_eq!(app.registry, "main");
-        assert_eq!(app.trust, "verified");
-        assert_eq!(listing.unreachable.len(), 1);
-        assert_eq!(listing.unreachable[0].name, "mirror");
-    }
+    fn catalogue_listing_parses_strictly_and_seeds_the_palette() {
+        /// Pinned against the exact JSON `app` prints;
+        /// `app-cli`'s own test pins the other half.
+        fn the_listing_envelope_parses_the_binarys_field_names() {
+            let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
+                "description":"a spreadsheet","category":"Office","version":"2.0.0",
+                "registry":"main","download_url":"https://x/y.tapp","trust":"verified"}],
+                "unreachable":[{"name":"mirror","detail":"connection refused"}]}"#;
+            let listing = parse_listing(json).expect("the envelope must parse");
+            assert_eq!(listing.apps.len(), 1);
+            let app = &listing.apps[0];
+            assert_eq!(app.package_id, "so.tilo.sheets");
+            assert_eq!(app.display_name, "Sheets");
+            assert_eq!(app.category.as_deref(), Some("Office"));
+            assert_eq!(app.version, "2.0.0");
+            assert_eq!(app.registry, "main");
+            assert_eq!(app.trust, "verified");
+            assert_eq!(listing.unreachable.len(), 1);
+            assert_eq!(listing.unreachable[0].name, "mirror");
+        }
 
-    /// Nothing available is an empty listing, not a parse error.
-    #[test]
-    fn an_empty_catalogue_is_a_valid_answer() {
-        let listing = parse_listing(r#"{"apps":[],"unreachable":[]}"#).expect("parses");
-        assert!(listing.apps.is_empty());
-        let bare = parse_listing("{}").expect("a bare object parses too");
-        assert!(bare.apps.is_empty());
-    }
+        /// Nothing available is an empty listing, not a parse error.
+        fn an_empty_catalogue_is_a_valid_answer() {
+            let listing = parse_listing(r#"{"apps":[],"unreachable":[]}"#).expect("parses");
+            assert!(listing.apps.is_empty());
+            let bare = parse_listing("{}").expect("a bare object parses too");
+            assert!(bare.apps.is_empty());
+        }
 
-    #[test]
-    fn garbage_on_stdout_is_an_error_not_an_empty_list() {
-        assert!(
-            parse_listing("not json at all").is_err(),
-            "an unparseable listing must be reported, not silently read as \
-             'nothing is available'"
-        );
-    }
+        fn garbage_on_stdout_is_an_error_not_an_empty_list() {
+            assert!(
+                parse_listing("not json at all").is_err(),
+                "an unparseable listing must be reported, not silently read as \
+                 'nothing is available'"
+            );
+        }
 
-    #[test]
-    fn persisted_metadata_can_seed_a_cold_palette() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("catalogue.json");
-        std::fs::write(
-            &path,
-            r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
-                "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
-        )
-        .unwrap();
-        let listing = read_cached_listing(&path).expect("cached listing should parse");
-        assert_eq!(listing.apps[0].package_id, "so.tilo.remote");
-    }
+        fn persisted_metadata_can_seed_a_cold_palette() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("catalogue.json");
+            std::fs::write(
+                &path,
+                r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
+                    "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
+            )
+            .unwrap();
+            let listing = read_cached_listing(&path).expect("cached listing should parse");
+            assert_eq!(listing.apps[0].package_id, "so.tilo.remote");
+        }
 
-    /// A pending notice belongs to exactly one open, and taking it
-    /// consumes it — a second launch of the same app must not dismiss
-    /// a notification that no longer exists.
-    #[test]
-    fn a_pending_notice_is_taken_once() {
-        note_pending_notice("so.tilo.noticefixture", 42);
-        assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
-        assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+        the_listing_envelope_parses_the_binarys_field_names();
+        an_empty_catalogue_is_a_valid_answer();
+        garbage_on_stdout_is_an_error_not_an_empty_list();
+        persisted_metadata_can_seed_a_cold_palette();
     }
 
     #[test]
-    fn a_newer_open_replaces_the_notice_for_the_same_package() {
-        note_pending_notice("so.tilo.replacefixture", 1);
-        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
-        note_pending_notice("so.tilo.replacefixture", 2);
-        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
-        assert_eq!(
-            take_pending_notice("so.tilo.replacefixture"),
-            Some(2),
-            "the live open's notification is the one to retire"
-        );
-        assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
-    }
+    fn catalogue_open_notices_are_taken_once_and_replaced_by_newer_opens() {
+        /// A pending notice belongs to exactly one open, and taking it
+        /// consumes it — a second launch of the same app must not dismiss
+        /// a notification that no longer exists.
+        fn a_pending_notice_is_taken_once() {
+            note_pending_notice("so.tilo.noticefixture", 42);
+            assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
+            assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+        }
 
-    /// How a test, or the headless harness, points at a specific build.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn an_explicit_binary_override_is_searched_first() {
-        let tmp = tempfile::tempdir().unwrap();
-        let fake = tmp.path().join("app");
-        std::fs::write(&fake, b"#!/bin/true\n").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APP_BIN", &fake);
-        let resolved = resolve_catalogue_bin();
-        env.remove("TILO_APP_BIN");
-        assert_eq!(resolved.as_deref(), Some(fake.as_path()));
-    }
+        fn a_newer_open_replaces_the_notice_for_the_same_package() {
+            note_pending_notice("so.tilo.replacefixture", 1);
+            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
+            note_pending_notice("so.tilo.replacefixture", 2);
+            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
+            assert_eq!(
+                take_pending_notice("so.tilo.replacefixture"),
+                Some(2),
+                "the live open's notification is the one to retire"
+            );
+            assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
+        }
 
-    #[test]
-    fn a_release_build_ignores_the_catalogue_binary_override() {
-        let exe = std::path::Path::new("/usr/bin/shell");
-        let shipped = catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
-        assert!(
-            !shipped.contains(&PathBuf::from("/tmp/evil-app")),
-            "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
-        );
-        assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
-        let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
-        assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
+        a_pending_notice_is_taken_once();
+        a_newer_open_replaces_the_notice_for_the_same_package();
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_missing_override_falls_through_rather_than_resolving_to_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let absent = tmp.path().join("not-here");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APP_BIN", &absent);
-        let resolved = resolve_catalogue_bin();
-        env.remove("TILO_APP_BIN");
-        assert_ne!(
-            resolved.as_deref(),
-            Some(absent.as_path()),
-            "a path that does not exist must not be handed to Command::new"
-        );
+    fn catalogue_binary_override_is_dev_only_and_falls_through_when_missing() {
+        /// How a test, or the headless harness, points at a specific build.
+        fn an_explicit_binary_override_is_searched_first() {
+            let tmp = tempfile::tempdir().unwrap();
+            let fake = tmp.path().join("app");
+            std::fs::write(&fake, b"#!/bin/true\n").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APP_BIN", &fake);
+            let resolved = resolve_catalogue_bin();
+            env.remove("TILO_APP_BIN");
+            assert_eq!(resolved.as_deref(), Some(fake.as_path()));
+        }
+
+        fn a_release_build_ignores_the_catalogue_binary_override() {
+            let exe = std::path::Path::new("/usr/bin/shell");
+            let shipped =
+                catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
+            assert!(
+                !shipped.contains(&PathBuf::from("/tmp/evil-app")),
+                "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
+            );
+            assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
+            let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
+            assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
+        }
+
+        fn a_missing_override_falls_through_rather_than_resolving_to_it() {
+            let tmp = tempfile::tempdir().unwrap();
+            let absent = tmp.path().join("not-here");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APP_BIN", &absent);
+            let resolved = resolve_catalogue_bin();
+            env.remove("TILO_APP_BIN");
+            assert_ne!(
+                resolved.as_deref(),
+                Some(absent.as_path()),
+                "a path that does not exist must not be handed to Command::new"
+            );
+        }
+
+        an_explicit_binary_override_is_searched_first();
+        a_release_build_ignores_the_catalogue_binary_override();
+        a_missing_override_falls_through_rather_than_resolving_to_it();
     }
 }

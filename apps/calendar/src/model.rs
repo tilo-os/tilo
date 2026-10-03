@@ -3,7 +3,7 @@
 //! This is the in-memory source of truth. It is mirrored into the
 //! Automerge document by [`crate::doc`] (events / tasks / projects as
 //! CRDT objects), and each event/task's rich-text **notes** live in the
-//! CRDT as a real block list bound to a `BlockEditor`.
+//! CRDT as rich text edited in the SDK rich-text editor.
 //!
 //! No rendering, no IO — just types, filters, and recurrence expansion.
 
@@ -1089,171 +1089,173 @@ mod tests {
     }
 
     #[test]
-    fn weekly_recurrence_lands_on_same_weekday() {
-        let mut e = sample_event(date(2026, 6, 15)); // Monday
-        e.recurrence = Recurrence::Weekly;
-        let occ = e.occurrences_in(date(2026, 6, 1), date(2026, 6, 30));
-        assert_eq!(
-            occ,
-            vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
-        );
-    }
-
-    #[test]
-    fn weekdays_recurrence_skips_weekends() {
-        let mut e = sample_event(date(2026, 6, 15));
-        e.recurrence = Recurrence::Weekdays;
-        let occ = e.occurrences_in(date(2026, 6, 15), date(2026, 6, 21));
-        // Mon..Fri only.
-        assert_eq!(occ.len(), 5);
-        assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
-    }
-
-    #[test]
-    fn recurrence_limits_exceptions_and_moved_occurrences_are_absolute() {
-        let mut event = sample_event(date(2026, 6, 1));
-        event.recurrence = Recurrence::Daily;
-        event.recurrence_interval = 2;
-        event.recurrence_count = Some(4);
-        event.recurrence_exdates.push(date(2026, 6, 3));
-        event.occurrence_overrides.push(OccurrenceOverride {
-            original_date: date(2026, 6, 5),
-            original_time: None,
-            cancelled: false,
-            start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
-            end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
-            title: Some("Moved instance".into()),
-            location: None,
-        });
-        assert_eq!(
-            event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
-            vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
-        );
-    }
-
-    #[test]
-    fn named_zone_recurrence_keeps_wall_clock_time_across_dst() {
-        let mut event = sample_event(date(2026, 3, 22));
-        event.start = date(2026, 3, 22).and_hms_opt(9, 0, 0).unwrap();
-        event.end = date(2026, 3, 22).and_hms_opt(10, 0, 0).unwrap();
-        event.timezone = "Europe/Berlin".into();
-        let before = event.occurrence_start_utc(date(2026, 3, 22)).unwrap();
-        let after = event.occurrence_start_utc(date(2026, 3, 29)).unwrap();
-        assert_eq!(
-            before.naive_utc().time(),
-            NaiveTime::from_hms_opt(8, 0, 0).unwrap()
-        );
-        assert_eq!(
-            after.naive_utc().time(),
-            NaiveTime::from_hms_opt(7, 0, 0).unwrap()
-        );
-    }
-
-    #[test]
-    fn none_recurrence_is_single_day() {
-        let e = sample_event(date(2026, 6, 15));
-        assert!(e.occurs_on(date(2026, 6, 15)));
-        assert!(!e.occurs_on(date(2026, 6, 16)));
-    }
-
-    #[test]
-    fn all_day_events_use_an_exclusive_end_but_occupy_each_visible_day() {
-        let mut e = sample_event(date(2026, 6, 15));
-        e.all_day = true;
-        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
-        e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
-
-        assert_eq!(e.all_day_last_date(), date(2026, 6, 17));
-        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 18));
-        assert_eq!(e.all_day_span_days(), 3);
-        assert!(e.occurs_on(date(2026, 6, 15)));
-        assert!(e.occurs_on(date(2026, 6, 16)));
-        assert!(e.occurs_on(date(2026, 6, 17)));
-        assert!(!e.occurs_on(date(2026, 6, 18)));
-    }
-
-    #[test]
-    fn legacy_all_day_final_minute_stays_one_visible_day() {
-        let mut e = sample_event(date(2026, 6, 15));
-        e.all_day = true;
-        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
-        e.end = date(2026, 6, 15).and_hms_opt(23, 59, 0).unwrap();
-
-        assert_eq!(e.all_day_last_date(), date(2026, 6, 15));
-        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 16));
-        assert!(e.occurs_on(date(2026, 6, 15)));
-        assert!(!e.occurs_on(date(2026, 6, 16)));
-    }
-
-    #[test]
-    fn today_filter_includes_overdue_open_tasks() {
-        let model = seed_demo(date(2026, 6, 15));
-        let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
-        // Every "Today" task is open and due on/before today.
-        assert!(
-            today
-                .iter()
-                .all(|t| !t.done && t.due.unwrap() <= date(2026, 6, 15))
-        );
-    }
-
-    #[test]
-    fn demo_seed_has_no_developer_todo_titles() {
-        // The demo/sample seed must read as a realistic person's calendar, not
-        // leak the app's own backlog. Guard every event/task title (and the
-        // curated project names) against known developer-TODO fragments.
-        let model = seed_demo(date(2026, 6, 15));
-        let markers = [
-            "ICS",
-            "round-trip",
-            "PR #",
-            "hit test",
-            "month-grid",
-            "Release v",
-            "Sprint",
-            "TODO",
-            "refactor",
-            "unit test",
-            "bugfix",
-        ];
-        let mut titles: Vec<&str> = Vec::new();
-        titles.extend(model.events.iter().map(|e| e.title.as_str()));
-        titles.extend(model.tasks.iter().map(|t| t.title.as_str()));
-        titles.extend(model.projects.iter().map(|p| p.name.as_str()));
-        for title in titles {
-            let lower = title.to_ascii_lowercase();
-            for m in markers {
-                assert!(
-                    !lower.contains(&m.to_ascii_lowercase()),
-                    "demo seed leaks developer-TODO text: {title:?} matched {m:?}",
-                );
+    fn recurrence_expands_rules_limits_zones_and_round_trips_rrule() {
+        // Case `weekly_recurrence_lands_on_same_weekday`.
+        {
+            let mut e = sample_event(date(2026, 6, 15)); // Monday
+            e.recurrence = Recurrence::Weekly;
+            let occ = e.occurrences_in(date(2026, 6, 1), date(2026, 6, 30));
+            assert_eq!(
+                occ,
+                vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
+            );
+        }
+        // Case `weekdays_recurrence_skips_weekends`.
+        {
+            let mut e = sample_event(date(2026, 6, 15));
+            e.recurrence = Recurrence::Weekdays;
+            let occ = e.occurrences_in(date(2026, 6, 15), date(2026, 6, 21));
+            // Mon..Fri only.
+            assert_eq!(occ.len(), 5);
+            assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
+        }
+        // Case `recurrence_limits_exceptions_and_moved_occurrences_are_absolute`.
+        {
+            let mut event = sample_event(date(2026, 6, 1));
+            event.recurrence = Recurrence::Daily;
+            event.recurrence_interval = 2;
+            event.recurrence_count = Some(4);
+            event.recurrence_exdates.push(date(2026, 6, 3));
+            event.occurrence_overrides.push(OccurrenceOverride {
+                original_date: date(2026, 6, 5),
+                original_time: None,
+                cancelled: false,
+                start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
+                end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
+                title: Some("Moved instance".into()),
+                location: None,
+            });
+            assert_eq!(
+                event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
+                vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
+            );
+        }
+        // Case `named_zone_recurrence_keeps_wall_clock_time_across_dst`.
+        {
+            let mut event = sample_event(date(2026, 3, 22));
+            event.start = date(2026, 3, 22).and_hms_opt(9, 0, 0).unwrap();
+            event.end = date(2026, 3, 22).and_hms_opt(10, 0, 0).unwrap();
+            event.timezone = "Europe/Berlin".into();
+            let before = event.occurrence_start_utc(date(2026, 3, 22)).unwrap();
+            let after = event.occurrence_start_utc(date(2026, 3, 29)).unwrap();
+            assert_eq!(
+                before.naive_utc().time(),
+                NaiveTime::from_hms_opt(8, 0, 0).unwrap()
+            );
+            assert_eq!(
+                after.naive_utc().time(),
+                NaiveTime::from_hms_opt(7, 0, 0).unwrap()
+            );
+        }
+        // Case `none_recurrence_is_single_day`.
+        {
+            let e = sample_event(date(2026, 6, 15));
+            assert!(e.occurs_on(date(2026, 6, 15)));
+            assert!(!e.occurs_on(date(2026, 6, 16)));
+        }
+        // Case `rrule_round_trips`.
+        {
+            for r in [
+                Recurrence::Daily,
+                Recurrence::Weekdays,
+                Recurrence::Weekly,
+                Recurrence::Monthly,
+                Recurrence::Yearly,
+            ] {
+                assert_eq!(Recurrence::from_rrule(&r.to_rrule()), r);
             }
         }
     }
 
     #[test]
-    fn demo_seed_keeps_a_realistic_spread() {
-        // Sanity that the neutral replacements are actually present, so a future
-        // edit can't silently gut the sample into an empty/placeholder set.
-        let model = seed_demo(date(2026, 6, 15));
-        let has = |t: &str| {
-            model.events.iter().any(|e| e.title == t) || model.tasks.iter().any(|k| k.title == t)
-        };
-        assert!(has("Company offsite"), "neutral all-day event present");
-        assert!(has("Reply to Alex's email"), "neutral task present");
-        assert!(has("Lunch with Sam"), "everyday event present");
+    fn day_membership_covers_all_day_spans_and_overdue_open_tasks() {
+        // Case `all_day_events_use_an_exclusive_end_but_occupy_each_visible_day`.
+        {
+            let mut e = sample_event(date(2026, 6, 15));
+            e.all_day = true;
+            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+            e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+
+            assert_eq!(e.all_day_last_date(), date(2026, 6, 17));
+            assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 18));
+            assert_eq!(e.all_day_span_days(), 3);
+            assert!(e.occurs_on(date(2026, 6, 15)));
+            assert!(e.occurs_on(date(2026, 6, 16)));
+            assert!(e.occurs_on(date(2026, 6, 17)));
+            assert!(!e.occurs_on(date(2026, 6, 18)));
+        }
+        // Case `legacy_all_day_final_minute_stays_one_visible_day`.
+        {
+            let mut e = sample_event(date(2026, 6, 15));
+            e.all_day = true;
+            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+            e.end = date(2026, 6, 15).and_hms_opt(23, 59, 0).unwrap();
+
+            assert_eq!(e.all_day_last_date(), date(2026, 6, 15));
+            assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 16));
+            assert!(e.occurs_on(date(2026, 6, 15)));
+            assert!(!e.occurs_on(date(2026, 6, 16)));
+        }
+        // Case `today_filter_includes_overdue_open_tasks`.
+        {
+            let model = seed_demo(date(2026, 6, 15));
+            let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
+            // Every "Today" task is open and due on/before today.
+            assert!(
+                today
+                    .iter()
+                    .all(|t| !t.done && t.due.unwrap() <= date(2026, 6, 15))
+            );
+        }
     }
 
     #[test]
-    fn rrule_round_trips() {
-        for r in [
-            Recurrence::Daily,
-            Recurrence::Weekdays,
-            Recurrence::Weekly,
-            Recurrence::Monthly,
-            Recurrence::Yearly,
-        ] {
-            assert_eq!(Recurrence::from_rrule(&r.to_rrule()), r);
+    fn demo_seed_keeps_a_realistic_spread_without_developer_todo_titles() {
+        // Case `demo_seed_has_no_developer_todo_titles`.
+        {
+            // The demo/sample seed must read as a realistic person's calendar, not
+            // leak the app's own backlog. Guard every event/task title (and the
+            // curated project names) against known developer-TODO fragments.
+            let model = seed_demo(date(2026, 6, 15));
+            let markers = [
+                "ICS",
+                "round-trip",
+                "PR #",
+                "hit test",
+                "month-grid",
+                "Release v",
+                "Sprint",
+                "TODO",
+                "refactor",
+                "unit test",
+                "bugfix",
+            ];
+            let mut titles: Vec<&str> = Vec::new();
+            titles.extend(model.events.iter().map(|e| e.title.as_str()));
+            titles.extend(model.tasks.iter().map(|t| t.title.as_str()));
+            titles.extend(model.projects.iter().map(|p| p.name.as_str()));
+            for title in titles {
+                let lower = title.to_ascii_lowercase();
+                for m in markers {
+                    assert!(
+                        !lower.contains(&m.to_ascii_lowercase()),
+                        "demo seed leaks developer-TODO text: {title:?} matched {m:?}",
+                    );
+                }
+            }
+        }
+        // Case `demo_seed_keeps_a_realistic_spread`.
+        {
+            // Sanity that the neutral replacements are actually present, so a future
+            // edit can't silently gut the sample into an empty/placeholder set.
+            let model = seed_demo(date(2026, 6, 15));
+            let has = |t: &str| {
+                model.events.iter().any(|e| e.title == t)
+                    || model.tasks.iter().any(|k| k.title == t)
+            };
+            assert!(has("Company offsite"), "neutral all-day event present");
+            assert!(has("Reply to Alex's email"), "neutral task present");
+            assert!(has("Lunch with Sam"), "everyday event present");
         }
     }
 

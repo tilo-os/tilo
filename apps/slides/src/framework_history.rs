@@ -147,7 +147,21 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
                 &["text", "rect", "ellipse", "line", "image"],
             )?;
             enum_field(doc, &e, "align", &["left", "center", "right", "justify"])?;
-            object(doc, &e, "text", ObjType::Text)?;
+            // A text box keeps its words as rich text, or before that as a
+            // plain Text; other elements have none.
+            match doc.get(&e, "body").map_err(|e| e.to_string())? {
+                Some((Value::Object(ObjType::Map), body)) => {
+                    tilo_doc::model::open(doc, &body)
+                        .map_err(|_| "Unreadable recorded text body")?;
+                }
+                Some(_) => return Err("Recorded text body is not rich text".into()),
+                None if string(doc, &e, "kind")? == "text"
+                    || doc.get(&e, "text").map_err(|e| e.to_string())?.is_some() =>
+                {
+                    object(doc, &e, "text", ObjType::Text)?;
+                }
+                None => {}
+            }
             for key in ["src", "fill", "stroke"] {
                 if string(doc, &e, key)?.len() > 4096 {
                     return Err(format!("Oversized {key}"));
@@ -356,15 +370,14 @@ impl HistoryPreview for DeckPreview {
         );
         if let (Some(deck), Some(slide)) = (&self.deck, self.selected()) {
             crate::render::draw_slide(
-                scene,
-                transform,
-                tr,
-                theme,
-                &Palette::resolve(deck.palette, theme),
+                &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+                crate::render::DeckAssets {
+                    palette: &Palette::resolve(deck.palette, theme),
+                    images: &self.images,
+                },
                 slide,
                 self.slide_rect,
                 8.,
-                &self.images,
             );
             tr.draw_text(
                 scene,

@@ -36,15 +36,85 @@ use vello::peniko::{Color, Fill};
 use ui::surface::{card, edge_on, edge_outline, pill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use taffy::{NodeId, TaffyTree};
+use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::Widget;
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, TextInput};
+use ui::widget::marks::Mark;
+use ui::widget::{BlockContent, BlockEditor, BlockKind, Button, ButtonFace, TextInput};
 
+use crate::actions::{DraftBodySeed, MAIL_ACTION_TYPE, MailAction};
+use crate::doc::MailDoc;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
-use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
+
+/// The HTML body: the SDK rich-text editor over the draft's body, every
+/// edit a [`MailAction::EditDraftBody`].
+type BodyEditor = RichTextSurface<RichTextField<MailAction>>;
+
+fn body_editor() -> BodyEditor {
+    let context = tilo_actions::ActionContext::for_action(
+        "so.tilo.mail",
+        "Mail",
+        &MailAction::EditDraftBody(tilo_document::RichTextAction::AppendParagraph {
+            text: String::new(),
+        }),
+    );
+    let field = RichTextField::new(
+        MAIL_ACTION_TYPE,
+        MailDoc::draft_body,
+        MailAction::EditDraftBody,
+    )
+    .with_context(context);
+    RichTextSurface::field(field).with_editor(
+        BlockEditor::new()
+            .with_wrap_lines(true)
+            .with_empty_hint("Write your message…"),
+    )
+}
+
+/// The editor's own layout inside the body card: the window is drawn
+/// immediately, the editor is a laid-out widget.
+#[derive(Default)]
+struct BodyLayout {
+    taffy: TaffyTree<()>,
+    node: Option<NodeId>,
+    /// The card it was laid out in.
+    laid_in: Option<Rect>,
+    /// How far the text is scrolled up inside the card.
+    scroll: f64,
+    /// The text's height, for the scroll limit.
+    content_h: f64,
+}
+
+/// The body as the `text/plain` alternative: a line per paragraph, list
+/// items and quotes marked as a reader of plain text expects.
+fn plain_of(blocks: &[BlockContent]) -> String {
+    let mut out = String::new();
+    let mut number = 1_usize;
+    for (index, block) in blocks.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        match block.kind {
+            BlockKind::Bullet { .. } | BlockKind::Checklist { .. } => out.push_str("• "),
+            BlockKind::Numbered { .. } => {
+                out.push_str(&number.to_string());
+                out.push_str(". ");
+                number = number.saturating_add(1);
+            }
+            BlockKind::Quote => out.push_str("> "),
+            _ => {}
+        }
+        if !matches!(block.kind, BlockKind::Numbered { .. }) {
+            number = 1;
+        }
+        out.push_str(&block.text);
+    }
+    out
+}
 
 /// Authored 1× bands; the measured rules ([`ComposeMetrics`]) never go below
 /// them, so 1× geometry is unchanged and a larger text scale grows the window's
@@ -311,7 +381,16 @@ pub struct ComposeWindow {
 
     // body
     format: ComposeFormat,
-    editor: Wysiwyg,
+    editor: BodyEditor,
+    body_layout: BodyLayout,
+    /// The body to start the draft with, applied when the window next
+    /// reaches the document.
+    seed: Option<DraftBodySeed>,
+    /// Dispatches [`MailAction::StartDraftBody`].
+    seed_actions: crate::resource::ActionSink,
+    /// The body as plain text as of the last frame, for accessibility and a
+    /// switch to plain-text authoring.
+    body_plain: String,
     /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
@@ -362,7 +441,11 @@ impl ComposeWindow {
             subject: mk(),
             show_cc_bcc: false,
             format,
-            editor: Wysiwyg::new(),
+            editor: body_editor(),
+            body_layout: BodyLayout::default(),
+            seed: None,
+            seed_actions: crate::resource::ActionSink::default(),
+            body_plain: String::new(),
             plain_body: {
                 let mut b = TextInput::local()
                     .multiline(true)
@@ -457,7 +540,7 @@ impl ComposeWindow {
                 "Message body",
                 "body",
                 if self.format == ComposeFormat::Html {
-                    self.editor.to_plain()
+                    self.body_plain.clone()
                 } else {
                     self.plain_body.value().to_string()
                 },
@@ -517,8 +600,8 @@ impl ComposeWindow {
     fn accessibility_control_specs(
         &self,
     ) -> Vec<(ComposeHit, &'static str, &'static str, Option<bool>)> {
-        let marks = self.editor.active_marks();
-        let block = self.editor.active_block_kind();
+        let marks = self.editor.editor().active_marks();
+        let block = self.focused_kind();
         vec![
             (ComposeHit::Send, "Send", "send", None),
             (ComposeHit::SaveDraft, "Save draft", "save", None),
@@ -536,13 +619,23 @@ impl ComposeWindow {
                 "format",
                 Some(self.format == ComposeFormat::Html),
             ),
-            (ComposeHit::Bold, "Bold", "bold", Some(marks.bold)),
-            (ComposeHit::Italic, "Italic", "italic", Some(marks.italic)),
+            (
+                ComposeHit::Bold,
+                "Bold",
+                "bold",
+                Some(marks.contains(&Mark::Bold)),
+            ),
+            (
+                ComposeHit::Italic,
+                "Italic",
+                "italic",
+                Some(marks.contains(&Mark::Italic)),
+            ),
             (
                 ComposeHit::Underline,
                 "Underline",
                 "underline",
-                Some(marks.underline),
+                Some(marks.contains(&Mark::Underline)),
             ),
             (
                 ComposeHit::H1,
@@ -560,13 +653,13 @@ impl ComposeWindow {
                 ComposeHit::Bullet,
                 "Bulleted list",
                 "bullet",
-                Some(matches!(block, BlockKind::Bullet)),
+                Some(matches!(block, BlockKind::Bullet { .. })),
             ),
             (
                 ComposeHit::Numbered,
                 "Numbered list",
                 "numbered",
-                Some(matches!(block, BlockKind::Numbered)),
+                Some(matches!(block, BlockKind::Numbered { .. })),
             ),
             (
                 ComposeHit::Quote,
@@ -617,7 +710,7 @@ impl ComposeWindow {
                 Action::Focus | Action::Activate => self.set_focus(Field::Body),
                 Action::SetValue(value) => {
                     if self.format == ComposeFormat::Html {
-                        self.editor.set_plain(value);
+                        self.start_body(DraftBodySeed::text(value));
                     } else {
                         self.plain_body.set_text(value);
                     }
@@ -641,28 +734,28 @@ impl ComposeWindow {
                 self.toggle_format();
             }
             "bold" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.toggle_inline(InlineMark::Bold);
+                self.toggle_mark(Mark::Bold);
             }
             "italic" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.toggle_inline(InlineMark::Italic);
+                self.toggle_mark(Mark::Italic);
             }
             "underline" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.toggle_inline(InlineMark::Underline);
+                self.toggle_mark(Mark::Underline);
             }
             "heading-1" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.set_block_kind(BlockKind::Heading(1));
+                self.toggle_kind(BlockKind::Heading(1));
             }
             "heading-2" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.set_block_kind(BlockKind::Heading(2));
+                self.toggle_kind(BlockKind::Heading(2));
             }
             "bullet" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.set_block_kind(BlockKind::Bullet);
+                self.toggle_kind(BlockKind::Bullet { indent: 0 });
             }
             "numbered" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.set_block_kind(BlockKind::Numbered);
+                self.toggle_kind(BlockKind::Numbered { indent: 0 });
             }
             "quote" if matches!(action, Action::Activate | Action::ToggleCheck) => {
-                self.editor.set_block_kind(BlockKind::Quote);
+                self.toggle_kind(BlockKind::Quote);
             }
             "link" if matches!(action, Action::Activate) => self.open_prompt(PromptKind::Link),
             _ => return None,
@@ -683,7 +776,7 @@ impl ComposeWindow {
         self.show_cc_bcc = false;
         self.attachments.clear();
         self.prompt = None;
-        self.editor = Wysiwyg::new();
+        self.start_body(DraftBodySeed::default());
         self.plain_body.set_text("");
         self.title_hint.clear();
         self.set_focus(Field::To);
@@ -697,7 +790,7 @@ impl ComposeWindow {
         self.subject.set_text(subject);
         self.title_hint = subject.to_string();
         match self.format {
-            ComposeFormat::Html => self.editor.set_plain(quote),
+            ComposeFormat::Html => self.start_body(DraftBodySeed::text(quote)),
             ComposeFormat::Text => {
                 self.plain_body.set_text(quote);
             }
@@ -725,7 +818,7 @@ impl ComposeWindow {
         self.show_cc_bcc = !draft.cc.is_empty() || !draft.bcc.is_empty();
         self.attachments.clone_from(&draft.attachments);
         match self.format {
-            ComposeFormat::Html => self.editor.set_plain(&draft.body),
+            ComposeFormat::Html => self.start_body(DraftBodySeed::of_draft(draft)),
             ComposeFormat::Text => self.plain_body.set_text(&draft.body),
         }
         if !draft.subject.is_empty() {
@@ -737,50 +830,30 @@ impl ComposeWindow {
     /// Open the window pre-filled with a representative formatted message, used
     /// by the headless screenshot to show the WYSIWYG editor in action.
     pub fn open_demo(&mut self) {
-        use crate::wysiwyg::{BlockKind, Style};
         self.open_blank();
         self.format = ComposeFormat::Html;
         self.to.set_text("Ada Lovelace <ada@analytical.example>");
         self.subject
             .set_text("Re: Launch plan for the spatial shell");
         self.title_hint = "New message".to_string();
-        let bold = Style {
-            bold: true,
-            ..Default::default()
-        };
-        let italic = Style {
-            italic: true,
-            ..Default::default()
-        };
-        let plain = Style::default();
-        self.editor = Wysiwyg::new();
-        self.editor
-            .push_styled_block(BlockKind::Heading(2), &[("Launch sequencing", plain)]);
-        self.editor.push_styled_block(
-            BlockKind::Paragraph,
-            &[
-                ("Thanks both — the new order is ", plain),
-                ("tiling → sandbox → streaming", bold),
-                (".", plain),
-            ],
-        );
-        self.editor.push_styled_block(
-            BlockKind::Bullet,
-            &[("Tiling engine skeleton by Wednesday", plain)],
-        );
-        self.editor.push_styled_block(
-            BlockKind::Bullet,
-            &[("Bubblewrap sandbox policy review", plain)],
-        );
-        self.editor.push_styled_block(
-            BlockKind::Bullet,
-            &[("Collaboration buffer streaming last", plain)],
-        );
-        self.editor.push_styled_block(
-            BlockKind::Quote,
-            &[("Don't ship streaming before the policy is solid.", italic)],
-        );
-        self.editor.set_focus(true);
+        let text = "Launch sequencing\n\
+            Thanks both — the new order is tiling → sandbox → streaming.\n\
+            Tiling engine skeleton by Wednesday\n\
+            Bubblewrap sandbox policy review\n\
+            Collaboration buffer streaming last\n\
+            > Don't ship streaming before the policy is solid.";
+        self.start_body(DraftBodySeed {
+            text: text.to_owned(),
+            html: Some(
+                "<h2>Launch sequencing</h2>\
+                 <p>Thanks both — the new order is <b>tiling → sandbox → streaming</b>.</p>\
+                 <ul><li>Tiling engine skeleton by Wednesday</li>\
+                 <li>Bubblewrap sandbox policy review</li>\
+                 <li>Collaboration buffer streaming last</li></ul>\
+                 <blockquote><i>Don't ship streaming before the policy is solid.</i></blockquote>"
+                    .to_owned(),
+            ),
+        });
         self.set_focus(Field::Body);
         self.show_cc_bcc = false;
         self.dirty = true;
@@ -798,13 +871,13 @@ impl ComposeWindow {
         match self.format {
             ComposeFormat::Html => {
                 // HTML → plain: flatten.
-                let flat = self.editor.to_plain();
+                let flat = self.body_plain.clone();
                 self.plain_body.set_text(&flat);
                 self.format = ComposeFormat::Text;
             }
             ComposeFormat::Text => {
-                // plain → HTML: re-parse into blocks.
-                self.editor.set_plain(self.plain_body.value());
+                // plain → HTML: a paragraph per line.
+                self.start_body(DraftBodySeed::text(self.plain_body.value()));
                 self.format = ComposeFormat::Html;
             }
         }
@@ -832,12 +905,7 @@ impl ComposeWindow {
         self.bcc.set_text(&draft.bcc);
         self.subject.set_text(&draft.subject);
         self.plain_body.set_text(&draft.body);
-        if let Some(html) = &draft.html_body {
-            // Best-effort: re-seed from the plain alternative (HTML re-import is
-            // a future enhancement — see wysiwyg promotion note).
-            let _ = html;
-        }
-        self.editor.set_plain(&draft.body);
+        self.start_body(DraftBodySeed::of_draft(draft));
         self.dock = DockState::Docked;
         self.placed = false;
         self.dirty = true;
@@ -845,9 +913,20 @@ impl ComposeWindow {
 
     /// The current draft, with both a plain body and (in HTML mode) an HTML
     /// body, ready for `transport::build_mime`.
-    pub fn to_draft(&self) -> Draft {
+    pub fn to_draft(&mut self, doc: &mut automerge::AutoCommit) -> Draft {
+        self.start_pending_body(doc);
         let (body, html_body) = match self.format {
-            ComposeFormat::Html => (self.editor.to_plain(), Some(self.editor.to_html())),
+            ComposeFormat::Html => {
+                let root = MailDoc::draft_body(doc);
+                let html = root.as_ref().and_then(|root| {
+                    tilo_doc_codecs::export_html::render_html_fragment_under(
+                        doc,
+                        root,
+                        &tilo_content::NoContent,
+                    )
+                });
+                (Self::read_plain(doc), Some(html.unwrap_or_default()))
+            }
             ComposeFormat::Text => (self.plain_body.value().to_string(), None),
         };
         Draft {
@@ -884,14 +963,199 @@ impl ComposeWindow {
 
     // ---- focus ----
 
+    // ---- body ----
+
+    /// Start the body afresh from `seed` when the window next reaches the
+    /// document; until then the body reads as the seed's text.
+    fn start_body(&mut self, seed: DraftBodySeed) {
+        self.editor = body_editor();
+        self.body_layout = BodyLayout::default();
+        self.body_plain.clone_from(&seed.text);
+        self.seed = Some(seed);
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher so a new draft body is that resource's action.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
+    ) {
+        self.seed_actions.attach(dispatcher);
+    }
+
+    /// Apply a pending [`Self::start_body`].
+    fn start_pending_body(&mut self, doc: &mut automerge::AutoCommit) {
+        let Some(seed) = self.seed.take() else {
+            return;
+        };
+        let action = MailAction::StartDraftBody(seed);
+        let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", &action);
+        if let Err(error) =
+            self.seed_actions
+                .try_dispatch_with_context(doc, MAIL_ACTION_TYPE, &action, context)
+        {
+            tracing::warn!(%error, "draft body could not be started");
+        }
+    }
+
+    fn read_plain(doc: &automerge::AutoCommit) -> String {
+        MailDoc::draft_body(doc)
+            .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
+            .map(|blocks| plain_of(&blocks))
+            .unwrap_or_default()
+    }
+
+    /// Bring the body up to date with the document: a pending start, and
+    /// what peers or an undo changed. Called by the host every frame.
+    pub fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        if !self.open || self.format != ComposeFormat::Html {
+            return;
+        }
+        self.start_pending_body(doc);
+        ui::Widget::sync(&mut self.editor, doc, path);
+        self.body_plain = Self::read_plain(doc);
+        if ui::Widget::needs_redraw(&self.editor) {
+            self.dirty = true;
+        }
+    }
+
+    /// The undo boundary before the body's latest edit, for the host.
+    pub fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        let started = self.seed_actions.take_committed();
+        let edited = ui::undo::take_committed_action(&mut self.editor);
+        started.or(edited)
+    }
+
+    /// Typing a word in the body is one undo step.
+    pub fn keeps_undo_step_open(&self) -> bool {
+        ui::undo::keeps_undo_step_open(&self.editor)
+    }
+
+    fn focused_kind(&self) -> BlockKind {
+        self.editor
+            .editor()
+            .focused_kind()
+            .cloned()
+            .unwrap_or(BlockKind::Paragraph)
+    }
+
+    fn toggle_mark(&mut self, mark: Mark) {
+        self.editor.editor_mut().toggle_mark(mark);
+        self.dirty = true;
+    }
+
+    /// Make the focused paragraph `kind`, or a plain paragraph again when it
+    /// already is one.
+    fn toggle_kind(&mut self, kind: BlockKind) {
+        let editor = self.editor.editor_mut();
+        let Some(index) = editor.focused_index() else {
+            return;
+        };
+        let already = editor.focused_kind() == Some(&kind);
+        editor.try_convert_to(index, if already { BlockKind::Paragraph } else { kind });
+        self.dirty = true;
+    }
+
+    /// Lay the editor out in the body card, when the card or the text
+    /// changed since the last layout.
+    fn lay_out_body(&mut self, theme: &Theme) {
+        let card = self.body_rect();
+        let layout = &mut self.body_layout;
+        let stale = layout.node.is_none()
+            || layout.laid_in != Some(card)
+            || ui::Widget::take_structure_dirty(&mut self.editor)
+            || ui::Widget::is_layout_dirty(&self.editor);
+        if !stale {
+            return;
+        }
+        layout.taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = ui::Widget::build_layout(&mut self.editor, &mut layout.taffy, theme, &mut nodes);
+        // The text's inset from its card: `s3` beside it, `s2` above.
+        let (pad_x, pad_y) = (
+            f64::from(theme.tokens.spacing.s3),
+            f64::from(theme.tokens.spacing.s2),
+        );
+        let width = (card.width() - 2.0 * pad_x).max(40.0);
+        if let Ok(style) = layout.taffy.style(node).cloned() {
+            let _ = layout.taffy.set_style(
+                node,
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::length(width as f32),
+                        height: taffy::Dimension::auto(),
+                    },
+                    ..style
+                },
+            );
+        }
+        let _ = layout
+            .taffy
+            .compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT);
+        layout.content_h = layout
+            .taffy
+            .layout(node)
+            .map_or(0.0, |laid| f64::from(laid.size.height));
+        let max_scroll = (layout.content_h + 2.0 * pad_y - card.height()).max(0.0);
+        layout.scroll = layout.scroll.clamp(0.0, max_scroll);
+        layout.node = Some(node);
+        layout.laid_in = Some(card);
+        let origin = Point::new(card.x0 + pad_x, card.y0 + pad_y - layout.scroll);
+        ui::Widget::apply_layout(&mut self.editor, &layout.taffy, node, origin);
+    }
+
+    /// An event for the body editor.
+    fn body_event(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
+        self.start_pending_body(ctx.state);
+        if self.body_layout.node.is_none() {
+            // An event before the first frame: lay out with the default theme.
+            self.lay_out_body(&Theme::dark());
+        }
+        let Some(node) = self.body_layout.node else {
+            return;
+        };
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.body_rect().contains(self.last_mouse)
+        {
+            let lines = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
+            };
+            self.body_layout.scroll -= lines;
+            self.body_layout.laid_in = None;
+            self.dirty = true;
+            return;
+        }
+        let mut handled = false;
+        let mut focus = None;
+        ui::Widget::handle_event(
+            &mut self.editor,
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &self.body_layout.taffy,
+            },
+        );
+        self.body_plain = Self::read_plain(ctx.state);
+        self.dirty = true;
+    }
+
     fn set_focus(&mut self, field: Field) {
         self.focus = field;
         self.to.set_focus(matches!(field, Field::To));
         self.cc.set_focus(matches!(field, Field::Cc));
         self.bcc.set_focus(matches!(field, Field::Bcc));
         self.subject.set_focus(matches!(field, Field::Subject));
-        self.editor
-            .set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Html));
+        ui::Widget::set_focus(
+            &mut self.editor,
+            matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Html),
+        );
         self.plain_body
             .set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Text));
         self.dirty = true;
@@ -1083,7 +1347,8 @@ impl ComposeWindow {
         let body = Rect::new(lx, y, rx, self.chips_band.y0 - PAD);
         self.hits.push((body, ComposeHit::Body));
         match self.format {
-            ComposeFormat::Html => self.editor.apply_layout(body),
+            // Laid out when drawn: the editor measures with the theme.
+            ComposeFormat::Html => {}
             ComposeFormat::Text => self.plain_body.apply_layout_external(body),
         }
 
@@ -1164,14 +1429,16 @@ impl ComposeWindow {
         for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
             inp.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         // Forward to the plain body too so its hover / drag-selection tracks
@@ -1179,30 +1446,36 @@ impl ComposeWindow {
         if matches!(self.format, ComposeFormat::Text) {
             self.plain_body.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         if let Some(p) = self.prompt.as_mut() {
             p.input.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
-        self.editor.on_cursor_moved(pt, false);
+        if matches!(self.format, ComposeFormat::Html) {
+            self.body_event(event, ctx);
+        }
         // Consume only if inside the window (so hover outside still works
         // for the app, but we stay modal for clicks/keys).
         (self.rect.contains(pt), ComposeAction::None)
@@ -1335,14 +1608,16 @@ impl ComposeWindow {
         if let Some(p) = self.prompt.as_mut() {
             p.input.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         self.dirty = true;
@@ -1367,25 +1642,23 @@ impl ComposeWindow {
     /// depending on the active compose format. Part of
     /// [`Self::handle_keyboard_input`].
     fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
-        let shift = ctx.modifiers.state().shift_key();
-        let ctrl = ctx.modifiers.state().control_key();
         match self.format {
-            ComposeFormat::Html => {
-                self.editor.on_key(event, shift, ctrl);
-            }
+            ComposeFormat::Html => self.body_event(event, ctx),
             ComposeFormat::Text => {
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
                 self.plain_body.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    &mut h,
-                    &mut ft,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
         }
@@ -1400,14 +1673,16 @@ impl ComposeWindow {
         if let Some(inp) = self.focused_input() {
             inp.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         self.dirty = true;
@@ -1454,14 +1729,14 @@ impl ComposeWindow {
                 self.focus_and_forward(field, event, ctx);
             }
             ComposeHit::Body => self.dispatch_body_press(pt, event, ctx),
-            ComposeHit::Bold => self.editor.toggle_inline(InlineMark::Bold),
-            ComposeHit::Italic => self.editor.toggle_inline(InlineMark::Italic),
-            ComposeHit::Underline => self.editor.toggle_inline(InlineMark::Underline),
-            ComposeHit::H1 => self.editor.set_block_kind(BlockKind::Heading(1)),
-            ComposeHit::H2 => self.editor.set_block_kind(BlockKind::Heading(2)),
-            ComposeHit::Bullet => self.editor.set_block_kind(BlockKind::Bullet),
-            ComposeHit::Numbered => self.editor.set_block_kind(BlockKind::Numbered),
-            ComposeHit::Quote => self.editor.set_block_kind(BlockKind::Quote),
+            ComposeHit::Bold => self.toggle_mark(Mark::Bold),
+            ComposeHit::Italic => self.toggle_mark(Mark::Italic),
+            ComposeHit::Underline => self.toggle_mark(Mark::Underline),
+            ComposeHit::H1 => self.toggle_kind(BlockKind::Heading(1)),
+            ComposeHit::H2 => self.toggle_kind(BlockKind::Heading(2)),
+            ComposeHit::Bullet => self.toggle_kind(BlockKind::Bullet { indent: 0 }),
+            ComposeHit::Numbered => self.toggle_kind(BlockKind::Numbered { indent: 0 }),
+            ComposeHit::Quote => self.toggle_kind(BlockKind::Quote),
             ComposeHit::Link => self.open_prompt(PromptKind::Link),
             ComposeHit::PromptConfirm => self.confirm_prompt(),
             ComposeHit::PromptCancel => self.prompt = None,
@@ -1472,14 +1747,16 @@ impl ComposeWindow {
                     let mut ft: Option<taffy::NodeId> = None;
                     p.input.handle_event(
                         event,
-                        ctx.scale_factor,
-                        &ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        &mut h,
-                        &mut ft,
-                        ctx.node_id,
-                        ctx.taffy,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: ctx.scale_factor,
+                            modifiers: &ctx.modifiers,
+                            state: ctx.state,
+                            path: ctx.path,
+                            handled: &mut h,
+                            focus_target: &mut ft,
+                            node_id: ctx.node_id,
+                            taffy: ctx.taffy,
+                        },
                     );
                 }
             }
@@ -1501,7 +1778,8 @@ impl ComposeWindow {
         self.set_focus(Field::Body);
         match self.format {
             ComposeFormat::Html => {
-                self.editor.on_mouse_press(pt);
+                let _ = pt;
+                self.body_event(event, ctx);
             }
             ComposeFormat::Text => {
                 // Forward the real press so the body places its caret at the
@@ -1510,14 +1788,16 @@ impl ComposeWindow {
                 let mut ft: Option<taffy::NodeId> = None;
                 self.plain_body.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    &mut h,
-                    &mut ft,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
         }
@@ -1553,7 +1833,7 @@ impl ComposeWindow {
                 if !val.is_empty() {
                     self.set_focus(Field::Body);
                     if matches!(self.format, ComposeFormat::Html) {
-                        self.editor.set_link(&val);
+                        self.editor.editor_mut().insert_link(&val);
                     }
                 }
             }
@@ -1578,14 +1858,16 @@ impl ComposeWindow {
         if let Some(inp) = self.focused_input() {
             inp.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                &mut h,
-                &mut ft,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: &mut h,
+                    focus_target: &mut ft,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
     }
@@ -1848,6 +2130,7 @@ impl ComposeWindow {
         }
         match self.format {
             ComposeFormat::Html => {
+                self.lay_out_body(theme);
                 scene.push_layer(
                     Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -1855,8 +2138,9 @@ impl ComposeWindow {
                     t,
                     &body,
                 );
-                self.editor.draw(scene, t, tr, theme);
+                ui::Widget::draw(&mut self.editor, scene, t, tr, theme, presence);
                 scene.pop_layer();
+                ui::Widget::draw_overlay(&mut self.editor, scene, t, tr, theme, presence);
             }
             ComposeFormat::Text => {
                 // The shared multiline TextInput draws the wrapped body, caret,
@@ -2026,10 +2310,6 @@ impl ComposeWindow {
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "compose-field painting shares render context with the localized label key, field bounds and focus state"
-    )]
     fn draw_field(
         &self,
         scene: &mut Scene,
@@ -2067,10 +2347,6 @@ impl ComposeWindow {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "chip buttons take the paint context, their hit id, label key and active state"
-    )]
     fn draw_chip_button(
         &self,
         scene: &mut Scene,
@@ -2125,13 +2401,23 @@ impl ComposeWindow {
 
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let marks = self.editor.active_marks();
-        let bk = self.editor.active_block_kind();
+        let marks = self.editor.editor().active_marks();
+        let bk = self.focused_kind();
         for (rect, hit) in &self.hits {
             let (glyph, active, weight, italic) = match hit {
-                ComposeHit::Bold => ("B", marks.bold, TextWeight::Bold, false),
-                ComposeHit::Italic => ("I", marks.italic, TextWeight::Regular, true),
-                ComposeHit::Underline => ("U", marks.underline, TextWeight::Regular, false),
+                ComposeHit::Bold => ("B", marks.contains(&Mark::Bold), TextWeight::Bold, false),
+                ComposeHit::Italic => (
+                    "I",
+                    marks.contains(&Mark::Italic),
+                    TextWeight::Regular,
+                    true,
+                ),
+                ComposeHit::Underline => (
+                    "U",
+                    marks.contains(&Mark::Underline),
+                    TextWeight::Regular,
+                    false,
+                ),
                 ComposeHit::H1 => (
                     "H1",
                     matches!(bk, BlockKind::Heading(1)),
@@ -2146,13 +2432,13 @@ impl ComposeWindow {
                 ),
                 ComposeHit::Bullet => (
                     "\u{2022}",
-                    matches!(bk, BlockKind::Bullet),
+                    matches!(bk, BlockKind::Bullet { .. }),
                     TextWeight::Regular,
                     false,
                 ),
                 ComposeHit::Numbered => (
                     "1.",
-                    matches!(bk, BlockKind::Numbered),
+                    matches!(bk, BlockKind::Numbered { .. }),
                     TextWeight::Regular,
                     false,
                 ),
@@ -2192,16 +2478,15 @@ impl ComposeWindow {
             let (gw, gh) = tr.measure_weighted(glyph, TOOLBAR_GLYPH_SIZE, None, weight);
             let gx = rect.center().x - f64::from(gw) / 2.0;
             let gy = rect.center().y - f64::from(gh) / 2.0;
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 glyph,
-                TOOLBAR_GLYPH_SIZE,
                 col,
                 t * Affine::translate((gx, gy)),
                 None,
-                weight,
-                italic,
-                false,
+                &TextStyle::new(TOOLBAR_GLYPH_SIZE)
+                    .with_weight(weight)
+                    .with_italic(italic),
             );
             if matches!(hit, ComposeHit::Underline) {
                 let uy = gy + f64::from(gh) * 0.8;
@@ -2340,10 +2625,6 @@ impl ComposeWindow {
 
     /// Draw the inline prompt's Add/Cancel buttons. Part of
     /// [`Self::draw_prompt`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of this draw call (the universal scene/t/tr/theme quad plus the two button rects); bundling them would just move the same count into a field list"
-    )]
     fn draw_prompt_buttons(
         &self,
         scene: &mut Scene,
@@ -2380,10 +2661,6 @@ impl ComposeWindow {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "action buttons take the paint context, their hit id, label key and primary styling flag"
-    )]
     fn draw_action_button(
         &self,
         scene: &mut Scene,
@@ -2444,6 +2721,48 @@ fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::KeyEvent;
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    fn key(logical: Key, text: Option<&str>) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text.map(SmolStr::new);
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
 
     fn win() -> ComposeWindow {
         let mut w = ComposeWindow::new(ComposeFormat::Html);
@@ -2453,192 +2772,343 @@ mod tests {
     }
 
     #[test]
-    fn one_x_metrics_reproduce_the_authored_bands() {
-        // The pre-paint rule set keeps every 1× band at its authored size.
-        let m = ComposeMetrics::default();
-        assert_eq!(m.title_h, TITLE_H);
-        assert_eq!(m.field_h, FIELD_H);
-        assert_eq!(m.toolbar_h, TOOLBAR_H);
-        assert_eq!(m.button_h, BUTTON_H);
-        assert_eq!(m.scale, 1.0);
-    }
-
-    #[test]
-    fn scaled_metrics_grow_the_header_rows_and_the_buttons_hold_their_labels() {
-        // 200% text: rows follow their measured lines instead of the fields
-        // and labels stacking over each other (the defect at 200% before).
-        let big = ComposeMetrics {
-            scale: 2.0,
-            title_h: 51.0,
-            label_h: 30.0,
-            field_h: 51.0,
-            toolbar_h: 62.0,
-            button_h: 50.0,
-            cc_bcc_w: 96.0,
-            attach_w: 130.0,
-            toggle_w: 140.0,
-            send_w: 128.0,
-            draft_w: 176.0,
-            discard_w: 150.0,
-            ..ComposeMetrics::default()
-        };
-        let mut w = ComposeWindow::new(ComposeFormat::Html);
-        w.open_blank();
-        w.metrics = big;
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
-        let to = hit_rect(&w, ComposeHit::FieldTo);
-        let subject = hit_rect(&w, ComposeHit::FieldSubject);
-        let send = hit_rect(&w, ComposeHit::Send);
-        let draft = hit_rect(&w, ComposeHit::SaveDraft);
-        let discard = hit_rect(&w, ComposeHit::Discard);
-        assert_eq!(to.height(), big.field_h);
-        assert!(
-            subject.y0 >= to.y1,
-            "the subject row starts under the To row"
-        );
-        assert_eq!(send.width(), big.send_w);
-        assert!(draft.x0 >= send.x1, "Save draft sits after Send");
-        assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
-        assert_eq!(send.height(), big.button_h);
-        // The default window followed the scale so a body remains.
-        let body = hit_rect(&w, ComposeHit::Body);
-        assert!(body.height() > 100.0, "body {body:?}");
-    }
-
-    #[test]
-    fn format_toggle_round_trips_content() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.editor.set_plain("Hello world");
-        w.toggle_format();
-        assert_eq!(w.format(), ComposeFormat::Text);
-        assert!(w.plain_body.value().contains("Hello world"));
-        w.toggle_format();
-        assert_eq!(w.format(), ComposeFormat::Html);
-    }
-
-    #[test]
-    fn draft_carries_html_in_html_mode() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.editor.set_plain("Body");
-        w.to.set_text("a@b.example");
-        let d = w.to_draft();
-        assert!(d.html_body.is_some());
-        assert!(d.html_body.unwrap().contains("Body"));
-        assert_eq!(d.to, "a@b.example");
-    }
-
-    #[test]
-    fn draft_is_plain_in_text_mode() {
-        let mut w = ComposeWindow::new(ComposeFormat::Text);
-        w.open_blank();
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        w.plain_body.set_text("Just text");
-        let d = w.to_draft();
-        assert!(d.html_body.is_none());
-        assert_eq!(d.body, "Just text");
-    }
-
-    /// The plain body is now a shared multiline `TextInput`: typing a newline
-    /// through the window's real keyboard path lands a genuinely multi-line
-    /// draft body — the thing a single-line field could not do.
-    #[test]
-    fn plain_body_accepts_a_multiline_draft_via_the_real_key_path() {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{Key, NamedKey, SmolStr};
-
-        fn key(logical: Key, text: Option<&str>) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = logical;
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = text.map(SmolStr::new);
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_metrics_reproduce_1x_and_grow_with_scale() {
+        // Phase `one_x_metrics_reproduce_the_authored_bands`.
+        {
+            // The pre-paint rule set keeps every 1× band at its authored size.
+            let m = ComposeMetrics::default();
+            assert_eq!(m.title_h, TITLE_H);
+            assert_eq!(m.field_h, FIELD_H);
+            assert_eq!(m.toolbar_h, TOOLBAR_H);
+            assert_eq!(m.button_h, BUTTON_H);
+            assert_eq!(m.scale, 1.0);
         }
 
-        let mut w = ComposeWindow::new(ComposeFormat::Text);
-        w.open_blank();
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        w.set_focus(Field::Body);
+        // Phase `scaled_metrics_grow_the_header_rows_and_the_buttons_hold_their_labels`.
+        {
+            // 200% text: rows follow their measured lines instead of the fields
+            // and labels stacking over each other (the defect at 200% before).
+            let big = ComposeMetrics {
+                scale: 2.0,
+                title_h: 51.0,
+                label_h: 30.0,
+                field_h: 51.0,
+                toolbar_h: 62.0,
+                button_h: 50.0,
+                cc_bcc_w: 96.0,
+                attach_w: 130.0,
+                toggle_w: 140.0,
+                send_w: 128.0,
+                draft_w: 176.0,
+                discard_w: 150.0,
+                ..ComposeMetrics::default()
+            };
+            let mut w = ComposeWindow::new(ComposeFormat::Html);
+            w.open_blank();
+            w.metrics = big;
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
+            let to = hit_rect(&w, ComposeHit::FieldTo);
+            let subject = hit_rect(&w, ComposeHit::FieldSubject);
+            let send = hit_rect(&w, ComposeHit::Send);
+            let draft = hit_rect(&w, ComposeHit::SaveDraft);
+            let discard = hit_rect(&w, ComposeHit::Discard);
+            assert_eq!(to.height(), big.field_h);
+            assert!(
+                subject.y0 >= to.y1,
+                "the subject row starts under the To row"
+            );
+            assert_eq!(send.width(), big.send_w);
+            assert!(draft.x0 >= send.x1, "Save draft sits after Send");
+            assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
+            assert_eq!(send.height(), big.button_h);
+            // The default window followed the scale so a body remains.
+            let body = hit_rect(&w, ComposeHit::Body);
+            assert!(body.height() > 100.0, "body {body:?}");
+        }
+    }
 
-        let m = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = taffy::NodeId::new(0);
-        let mut send = |ev: &WindowEvent| {
-            w.handle_event(
-                ev,
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_formats_and_drafts_round_trip_content() {
+        // Phase `format_toggle_round_trips_content`.
+        {
+            let mut w = win();
+            let mut doc = automerge::AutoCommit::new();
+            w.set_focus(Field::Body);
+            w.start_body(DraftBodySeed::text("Hello world"));
+            w.sync(&mut doc, &automerge::ROOT);
+            w.toggle_format();
+            assert_eq!(w.format(), ComposeFormat::Text);
+            assert!(w.plain_body.value().contains("Hello world"));
+            w.toggle_format();
+            assert_eq!(w.format(), ComposeFormat::Html);
+            assert_eq!(w.to_draft(&mut doc).body, "Hello world");
+        }
+
+        // Phase `draft_carries_html_in_html_mode`.
+        {
+            let mut w = win();
+            let mut doc = automerge::AutoCommit::new();
+            w.set_focus(Field::Body);
+            w.start_body(DraftBodySeed::text("Body\n> quoted"));
+            w.to.set_text("a@b.example");
+            let d = w.to_draft(&mut doc);
+            let html = d.html_body.expect("an HTML part");
+            assert!(html.contains("<p>Body</p>"), "got: {html}");
+            assert!(html.contains("<blockquote>"), "got: {html}");
+            assert_eq!(d.body, "Body\n> quoted");
+            assert_eq!(d.to, "a@b.example");
+        }
+
+        // Phase `a_saved_html_draft_reopens_with_its_formatting`.
+        {
+            let mut w = win();
+            let mut doc = automerge::AutoCommit::new();
+            w.open_with_draft(&Draft {
+                body: "Plan\nship it".into(),
+                html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
+                ..Draft::default()
+            });
+            let d = w.to_draft(&mut doc);
+            assert_eq!(d.body, "Plan\n• ship it");
+            let html = d.html_body.unwrap();
+            assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
+            assert!(html.contains("<strong>ship</strong>"), "got: {html}");
+        }
+
+        // Phase `typing_and_formatting_edit_the_draft_body_as_actions`.
+        {
+            let mut w = win();
+            let mut doc = automerge::AutoCommit::new();
+            w.sync(&mut doc, &automerge::ROOT);
+            let body = hit_rect(&w, ComposeHit::Body);
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let m = winit::event::Modifiers::default();
+            let send =
+                |w: &mut ComposeWindow, doc: &mut automerge::AutoCommit, ev: &WindowEvent| {
+                    w.handle_event(
+                        ev,
+                        &mut ComposeEventContext {
+                            scale_factor: 1.0,
+                            modifiers: m,
+                            state: doc,
+                            path: &automerge::ROOT,
+                            node_id: taffy::NodeId::new(0),
+                            taffy: &taffy,
+                        },
+                    );
+                };
+            send(&mut w, &mut doc, &moved(body.x0 + 20.0, body.y0 + 16.0));
+            send(&mut w, &mut doc, &press());
+            send(&mut w, &mut doc, &release());
+            w.toggle_mark(Mark::Bold);
+            for ch in ["H", "i"] {
+                send(
+                    &mut w,
+                    &mut doc,
+                    &key(Key::Character(SmolStr::new(ch)), Some(ch)),
+                );
+            }
+            w.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(w.to_draft(&mut doc).body, "Hi");
+            assert!(
+                w.to_draft(&mut doc)
+                    .html_body
+                    .unwrap()
+                    .contains("<strong>Hi</strong>"),
+                "the bold toggle marked what was typed next"
+            );
+            assert!(
+                w.take_committed_action().is_some(),
+                "the edits are undoable actions"
+            );
+        }
+
+        // Phase `draft_is_plain_in_text_mode`.
+        {
+            let mut w = ComposeWindow::new(ComposeFormat::Text);
+            w.open_blank();
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            w.plain_body.set_text("Just text");
+            let d = w.to_draft(&mut automerge::AutoCommit::new());
+            assert!(d.html_body.is_none());
+            assert_eq!(d.body, "Just text");
+        }
+
+        // Phase `plain_body_accepts_a_multiline_draft_via_the_real_key_path`.
+        // The plain body is now a shared multiline `TextInput`: typing a newline
+        // through the window's real keyboard path lands a genuinely multi-line
+        // draft body — the thing a single-line field could not do.
+        {
+            let mut w = ComposeWindow::new(ComposeFormat::Text);
+            w.open_blank();
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            w.set_focus(Field::Body);
+
+            let m = winit::event::Modifiers::default();
+            let mut doc = automerge::AutoCommit::new();
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let node = taffy::NodeId::new(0);
+            let mut send = |ev: &WindowEvent| {
+                w.handle_event(
+                    ev,
+                    &mut ComposeEventContext {
+                        scale_factor: 1.0,
+                        modifiers: m,
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+            };
+            send(&key(Key::Character(SmolStr::new("H")), Some("H")));
+            send(&key(Key::Character(SmolStr::new("i")), Some("i")));
+            send(&key(Key::Named(NamedKey::Enter), None));
+            send(&key(Key::Character(SmolStr::new("t")), Some("t")));
+            send(&key(Key::Character(SmolStr::new("w")), Some("w")));
+            send(&key(Key::Character(SmolStr::new("o")), Some("o")));
+
+            assert_eq!(
+                w.to_draft(&mut doc).body,
+                "Hi\ntwo",
+                "Enter split the body across two lines"
+            );
+        }
+
+        // Phase `link_prompt_applies_the_typed_href_not_a_placeholder`.
+        {
+            let mut w = win();
+            let mut doc = automerge::AutoCommit::new();
+            w.sync(&mut doc, &automerge::ROOT);
+            w.set_focus(Field::Body);
+            w.editor
+                .editor_mut()
+                .focus_block(0, ui::widget::CursorPlacement::End);
+            w.open_prompt(PromptKind::Link);
+            // Seeded with a scheme the user edits — never a hardcoded final target.
+            assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
+            w.prompt
+                .as_mut()
+                .unwrap()
+                .input
+                .set_text("https://example.test/docs");
+            w.confirm_prompt();
+            w.sync(&mut doc, &automerge::ROOT);
+            let html = w.to_draft(&mut doc).html_body.unwrap();
+            assert!(
+                html.contains("href=\"https://example.test/docs\""),
+                "got: {html}"
+            );
+            assert!(
+                !html.contains("href=\"https://\""),
+                "must not link the bare scheme"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_window_moves_resizes_docks_and_owns_its_input() {
+        // Phase `move_keeps_window_in_bounds`.
+        {
+            let mut w = win();
+            let before = w.window_rect();
+            // Drag the title far past the right edge; clamp must keep it reachable.
+            w.drag = Some(Drag::Move {
+                grab: Point::new(10.0, 10.0),
+            });
+            w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
+            let r = w.window_rect();
+            assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
+            assert!(r.y0 < 800.0, "window stayed reachable vertically");
+            assert_eq!(r.width(), before.width(), "move does not resize");
+        }
+
+        // Phase `resize_respects_minimum`.
+        {
+            let mut w = win();
+            let start = w.window_rect();
+            w.apply_drag(
+                Drag::Resize {
+                    edge: Edge::BottomRight,
+                    start,
+                    from: Point::new(start.x1, start.y1),
+                },
+                Point::new(start.x0, start.y0),
+            );
+            let r = w.window_rect();
+            assert!(r.width() >= MIN_W - 0.5);
+            assert!(r.height() >= MIN_H - 0.5);
+        }
+
+        // Phase `detach_toggles_dock_state`.
+        {
+            let mut w = win();
+            assert_eq!(w.dock(), DockState::Docked);
+            w.toggle_dock();
+            assert_eq!(w.dock(), DockState::Detached);
+        }
+
+        // Phase `attach_button_requests_the_root_portal_boundary`.
+        {
+            let mut w = win();
+            // The compose widget never accepts a typed path; its root owns the
+            // host portal and returns a descriptor-only staged attachment later.
+            let attach = hit_rect(&w, ComposeHit::Attach);
+            let (consumed, action) = press_at(&mut w, attach.center());
+            assert!(consumed);
+            assert_eq!(action, ComposeAction::RequestAttachment);
+            assert!(
+                w.attachments.is_empty(),
+                "no host path or fabricated attachment is staged"
+            );
+        }
+
+        // Phase `click_outside_window_is_consumed_not_passed_through`.
+        {
+            let mut w = win();
+            w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
+            let modifiers = winit::event::Modifiers::default();
+            let mut doc = automerge::AutoCommit::new();
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let press = WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            let (consumed, action) = w.handle_event(
+                &press,
                 &mut ComposeEventContext {
                     scale_factor: 1.0,
-                    modifiers: m,
+                    modifiers,
                     state: &mut doc,
                     path: &automerge::ROOT,
-                    node_id: node,
+                    node_id: taffy::NodeId::new(0),
                     taffy: &taffy,
                 },
             );
-        };
-        send(&key(Key::Character(SmolStr::new("H")), Some("H")));
-        send(&key(Key::Character(SmolStr::new("i")), Some("i")));
-        send(&key(Key::Named(NamedKey::Enter), None));
-        send(&key(Key::Character(SmolStr::new("t")), Some("t")));
-        send(&key(Key::Character(SmolStr::new("w")), Some("w")));
-        send(&key(Key::Character(SmolStr::new("o")), Some("o")));
-
-        assert_eq!(
-            w.to_draft().body,
-            "Hi\ntwo",
-            "Enter split the body across two lines"
-        );
-    }
-
-    #[test]
-    fn move_keeps_window_in_bounds() {
-        let mut w = win();
-        let before = w.window_rect();
-        // Drag the title far past the right edge; clamp must keep it reachable.
-        w.drag = Some(Drag::Move {
-            grab: Point::new(10.0, 10.0),
-        });
-        w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
-        let r = w.window_rect();
-        assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
-        assert!(r.y0 < 800.0, "window stayed reachable vertically");
-        assert_eq!(r.width(), before.width(), "move does not resize");
-    }
-
-    #[test]
-    fn resize_respects_minimum() {
-        let mut w = win();
-        let start = w.window_rect();
-        w.apply_drag(
-            Drag::Resize {
-                edge: Edge::BottomRight,
-                start,
-                from: Point::new(start.x1, start.y1),
-            },
-            Point::new(start.x0, start.y0),
-        );
-        let r = w.window_rect();
-        assert!(r.width() >= MIN_W - 0.5);
-        assert!(r.height() >= MIN_H - 0.5);
-    }
-
-    #[test]
-    fn detach_toggles_dock_state() {
-        let mut w = win();
-        assert_eq!(w.dock(), DockState::Docked);
-        w.toggle_dock();
-        assert_eq!(w.dock(), DockState::Detached);
+            assert!(
+                consumed,
+                "clicks outside the modal window must be swallowed, not fall through"
+            );
+            assert_eq!(
+                action,
+                ComposeAction::None,
+                "outside click does not close (explicit Discard only)"
+            );
+            assert!(w.open, "window stays open");
+        }
     }
 
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {
@@ -2685,79 +3155,5 @@ mod tests {
             .find(|(_, h)| *h == hit)
             .map(|(r, _)| *r)
             .expect("hit present")
-    }
-
-    #[test]
-    fn attach_button_requests_the_root_portal_boundary() {
-        let mut w = win();
-        // The compose widget never accepts a typed path; its root owns the
-        // host portal and returns a descriptor-only staged attachment later.
-        let attach = hit_rect(&w, ComposeHit::Attach);
-        let (consumed, action) = press_at(&mut w, attach.center());
-        assert!(consumed);
-        assert_eq!(action, ComposeAction::RequestAttachment);
-        assert!(
-            w.attachments.is_empty(),
-            "no host path or fabricated attachment is staged"
-        );
-    }
-
-    #[test]
-    fn link_prompt_applies_the_typed_href_not_a_placeholder() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.open_prompt(PromptKind::Link);
-        // Seeded with a scheme the user edits — never a hardcoded final target.
-        assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("https://example.test/docs");
-        w.confirm_prompt();
-        let html = w.editor.to_html();
-        assert!(
-            html.contains("href=\"https://example.test/docs\""),
-            "got: {html}"
-        );
-        assert!(
-            !html.contains("href=\"https://\""),
-            "must not link the bare scheme"
-        );
-    }
-
-    #[test]
-    fn click_outside_window_is_consumed_not_passed_through() {
-        let mut w = win();
-        w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
-        let modifiers = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let (consumed, action) = w.handle_event(
-            &press,
-            &mut ComposeEventContext {
-                scale_factor: 1.0,
-                modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                node_id: taffy::NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
-        assert!(
-            consumed,
-            "clicks outside the modal window must be swallowed, not fall through"
-        );
-        assert_eq!(
-            action,
-            ComposeAction::None,
-            "outside click does not close (explicit Discard only)"
-        );
-        assert!(w.open, "window stays open");
     }
 }

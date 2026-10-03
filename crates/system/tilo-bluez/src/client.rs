@@ -495,39 +495,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pairing_failures_read_as_english_not_dbus_names() {
-        assert_eq!(
-            bluez_error_text("org.bluez.Error.AuthenticationFailed", None),
-            "Pairing failed — the passkey did not match."
-        );
-        assert_eq!(
-            bluez_error_text("org.bluez.Error.NotReady", None),
-            "Bluetooth is turned off."
-        );
-        assert_eq!(
-            bluez_error_text("org.bluez.Error.AuthenticationCanceled", None),
-            "Pairing was cancelled."
-        );
-    }
-
-    /// An error we have not special-cased still surfaces `BlueZ`'s own detail rather than a bare
-    /// wire name.
-    #[test]
-    fn unmapped_errors_keep_the_daemons_own_message() {
-        assert_eq!(
-            bluez_error_text(
-                "org.bluez.Error.Failed",
-                Some("br-connection-profile-unavailable")
-            ),
-            "br-connection-profile-unavailable"
-        );
-    }
-
-    #[test]
-    fn unmapped_errors_without_detail_still_name_something() {
-        assert_eq!(
-            bluez_error_text("org.bluez.Error.Failed", None),
-            "Bluetooth error: Failed"
-        );
+    fn pairing_errors_read_as_english_or_the_daemons_own_message() {
+        // Phase `pairing_failures_read_as_english_not_dbus_names`.
+        {
+            assert_eq!(
+                bluez_error_text("org.bluez.Error.AuthenticationFailed", None),
+                "Pairing failed — the passkey did not match."
+            );
+            assert_eq!(
+                bluez_error_text("org.bluez.Error.NotReady", None),
+                "Bluetooth is turned off."
+            );
+            assert_eq!(
+                bluez_error_text("org.bluez.Error.AuthenticationCanceled", None),
+                "Pairing was cancelled."
+            );
+        }
+        // Phase `unmapped_errors_keep_the_daemons_own_message`.
+        // An error we have not special-cased still surfaces `BlueZ`'s own detail rather than a bare
+        // wire name.
+        {
+            assert_eq!(
+                bluez_error_text(
+                    "org.bluez.Error.Failed",
+                    Some("br-connection-profile-unavailable")
+                ),
+                "br-connection-profile-unavailable"
+            );
+        }
+        // Phase `unmapped_errors_without_detail_still_name_something`.
+        {
+            assert_eq!(
+                bluez_error_text("org.bluez.Error.Failed", None),
+                "Bluetooth error: Failed"
+            );
+        }
     }
 }

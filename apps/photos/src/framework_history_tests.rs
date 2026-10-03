@@ -6,30 +6,21 @@ use crate::{
 use tilo_automerge::ApplyIncoming;
 use ui::widget::Widget;
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn production_root_declares_framework_history() {
-    assert!(crate::app_root().document_history_definition().is_some());
-}
-#[test]
-fn legacy_and_blank_production_sync_preserves_exact_graph() {
-    for legacy in [false, true] {
+fn production_history_root_and_sync_preserve_the_exact_graph() {
+    eprintln!("phase production_root_declares_framework_history");
+    {
+        assert!(
+            ui::history_mode::capability::document_history_definition(crate::app_root().as_ref())
+                .is_some()
+        );
+    }
+
+    eprintln!("phase blank_production_sync_preserves_exact_graph");
+    {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "runtime_metadata", "current").unwrap();
-        if legacy {
-            doc.put(ROOT, "image", "null").unwrap();
-            doc.put(
-                ROOT,
-                "edits",
-                serde_json::to_string(&Edits::default()).unwrap(),
-            )
-            .unwrap();
-            doc.put(
-                ROOT,
-                "library",
-                serde_json::to_string(&PhotoLibrary::default()).unwrap(),
-            )
-            .unwrap();
-        }
         let heads = doc.get_heads();
         crate::app_root().sync(&mut doc, &ROOT);
         assert_eq!(
@@ -41,22 +32,331 @@ fn legacy_and_blank_production_sync_preserves_exact_graph() {
         crate::app_root().sync(&mut reopened, &ROOT);
         assert_eq!(reopened.get_heads(), heads);
     }
+
+    eprintln!("phase exact_current_roots_tombstones_unknown_authored_fields_survive_restore");
+    {
+        {
+            let (open, _, _) = image_fixture();
+            let mut doc = AutoCommit::new();
+            PhotosDoc::set_image(&mut doc, Some(&open));
+            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+            doc.put(&root, "future_authored_setting", "retained")
+                .unwrap();
+            let removed = doc.get(&root, "removed_photos").unwrap().unwrap().1;
+            doc.put(&removed, "deleted-photo", true).unwrap();
+            let selected = doc.get_heads();
+            let saved = doc.save();
+            PhotosDoc::set_image(&mut doc, None);
+            doc.put(ROOT, "receipt", "current").unwrap();
+            let heads = doc.get_heads();
+            let plan =
+                prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &selected)
+                    .unwrap();
+            apply_prepared_content_restore(&mut doc, &plan).unwrap();
+            assert_eq!(doc.get_changes(&heads).len(), 1);
+            let projection = project_content(
+                &AutoCommit::load(&saved).unwrap(),
+                &crate::framework_history::SCHEMA,
+            )
+            .unwrap();
+            for _ in 0..2 {
+                crate::app_root().sync(&mut doc, &ROOT);
+                assert_eq!(
+                    project_content(&doc, &crate::framework_history::SCHEMA).unwrap(),
+                    projection
+                );
+                doc = AutoCommit::load(&doc.save()).unwrap();
+            }
+            assert_eq!(
+                doc.get(ROOT, "receipt").unwrap().unwrap().0.as_str(),
+                Some("current")
+            );
+            assert!(doc.get_change_by_hash(&selected[0]).is_some());
+        }
+    }
+
+    eprintln!("phase typed_schema_refuses_defaulted_malformed_values_without_writes");
+    {
+        for case in 0..7 {
+            let (mut doc, _, _) = fixture();
+            let edits = doc.get(ROOT, "photos_edits").unwrap().unwrap().1;
+            let library = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+            match case {
+                0 => doc.put(ROOT, "image", "{}").unwrap(),
+                1 => doc.put(&edits, "rotate_quarters", "4").unwrap(),
+                2 => doc
+                    .put(&edits, "crop", r#"{"x":0,"y":0,"w":2,"h":1}"#)
+                    .unwrap(),
+                3 => doc.delete(&edits, "crop").unwrap(),
+                4 => doc.put(&library, "photo_order", false).unwrap(),
+                5 => doc.put(&library, "photo_core", "bad").unwrap(),
+                _ => {
+                    let tombstones = doc.get(&library, "removed_photos").unwrap().unwrap().1;
+                    doc.put(tombstones, "id", "true").unwrap();
+                }
+            }
+            let heads = doc.get_heads();
+            let input = frozen_input(
+                &doc,
+                heads[0],
+                FrozenPreviewAssets::default(),
+                PreviewView::default(),
+            );
+            assert!(
+                definition().scopes[0]
+                    .presentation
+                    .preview_factory()
+                    .unwrap()(input)
+                .is_err(),
+                "case {case}"
+            );
+            assert_eq!(doc.get_heads(), heads);
+        }
+    }
 }
+#[allow(
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "one end-to-end request custody sequence with local fixture helpers"
+)]
 #[test]
-fn same_path_changed_content_refreshes_actual_pixels() {
-    let mut doc = AutoCommit::new();
-    let store = tilo_content::ContentStore::memory();
-    let mut app = crate::PhotosApp::with_content(store.clone());
-    let mut expected = Vec::new();
-    for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
-        let rgba = crate::pixels::Rgba::new(2, 1, color.repeat(2)).unwrap();
-        let bytes = crate::pixels::encode_png(&rgba).unwrap();
-        let hash = store.put(&bytes).unwrap();
-        let open = OpenImage::from_path("same.png", 2, 1).with_content(hash);
+fn history_previews_use_actual_historic_pixels_and_never_substitute_current_ones() {
+    eprintln!("phase same_path_changed_content_refreshes_actual_pixels");
+    {
+        let mut doc = AutoCommit::new();
+        let store = tilo_content::ContentStore::memory();
+        let mut app = crate::PhotosApp::with_content(store.clone());
+        let mut expected = Vec::new();
+        for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
+            let rgba = crate::pixels::Rgba::new(2, 1, color.repeat(2)).unwrap();
+            let bytes = crate::pixels::encode_png(&rgba).unwrap();
+            let hash = store.put(&bytes).unwrap();
+            let open = OpenImage::from_path("same.png", 2, 1).with_content(hash);
+            PhotosDoc::set_image(&mut doc, Some(&open));
+            app.sync(&mut doc, &ROOT);
+            expected.push(rgba);
+            assert_eq!(app.edited_pixels(), expected.last());
+        }
+    }
+
+    eprintln!(
+        "phase same_path_old_new_restore_undo_redo_uses_actual_historic_pixels_and_current_metadata"
+    );
+    {
+        let (old, old_rgba, old_bytes) = image_fixture();
+        let new_rgba = crate::pixels::Rgba::new(6, 4, [0, 255, 0, 255].repeat(24)).unwrap();
+        let new_bytes = crate::pixels::encode_png(&new_rgba).unwrap();
+        let new = old
+            .clone()
+            .with_content(tilo_content::hash_bytes(&new_bytes));
+        let mut doc = AutoCommit::new();
+        PhotosDoc::set_image(&mut doc, Some(&old));
+        let selected = doc.get_heads()[0];
+        PhotosDoc::set_image(&mut doc, Some(&new));
+        doc.put(ROOT, "view_only", "current").unwrap();
+        let live = doc.get_heads()[0];
+        for (hash, open, bytes, expected) in [
+            (selected, &old, &old_bytes, &old_rgba),
+            (live, &new, &new_bytes, &new_rgba),
+        ] {
+            let mut p = prepared(&doc, hash, assets(open, bytes), PreviewView::default());
+            assert_eq!(
+                painted_images(&painted(p.as_mut(), 1000., 1.))[0]
+                    .data
+                    .data(),
+                expected.bytes
+            );
+        }
+        let mut driver = managed_driver(doc, selected);
+        driver.click_named("history-restore").unwrap();
+        driver.key("Enter");
+        driver.click_named("history-back-live").unwrap();
+        let store = tilo_content::ContentStore::memory();
+        store.put(&old_bytes).unwrap();
+        store.put(&new_bytes).unwrap();
+        let mut app = crate::PhotosApp::with_content(store);
+        app.sync(&mut driver.state_mut().doc, &ROOT);
+        assert_eq!(app.edited_pixels(), Some(&old_rgba));
+        assert!(driver.state_mut().undo(None, None).is_some());
+        app.sync(&mut driver.state_mut().doc, &ROOT);
+        assert_eq!(app.edited_pixels(), Some(&new_rgba));
+        assert!(driver.state_mut().redo(None, None).is_some());
+        app.sync(&mut driver.state_mut().doc, &ROOT);
+        assert_eq!(app.edited_pixels(), Some(&old_rgba));
+        let mut reopened = AutoCommit::load(&driver.state_mut().doc.save()).unwrap();
+        let heads = reopened.get_heads();
+        app.sync(&mut reopened, &ROOT);
+        assert_eq!(app.edited_pixels(), Some(&old_rgba));
+        assert_eq!(reopened.get_heads(), heads);
+        assert_eq!(
+            reopened.get(ROOT, "view_only").unwrap().unwrap().0.as_str(),
+            Some("current")
+        );
+        assert!(reopened.get_change_by_hash(&selected).is_some());
+    }
+
+    eprintln!("phase corrupt_missing_and_existing_legacy_path_never_substitute_current_pixels");
+    {
+        let (open, _, bytes) = image_fixture();
+        let mut doc = AutoCommit::new();
         PhotosDoc::set_image(&mut doc, Some(&open));
-        app.sync(&mut doc, &ROOT);
-        expected.push(rgba);
-        assert_eq!(app.edited_pixels(), expected.last());
+        let selected = doc.get_heads()[0];
+        for asset in [FrozenPreviewAssets::default(), assets(&open, b"corrupt")] {
+            let mut p = prepared(&doc, selected, asset, PreviewView::default());
+            assert!(painted_images(&painted(p.as_mut(), 1000., 1.)).is_empty());
+            assert!(p.accessibility().description.contains("unavailable"));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exists.png");
+        std::fs::write(&path, &bytes).unwrap();
+        PhotosDoc::set_image(
+            &mut doc,
+            Some(&OpenImage::from_path(&path.to_string_lossy(), 6, 4)),
+        );
+        let selected = doc.get_heads()[0];
+        let mut p = prepared(
+            &doc,
+            selected,
+            FrozenPreviewAssets::default(),
+            PreviewView::default(),
+        );
+        assert!(painted_images(&painted(p.as_mut(), 1000., 1.)).is_empty());
+        assert!(p.accessibility().description.contains("unavailable"));
+    }
+
+    eprintln!(
+        "phase late_old_selection_compare_side_and_closed_host_assets_never_replace_current_preview"
+    );
+    {
+        use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+        #[derive(Default)]
+        struct Held(RefCell<Vec<(HistoricalAssetRequest, HistoricalAssetResponse)>>);
+        impl HistoricalAssetSource for Held {
+            fn request(&self, r: HistoricalAssetRequest, s: HistoricalAssetResponse) {
+                self.0.borrow_mut().push((r, s));
+            }
+        }
+        let (old, _, old_bytes) = image_fixture();
+        let new_bytes = crate::pixels::encode_png(
+            &crate::pixels::Rgba::new(6, 4, [0, 255, 0, 255].repeat(24)).unwrap(),
+        )
+        .unwrap();
+        let new = old
+            .clone()
+            .with_content(tilo_content::hash_bytes(&new_bytes));
+        let mut doc = AutoCommit::new();
+        PhotosDoc::set_image(&mut doc, Some(&old));
+        let selected = doc.get_heads()[0];
+        PhotosDoc::set_image(&mut doc, Some(&new));
+        doc.put(ROOT, "timeline_marker", "live").unwrap();
+        let live = doc.get_heads()[0];
+        let held = Rc::new(Held::default());
+        let def = definition();
+        let registration = HistoryRegistration::new(
+            def,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "photos",
+                resource: HistoryResource::new("p", "r", def.app_id, ui::RecordId::for_tab(55)),
+            }],
+        )
+        .unwrap()
+        .with_asset_source("photos", held.clone())
+        .unwrap();
+        let mut driver = ui::headless::Driver::from_managed_root(
+            ui::State::from_doc(doc),
+            ManagedRoot::new(test_root(), registration),
+            (1000, 750),
+        )
+        .unwrap();
+        driver.click_named("history-open").unwrap();
+        select_version(&mut driver, selected);
+        let stale = held.0.take();
+        assert!(!stale.is_empty());
+        select_version(&mut driver, live);
+        let current = held.0.take();
+        assert_eq!(current.len(), 2);
+        for (request, response) in current {
+            let image =
+                PhotosDoc::image(&AutoCommit::load(request.snapshot.bytes()).unwrap()).unwrap();
+            let bytes = if image.content == new.content {
+                &new_bytes
+            } else {
+                &old_bytes
+            };
+            response.complete(Ok(BTreeMap::from([(
+                crate::framework_history::asset_id(&image).unwrap(),
+                Arc::from(bytes.clone()),
+            )])));
+        }
+        driver.resize((1000, 750)).unwrap();
+        driver.click_named("history-after").unwrap();
+        let before = format!("{:?}", driver.a11y_nodes());
+        assert!(!before.contains("Historical pixels unavailable"));
+        for (_, response) in stale {
+            response.complete(Err(
+                "late old response must not replace active pixels".into()
+            ));
+        }
+        driver.resize((1000, 750)).unwrap();
+        assert_eq!(format!("{:?}", driver.a11y_nodes()), before);
+        driver.click_named("history-before").unwrap();
+        assert!(!format!("{:?}", driver.a11y_nodes()).contains("Historical pixels unavailable"));
+        // Re-select in the SAME host after comparing Before. A resize pumps
+        // completions without typing into the timeline's search field.
+        let target = format!(
+            "timeline-entry:{}",
+            ui::widget::history_group::hex16(&ui::history_source::entry_id_from_hash(
+                &selected.to_string()
+            ))
+        );
+        assert!(
+            driver.inspection_json().unwrap().contains(&target),
+            "the selected row remains exported after Before comparison"
+        );
+        select_version(&mut driver, selected);
+        let closed_same_host = held.0.take();
+        assert!(!closed_same_host.is_empty());
+        driver.click_named("history-back-live").unwrap();
+        for (_, response) in closed_same_host {
+            response.complete(Err("late same-host closed preview".into()));
+        }
+        driver.resize((1000, 750)).unwrap();
+        assert!(!format!("{:?}", driver.a11y_nodes()).contains("late same-host closed preview"));
+        // A distinct host/resource owns the next request. Closing it cannot deliver
+        // either pixels or failure state into the still-mounted first host.
+        let registration = HistoryRegistration::new(
+            def,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "photos",
+                resource: HistoryResource::new(
+                    "other-profile",
+                    "other-record",
+                    def.app_id,
+                    ui::RecordId::for_tab(66),
+                ),
+            }],
+        )
+        .unwrap()
+        .with_asset_source("photos", held.clone())
+        .unwrap();
+        let mut closing_driver = ui::headless::Driver::from_managed_root(
+            ui::State::from_doc(driver.state_mut().doc.clone()),
+            ManagedRoot::new(test_root(), registration),
+            (1000, 750),
+        )
+        .unwrap();
+        closing_driver.click_named("history-open").unwrap();
+        select_version(&mut closing_driver, selected);
+        let closing = held.0.take();
+        assert!(!closing.is_empty());
+        closing_driver.click_named("history-back-live").unwrap();
+        drop(closing_driver);
+        let visible = format!("{:?}", driver.a11y_nodes());
+        for (_, response) in closing {
+            response.complete(Err("late closed host".into()));
+        }
+        driver.resize((1000, 750)).unwrap();
+        assert_eq!(format!("{:?}", driver.a11y_nodes()), visible);
     }
 }
 
@@ -221,59 +521,6 @@ fn frozen_selected_pixels_follow_real_crop_then_quarter_turn_and_recreate_pan_zo
     }
 }
 #[test]
-fn same_path_old_new_restore_undo_redo_uses_actual_historic_pixels_and_current_metadata() {
-    let (old, old_rgba, old_bytes) = image_fixture();
-    let new_rgba = crate::pixels::Rgba::new(6, 4, [0, 255, 0, 255].repeat(24)).unwrap();
-    let new_bytes = crate::pixels::encode_png(&new_rgba).unwrap();
-    let new = old
-        .clone()
-        .with_content(tilo_content::hash_bytes(&new_bytes));
-    let mut doc = AutoCommit::new();
-    PhotosDoc::set_image(&mut doc, Some(&old));
-    let selected = doc.get_heads()[0];
-    PhotosDoc::set_image(&mut doc, Some(&new));
-    doc.put(ROOT, "view_only", "current").unwrap();
-    let live = doc.get_heads()[0];
-    for (hash, open, bytes, expected) in [
-        (selected, &old, &old_bytes, &old_rgba),
-        (live, &new, &new_bytes, &new_rgba),
-    ] {
-        let mut p = prepared(&doc, hash, assets(open, bytes), PreviewView::default());
-        assert_eq!(
-            painted_images(&painted(p.as_mut(), 1000., 1.))[0]
-                .data
-                .data(),
-            expected.bytes
-        );
-    }
-    let mut driver = managed_driver(doc, selected);
-    driver.click_named("history-restore").unwrap();
-    driver.key("Enter");
-    driver.click_named("history-back-live").unwrap();
-    let store = tilo_content::ContentStore::memory();
-    store.put(&old_bytes).unwrap();
-    store.put(&new_bytes).unwrap();
-    let mut app = crate::PhotosApp::with_content(store);
-    app.sync(&mut driver.state_mut().doc, &ROOT);
-    assert_eq!(app.edited_pixels(), Some(&old_rgba));
-    assert!(driver.state_mut().undo(None, None).is_some());
-    app.sync(&mut driver.state_mut().doc, &ROOT);
-    assert_eq!(app.edited_pixels(), Some(&new_rgba));
-    assert!(driver.state_mut().redo(None, None).is_some());
-    app.sync(&mut driver.state_mut().doc, &ROOT);
-    assert_eq!(app.edited_pixels(), Some(&old_rgba));
-    let mut reopened = AutoCommit::load(&driver.state_mut().doc.save()).unwrap();
-    let heads = reopened.get_heads();
-    app.sync(&mut reopened, &ROOT);
-    assert_eq!(app.edited_pixels(), Some(&old_rgba));
-    assert_eq!(reopened.get_heads(), heads);
-    assert_eq!(
-        reopened.get(ROOT, "view_only").unwrap().unwrap().0.as_str(),
-        Some("current")
-    );
-    assert!(reopened.get_change_by_hash(&selected).is_some());
-}
-#[test]
 fn grid_album_favorites_metadata_are_painted_and_paginated_at_narrow_large_text() {
     let (open, _, bytes) = image_fixture();
     let mut library = PhotoLibrary::default();
@@ -322,275 +569,6 @@ fn grid_album_favorites_metadata_are_painted_and_paginated_at_narrow_large_text(
         );
         assert!(p.navigate(PreviewNavigation::SelectPage("library:0".into())));
     }
-}
-#[test]
-fn corrupt_missing_and_existing_legacy_path_never_substitute_current_pixels() {
-    let (open, _, bytes) = image_fixture();
-    let mut doc = AutoCommit::new();
-    PhotosDoc::set_image(&mut doc, Some(&open));
-    let selected = doc.get_heads()[0];
-    for asset in [FrozenPreviewAssets::default(), assets(&open, b"corrupt")] {
-        let mut p = prepared(&doc, selected, asset, PreviewView::default());
-        assert!(painted_images(&painted(p.as_mut(), 1000., 1.)).is_empty());
-        assert!(p.accessibility().description.contains("unavailable"));
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("exists.png");
-    std::fs::write(&path, &bytes).unwrap();
-    PhotosDoc::set_image(
-        &mut doc,
-        Some(&OpenImage::from_path(&path.to_string_lossy(), 6, 4)),
-    );
-    let selected = doc.get_heads()[0];
-    let mut p = prepared(
-        &doc,
-        selected,
-        FrozenPreviewAssets::default(),
-        PreviewView::default(),
-    );
-    assert!(painted_images(&painted(p.as_mut(), 1000., 1.)).is_empty());
-    assert!(p.accessibility().description.contains("unavailable"));
-}
-#[test]
-fn exact_current_and_legacy_roots_tombstones_unknown_authored_fields_survive_restore() {
-    for legacy in [false, true] {
-        let (open, _, _) = image_fixture();
-        let mut doc = AutoCommit::new();
-        if legacy {
-            doc.put(ROOT, "image", serde_json::to_string(&Some(&open)).unwrap())
-                .unwrap();
-            doc.put(
-                ROOT,
-                "edits",
-                serde_json::to_string(&Edits::default().rotated_right()).unwrap(),
-            )
-            .unwrap();
-            doc.put(
-                ROOT,
-                "library",
-                serde_json::to_string(&PhotoLibrary {
-                    photos: vec![crate::model::LibraryPhoto::from_image(open.clone())],
-                    albums: vec![],
-                })
-                .unwrap(),
-            )
-            .unwrap();
-        } else {
-            PhotosDoc::set_image(&mut doc, Some(&open));
-            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-            doc.put(&root, "future_authored_setting", "retained")
-                .unwrap();
-            let removed = doc.get(&root, "removed_photos").unwrap().unwrap().1;
-            doc.put(&removed, "deleted-photo", true).unwrap();
-        }
-        let selected = doc.get_heads();
-        let saved = doc.save();
-        PhotosDoc::set_image(&mut doc, None);
-        doc.put(ROOT, "receipt", "current").unwrap();
-        let heads = doc.get_heads();
-        let plan =
-            prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &selected)
-                .unwrap();
-        apply_prepared_content_restore(&mut doc, &plan).unwrap();
-        assert_eq!(doc.get_changes(&heads).len(), 1);
-        let projection = project_content(
-            &AutoCommit::load(&saved).unwrap(),
-            &crate::framework_history::SCHEMA,
-        )
-        .unwrap();
-        for _ in 0..2 {
-            crate::app_root().sync(&mut doc, &ROOT);
-            assert_eq!(
-                project_content(&doc, &crate::framework_history::SCHEMA).unwrap(),
-                projection
-            );
-            doc = AutoCommit::load(&doc.save()).unwrap();
-        }
-        assert_eq!(
-            doc.get(ROOT, "receipt").unwrap().unwrap().0.as_str(),
-            Some("current")
-        );
-        assert!(doc.get_change_by_hash(&selected[0]).is_some());
-    }
-}
-#[test]
-fn typed_schema_refuses_defaulted_malformed_values_without_writes() {
-    for case in 0..9 {
-        let (mut doc, _, _) = fixture();
-        let edits = doc.get(ROOT, "photos_edits").unwrap().unwrap().1;
-        let library = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-        match case {
-            0 => doc.put(ROOT, "image", "{}").unwrap(),
-            1 => doc.put(&edits, "rotate_quarters", "4").unwrap(),
-            2 => doc
-                .put(&edits, "crop", r#"{"x":0,"y":0,"w":2,"h":1}"#)
-                .unwrap(),
-            3 => doc.delete(&edits, "crop").unwrap(),
-            4 => doc.put(&library, "photo_order", false).unwrap(),
-            5 => doc.put(&library, "photos", "bad").unwrap(),
-            6 => doc
-                .put(ROOT, "edits", r#"{"crop":{},"rotate_quarters":0}"#)
-                .unwrap(),
-            7 => doc.put(ROOT, "library", r#"{"photos":[{}]}"#).unwrap(),
-            _ => {
-                let tombstones = doc.get(&library, "removed_photos").unwrap().unwrap().1;
-                doc.put(tombstones, "id", "true").unwrap();
-            }
-        }
-        let heads = doc.get_heads();
-        let input = frozen_input(
-            &doc,
-            heads[0],
-            FrozenPreviewAssets::default(),
-            PreviewView::default(),
-        );
-        assert!(
-            definition().scopes[0]
-                .presentation
-                .preview_factory()
-                .unwrap()(input)
-            .is_err(),
-            "case {case}"
-        );
-        assert_eq!(doc.get_heads(), heads);
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    clippy::items_after_statements,
-    reason = "one end-to-end request custody sequence with local fixture helpers"
-)]
-fn late_old_selection_compare_side_and_closed_host_assets_never_replace_current_preview() {
-    use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
-    #[derive(Default)]
-    struct Held(RefCell<Vec<(HistoricalAssetRequest, HistoricalAssetResponse)>>);
-    impl HistoricalAssetSource for Held {
-        fn request(&self, r: HistoricalAssetRequest, s: HistoricalAssetResponse) {
-            self.0.borrow_mut().push((r, s));
-        }
-    }
-    let (old, _, old_bytes) = image_fixture();
-    let new_bytes = crate::pixels::encode_png(
-        &crate::pixels::Rgba::new(6, 4, [0, 255, 0, 255].repeat(24)).unwrap(),
-    )
-    .unwrap();
-    let new = old
-        .clone()
-        .with_content(tilo_content::hash_bytes(&new_bytes));
-    let mut doc = AutoCommit::new();
-    PhotosDoc::set_image(&mut doc, Some(&old));
-    let selected = doc.get_heads()[0];
-    PhotosDoc::set_image(&mut doc, Some(&new));
-    doc.put(ROOT, "timeline_marker", "live").unwrap();
-    let live = doc.get_heads()[0];
-    let held = Rc::new(Held::default());
-    let def = definition();
-    let registration = HistoryRegistration::new(
-        def,
-        vec![HistorySourceRegistration::HostDocument {
-            scope: "photos",
-            resource: HistoryResource::new("p", "r", def.app_id, ui::RecordId::for_tab(55)),
-        }],
-    )
-    .unwrap()
-    .with_asset_source("photos", held.clone())
-    .unwrap();
-    let mut driver = ui::headless::Driver::from_managed_root(
-        ui::State::from_doc(doc),
-        ManagedRoot::new(test_root(), registration),
-        (1000, 750),
-    )
-    .unwrap();
-    driver.click_named("history-open").unwrap();
-    select_version(&mut driver, selected);
-    let stale = held.0.take();
-    assert!(!stale.is_empty());
-    select_version(&mut driver, live);
-    let current = held.0.take();
-    assert_eq!(current.len(), 2);
-    for (request, response) in current {
-        let image = PhotosDoc::image(&AutoCommit::load(request.snapshot.bytes()).unwrap()).unwrap();
-        let bytes = if image.content == new.content {
-            &new_bytes
-        } else {
-            &old_bytes
-        };
-        response.complete(Ok(BTreeMap::from([(
-            crate::framework_history::asset_id(&image).unwrap(),
-            Arc::from(bytes.clone()),
-        )])));
-    }
-    driver.resize((1000, 750)).unwrap();
-    driver.click_named("history-after").unwrap();
-    let before = format!("{:?}", driver.a11y_nodes());
-    assert!(!before.contains("Historical pixels unavailable"));
-    for (_, response) in stale {
-        response.complete(Err(
-            "late old response must not replace active pixels".into()
-        ));
-    }
-    driver.resize((1000, 750)).unwrap();
-    assert_eq!(format!("{:?}", driver.a11y_nodes()), before);
-    driver.click_named("history-before").unwrap();
-    assert!(!format!("{:?}", driver.a11y_nodes()).contains("Historical pixels unavailable"));
-    // Re-select in the SAME host after comparing Before. A resize pumps
-    // completions without typing into the timeline's search field.
-    let target = format!(
-        "timeline-entry:{}",
-        ui::widget::history_group::hex16(&ui::history_source::entry_id_from_hash(
-            &selected.to_string()
-        ))
-    );
-    assert!(
-        driver.inspection_json().unwrap().contains(&target),
-        "the selected row remains exported after Before comparison"
-    );
-    select_version(&mut driver, selected);
-    let closed_same_host = held.0.take();
-    assert!(!closed_same_host.is_empty());
-    driver.click_named("history-back-live").unwrap();
-    for (_, response) in closed_same_host {
-        response.complete(Err("late same-host closed preview".into()));
-    }
-    driver.resize((1000, 750)).unwrap();
-    assert!(!format!("{:?}", driver.a11y_nodes()).contains("late same-host closed preview"));
-    // A distinct host/resource owns the next request. Closing it cannot deliver
-    // either pixels or failure state into the still-mounted first host.
-    let registration = HistoryRegistration::new(
-        def,
-        vec![HistorySourceRegistration::HostDocument {
-            scope: "photos",
-            resource: HistoryResource::new(
-                "other-profile",
-                "other-record",
-                def.app_id,
-                ui::RecordId::for_tab(66),
-            ),
-        }],
-    )
-    .unwrap()
-    .with_asset_source("photos", held.clone())
-    .unwrap();
-    let mut closing_driver = ui::headless::Driver::from_managed_root(
-        ui::State::from_doc(driver.state_mut().doc.clone()),
-        ManagedRoot::new(test_root(), registration),
-        (1000, 750),
-    )
-    .unwrap();
-    closing_driver.click_named("history-open").unwrap();
-    select_version(&mut closing_driver, selected);
-    let closing = held.0.take();
-    assert!(!closing.is_empty());
-    closing_driver.click_named("history-back-live").unwrap();
-    drop(closing_driver);
-    let visible = format!("{:?}", driver.a11y_nodes());
-    for (_, response) in closing {
-        response.complete(Err("late closed host".into()));
-    }
-    driver.resize((1000, 750)).unwrap();
-    assert_eq!(format!("{:?}", driver.a11y_nodes()), visible);
 }
 /// The preview is built only from the frozen snapshot and the assets admitted
 /// for it: it is handed no content store, and its source reaches for none.
@@ -645,94 +623,47 @@ fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport
 }
 
 #[test]
-fn supported_conflict_branches_preview_without_flattening_but_restore_refuses_conflict() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "metadata", "base").unwrap();
-    doc.get_heads();
-    let mut peer = doc.fork();
-    PhotosDoc::set_image(&mut doc, Some(&OpenImage::from_path("one.png", 4, 3)));
-    PhotosDoc::set_image(&mut peer, Some(&OpenImage::from_path("two.png", 4, 3)));
-    doc.merge_incoming(&mut peer).unwrap();
-    let heads = doc.get_heads();
-    let mut controller = HistoryController::new(
-        HistoryResource::new("p", "r", "so.tilo.photos", ui::RecordId::for_tab(8)),
-        &doc,
-    )
-    .unwrap();
-    controller
-        .select(
+fn conflicts_preview_unflattened_but_restore_refuses_them() {
+    eprintln!(
+        "phase supported_conflict_branches_preview_without_flattening_but_restore_refuses_conflict"
+    );
+    {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "metadata", "base").unwrap();
+        doc.get_heads();
+        let mut peer = doc.fork();
+        PhotosDoc::set_image(&mut doc, Some(&OpenImage::from_path("one.png", 4, 3)));
+        PhotosDoc::set_image(&mut peer, Some(&OpenImage::from_path("two.png", 4, 3)));
+        doc.merge_incoming(&mut peer).unwrap();
+        let heads = doc.get_heads();
+        let mut controller = HistoryController::new(
+            HistoryResource::new("p", "r", "so.tilo.photos", ui::RecordId::for_tab(8)),
             &doc,
-            &heads
-                .iter()
-                .map(|h| ui::history_source::entry_id_from_hash(&h.to_string()))
-                .collect::<Vec<_>>(),
         )
         .unwrap();
-    let p = crate::framework_history::HISTORY.scopes[0]
-        .presentation
-        .preview_factory()
-        .unwrap()(PreviewInput {
-        snapshot: controller.snapshot().unwrap().clone(),
-        initial_view: PreviewView::default(),
-        assets: FrozenPreviewAssets::default(),
-    })
-    .unwrap();
-    assert!(p.accessibility().description.contains(".png"));
-    assert_eq!(doc.get_heads(), heads);
-    assert!(
-        prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &heads).is_err()
-    );
-}
-
-#[test]
-fn explicit_normal_edit_materializes_legacy_once_and_undo_restores_legacy_representation() {
-    let (open, _, bytes) = image_fixture();
-    let store = tilo_content::ContentStore::memory();
-    store.put(&bytes).unwrap();
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "image", serde_json::to_string(&Some(&open)).unwrap())
-        .unwrap();
-    doc.put(
-        ROOT,
-        "edits",
-        serde_json::to_string(&Edits::default()).unwrap(),
-    )
-    .unwrap();
-    doc.put(
-        ROOT,
-        "library",
-        serde_json::to_string(&PhotoLibrary {
-            photos: vec![crate::model::LibraryPhoto::from_image(open)],
-            albums: vec![],
+        controller
+            .select(
+                &doc,
+                &heads
+                    .iter()
+                    .map(|h| ui::history_source::entry_id_from_hash(&h.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let p = crate::framework_history::HISTORY.scopes[0]
+            .presentation
+            .preview_factory()
+            .unwrap()(PreviewInput {
+            snapshot: controller.snapshot().unwrap().clone(),
+            initial_view: PreviewView::default(),
+            assets: FrozenPreviewAssets::default(),
         })
-        .unwrap(),
-    )
-    .unwrap();
-    let heads = doc.get_heads();
-    let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
-    crate::strings::install();
-    let mut driver = ui::headless::Driver::new(
-        ui::State::from_doc(doc),
-        Box::new(crate::PhotosApp::with_content(store)),
-        (1000, 750),
-    );
-    driver
-        .perform_semantic_named(
-            "PhotosApp",
-            Some("photos:toolbar:photos-rotate-right"),
-            &ui::a11y::Action::Activate,
-        )
         .unwrap();
-    assert_eq!(driver.state_mut().doc.get_changes(&heads).len(), 1);
-    assert_eq!(PhotosDoc::edits(&driver.state_mut().doc).rotate_quarters, 1);
-    assert!(driver.state_mut().doc.get(ROOT, "edits").unwrap().is_none());
-    assert!(driver.state_mut().undo(None, None).is_some());
-    driver.resize((1000, 750)).unwrap();
-    assert_eq!(
-        project_content(&driver.state_mut().doc, &crate::framework_history::SCHEMA).unwrap(),
-        expected
-    );
-    assert!(driver.state_mut().redo(None, None).is_some());
-    driver.resize((1000, 750)).unwrap();
-    assert_eq!(PhotosDoc::edits(&driver.state_mut().doc).rotate_quarters, 1);
+        assert!(p.accessibility().description.contains(".png"));
+        assert_eq!(doc.get_heads(), heads);
+        assert!(
+            prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &heads)
+                .is_err()
+        );
+    }
 }

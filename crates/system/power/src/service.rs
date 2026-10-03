@@ -5,8 +5,8 @@
 //! Runs on a background tokio runtime (spawned by the compositor next to the notification
 //! service) and:
 //!
-//! * takes a logind *block* lock so logind delegates the lid switch and power key to the
-//!   compositor's policy;
+//! * on the seat that owns them, takes a logind *block* lock so logind delegates the lid
+//!   switch and power key to the compositor's policy;
 //! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock;
 //! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
 //!   + a critical auto-suspend;
@@ -165,15 +165,25 @@ impl PowerService {
 
         // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
         // just also act on the lid. Do not fail startup.
-        let delegate = match logind.delegate_handled_keys().await {
-            Ok(l) => {
-                info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
-                Some(l)
+        let seat = std::env::var("XDG_SEAT").ok();
+        let delegate = if receives_seat_buttons(seat.as_deref()) {
+            match logind.delegate_handled_keys().await {
+                Ok(l) => {
+                    info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
+                    Some(l)
+                }
+                Err(e) => {
+                    warn!(target: "tilo::power", error = %e, "logind: could not take delegate lock");
+                    None
+                }
             }
-            Err(e) => {
-                warn!(target: "tilo::power", error = %e, "logind: could not take delegate lock");
-                None
-            }
+        } else {
+            info!(
+                target: "tilo::power",
+                seat = seat.as_deref().unwrap_or_default(),
+                "logind: lid/power-key stay with logind; they belong to seat0, not this seat"
+            );
+            None
         };
         let sleep_delay_lock = take_sleep_delay_lock(&logind).await;
 
@@ -498,6 +508,14 @@ impl PowerService {
     }
 }
 
+/// Whether a session on `seat` gets the lid switch and power key. logind tags those
+/// buttons `seat0` and keeps them there; a session on any other seat (a second
+/// head, a dev-VM slot) never sees them, so delegating them to it would leave the
+/// power button, and an ACPI shutdown request, doing nothing at all.
+fn receives_seat_buttons(seat: Option<&str>) -> bool {
+    seat.is_none_or(|seat| seat.is_empty() || seat == "seat0")
+}
+
 async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor> {
     match logind
         .inhibit(
@@ -532,134 +550,140 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ended_signal_streams_back_off_before_resubscribe() {
-        let now = tokio::time::Instant::now();
-        let retry = stream_retry_after(now);
-        assert!(retry > now);
-        assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
-    }
-
-    #[test]
-    fn lid_edge_only_acts_on_close_transition() {
-        let mut p = PowerPolicy {
-            lid_close_action: PowerAction::Suspend,
-            ..Default::default()
-        };
-        // First observation never acts (records only).
-        assert_eq!(lid_edge_effect(None, true, &p), Effect::None);
-        assert_eq!(lid_edge_effect(None, false, &p), Effect::None);
-        // open→closed acts.
-        assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Suspend);
-        // staying closed does not re-act.
-        assert_eq!(lid_edge_effect(Some(true), true, &p), Effect::None);
-        // closing→opening does not act.
-        assert_eq!(lid_edge_effect(Some(true), false, &p), Effect::None);
-        // Policy is honoured on the edge.
-        p.lid_close_action = PowerAction::Lock;
-        assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Lock);
-        p.lid_close_action = PowerAction::Ignore;
-        assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::None);
-    }
-
-    #[test]
-    fn effect_from_action() {
-        assert_eq!(Effect::from(Some(PowerAction::Suspend)), Effect::Suspend);
-        assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
-        assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
-        assert_eq!(Effect::from(None), Effect::None);
-    }
-
-    #[test]
-    fn sleep_always_locks_before_resume_is_reported() {
-        assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
-        assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
-    }
-
-    #[test]
-    fn suspend_failure_is_reported_to_cancel_a_pre_sleep_latch() {
-        let bridge = crate::bridge::PowerBridge::new();
-        bridge.push_signal(PowerSignal::SuspendFailed);
-        assert_eq!(bridge.drain_signals(), vec![PowerSignal::SuspendFailed]);
-    }
-
-    #[test]
-    fn low_event_becomes_a_noncritical_toast_no_suspend() {
-        let p = PowerPolicy::default();
-        let (signals, suspend) = battery_reaction(&[BatteryEvent::Low(12)], &p);
-        assert!(!suspend);
-        assert_eq!(signals.len(), 1);
-        match &signals[0] {
-            PowerSignal::Notify(n) => {
-                assert!(!n.critical);
-                assert!(n.body.contains("12%"));
-            }
-            other => panic!("expected a notify, got {other:?}"),
+    fn service_reacts_to_lid_sleep_and_signal_edges() {
+        // Phase `ended_signal_streams_back_off_before_resubscribe`.
+        {
+            let now = tokio::time::Instant::now();
+            let retry = stream_retry_after(now);
+            assert!(retry > now);
+            assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
+        }
+        // Phase `only_the_button_seat_takes_the_key_delegation`.
+        {
+            assert!(receives_seat_buttons(Some("seat0")));
+            assert!(receives_seat_buttons(None));
+            assert!(receives_seat_buttons(Some("")));
+            assert!(!receives_seat_buttons(Some("seat-pr1307")));
+            assert!(!receives_seat_buttons(Some("seat1")));
+        }
+        // Phase `lid_edge_only_acts_on_close_transition`.
+        {
+            let mut p = PowerPolicy {
+                lid_close_action: PowerAction::Suspend,
+                ..Default::default()
+            };
+            // First observation never acts (records only).
+            assert_eq!(lid_edge_effect(None, true, &p), Effect::None);
+            assert_eq!(lid_edge_effect(None, false, &p), Effect::None);
+            // open→closed acts.
+            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Suspend);
+            // staying closed does not re-act.
+            assert_eq!(lid_edge_effect(Some(true), true, &p), Effect::None);
+            // closing→opening does not act.
+            assert_eq!(lid_edge_effect(Some(true), false, &p), Effect::None);
+            // Policy is honoured on the edge.
+            p.lid_close_action = PowerAction::Lock;
+            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Lock);
+            p.lid_close_action = PowerAction::Ignore;
+            assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::None);
+        }
+        // Phase `effect_from_action`.
+        {
+            assert_eq!(Effect::from(Some(PowerAction::Suspend)), Effect::Suspend);
+            assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
+            assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
+            assert_eq!(Effect::from(None), Effect::None);
+        }
+        // Phase `sleep_always_locks_before_resume_is_reported`.
+        {
+            assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
+            assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
+        }
+        // Phase `suspend_failure_is_reported_to_cancel_a_pre_sleep_latch`.
+        {
+            let bridge = crate::bridge::PowerBridge::new();
+            bridge.push_signal(PowerSignal::SuspendFailed);
+            assert_eq!(bridge.drain_signals(), vec![PowerSignal::SuspendFailed]);
         }
     }
 
     #[test]
-    fn critical_event_toasts_and_suspends_when_policy_says_suspend() {
-        let p = PowerPolicy {
-            critical_action: PowerAction::Suspend,
-            ..Default::default()
-        };
-        let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
-        assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
-        assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
-    }
+    fn battery_events_toast_and_suspend_according_to_policy() {
+        // Phase `low_event_becomes_a_noncritical_toast_no_suspend`.
+        {
+            let p = PowerPolicy::default();
+            let (signals, suspend) = battery_reaction(&[BatteryEvent::Low(12)], &p);
+            assert!(!suspend);
+            assert_eq!(signals.len(), 1);
+            match &signals[0] {
+                PowerSignal::Notify(n) => {
+                    assert!(!n.critical);
+                    assert!(n.body.contains("12%"));
+                }
+                other => panic!("expected a notify, got {other:?}"),
+            }
+        }
+        // Phase `critical_event_toasts_and_suspends_when_policy_says_suspend`.
+        {
+            let p = PowerPolicy {
+                critical_action: PowerAction::Suspend,
+                ..Default::default()
+            };
+            let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
+            assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
+            assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
+        }
+        // Phase `critical_event_does_not_suspend_when_policy_ignores`.
+        {
+            let p = PowerPolicy {
+                critical_action: PowerAction::Ignore,
+                ..Default::default()
+            };
+            let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(3)], &p);
+            assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
+            // Still warns (critical toast), just doesn't act.
+            assert_eq!(signals.len(), 1);
+            assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
+        }
+        // Phase `recovered_event_is_silent`.
+        {
+            let p = PowerPolicy::default();
+            let (signals, suspend) = battery_reaction(&[BatteryEvent::Recovered], &p);
+            assert!(signals.is_empty());
+            assert!(!suspend);
+        }
+        // Phase `monitor_plus_reaction_full_discharge`.
+        // End-to-end pure path: a discharging battery crossing the low then the critical threshold
+        // produces exactly the toasts + suspend the service would apply — the same `BatteryMonitor`
+        // + `battery_reaction` the async loop uses, minus the bus.
+        {
+            use crate::battery::BatteryState;
+            let p = PowerPolicy {
+                low_battery_percent: 15,
+                critical_battery_percent: 5,
+                ..Default::default()
+            };
+            let mut mon = BatteryMonitor::new();
+            let disch = |pct| BatterySnapshot {
+                present: true,
+                percent: pct,
+                state: BatteryState::Discharging,
+            };
 
-    #[test]
-    fn critical_event_does_not_suspend_when_policy_ignores() {
-        let p = PowerPolicy {
-            critical_action: PowerAction::Ignore,
-            ..Default::default()
-        };
-        let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(3)], &p);
-        assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
-        // Still warns (critical toast), just doesn't act.
-        assert_eq!(signals.len(), 1);
-        assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
-    }
-
-    #[test]
-    fn recovered_event_is_silent() {
-        let p = PowerPolicy::default();
-        let (signals, suspend) = battery_reaction(&[BatteryEvent::Recovered], &p);
-        assert!(signals.is_empty());
-        assert!(!suspend);
-    }
-
-    /// End-to-end pure path: a discharging battery crossing the low then the critical threshold
-    /// produces exactly the toasts + suspend the service would apply — the same `BatteryMonitor`
-    /// + `battery_reaction` the async loop uses, minus the bus.
-    #[test]
-    fn monitor_plus_reaction_full_discharge() {
-        use crate::battery::BatteryState;
-        let p = PowerPolicy {
-            low_battery_percent: 15,
-            critical_battery_percent: 5,
-            ..Default::default()
-        };
-        let mut mon = BatteryMonitor::new();
-        let disch = |pct| BatterySnapshot {
-            present: true,
-            percent: pct,
-            state: BatteryState::Discharging,
-        };
-
-        // Healthy: nothing.
-        let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);
-        assert!(s.is_empty());
-        // Low: one non-critical toast.
-        let (s, susp) = battery_reaction(&mon.evaluate(&disch(14), &p), &p);
-        assert_eq!(s.len(), 1);
-        assert!(!susp);
-        // Critical: critical toast + suspend.
-        let (s, susp) = battery_reaction(&mon.evaluate(&disch(4), &p), &p);
-        assert!(susp);
-        assert!(matches!(s[0], PowerSignal::Notify(ref n) if n.critical));
-        // Deeper: silent (latched).
-        let (s, susp) = battery_reaction(&mon.evaluate(&disch(2), &p), &p);
-        assert!(s.is_empty() && !susp);
+            // Healthy: nothing.
+            let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);
+            assert!(s.is_empty());
+            // Low: one non-critical toast.
+            let (s, susp) = battery_reaction(&mon.evaluate(&disch(14), &p), &p);
+            assert_eq!(s.len(), 1);
+            assert!(!susp);
+            // Critical: critical toast + suspend.
+            let (s, susp) = battery_reaction(&mon.evaluate(&disch(4), &p), &p);
+            assert!(susp);
+            assert!(matches!(s[0], PowerSignal::Notify(ref n) if n.critical));
+            // Deeper: silent (latched).
+            let (s, susp) = battery_reaction(&mon.evaluate(&disch(2), &p), &p);
+            assert!(s.is_empty() && !susp);
+        }
     }
 }

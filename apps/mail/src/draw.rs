@@ -77,8 +77,10 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
         c.semantic.warning,
         c.accent[6],
         c.accent[3],
-        Color::from_rgb8(217, 70, 239),
-        Color::from_rgb8(20, 184, 166),
+        // The last two slots are the accent's own categorical series, so a
+        // high-contrast accent retints them with the rest of the disc.
+        c.categorical(1),
+        c.categorical(2),
     ];
     let h = email.bytes().fold(u32::from(tint), |a, b| {
         a.wrapping_mul(31).wrapping_add(u32::from(b))
@@ -95,7 +97,9 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
 /// generic silhouette) when the address has no avatar, so the store settles as
 /// `Failed` and we keep the initials disc rather than a stock image.
 pub fn gravatar_url(email: &str) -> String {
-    let hash = md5_hex(email.trim().to_ascii_lowercase().as_bytes());
+    let hash = hex::encode(<md5::Md5 as md5::Digest>::digest(
+        email.trim().to_ascii_lowercase().as_bytes(),
+    ));
     format!("https://www.gravatar.com/avatar/{hash}?s=96&d=404")
 }
 
@@ -154,174 +158,53 @@ pub fn draw_avatar(
     Avatar::draw_at(scene, t, rect, &addr.initials(), col, theme, tr);
 }
 
-// ---- md5 (RFC 1321), inline to avoid a dependency for one hash ------------
-
-/// Hex-encoded MD5 of `input`. Small self-contained implementation — the only
-/// use is deriving the Gravatar path from an email address.
-pub fn md5_hex(input: &[u8]) -> String {
-    hex::encode(md5(input))
-}
-
-/// Per-round left-rotate amounts (RFC 1321 §3.4).
-const MD5_S: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
-    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
-    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-];
-
-/// Per-round additive constants — the integer part of `abs(sin(i + 1))`,
-/// `i` in radians (RFC 1321 §3.4).
-const MD5_K: [u32; 64] = [
-    0xd76a_a478,
-    0xe8c7_b756,
-    0x2420_70db,
-    0xc1bd_ceee,
-    0xf57c_0faf,
-    0x4787_c62a,
-    0xa830_4613,
-    0xfd46_9501,
-    0x6980_98d8,
-    0x8b44_f7af,
-    0xffff_5bb1,
-    0x895c_d7be,
-    0x6b90_1122,
-    0xfd98_7193,
-    0xa679_438e,
-    0x49b4_0821,
-    0xf61e_2562,
-    0xc040_b340,
-    0x265e_5a51,
-    0xe9b6_c7aa,
-    0xd62f_105d,
-    0x0244_1453,
-    0xd8a1_e681,
-    0xe7d3_fbc8,
-    0x21e1_cde6,
-    0xc337_07d6,
-    0xf4d5_0d87,
-    0x455a_14ed,
-    0xa9e3_e905,
-    0xfcef_a3f8,
-    0x676f_02d9,
-    0x8d2a_4c8a,
-    0xfffa_3942,
-    0x8771_f681,
-    0x6d9d_6122,
-    0xfde5_380c,
-    0xa4be_ea44,
-    0x4bde_cfa9,
-    0xf6bb_4b60,
-    0xbebf_bc70,
-    0x289b_7ec6,
-    0xeaa1_27fa,
-    0xd4ef_3085,
-    0x0488_1d05,
-    0xd9d4_d039,
-    0xe6db_99e5,
-    0x1fa2_7cf8,
-    0xc4ac_5665,
-    0xf429_2244,
-    0x432a_ff97,
-    0xab94_23a7,
-    0xfc93_a039,
-    0x655b_59c3,
-    0x8f0c_cc92,
-    0xffef_f47d,
-    0x8584_5dd1,
-    0x6fa8_7e4f,
-    0xfe2c_e6e0,
-    0xa301_4314,
-    0x4e08_11a1,
-    0xf753_7e82,
-    0xbd3a_f235,
-    0x2ad7_d2bb,
-    0xeb86_d391,
-];
-
-/// Pad `input` per RFC 1321 §3.1 (append `0x80`, zero-pad to `56 mod 64`,
-/// append the 64-bit little-endian bit length) so it splits evenly into
-/// 64-byte blocks.
-fn md5_pad(input: &[u8]) -> Vec<u8> {
-    let mut msg = input.to_vec();
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_le_bytes());
-    msg
-}
-
-/// Compress one 64-byte block into the running digest state (RFC 1321 §3.4).
-fn md5_compress(state: &mut [u32; 4], chunk: &[u8]) {
-    let mut words = [0u32; 16];
-    for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
-        // `chunks_exact(4)` always yields four bytes, so this never fails.
-        if let Ok(le) = <[u8; 4]>::try_from(bytes) {
-            *word = u32::from_le_bytes(le);
-        }
-    }
-    let [mut a, mut b, mut c, mut d] = *state;
-    for (round, (&kc, &shift)) in MD5_K.iter().zip(MD5_S.iter()).enumerate() {
-        // The word index is masked to four bits, so it always selects one of
-        // the sixteen words and the fallback below is unreachable. `round`
-        // is at most 63, so the wrapping never engages either.
-        let (mix, idx) = match round {
-            0..=15 => ((b & c) | (!b & d), round & 0b1111),
-            16..=31 => (
-                (d & b) | (!d & c),
-                round.wrapping_mul(5).wrapping_add(1) & 0b1111,
-            ),
-            32..=47 => (b ^ c ^ d, round.wrapping_mul(3).wrapping_add(5) & 0b1111),
-            _ => (c ^ (b | !d), round.wrapping_mul(7) & 0b1111),
-        };
-        let mix = mix
-            .wrapping_add(a)
-            .wrapping_add(kc)
-            .wrapping_add(words.get(idx).copied().unwrap_or(0));
-        a = d;
-        d = c;
-        c = b;
-        b = b.wrapping_add(mix.rotate_left(shift));
-    }
-    state[0] = state[0].wrapping_add(a);
-    state[1] = state[1].wrapping_add(b);
-    state[2] = state[2].wrapping_add(c);
-    state[3] = state[3].wrapping_add(d);
-}
-
-fn md5(input: &[u8]) -> [u8; 16] {
-    let mut state: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    let msg = md5_pad(input);
-    for chunk in msg.chunks_exact(64) {
-        md5_compress(&mut state, chunk);
-    }
-    let mut out = [0u8; 16];
-    out[0..4].copy_from_slice(&state[0].to_le_bytes());
-    out[4..8].copy_from_slice(&state[1].to_le_bytes());
-    out[8..12].copy_from_slice(&state[2].to_le_bytes());
-    out[12..16].copy_from_slice(&state[3].to_le_bytes());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn md5_matches_known_vectors() {
-        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(
-            md5_hex(b"The quick brown fox jumps over the lazy dog"),
-            "9e107d9d372bb6826bd81d3542a419d6"
+    fn avatar_colours_follow_the_theme() {
+        let dark = Theme::dark();
+        let contrast = Theme::high_contrast();
+        let mut changed = false;
+        for n in 0..32 {
+            let email = format!("person{n}@example.com");
+            if avatar_color(&dark, &email, 0) != avatar_color(&contrast, &email, 0) {
+                changed = true;
+                break;
+            }
+        }
+        assert!(
+            changed,
+            "avatar discs are theme colours, including high contrast"
         );
     }
 
     #[test]
-    fn gravatar_url_lowercases_and_trims() {
-        // Canonical Gravatar example hash for "MyEmailAddress@example.com".
-        let u = gravatar_url("  MyEmailAddress@example.com ");
-        assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gravatar_urls_hash_the_normalised_address() {
+        // Phase `gravatar_url_lowercases_and_trims`.
+        {
+            // Canonical Gravatar example hash for "MyEmailAddress@example.com".
+            let u = gravatar_url("  MyEmailAddress@example.com ");
+            assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+        }
+    }
+
+    #[test]
+    fn every_avatar_hue_comes_from_the_theme() {
+        let dark = Theme::dark();
+        let nord = Theme::named("Nord").expect("Nord");
+        for i in 0..64 {
+            let email = format!("person{i}@example.com");
+            assert_ne!(
+                avatar_color(&dark, &email, 0),
+                avatar_color(&nord, &email, 0),
+                "{email}: its initials disc ignores the theme"
+            );
+        }
     }
 }

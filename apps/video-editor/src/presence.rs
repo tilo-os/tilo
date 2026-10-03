@@ -78,6 +78,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use ui::PresencePayload;
+use ui::paint::PaintCtx;
 use ui::permissions::UserId;
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -393,10 +394,7 @@ const CHIP_STEP: f64 = 16.0;
 /// and presence snapshot. Grouping them makes that invariant explicit and
 /// keeps new overlay geometry from growing another long positional API.
 pub struct PeerPaintCtx<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text_renderer: &'a mut TextRenderer,
-    theme: &'a Theme,
+    paint: PaintCtx<'a>,
     presence: &'a PresenceCtx,
 }
 
@@ -409,10 +407,7 @@ impl<'a> PeerPaintCtx<'a> {
         presence: &'a PresenceCtx,
     ) -> Self {
         Self {
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            paint: PaintCtx::new(scene, transform, text_renderer, theme),
             presence,
         }
     }
@@ -444,10 +439,10 @@ pub fn draw_peer_playheads(
         let top = lanes.y0 + CHIP_STEP * (i % 3) as f64;
         let bar = Rect::new(x - 1.0, top, x + 1.0, bottom);
         ctx.presence.draw_peer_caret_labeled(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            ctx.paint.scene,
+            ctx.paint.theme,
+            ctx.paint.text,
+            ctx.paint.transform,
             &peer.user,
             &ctx.presence.display_name(&peer.user),
             bar,
@@ -473,10 +468,7 @@ pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], a
             continue;
         };
         ctx.presence.draw_peer_outline_labeled_within(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            &mut ctx.paint,
             &peer.user,
             &ctx.presence.display_name(&peer.user),
             *rect,
@@ -504,10 +496,10 @@ pub fn draw_peer_field_carets(
 ) {
     for (user, byte) in peer_field_carets(ctx.presence, field, subject) {
         ctx.presence.draw_peer_caret_labeled(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            ctx.paint.scene,
+            ctx.paint.theme,
+            ctx.paint.text,
+            ctx.paint.transform,
             &user,
             &ctx.presence.display_name(&user),
             caret_rect(byte),
@@ -571,378 +563,378 @@ mod tests {
         UserId(s.to_string())
     }
 
-    /// The exact bytes an external driver builds by hand have to be the exact
-    /// bytes this crate builds through its helpers, or a driver that follows
-    /// the documented recipe publishes into a scope nothing renders.
-    ///
-    /// Written out from primitives deliberately — calling `clip_key` on both
-    /// sides would assert nothing at all.
     #[test]
-    fn a_hand_built_key_is_the_key_this_crate_publishes_under() {
-        let clip = Uuid::parse_str("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e").unwrap();
+    fn presence_keys_and_times_round_trip_exactly() {
+        // Case `a_hand_built_key_is_the_key_this_crate_publishes_under`:
+        // The exact bytes an external driver builds by hand have to be the exact
+        // bytes this crate builds through its helpers, or a driver that follows
+        // the documented recipe publishes into a scope nothing renders.
+        //
+        // Written out from primitives deliberately — calling `clip_key` on both
+        // sides would assert nothing at all.
+        {
+            let clip = Uuid::parse_str("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e").unwrap();
 
-        let by_hand = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field("ve_clip".to_string()),
-                PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
-            ],
-        };
-        assert_eq!(by_hand, clip_key(clip));
+            let by_hand = PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field("ve_clip".to_string()),
+                    PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
+                ],
+            };
+            assert_eq!(by_hand, clip_key(clip));
 
-        let timeline = PresenceKey::Widget {
-            path: vec![PathSegment::Field("ve_timeline".to_string())],
-        };
-        assert_eq!(timeline, timeline_key());
+            let timeline = PresenceKey::Widget {
+                path: vec![PathSegment::Field("ve_timeline".to_string())],
+            };
+            assert_eq!(timeline, timeline_key());
 
-        let field = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field("ve_field".to_string()),
-                PathSegment::Field("title_words".to_string()),
-                PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
-            ],
-        };
-        assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
-    }
-
-    /// The recipe is the only thing an outside program reads before writing a
-    /// driver, so every key it names has to be a key this crate really uses.
-    /// Prose drifts silently; this makes it fail loudly instead.
-    #[test]
-    fn the_published_recipe_names_the_keys_this_crate_actually_builds() {
-        let recipe = external_driver_recipe();
-        for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
-            assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
+            let field = PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field("ve_field".to_string()),
+                    PathSegment::Field("title_words".to_string()),
+                    PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
+                ],
+            };
+            assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
         }
-        assert!(
-            recipe.contains("so.tilo.video-editor"),
-            "the recipe has to name the app id a driver announces as",
-        );
-        assert!(
-            recipe.contains("milliseconds"),
-            "a driver that guesses the time unit publishes a playhead in the \
-             wrong place, so the recipe must state it",
-        );
-    }
-
-    #[test]
-    fn keys_read_back_to_the_object_they_name() {
-        let clip = Uuid::new_v4();
-        let media = Uuid::new_v4();
-        assert_eq!(clip_of(&clip_key(clip)), Some(clip));
-        assert_eq!(media_of(&media_key(media)), Some(media));
-        // A key for one kind of object never reads back as another.
-        assert_eq!(clip_of(&media_key(media)), None);
-        assert_eq!(media_of(&clip_key(clip)), None);
-        // Nor does the timeline, which names no object at all.
-        assert_eq!(clip_of(&timeline_key()), None);
-        // Nor another app's key of the same shape.
-        let foreign = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field("wp_block".to_string()),
-                PathSegment::Field(clip.to_string()),
-            ],
-        };
-        assert_eq!(clip_of(&foreign), None);
-        // Nor a well-tagged key carrying something that is not a uuid.
-        let malformed = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field(CLIP.to_string()),
-                PathSegment::Field("not-a-uuid".to_string()),
-            ],
-        };
-        assert_eq!(clip_of(&malformed), None);
-    }
-
-    /// A time has to come back off the wire as the time that went on to it,
-    /// or a peer's playhead is drawn somewhere its owner never put it.
-    #[test]
-    fn a_time_survives_the_round_trip_to_the_millisecond() {
-        for t in [0.0, 0.001, 1.0, 12.5, 23.456, 3600.0] {
+        // Case `the_published_recipe_names_the_keys_this_crate_actually_builds`:
+        // The recipe is the only thing an outside program reads before writing a
+        // driver, so every key it names has to be a key this crate really uses.
+        // Prose drifts silently; this makes it fail loudly instead.
+        {
+            let recipe = external_driver_recipe();
+            for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
+                assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
+            }
             assert!(
-                (seconds(ticks(t)) - t).abs() < 1e-9,
-                "{t}s came back as {}s",
-                seconds(ticks(t)),
+                recipe.contains("so.tilo.video-editor"),
+                "the recipe has to name the app id a driver announces as",
+            );
+            assert!(
+                recipe.contains("milliseconds"),
+                "a driver that guesses the time unit publishes a playhead in the \
+             wrong place, so the recipe must state it",
             );
         }
-        // A negative time clamps here rather than wrapping to an enormous
-        // positive somewhere downstream.
-        assert_eq!(ticks(-5.0), 0);
-        assert_eq!(ticks(f64::NAN), 0);
-        assert_eq!(ticks(f64::NEG_INFINITY), 0);
-    }
-
-    #[test]
-    fn the_point_frame_is_the_playhead_until_a_field_is_being_edited() {
-        let (key, payload) = point_frame(None, 12.5);
-        assert_eq!(key, timeline_key());
-        assert_eq!(payload, PresencePayload::Caret { pos: 12_500 });
-
-        let clip = Uuid::new_v4();
-        let (key, payload) = point_frame(Some((FIELD_TITLE_WORDS, clip, 4)), 12.5);
-        assert_eq!(key, field_key(FIELD_TITLE_WORDS, clip));
-        assert_eq!(
-            payload,
-            PresencePayload::Caret { pos: 4 },
-            "while typing, the point is the text caret, not the playhead",
-        );
-    }
-
-    /// Deselecting has to *say* something. The selection store keeps one
-    /// selection per participant keyed to where it is, so the only way to take
-    /// an outline off a peer's screen is to publish a different, empty one.
-    #[test]
-    fn deselecting_publishes_a_frame_that_retracts_the_outline() {
-        let clip = Uuid::new_v4();
-        let (key, _) = range_frame(Some((clip, 2.0, 6.0)));
-        assert_eq!(key, clip_key(clip));
-
-        let (key, payload) = range_frame(None);
-        assert_eq!(key, timeline_key(), "the empty range is not on any clip");
-        assert_eq!(payload, PresencePayload::Selection { start: 0, end: 0 });
-
-        // And prove it actually clears: feed both frames to a receiver in
-        // order and the clip must end up with no peer on it.
-        let mut ctx = PresenceCtx::empty();
-        let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
-        ctx.apply_remote_presence("ada".into(), k, p);
-        assert_eq!(peer_clips(&ctx).len(), 1, "selected");
-        let (k, p) = range_frame(None);
-        ctx.apply_remote_presence("ada".into(), k, p);
-        assert!(peer_clips(&ctx).is_empty(), "and deselected again");
-    }
-
-    /// Both facets have to reach the peer. The host only broadcasts a frame
-    /// that differs from the previous one, so a publisher that returned the
-    /// playhead every poll would broadcast the selection exactly never.
-    #[test]
-    fn both_facets_get_published_across_successive_polls() {
-        let clip = Uuid::new_v4();
-        let local = LocalPresence::default();
-        let facets = || [point_frame(None, 12.5), range_frame(Some((clip, 2.0, 6.0)))];
-
-        let first = local.next(facets()).expect("a first frame");
-        let second = local.next(facets()).expect("a second frame");
-        assert_ne!(first, second, "the second poll offers the other facet");
-
-        let published = [first, second.clone()];
-        assert!(
-            published.iter().any(|(k, _)| *k == timeline_key()),
-            "the playhead was never published: {published:?}",
-        );
-        assert!(
-            published.iter().any(|(k, _)| *k == clip_key(clip)),
-            "the selection was never published: {published:?}",
-        );
-
-        // With nothing moving, it keeps returning the same frame, so the
-        // host's diff sees no change and the socket stays quiet.
-        let third = local.next(facets());
-        assert_eq!(third, Some(second.clone()));
-        assert_eq!(local.next(facets()), Some(second));
-    }
-
-    /// A playhead being dragged changes on every single frame. If the
-    /// publisher always offered the facet that moved, the selection would
-    /// never get a turn for as long as the drag lasted.
-    #[test]
-    fn a_dragged_playhead_does_not_starve_the_selection() {
-        let clip = Uuid::new_v4();
-        let local = LocalPresence::default();
-        let mut saw_selection = false;
-        for frame in 0..8 {
-            // A playhead moving every frame, and a selection that never does.
-            let t = 1.0 + f64::from(frame) * 0.25;
-            let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
-            if out.map(|(k, _)| k) == Some(clip_key(clip)) {
-                saw_selection = true;
+        // Case `keys_read_back_to_the_object_they_name`.
+        {
+            let clip = Uuid::new_v4();
+            let media = Uuid::new_v4();
+            assert_eq!(clip_of(&clip_key(clip)), Some(clip));
+            assert_eq!(media_of(&media_key(media)), Some(media));
+            // A key for one kind of object never reads back as another.
+            assert_eq!(clip_of(&media_key(media)), None);
+            assert_eq!(media_of(&clip_key(clip)), None);
+            // Nor does the timeline, which names no object at all.
+            assert_eq!(clip_of(&timeline_key()), None);
+            // Nor another app's key of the same shape.
+            let foreign = PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field("wp_block".to_string()),
+                    PathSegment::Field(clip.to_string()),
+                ],
+            };
+            assert_eq!(clip_of(&foreign), None);
+            // Nor a well-tagged key carrying something that is not a uuid.
+            let malformed = PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field(CLIP.to_string()),
+                    PathSegment::Field("not-a-uuid".to_string()),
+                ],
+            };
+            assert_eq!(clip_of(&malformed), None);
+        }
+        // Case `a_time_survives_the_round_trip_to_the_millisecond`:
+        // A time has to come back off the wire as the time that went on to it,
+        // or a peer's playhead is drawn somewhere its owner never put it.
+        {
+            for t in [0.0, 0.001, 1.0, 12.5, 23.456, 3600.0] {
+                assert!(
+                    (seconds(ticks(t)) - t).abs() < 1e-9,
+                    "{t}s came back as {}s",
+                    seconds(ticks(t)),
+                );
             }
+            // A negative time clamps here rather than wrapping to an enormous
+            // positive somewhere downstream.
+            assert_eq!(ticks(-5.0), 0);
+            assert_eq!(ticks(f64::NAN), 0);
+            assert_eq!(ticks(f64::NEG_INFINITY), 0);
         }
-        assert!(
-            saw_selection,
-            "the selection never got a turn while the playhead was moving",
-        );
     }
 
-    /// A fresh joiner has none of our state, so a reset has to make every
-    /// facet publishable again — otherwise we sit there believing we already
-    /// told them.
     #[test]
-    fn a_reset_republishes_every_facet() {
-        let clip = Uuid::new_v4();
-        let local = LocalPresence::default();
-        let facets = || [point_frame(None, 3.0), range_frame(Some((clip, 2.0, 6.0)))];
-        local.next(facets());
-        local.next(facets());
-        assert_eq!(local.next(facets()), local.next(facets()), "settled");
+    fn presence_publisher_emits_every_facet_fairly() {
+        // Case `the_point_frame_is_the_playhead_until_a_field_is_being_edited`.
+        {
+            let (key, payload) = point_frame(None, 12.5);
+            assert_eq!(key, timeline_key());
+            assert_eq!(payload, PresencePayload::Caret { pos: 12_500 });
 
-        local.reset();
-        let a = local.next(facets()).expect("a frame after the reset");
-        let b = local.next(facets()).expect("and the other facet");
-        assert_ne!(a, b, "both facets are offered again after a reset");
-    }
+            let clip = Uuid::new_v4();
+            let (key, payload) = point_frame(Some((FIELD_TITLE_WORDS, clip, 4)), 12.5);
+            assert_eq!(key, field_key(FIELD_TITLE_WORDS, clip));
+            assert_eq!(
+                payload,
+                PresencePayload::Caret { pos: 4 },
+                "while typing, the point is the text caret, not the playhead",
+            );
+        }
+        // Case `deselecting_publishes_a_frame_that_retracts_the_outline`:
+        // Deselecting has to *say* something. The selection store keeps one
+        // selection per participant keyed to where it is, so the only way to take
+        // an outline off a peer's screen is to publish a different, empty one.
+        {
+            let clip = Uuid::new_v4();
+            let (key, _) = range_frame(Some((clip, 2.0, 6.0)));
+            assert_eq!(key, clip_key(clip));
 
-    /// The peer readers resolve what the publishers produced — the two halves
-    /// under test together, which is the only way to catch them keying
-    /// differently.
-    #[test]
-    fn a_published_frame_reads_back_as_the_peer_that_sent_it() {
-        let clip = Uuid::new_v4();
-        let mut ctx = PresenceCtx::empty();
+            let (key, payload) = range_frame(None);
+            assert_eq!(key, timeline_key(), "the empty range is not on any clip");
+            assert_eq!(payload, PresencePayload::Selection { start: 0, end: 0 });
 
-        let (k, p) = point_frame(None, 12.5);
-        ctx.apply_remote_presence("ada".into(), k, p);
-        let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
-        ctx.apply_remote_presence("ada".into(), k, p);
-
-        let heads = peer_playheads(&ctx);
-        assert_eq!(heads.len(), 1);
-        assert_eq!(heads[0].user, uid("ada"));
-        assert!((heads[0].at - 12.5).abs() < 1e-9, "at {}", heads[0].at);
-
-        let clips = peer_clips(&ctx);
-        assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0].clip, clip);
-        assert_eq!(clips[0].span, (2.0, 6.0));
-    }
-
-    /// A participant has one playhead. Publishing a new one has to move it,
-    /// not leave a trail of every instant they ever visited.
-    #[test]
-    fn a_peers_playhead_moves_rather_than_accumulating() {
-        let mut ctx = PresenceCtx::empty();
-        for t in [1.0, 2.0, 3.0] {
-            let (k, p) = point_frame(None, t);
+            // And prove it actually clears: feed both frames to a receiver in
+            // order and the clip must end up with no peer on it.
+            let mut ctx = PresenceCtx::empty();
+            let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
             ctx.apply_remote_presence("ada".into(), k, p);
+            assert_eq!(peer_clips(&ctx).len(), 1, "selected");
+            let (k, p) = range_frame(None);
+            ctx.apply_remote_presence("ada".into(), k, p);
+            assert!(peer_clips(&ctx).is_empty(), "and deselected again");
         }
-        let heads = peer_playheads(&ctx);
-        assert_eq!(heads.len(), 1, "one participant, one playhead: {heads:?}");
-        assert!((heads[0].at - 3.0).abs() < 1e-9);
-    }
+        // Case `both_facets_get_published_across_successive_polls`:
+        // Both facets have to reach the peer. The host only broadcasts a frame
+        // that differs from the previous one, so a publisher that returned the
+        // playhead every poll would broadcast the selection exactly never.
+        {
+            let clip = Uuid::new_v4();
+            let local = LocalPresence::default();
+            let facets = || [point_frame(None, 12.5), range_frame(Some((clip, 2.0, 6.0)))];
 
-    /// Typing in a field takes the participant's caret with it — that is what
-    /// the exclusive caret store means, and it is the honest reading: their
-    /// point is in the field, not on the ruler.
-    #[test]
-    fn typing_in_a_field_moves_the_peers_point_off_the_ruler() {
-        let clip = Uuid::new_v4();
-        let mut ctx = PresenceCtx::empty();
-        let (k, p) = point_frame(None, 12.5);
-        ctx.apply_remote_presence("ada".into(), k, p);
-        assert_eq!(peer_playheads(&ctx).len(), 1);
+            let first = local.next(facets()).expect("a first frame");
+            let second = local.next(facets()).expect("a second frame");
+            assert_ne!(first, second, "the second poll offers the other facet");
 
-        let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, clip, 3)), 12.5);
-        ctx.apply_remote_presence("ada".into(), k, p);
-        assert!(
-            peer_playheads(&ctx).is_empty(),
-            "their ghost playhead steps aside while they type",
-        );
-        assert_eq!(
-            peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip),
-            vec![(uid("ada"), 3)],
-        );
+            let published = [first, second.clone()];
+            assert!(
+                published.iter().any(|(k, _)| *k == timeline_key()),
+                "the playhead was never published: {published:?}",
+            );
+            assert!(
+                published.iter().any(|(k, _)| *k == clip_key(clip)),
+                "the selection was never published: {published:?}",
+            );
 
-        // And it comes back when they stop.
-        let (k, p) = point_frame(None, 12.5);
-        ctx.apply_remote_presence("ada".into(), k, p);
-        assert_eq!(peer_playheads(&ctx).len(), 1);
-        assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip).is_empty());
-    }
-
-    /// Several participants at once, which is the case the whole feature is
-    /// for. Each keeps their own place and their own colour.
-    #[test]
-    fn several_peers_each_hold_their_own_place() {
-        let one = Uuid::new_v4();
-        let two = Uuid::new_v4();
-        let mut ctx = PresenceCtx::empty();
-        for (who, t, clip) in [("ada", 4.0, one), ("bo", 9.0, two)] {
-            let (k, p) = point_frame(None, t);
-            ctx.apply_remote_presence(who.into(), k, p);
-            let (k, p) = range_frame(Some((clip, 1.0, 2.0)));
-            ctx.apply_remote_presence(who.into(), k, p);
+            // With nothing moving, it keeps returning the same frame, so the
+            // host's diff sees no change and the socket stays quiet.
+            let third = local.next(facets());
+            assert_eq!(third, Some(second.clone()));
+            assert_eq!(local.next(facets()), Some(second));
         }
-        let heads = peer_playheads(&ctx);
-        assert_eq!(heads.len(), 2, "{heads:?}");
-        assert_eq!(heads[0].user, uid("ada"));
-        assert!((heads[0].at - 4.0).abs() < 1e-9);
-        assert_eq!(heads[1].user, uid("bo"));
-        assert!((heads[1].at - 9.0).abs() < 1e-9);
+        // Case `a_dragged_playhead_does_not_starve_the_selection`:
+        // A playhead being dragged changes on every single frame. If the
+        // publisher always offered the facet that moved, the selection would
+        // never get a turn for as long as the drag lasted.
+        {
+            let clip = Uuid::new_v4();
+            let local = LocalPresence::default();
+            let mut saw_selection = false;
+            for frame in 0..8 {
+                // A playhead moving every frame, and a selection that never does.
+                let t = 1.0 + f64::from(frame) * 0.25;
+                let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
+                if out.map(|(k, _)| k) == Some(clip_key(clip)) {
+                    saw_selection = true;
+                }
+            }
+            assert!(
+                saw_selection,
+                "the selection never got a turn while the playhead was moving",
+            );
+        }
+        // Case `a_reset_republishes_every_facet`:
+        // A fresh joiner has none of our state, so a reset has to make every
+        // facet publishable again — otherwise we sit there believing we already
+        // told them.
+        {
+            let clip = Uuid::new_v4();
+            let local = LocalPresence::default();
+            let facets = || [point_frame(None, 3.0), range_frame(Some((clip, 2.0, 6.0)))];
+            local.next(facets());
+            local.next(facets());
+            assert_eq!(local.next(facets()), local.next(facets()), "settled");
 
-        let clips = peer_clips(&ctx);
-        assert_eq!(clips.len(), 2, "{clips:?}");
-        assert_eq!(clips[0].clip, one);
-        assert_eq!(clips[1].clip, two);
-        assert_ne!(
-            ctx.color_for(&uid("ada")),
-            ctx.color_for(&uid("bo")),
-            "two people must not be drawn in one colour",
-        );
+            local.reset();
+            let a = local.next(facets()).expect("a frame after the reset");
+            let b = local.next(facets()).expect("and the other facet");
+            assert_ne!(a, b, "both facets are offered again after a reset");
+        }
     }
 
-    /// An empty range on a clip key is not a selection. Rendering it would
-    /// draw a zero-width outline on a clip nobody has selected.
     #[test]
-    fn an_empty_range_on_a_clip_is_not_read_as_a_selection() {
-        let clip = Uuid::new_v4();
-        let mut ctx = PresenceCtx::empty();
-        ctx.set_selection(
-            &clip_key(clip),
-            uid("ada"),
-            SelectionRange { start: 5, end: 5 },
-        );
-        assert!(peer_clips(&ctx).is_empty());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn peer_presence_is_read_back_per_peer_and_painted_in_place() {
+        // Case `a_published_frame_reads_back_as_the_peer_that_sent_it`:
+        // The peer readers resolve what the publishers produced — the two halves
+        // under test together, which is the only way to catch them keying
+        // differently.
+        {
+            let clip = Uuid::new_v4();
+            let mut ctx = PresenceCtx::empty();
 
-    /// A caret in a field has to reach the screen, in the peer's colour, at
-    /// the offset the field itself puts that byte at.
-    #[test]
-    fn a_peers_caret_in_a_field_is_painted_where_the_field_puts_it() {
-        use ui::offscreen::OffscreenRenderer;
-        use vello::peniko::Color;
+            let (k, p) = point_frame(None, 12.5);
+            ctx.apply_remote_presence("ada".into(), k, p);
+            let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
+            ctx.apply_remote_presence("ada".into(), k, p);
 
-        let subject = Uuid::new_v4();
-        let mut ctx = PresenceCtx::empty();
-        // "charlie" is the palette's emerald, so a green-dominant pixel is
-        // that peer specifically and not some other ink.
-        let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, subject, 7)), 0.0);
-        ctx.apply_remote_presence("charlie".into(), k, p);
+            let heads = peer_playheads(&ctx);
+            assert_eq!(heads.len(), 1);
+            assert_eq!(heads[0].user, uid("ada"));
+            assert!((heads[0].at - 12.5).abs() < 1e-9, "at {}", heads[0].at);
 
-        let mut scene = Scene::new();
-        let mut tr = ui::text_render::TextRenderer::new();
-        let theme = Theme::default();
-        let mut asked = Vec::new();
-        draw_peer_field_carets(
-            &mut PeerPaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, &ctx),
-            FIELD_TITLE_WORDS,
-            subject,
-            |byte| {
-                asked.push(byte);
-                // Stands in for the field's own mapping: a 2px bar at x=40.
-                Rect::new(40.0, 60.0, 42.0, 80.0)
-            },
-        );
-        assert_eq!(
-            asked,
-            vec![7],
-            "the field is asked for the byte the peer sent"
-        );
+            let clips = peer_clips(&ctx);
+            assert_eq!(clips.len(), 1);
+            assert_eq!(clips[0].clip, clip);
+            assert_eq!(clips[0].span, (2.0, 6.0));
+        }
+        // Case `a_peers_playhead_moves_rather_than_accumulating`:
+        // A participant has one playhead. Publishing a new one has to move it,
+        // not leave a trail of every instant they ever visited.
+        {
+            let mut ctx = PresenceCtx::empty();
+            for t in [1.0, 2.0, 3.0] {
+                let (k, p) = point_frame(None, t);
+                ctx.apply_remote_presence("ada".into(), k, p);
+            }
+            let heads = peer_playheads(&ctx);
+            assert_eq!(heads.len(), 1, "one participant, one playhead: {heads:?}");
+            assert!((heads[0].at - 3.0).abs() < 1e-9);
+        }
+        // Case `typing_in_a_field_moves_the_peers_point_off_the_ruler`:
+        // Typing in a field takes the participant's caret with it — that is what
+        // the exclusive caret store means, and it is the honest reading: their
+        // point is in the field, not on the ruler.
+        {
+            let clip = Uuid::new_v4();
+            let mut ctx = PresenceCtx::empty();
+            let (k, p) = point_frame(None, 12.5);
+            ctx.apply_remote_presence("ada".into(), k, p);
+            assert_eq!(peer_playheads(&ctx).len(), 1);
 
-        let mut r = OffscreenRenderer::new(120, 120);
-        let rgba = r.render(&scene, Color::BLACK);
-        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 120, 40, 70);
-        assert!(
-            cg > cr && cg > cb && cg > 100,
-            "expected the peer's emerald caret in the field, got ({cr},{cg},{cb})",
-        );
-    }
+            let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, clip, 3)), 12.5);
+            ctx.apply_remote_presence("ada".into(), k, p);
+            assert!(
+                peer_playheads(&ctx).is_empty(),
+                "their ghost playhead steps aside while they type",
+            );
+            assert_eq!(
+                peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip),
+                vec![(uid("ada"), 3)],
+            );
 
-    /// Nobody in the room means nothing to draw — the single-user path must
-    /// not paint stray chrome.
-    #[test]
-    fn an_empty_room_resolves_to_nothing() {
-        let ctx = PresenceCtx::empty();
-        assert!(peer_playheads(&ctx).is_empty());
-        assert!(peer_clips(&ctx).is_empty());
-        assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, Uuid::new_v4()).is_empty());
+            // And it comes back when they stop.
+            let (k, p) = point_frame(None, 12.5);
+            ctx.apply_remote_presence("ada".into(), k, p);
+            assert_eq!(peer_playheads(&ctx).len(), 1);
+            assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip).is_empty());
+        }
+        // Case `several_peers_each_hold_their_own_place`:
+        // Several participants at once, which is the case the whole feature is
+        // for. Each keeps their own place and their own colour.
+        {
+            let one = Uuid::new_v4();
+            let two = Uuid::new_v4();
+            let mut ctx = PresenceCtx::empty();
+            for (who, t, clip) in [("ada", 4.0, one), ("bo", 9.0, two)] {
+                let (k, p) = point_frame(None, t);
+                ctx.apply_remote_presence(who.into(), k, p);
+                let (k, p) = range_frame(Some((clip, 1.0, 2.0)));
+                ctx.apply_remote_presence(who.into(), k, p);
+            }
+            let heads = peer_playheads(&ctx);
+            assert_eq!(heads.len(), 2, "{heads:?}");
+            assert_eq!(heads[0].user, uid("ada"));
+            assert!((heads[0].at - 4.0).abs() < 1e-9);
+            assert_eq!(heads[1].user, uid("bo"));
+            assert!((heads[1].at - 9.0).abs() < 1e-9);
+
+            let clips = peer_clips(&ctx);
+            assert_eq!(clips.len(), 2, "{clips:?}");
+            assert_eq!(clips[0].clip, one);
+            assert_eq!(clips[1].clip, two);
+            assert_ne!(
+                ctx.color_for(&uid("ada")),
+                ctx.color_for(&uid("bo")),
+                "two people must not be drawn in one colour",
+            );
+        }
+        // Case `an_empty_range_on_a_clip_is_not_read_as_a_selection`:
+        // An empty range on a clip key is not a selection. Rendering it would
+        // draw a zero-width outline on a clip nobody has selected.
+        {
+            let clip = Uuid::new_v4();
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_selection(
+                &clip_key(clip),
+                uid("ada"),
+                SelectionRange { start: 5, end: 5 },
+            );
+            assert!(peer_clips(&ctx).is_empty());
+        }
+        // Case `a_peers_caret_in_a_field_is_painted_where_the_field_puts_it`:
+        // A caret in a field has to reach the screen, in the peer's colour, at
+        // the offset the field itself puts that byte at.
+        {
+            use ui::offscreen::OffscreenRenderer;
+            use vello::peniko::Color;
+
+            let subject = Uuid::new_v4();
+            let mut ctx = PresenceCtx::empty();
+            // "charlie" is the palette's emerald, so a green-dominant pixel is
+            // that peer specifically and not some other ink.
+            let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, subject, 7)), 0.0);
+            ctx.apply_remote_presence("charlie".into(), k, p);
+
+            let mut scene = Scene::new();
+            let mut tr = ui::text_render::TextRenderer::new();
+            let theme = Theme::default();
+            let mut asked = Vec::new();
+            draw_peer_field_carets(
+                &mut PeerPaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, &ctx),
+                FIELD_TITLE_WORDS,
+                subject,
+                |byte| {
+                    asked.push(byte);
+                    // Stands in for the field's own mapping: a 2px bar at x=40.
+                    Rect::new(40.0, 60.0, 42.0, 80.0)
+                },
+            );
+            assert_eq!(
+                asked,
+                vec![7],
+                "the field is asked for the byte the peer sent"
+            );
+
+            let mut r = OffscreenRenderer::new(120, 120);
+            let rgba = r.render(&scene, Color::BLACK);
+            let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 120, 40, 70);
+            assert!(
+                cg > cr && cg > cb && cg > 100,
+                "expected the peer's emerald caret in the field, got ({cr},{cg},{cb})",
+            );
+        }
+        // Case `an_empty_room_resolves_to_nothing`:
+        // Nobody in the room means nothing to draw — the single-user path must
+        // not paint stray chrome.
+        {
+            let ctx = PresenceCtx::empty();
+            assert!(peer_playheads(&ctx).is_empty());
+            assert!(peer_clips(&ctx).is_empty());
+            assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, Uuid::new_v4()).is_empty());
+        }
     }
 }

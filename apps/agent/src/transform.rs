@@ -27,7 +27,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
@@ -673,7 +673,7 @@ fn first_chars(text: &str, most: usize) -> String {
 /// [`code::TIMED_OUT`] when [`TIMEOUT`] passed, and
 /// [`code::INVALID_OUTPUT`] when both answers failed the shape.
 pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Failure> {
-    let began = Instant::now();
+    let began = ui::time::now();
     let instructions = call.transform.instructions();
     let expected = call.transform.expected();
     let input = call
@@ -1089,8 +1089,8 @@ mod tests {
         );
         assert!(matches!(wrong, InvocationUpdate::Failed { .. }));
         let mut done = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while done.is_empty() && Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        while done.is_empty() && ui::time::now() < deadline {
             done = service.finished();
             std::thread::yield_now();
         }
@@ -1104,8 +1104,8 @@ mod tests {
             service.cancel(9),
             Some(InvocationUpdate::Cancelled { .. })
         ));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while service.running() > 0 && Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        while service.running() > 0 && ui::time::now() < deadline {
             assert!(service.finished().is_empty());
             std::thread::yield_now();
         }

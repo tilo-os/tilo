@@ -1,10 +1,11 @@
 schema = 1
-catalog_id = "tilo-fonts-fedora44-2026-09-12-v1"
+catalog_id = "tilo-fonts-fedora44-2026-09-12-v2"
 product_bytes = 43817716
 fixture_bytes = 44697512
 
 [[font]]
 scope = "product"
+browser_startup = true
 file = "NotoSans[wght].ttf"
 bytes = 712460
 sha256 = "fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b"
@@ -22,6 +23,7 @@ style = "normal"
 
 [[font]]
 scope = "product"
+browser_startup = true
 file = "NotoSans-Italic[wght].ttf"
 bytes = 739728
 sha256 = "28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684"
@@ -39,6 +41,7 @@ style = "italic"
 
 [[font]]
 scope = "product"
+browser_startup = true
 file = "NotoSerif[wght].ttf"
 bytes = 811080
 sha256 = "9374c4d81d2e21b03ac03fbc165458e8cf63e434a44c82193aa0305d20dc1037"
@@ -56,6 +59,7 @@ style = "normal"
 
 [[font]]
 scope = "product"
+browser_startup = true
 file = "NotoSerif-Italic[wght].ttf"
 bytes = 849200
 sha256 = "30f1c0204b6bb16d7b6f0984ce6e355ad61d05656201b3d13a2b19bb9baa6779"
@@ -73,6 +77,7 @@ style = "italic"
 
 [[font]]
 scope = "product"
+browser_startup = true
 file = "NotoSansMono[wght].ttf"
 bytes = 569204
 sha256 = "3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11"

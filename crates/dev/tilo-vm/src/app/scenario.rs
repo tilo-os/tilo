@@ -22,7 +22,7 @@ use crate::hypervisor::{CommandLine, Runner};
 use crate::scenario::console::{Console, SocketConsole};
 use crate::scenario::drive::{self, Choices, RealPace};
 use crate::scenario::fixture::{self, Preserved, Tools};
-use crate::scenario::{Credentials, Layout, Unlock, scrub};
+use crate::scenario::{Credentials, Layout, Unlock, scrub, scrub_with};
 
 /// Where `os/dev/build-custom-installer.sh` writes the medium.
 pub const DEFAULT_MEDIUM: &str = "os/output/installer/qcow2/disk.qcow2";
@@ -32,8 +32,44 @@ const INSTALLER_BOOT: Duration = Duration::from_secs(20 * 60);
 const POWER_OFF: Duration = Duration::from_secs(180);
 /// How long a cold-booted target gets to reach the greeter.
 const TARGET_BOOT: Duration = Duration::from_secs(15 * 60);
-/// Unlock attempts typed at the target's boot prompt at most.
-const UNLOCK_ATTEMPTS: u32 = 8;
+/// Bound retries even when the encrypted-root prompt remains visible.
+const UNLOCK_ATTEMPTS: u32 = 2;
+
+enum FirstBootSurface {
+    Greeter(Value),
+    IdentitySetup { screenshot: PathBuf, text: String },
+}
+
+fn is_identity_setup(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("tilo identity setup")
+        && (text.contains("create your local")
+            || text.contains("connect an existing identity")
+            || text.contains("back up your tilo identity")
+            || text.contains("your identity is ready"))
+}
+
+fn is_disk_unlock_prompt(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("unlock tilo") && text.contains("enter your disk passphrase or recovery key")
+}
+
+// Older receipts predate these flags and used scenario-tilo plus medium defaults.
+fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), String> {
+    for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+        let legacy = if key == "hostname" {
+            json!("scenario-tilo")
+        } else {
+            Value::Null
+        };
+        if saved.get(key).unwrap_or(&legacy) != current.get(key).unwrap_or(&legacy) {
+            return Err(format!(
+                "retained scenario {key} differs; use its original inputs"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Everything one run needs to know, settled before anything boots.
 struct Plan {
@@ -42,8 +78,14 @@ struct Plan {
     external_target: Option<PathBuf>,
     skip_target_boot: bool,
     layout: Layout,
+    filesystem: Option<String>,
+    resume: bool,
     unlock: Unlock,
     username: String,
+    hostname: String,
+    keyboard_layout: Option<String>,
+    timezone: Option<String>,
+    locale: Option<String>,
     graphics: crate::scenario::Graphics,
     cycle: String,
     out: PathBuf,
@@ -149,22 +191,26 @@ impl Plan {
     }
 
     fn describe(&self) -> Value {
-        let mut commands = vec![
-            self.vm(&["init-cycle"]).display(),
-            self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()])
-                .display(),
-            format!(
-                "drive the installer through its actions on {}",
-                self.console().display()
-            ),
-        ];
+        let mut commands = if self.resume {
+            vec!["check retained install record, target layout and guest image proof".to_owned()]
+        } else {
+            vec![
+                self.vm(&["init-cycle"]).display(),
+                self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()])
+                    .display(),
+                format!(
+                    "drive the installer through its actions on {}",
+                    self.console().display()
+                ),
+            ]
+        };
         if !self.skip_target_boot {
             commands.push(
                 self.vm(&["boot-target", self.graphics.flag(), self.tpm_flag()])
                     .display(),
             );
             commands.push(format!(
-                "verify the greeter on {}",
+                "verify sign-in or first-use identity setup on {}",
                 self.console().display()
             ));
         }
@@ -172,8 +218,13 @@ impl Plan {
             "scenario": "install",
             "medium": self.medium,
             "layout": self.layout.name(),
+            "filesystem": self.filesystem,
             "encrypt": self.unlock.name(),
             "username": self.username,
+            "hostname": self.hostname,
+            "keyboard_layout": self.keyboard_layout,
+            "timezone": self.timezone,
+            "locale": self.locale,
             "graphics": self.graphics,
             "cycle": self.cycle,
             "artifacts": self.out,
@@ -183,6 +234,7 @@ impl Plan {
             "skip_target_boot": self.skip_target_boot,
             "install_timeout_seconds": self.install_timeout.as_secs(),
             "keep": self.keep,
+            "resume": self.resume,
             "commands": commands,
         })
     }
@@ -259,6 +311,8 @@ struct VmInstallProof {
     architecture: String,
     booted_image_digest: String,
     installed_image_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    copied_manifest_digest: Option<String>,
     composefs_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     booted_composefs_digest: Option<String>,
@@ -268,6 +322,8 @@ struct VmInstallProof {
     installed_update_origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selected_target: Option<VmSelectedTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installer_code_override_sha256: Option<String>,
     target_uki_sha256: String,
     disk_guid: String,
     partuuids: VmPartuuids,
@@ -293,7 +349,7 @@ struct VmSelectedTarget {
     hardware_profile: String,
     update_origin: String,
     provenance: VmSelectedProvenance,
-    verifier_key_sha256: String,
+    verifier_key_sha256: Option<String>,
 }
 
 #[cfg(windows)]
@@ -326,7 +382,11 @@ fn canonical_uuid(value: &str) -> bool {
 #[cfg(windows)]
 fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
-    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
+    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V4=") {
+        (4, rest)
+    } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V3=") {
+        (3, rest)
+    } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
         (2, rest)
     } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V1=") {
         (1, rest)
@@ -341,6 +401,14 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     }
     let proof: VmInstallProof = serde_json::from_str(payload)
         .map_err(|error| format!("invalid VM install proof: {error}"))?;
+    if proof
+        .installer_code_override_sha256
+        .as_deref()
+        .is_some_and(|digest| !lowercase_hex(digest, 64))
+    {
+        return Err("invalid local installer code refresh digest".into());
+    }
+
     if proof.architecture != "arm64"
         || !proof
             .booted_image_digest
@@ -374,8 +442,78 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                 .as_ref()
                 .is_some_and(|value| value != &proof.composefs_digest)
             || proof.selected_target.is_some()
+            || proof.copied_manifest_digest.is_some()
         {
             return Err("VM v1 install proof has inconsistent image identities".into());
+        }
+    } else if version == 3 {
+        if proof.schema != "tilo.vm-install-image-proof.v3"
+            || proof.booted_image_digest == proof.installed_image_digest
+            || proof.copied_manifest_digest.as_deref()
+                != Some(proof.installed_image_digest.as_str())
+            || proof.booted_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || proof.installed_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || proof.selected_target.is_some()
+        {
+            return Err("VM v3 development copy proof has inconsistent identities".into());
+        }
+    } else if version == 4 {
+        let selected = proof
+            .selected_target
+            .as_ref()
+            .ok_or("VM development target proof has no selected target")?;
+        let source = &selected.provenance.source_revision;
+        let tag = selected
+            .update_origin
+            .strip_prefix("registry.tilo.so/tilo/tilo-vm:");
+        if proof.schema != "tilo.vm-install-image-proof.v4"
+            || selected.schema != "tilo.installer-dev-target.v1"
+            || selected.target_ref
+                != format!("registry.tilo.so/tilo/tilo-vm@{}", selected.target_digest)
+            || selected.target_digest != proof.installed_image_digest
+            || selected.architecture != "aarch64"
+            || !matches!(
+                selected.hardware_profile.as_str(),
+                "generic" | "lenovo-83ed"
+            )
+            || selected.verifier_key_sha256.is_some()
+            || !lowercase_hex(source, 40)
+            || selected.provenance.invocation_id.is_empty()
+            || !selected
+                .provenance
+                .invocation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            || !tag.is_some_and(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                    && value
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            })
+            || selected.provenance.firmware_candidate.is_some()
+            || selected.provenance.firmware_manifest_sha256.is_some()
+            || selected.provenance.generation.is_some()
+            || proof.installed_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || !proof
+                .booted_composefs_digest
+                .as_deref()
+                .is_some_and(|value| lowercase_hex(value, 128))
+            || proof.copied_manifest_digest.is_some()
+            || proof.installed_update_origin.as_deref()
+                != Some(
+                    format!(
+                        "ostree-unverified-image:docker://{}",
+                        selected.update_origin
+                    )
+                    .as_str(),
+                )
+        {
+            return Err("VM development target proof has inconsistent image identities".into());
         }
     } else {
         let selected = proof
@@ -408,9 +546,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .as_deref()
                         .is_some_and(|value| {
                             value
-                                .strip_prefix(
-                                    "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:",
-                                )
+                                .strip_prefix("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:")
                                 .is_some_and(|hex| lowercase_hex(hex, 64))
                         })
                     && selected
@@ -443,6 +579,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             "registry.tilo.so/tilo/tilo"
         };
         if proof.schema != "tilo.vm-install-image-proof.v2"
+            || proof.copied_manifest_digest.is_some()
             || !lowercase_hex(booted_composefs, 128)
             || !lowercase_hex(installed_composefs, 128)
             || proof.composefs_digest != installed_composefs
@@ -458,7 +595,10 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                 .invocation_id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit())
-            || !lowercase_hex(&selected.verifier_key_sha256, 64)
+            || !selected
+                .verifier_key_sha256
+                .as_deref()
+                .is_some_and(|value| lowercase_hex(value, 64))
             || update_origin
                 != format!(
                     "ostree-unverified-image:docker://{}",
@@ -504,8 +644,12 @@ fn check_install_proof(
         );
     }
     Ok(json!({
-        "schema": if proof.schema == "tilo.vm-install-image-proof.v2" {
+        "schema": if proof.schema == "tilo.vm-install-image-proof.v4" {
+            "tilo.windows-vm-install-proof-check.v4"
+        } else if proof.schema == "tilo.vm-install-image-proof.v2" {
             "tilo.windows-vm-install-proof-check.v2"
+        } else if proof.schema == "tilo.vm-install-image-proof.v3" {
+            "tilo.windows-vm-install-proof-check.v3"
         } else {
             "tilo.windows-vm-install-proof-check.v1"
         },
@@ -513,6 +657,121 @@ fn check_install_proof(
         "source_check": source_check,
         "installer_composefs": installer_composefs,
     }))
+}
+
+#[cfg(windows)]
+fn installer_code_phase(cycle: &std::path::Path, phase: Value) -> Result<(), String> {
+    let lock = cycle.join("installer-code-window.lock");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let descriptor = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(descriptor) => break descriptor,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(format!("cannot close installer refresh window: {error}")),
+        }
+    };
+    let result = std::fs::write(cycle.join("installer-code-phase.json"), phase.to_string())
+        .map_err(|error| error.to_string());
+    drop(descriptor);
+    std::fs::remove_file(lock).map_err(|error| error.to_string())?;
+    result
+}
+
+#[cfg(windows)]
+fn installer_code_runtime(plan: &Plan, proof: &VmInstallProof) -> Result<Value, String> {
+    let read = |name: &str, limit: u64| -> Result<Value, String> {
+        let path = plan.cycle_dir.join(name);
+        let size = std::fs::metadata(&path)
+            .map_err(|error| error.to_string())?
+            .len();
+        if size == 0 || size > limit {
+            return Err("installer code runtime evidence is empty or oversized".into());
+        }
+        serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())
+    };
+    let channel = read("installer-code-channel.json", 8192)?;
+    if channel["schema"] != "tilo.installer-code-runtime.v1" {
+        return Err("installer code channel has an invalid host receipt".into());
+    }
+    let history_path = plan.cycle_dir.join("installer-code-history.json");
+    let history = if history_path.exists() {
+        read("installer-code-history.json", 262144)?
+    } else {
+        json!([])
+    };
+    check_installer_code_runtime(
+        &channel,
+        &history,
+        proof.installer_code_override_sha256.as_deref(),
+    )
+}
+
+#[cfg(windows)]
+fn check_installer_code_runtime(
+    channel: &Value,
+    history: &Value,
+    guest_hash: Option<&str>,
+) -> Result<Value, String> {
+    let fields = channel
+        .as_object()
+        .ok_or("invalid host code channel object")?;
+    if fields.len() != 4
+        || !["schema", "enabled", "port", "source"]
+            .iter()
+            .all(|key| fields.contains_key(*key))
+        || channel["schema"] != "tilo.installer-code-runtime.v1"
+    {
+        return Err("incomplete host code channel receipt".into());
+    }
+    let enabled = channel["enabled"]
+        .as_bool()
+        .ok_or("missing host code channel state")?;
+    let rows = history
+        .as_array()
+        .ok_or("invalid host code refresh history")?;
+    if rows.len() > 32 {
+        return Err("host code refresh history exceeds its bound".into());
+    }
+    if enabled {
+        if !channel["port"]
+            .as_u64()
+            .is_some_and(|port| (1024..=65535).contains(&port))
+            || !channel["source"]
+                .as_str()
+                .is_some_and(|source| !source.is_empty())
+        {
+            return Err("invalid opted-in host code channel endpoint".into());
+        }
+        let latest = rows
+            .last()
+            .ok_or("opted-in code channel has no host refresh attempt")?;
+        let hash = latest
+            .pointer("/requested/sha256")
+            .and_then(Value::as_str)
+            .ok_or("missing host refresh content hash")?;
+        if !lowercase_hex(hash, 64) || latest["acknowledged"] != true || guest_hash != Some(hash) {
+            return Err(
+                "guest installer code evidence differs from the host refresh history".into(),
+            );
+        }
+    } else if !rows.is_empty()
+        || guest_hash.is_some()
+        || !channel["port"].is_null()
+        || !channel["source"].is_null()
+    {
+        return Err("clean installer scenario contains local code override evidence".into());
+    }
+    Ok(json!({"schema":"tilo.installer-code-runtime.v1", "channel":channel, "history":history}))
 }
 
 #[cfg(windows)]
@@ -680,7 +939,7 @@ impl App {
         } else {
             None
         };
-        let cycle = format!(
+        let mut cycle = format!(
             "scenario-install-{}-{}",
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
             std::process::id()
@@ -689,13 +948,43 @@ impl App {
             .out
             .clone()
             .unwrap_or_else(|| root.join("target/tilo-vm-scenarios").join(&cycle));
+        if args.resume {
+            if !cfg!(windows) {
+                return Err(CliError::Unsupported {
+                    what: "install scenario resume".into(),
+                    alternative: "resume currently requires a retained Windows raw target".into(),
+                });
+            }
+            let saved: Value = serde_json::from_slice(
+                &std::fs::read(out.join("scenario.json"))
+                    .map_err(CliError::io("reading retained scenario"))?,
+            )
+            .map_err(|error| CliError::Unsupported {
+                what: "retained scenario".into(),
+                alternative: error.to_string(),
+            })?;
+            let old_cycle = saved.get("cycle").and_then(Value::as_str).unwrap_or("");
+            if !old_cycle
+                .strip_prefix("scenario-install-")
+                .is_some_and(|tail| {
+                    !tail.is_empty()
+                        && tail
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || matches!(c, 'T' | 'Z' | '-'))
+                })
+            {
+                return Err(CliError::Unsupported {
+                    what: "retained scenario cycle".into(),
+                    alternative: "use the original scenario output".into(),
+                });
+            }
+            old_cycle.clone_into(&mut cycle);
+        }
         let storage = out.join("storage");
         // Exactly the runtime directory vm.sh derives for a named cycle;
         // init-cycle refuses to clear any other.
         #[cfg(not(windows))]
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(windows)]
         let runtime = out.clone();
         let plan = Plan {
@@ -704,8 +993,14 @@ impl App {
             external_target,
             skip_target_boot: args.skip_target_boot,
             layout: args.layout,
+            filesystem: args.filesystem.clone(),
+            resume: args.resume,
             unlock: args.encrypt,
             username: username.to_owned(),
+            hostname: args.hostname.clone(),
+            keyboard_layout: args.keyboard_layout.clone(),
+            timezone: args.timezone.clone(),
+            locale: args.locale.clone(),
             graphics: args.graphics,
             cycle_dir: storage.join("vm-cycles").join(&cycle),
             run: runtime.join(format!("tilo-vm-{cycle}")),
@@ -717,6 +1012,33 @@ impl App {
             #[cfg(windows)]
             ports: WindowsPorts::reserve()?,
         };
+        if plan.resume {
+            let saved: Value = serde_json::from_slice(
+                &std::fs::read(plan.out.join("scenario.json"))
+                    .map_err(CliError::io("reading retained scenario"))?,
+            )
+            .map_err(|error| failed("resume", error.to_string(), &plan))?;
+            let current = plan.describe();
+            for key in [
+                "medium",
+                "target",
+                "layout",
+                "filesystem",
+                "encrypt",
+                "username",
+                "graphics",
+            ] {
+                if saved.get(key) != current.get(key) {
+                    return Err(failed(
+                        "resume",
+                        format!("retained scenario {key} differs; use its original inputs"),
+                        &plan,
+                    ));
+                }
+            }
+            check_retained_preferences(&saved, &current)
+                .map_err(|message| failed("resume", message, &plan))?;
+        }
         if args.dry_run {
             let plan_json = plan.describe();
             let text = format!(
@@ -843,7 +1165,7 @@ impl App {
         let completion = if plan.skip_target_boot {
             "target boot deferred; guest image proof and source GPT checked"
         } else {
-            "first boot reached the greeter on the installed image"
+            "first boot reached Tilo's sign-in or identity setup surface"
         };
         let text = format!(
             "install scenario passed: {} install onto {} ({}), {} {}\nphases: {}\nartifacts: {}",
@@ -877,116 +1199,189 @@ impl App {
             plan.unlock.name(),
             plan.out.display()
         ));
-        let started = Instant::now();
-        let init = self.runner.output(&plan.vm(&["init-cycle"]))?;
-        if !init.success {
-            return Err(failed("prepare", init.stderr.trim(), plan));
-        }
-        #[cfg(windows)]
-        verify_external_target(plan, 0, "external-target-before.json")?;
         let mut preserved: Vec<Preserved> = Vec::new();
-        if plan.layout != Layout::Erase && plan.external_target.is_none() {
-            let scratch = fixture::scratch_dir(&plan.cycle_dir);
-            std::fs::create_dir_all(&scratch).map_err(CliError::io("creating fixture scratch"))?;
-            let raw = plan.cycle_dir.join("target.raw");
-            preserved = fixture::build(plan.layout, &raw, &scratch, &mut VmTools { plan })
-                .map_err(|detail| failed("prepare", detail, plan))?;
-            let target = plan.target().display().to_string();
-            VmTools { plan }
-                .run(
-                    "qemu-img",
-                    &[
-                        "create",
-                        "-f",
-                        "qcow2",
-                        "-F",
-                        "raw",
-                        "-b",
-                        &raw.display().to_string(),
-                        &target,
-                    ],
-                    None,
-                )
-                .map_err(|detail| failed("prepare", detail, plan))?;
-            write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
-        }
-        self.receipt
-            .record("prepare", started.elapsed().as_secs_f64());
-
-        let boot = Instant::now();
-        let booted = self.runner.output(&plan.vm(&[
-            "boot-installer",
-            plan.graphics.flag(),
-            plan.tpm_flag(),
-        ]))?;
-        if !booted.success {
-            return Err(failed("boot-installer", booted.stderr.trim(), plan));
-        }
-        say("installer medium booting; waiting for its console");
-        let mut console = SocketConsole::new(&plan.console());
-        let first = wait_for_app(&mut console, "installer", INSTALLER_BOOT).ok_or_else(|| {
-            failed(
-                "boot-installer",
-                format!(
-                    "the installer never answered on its console within {}s",
-                    INSTALLER_BOOT.as_secs()
-                ),
-                plan,
+        let installed = if plan.resume {
+            let installed: drive::Installed = serde_json::from_slice(
+                &std::fs::read(plan.out.join("install.json"))
+                    .map_err(CliError::io("reading retained install result"))?,
             )
-        })?;
-        write_json(&plan.out, "installer-state-first.json", &first)?;
-        self.receipt
-            .record("boot-installer", boot.elapsed().as_secs_f64());
+            .map_err(|error| failed("resume", error.to_string(), plan))?;
+            if installed.steps.last().map(String::as_str) != Some("power-off")
+                || !self.wait_stopped(plan, Duration::from_secs(2))
+            {
+                return Err(failed(
+                    "resume",
+                    "retained install is incomplete or its VM is running",
+                    plan,
+                ));
+            }
+            say("resuming completed install; checking target and guest proof before cold boot");
+            installed
+        } else {
+            let started = Instant::now();
+            let init = self.runner.output(&plan.vm(&["init-cycle"]))?;
+            if !init.success {
+                return Err(failed("prepare", init.stderr.trim(), plan));
+            }
+            #[cfg(windows)]
+            verify_external_target(plan, 0, "external-target-before.json")?;
+            if plan.layout != Layout::Erase && plan.external_target.is_none() {
+                let scratch = fixture::scratch_dir(&plan.cycle_dir);
+                std::fs::create_dir_all(&scratch)
+                    .map_err(CliError::io("creating fixture scratch"))?;
+                let raw = plan.cycle_dir.join("target.raw");
+                preserved = fixture::build(plan.layout, &raw, &scratch, &mut VmTools { plan })
+                    .map_err(|detail| failed("prepare", detail, plan))?;
+                let target = plan.target().display().to_string();
+                VmTools { plan }
+                    .run(
+                        "qemu-img",
+                        &[
+                            "create",
+                            "-f",
+                            "qcow2",
+                            "-F",
+                            "raw",
+                            "-b",
+                            &raw.display().to_string(),
+                            &target,
+                        ],
+                        None,
+                    )
+                    .map_err(|detail| failed("prepare", detail, plan))?;
+                write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
+            }
+            self.receipt
+                .record("prepare", started.elapsed().as_secs_f64());
 
-        let install = Instant::now();
-        let choices = Choices {
-            layout: plan.layout,
-            unlock: plan.unlock,
-            username: plan.username.clone(),
-            full_name: if plan.username == "scenario" {
-                "Scenario User".into()
-            } else {
-                plan.username.clone()
-            },
-            hostname: "scenario-tilo".into(),
-            account_secret: crate::scenario::Secret::new(credentials.account.expose()),
-            disk_secret: credentials
-                .disk
-                .as_ref()
-                .map(|secret| crate::scenario::Secret::new(secret.expose())),
+            let boot = Instant::now();
+            let booted = self.runner.output(&plan.vm(&[
+                "boot-installer",
+                plan.graphics.flag(),
+                plan.tpm_flag(),
+            ]))?;
+            if !booted.success {
+                return Err(failed("boot-installer", booted.stderr.trim(), plan));
+            }
+            say("installer medium booting; waiting for its console");
+            let mut console = SocketConsole::new(&plan.console());
+            let first =
+                wait_for_app(&mut console, "installer", INSTALLER_BOOT).ok_or_else(|| {
+                    failed(
+                        "boot-installer",
+                        format!(
+                            "the installer never answered on its console within {}s",
+                            INSTALLER_BOOT.as_secs()
+                        ),
+                        plan,
+                    )
+                })?;
+            write_json(&plan.out, "installer-state-first.json", &first)?;
+            self.receipt
+                .record("boot-installer", boot.elapsed().as_secs_f64());
+
+            #[cfg(windows)]
+            if std::env::var("TILO_INSTALLER_CODE_PAUSE").as_deref() == Ok("1") {
+                if std::env::var_os("TILO_INSTALLER_CODE_FROM").is_none() {
+                    return Err(failed(
+                        "installer-code-pause",
+                        "pause requires the explicit local code channel",
+                        plan,
+                    ));
+                }
+                let resume_file = plan.out.join("continue-install");
+                if resume_file.exists() {
+                    return Err(failed(
+                        "installer-code-pause",
+                        "stale continue-install marker; use a fresh artifact directory",
+                        plan,
+                    ));
+                }
+                installer_code_phase(
+                    &plan.cycle_dir,
+                    json!({"phase":"paused", "resume":resume_file}),
+                )
+                .map_err(|error| failed("installer-code-pause", error, plan))?;
+                say(&format!(
+                    "development installer ready for helper refresh; create {} to continue",
+                    resume_file.display()
+                ));
+                let deadline = after(plan.install_timeout);
+                while !resume_file.is_file() {
+                    if Instant::now() >= deadline {
+                        return Err(failed(
+                            "installer-code-pause",
+                            "development pause timed out",
+                            plan,
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+
+            #[cfg(windows)]
+            if std::env::var_os("TILO_INSTALLER_CODE_FROM").is_some() {
+                installer_code_phase(&plan.cycle_dir, json!({"phase":"closed"}))
+                    .map_err(|error| failed("installer-code-pause", error, plan))?;
+            }
+
+            let install = Instant::now();
+            let choices = Choices {
+                layout: plan.layout,
+                filesystem: plan.filesystem.clone(),
+                unlock: plan.unlock,
+                username: plan.username.clone(),
+                full_name: if plan.username == "scenario" {
+                    "Scenario User".into()
+                } else {
+                    plan.username.clone()
+                },
+                hostname: plan.hostname.clone(),
+                keyboard_layout: plan.keyboard_layout.clone(),
+                timezone: plan.timezone.clone(),
+                locale: plan.locale.clone(),
+                account_secret: crate::scenario::Secret::new(credentials.account.expose()),
+                disk_secret: credentials
+                    .disk
+                    .as_ref()
+                    .map(|secret| crate::scenario::Secret::new(secret.expose())),
+            };
+            let installed = drive::install(
+                &mut console,
+                &choices,
+                plan.install_timeout,
+                &mut RealPace,
+                &mut |line| say(line),
+            );
+            // The live installer's serial console is never kept: the install
+            // backend's private output carries the one-time recovery key.
+            std::fs::write(
+                plan.out.join("installer-serial-withheld.txt"),
+                "withheld: live-installer serial may contain the one-time recovery key\n",
+            )
+            .map_err(CliError::io("writing the withheld-serial notice"))?;
+            if let Ok(state) = console.state() {
+                write_json(&plan.out, "installer-state-last.json", &state)?;
+            }
+            let installed =
+                installed.map_err(|error| failed("install", error.to_string(), plan))?;
+            write_json(&plan.out, "install.json", &json!(installed))?;
+            self.receipt
+                .record("install", install.elapsed().as_secs_f64());
+
+            let off = Instant::now();
+            if !self.wait_stopped(plan, POWER_OFF) {
+                return Err(failed(
+                    "power-off",
+                    "the installer's Power off action did not stop the VM",
+                    plan,
+                ));
+            }
+            self.receipt
+                .record("power-off", off.elapsed().as_secs_f64());
+            installed
         };
-        let installed = drive::install(
-            &mut console,
-            &choices,
-            plan.install_timeout,
-            &mut RealPace,
-            &mut |line| say(line),
-        );
-        // The live installer's serial console is never kept: the install
-        // backend's private output carries the one-time recovery key.
-        std::fs::write(
-            plan.out.join("installer-serial-withheld.txt"),
-            "withheld: live-installer serial may contain the one-time recovery key\n",
-        )
-        .map_err(CliError::io("writing the withheld-serial notice"))?;
-        if let Ok(state) = console.state() {
-            write_json(&plan.out, "installer-state-last.json", &state)?;
-        }
-        let installed = installed.map_err(|error| failed("install", error.to_string(), plan))?;
-        write_json(&plan.out, "install.json", &json!(installed))?;
-        self.receipt
-            .record("install", install.elapsed().as_secs_f64());
-
-        let off = Instant::now();
-        if !self.wait_stopped(plan, POWER_OFF) {
-            return Err(failed(
-                "power-off",
-                "the installer's Power off action did not stop the VM",
-                plan,
-            ));
-        }
-        self.receipt
-            .record("power-off", off.elapsed().as_secs_f64());
+        let mut console = SocketConsole::new(&plan.console());
 
         if !preserved.is_empty() {
             let verify = Instant::now();
@@ -1034,7 +1429,10 @@ impl App {
                 .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?;
             let proof = parse_install_proof(&bytes)
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
-            let checked = check_install_proof(&proof, source_check, installed.composefs.as_deref())
+            let mut checked =
+                check_install_proof(&proof, source_check, installed.composefs.as_deref())
+                    .map_err(|error| failed("verify-install-proof", error, plan))?;
+            checked["installer_code_runtime"] = installer_code_runtime(plan, &proof)
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
             Some(checked)
         } else {
@@ -1050,12 +1448,16 @@ impl App {
                     plan,
                 )
             })?;
-            if checked.get("schema").and_then(Value::as_str)
-                != Some("tilo.windows-vm-install-proof-check.v2")
-            {
+            if !matches!(
+                checked.get("schema").and_then(Value::as_str),
+                Some(
+                    "tilo.windows-vm-install-proof-check.v2"
+                        | "tilo.windows-vm-install-proof-check.v4"
+                )
+            ) {
                 return Err(failed(
                     "verify-install-proof",
-                    "board install requires backend-derived signed target proof v2",
+                    "board install requires backend-derived signed target proof v2 or explicit dev target proof v4",
                     plan,
                 ));
             }
@@ -1070,6 +1472,13 @@ impl App {
             }));
         }
 
+        #[cfg(windows)]
+        if plan.external_target.is_some() {
+            let discarded = self.runner.output(&plan.vm(&["discard-installer"]))?;
+            if !discarded.success {
+                return Err(failed("discard-installer", discarded.stderr.trim(), plan));
+            }
+        }
         let target_boot = Instant::now();
         let booted = self.runner.output(&plan.vm(&[
             "boot-target",
@@ -1080,19 +1489,15 @@ impl App {
             return Err(failed("boot-target", booted.stderr.trim(), plan));
         }
         say("installed target booting; unlocking at its boot prompt");
-        let greeter = self.unlock_to_greeter(plan, &mut console, credentials.unlock_secret())?;
+        console.timeout = Duration::from_secs(2);
+        let first_boot =
+            self.unlock_to_first_boot(plan, &mut console, credentials.unlock_secret())?;
         let serial = plan.run.join("serial.log");
         if serial.is_file() {
             let _ = std::fs::copy(&serial, plan.out.join("target-serial.log"));
         }
-        write_json(&plan.out, "greeter-state.json", &greeter)?;
         self.receipt
             .record("first-boot", target_boot.elapsed().as_secs_f64());
-
-        let installed_image = greeter
-            .pointer("/image/composefs")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
         #[cfg(windows)]
         let expected_composefs = checked_install_proof
             .as_ref()
@@ -1104,30 +1509,64 @@ impl App {
             .or(installed.composefs.as_deref());
         #[cfg(not(windows))]
         let expected_composefs = installed.composefs.as_deref();
-        let (Some(live), Some(booted_image)) = (expected_composefs, installed_image.as_deref())
-        else {
+        let Some(live) = expected_composefs else {
             return Err(failed(
                 "first-boot",
-                "the installer or the greeter did not report the composefs image it booted, so the installed image cannot be verified",
+                "the installer did not report the composefs image it wrote",
                 plan,
             ));
         };
-        if live != booted_image {
-            return Err(failed(
-                "first-boot",
-                format!(
-                    "first boot runs composefs {booted_image}, not the {live} the installer wrote"
-                ),
-                plan,
-            ));
-        }
-        if greeter.get("phase").and_then(Value::as_str) != Some("sign-in") {
-            return Err(failed(
-                "first-boot",
-                format!("the greeter is not offering sign-in: {greeter}"),
-                plan,
-            ));
-        }
+        let (booted_image, observation) = match first_boot {
+            FirstBootSurface::Greeter(greeter) => {
+                write_json(&plan.out, "greeter-state.json", &greeter)?;
+                let booted_image = greeter
+                    .pointer("/image/composefs")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        failed(
+                            "first-boot",
+                            "the greeter did not report its composefs image",
+                            plan,
+                        )
+                    })?;
+                if live != booted_image {
+                    return Err(failed(
+                        "first-boot",
+                        format!(
+                            "first boot runs composefs {booted_image}, not the {live} the installer wrote"
+                        ),
+                        plan,
+                    ));
+                }
+                if greeter.get("phase").and_then(Value::as_str) != Some("sign-in") {
+                    return Err(failed(
+                        "first-boot",
+                        format!("the greeter is not offering sign-in: {greeter}"),
+                        plan,
+                    ));
+                }
+                (
+                    booted_image.to_owned(),
+                    json!({ "kind": "greeter", "state": greeter }),
+                )
+            }
+            FirstBootSurface::IdentitySetup { screenshot, text } => {
+                write_json(
+                    &plan.out,
+                    "identity-setup-observation.json",
+                    &json!({
+                        "screenshot": screenshot,
+                        "ocr": text,
+                        "image_identity_source": "installer proof; the cold-booted VM has only the installed target disk",
+                    }),
+                )?;
+                (
+                    live.to_owned(),
+                    json!({ "kind": "identity-setup", "screenshot": screenshot,
+                    "image_identity_observed_directly": false }),
+                )
+            }
+        };
         let report = json!({
             "scenario": "install",
             "layout": plan.layout.name(),
@@ -1137,7 +1576,7 @@ impl App {
             "installer_image": live,
             "installed_image": booted_image,
             "first_boot_verified": true,
-            "greeter": greeter,
+            "first_boot": observation,
             "preserved": preserved,
             "artifacts": plan.out,
         });
@@ -1167,25 +1606,48 @@ impl App {
         false
     }
 
-    /// Type the unlock secret at the target's boot prompt until the greeter
-    /// answers its console. The prompt is before userspace, so the keyboard
-    /// is the only door; the greeter answering is what stops the typing, so
-    /// a late attempt cannot land in its username field.
-    fn unlock_to_greeter(
+    /// Recognize either sign-in or first-use identity setup. Type the disk
+    /// secret only after observing the encrypted-root prompt on this poll.
+    fn unlock_to_first_boot(
         &mut self,
         plan: &Plan,
         console: &mut SocketConsole,
         secret: &crate::scenario::Secret,
-    ) -> Result<Value, CliError> {
+    ) -> Result<FirstBootSurface, CliError> {
         let deadline = after(TARGET_BOOT);
-        let first_attempt = after(Duration::from_secs(30));
         let mut typed = 0_u32;
+        let mut next_unlock = Instant::now();
         while Instant::now() < deadline {
             if let Ok(state) = console.state()
                 && state.get("app").and_then(Value::as_str) == Some("greeter")
             {
                 self.receipt.set("unlock_attempts", typed);
-                return Ok(state);
+                return Ok(FirstBootSurface::Greeter(state));
+            }
+            let mut unlock_prompt = false;
+            if let Ok(shot) = self
+                .runner
+                .output(&plan.vm(&["shot", "first-boot-observe"]))
+                && shot.success
+            {
+                let source = PathBuf::from(shot.stdout.trim());
+                if source.is_file()
+                    && let Ok(ocr) = std::process::Command::new("tesseract")
+                        .arg(&source)
+                        .arg("stdout")
+                        .output()
+                    && ocr.status.success()
+                {
+                    let text = String::from_utf8_lossy(&ocr.stdout).into_owned();
+                    unlock_prompt = is_disk_unlock_prompt(&text);
+                    if is_identity_setup(&text) {
+                        let screenshot = plan.out.join("first-boot-identity-setup.png");
+                        std::fs::copy(&source, &screenshot)
+                            .map_err(CliError::io("saving first-boot identity setup screenshot"))?;
+                        self.receipt.set("unlock_attempts", typed);
+                        return Ok(FirstBootSurface::IdentitySetup { screenshot, text });
+                    }
+                }
             }
             let running = self
                 .runner
@@ -1194,23 +1656,24 @@ impl App {
             if !running {
                 return Err(failed(
                     "first-boot",
-                    "the installed target stopped before reaching the greeter",
+                    "the installed target stopped before reaching sign-in or identity setup",
                     plan,
                 ));
             }
-            if Instant::now() >= first_attempt && typed < UNLOCK_ATTEMPTS {
+            if unlock_prompt && typed < UNLOCK_ATTEMPTS && Instant::now() >= next_unlock {
                 piped(plan, &["type", "-"], secret.expose())?;
                 let _ = self.runner.output(&plan.vm(&["keys", "ret"]));
                 typed = typed.saturating_add(1);
-                std::thread::sleep(Duration::from_secs(15));
-            } else {
-                std::thread::sleep(Duration::from_secs(5));
+                next_unlock = after(Duration::from_secs(15));
             }
+            // Keep observing startup while the retry delay elapses: a fast
+            // successful unlock should not incur a fixed fifteen-second wait.
+            std::thread::sleep(Duration::from_secs(1));
         }
         Err(failed(
             "first-boot",
             format!(
-                "no greeter answered within {}s after {typed} unlock attempt(s)",
+                "no sign-in or identity setup appeared within {}s after {typed} unlock attempt(s)",
                 TARGET_BOOT.as_secs()
             ),
             plan,
@@ -1235,7 +1698,17 @@ fn valid_username(name: &str) -> bool {
 /// installer deliberately withholds from scenario artifacts. Scrub it before
 /// retention or cleanup, even when the install failed.
 fn scrub_scenario_logs(out: &Path, run: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
-    scrub_scenario_logs_with(out, run, secrets, scrub)
+    scrub_scenario_logs_with(out, run, secrets, |path, secrets| {
+        if path == out {
+            // VM disk images live here and can be tens of GiB. They are never
+            // text logs; reading them can exhaust host memory, and a false
+            // positive must never truncate an installed target.
+            let storage = out.join("storage");
+            scrub_with(path, secrets, |directory| directory != storage)
+        } else {
+            scrub(path, secrets)
+        }
+    })
 }
 
 fn scrub_scenario_logs_with(
@@ -1290,109 +1763,296 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_install_preferences_preserve_legacy_defaults_and_reject_changes() {
+        let legacy = serde_json::json!({});
+        let defaults = serde_json::json!({"hostname":"scenario-tilo", "keyboard_layout":null, "timezone":null, "locale":null});
+        super::check_retained_preferences(&legacy, &defaults).unwrap();
+        let mut configured = plan(Layout::Erase);
+        configured.hostname = "laptop".into();
+        configured.keyboard_layout = Some("German (QWERTZ)".into());
+        configured.timezone = Some("Europe/Berlin".into());
+        let requested = configured.describe();
+        super::check_retained_preferences(&requested, &requested).unwrap();
+        for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+            let mut changed = requested.clone();
+            changed[key] = serde_json::json!("different");
+            assert!(
+                super::check_retained_preferences(&requested, &changed)
+                    .unwrap_err()
+                    .contains(key)
+            );
+        }
+        assert!(super::check_retained_preferences(&legacy, &requested).is_err());
+    }
+
+    #[test]
+    fn disk_secret_requires_the_visible_encrypted_root_prompt() {
+        assert!(super::is_disk_unlock_prompt(
+            "Unlock Tilo\n\nEnter your disk passphrase or recovery key"
+        ));
+        assert!(!super::is_disk_unlock_prompt("Tilo\nStarting services"));
+        assert!(!super::is_disk_unlock_prompt(
+            "Welcome back to Tilo\nbob\nEnter your passcode to open your desktop."
+        ));
+        assert!(!super::is_disk_unlock_prompt(
+            "Tilo identity setup\nBack up your Tilo identity\nRecovery key"
+        ));
+        assert!(!super::is_disk_unlock_prompt("Unlock Tilo"));
+    }
+
+    #[test]
+    fn first_boot_ocr_accepts_identity_setup_but_not_a_login_prompt() {
+        assert!(super::is_identity_setup(
+            "Tilo identity setup Step 2 of 5 - Restore\nConnect an existing identity"
+        ));
+        assert!(super::is_identity_setup(
+            "Tilo identity setup\nCreate your local identity"
+        ));
+        assert!(!super::is_identity_setup(
+            "Fedora Linux 44\nscenario-tilo login:"
+        ));
+    }
+
+    /// A VM install proof requires one valid guest line and matching source; a v2 proof binds a distinct
+    /// medium and signed target.
     #[cfg(windows)]
     #[test]
-    fn vm_install_proof_requires_one_valid_guest_line_and_matching_source() {
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let efi = "11111111-1111-4111-8111-111111111111";
-        let boot = "22222222-2222-4222-8222-222222222222";
-        let root = "33333333-3333-4333-8333-333333333333";
-        let disk = "44444444-4444-4444-8444-444444444444";
-        let payload = json!({
-            "schema": "tilo.vm-install-image-proof.v1", "architecture": "arm64",
-            "booted_image_digest": digest, "installed_image_digest": digest,
-            "composefs_digest": "b".repeat(128), "target_uki_sha256": "c".repeat(64),
-            "disk_guid": disk, "partuuids": {"efi": efi, "boot": boot, "root": root},
-        });
-        let line = format!("TILO_VM_INSTALL_PROOF_V1={payload}\n");
-        let proof = super::parse_install_proof(line.as_bytes()).expect("valid guest proof");
-        let source = json!({"disk_guid": disk,
-            "final_partuuids": {"efi": efi, "boot": boot, "root": root}});
-        let checked = super::check_install_proof(&proof, &source, Some(&"b".repeat(128)))
-            .expect("matching source GPT");
-        assert_eq!(checked["guest_proof"]["disk_guid"], disk);
-        assert!(super::parse_install_proof(format!("{line}{line}").as_bytes()).is_err());
-        assert!(super::parse_install_proof(line.trim_end().as_bytes()).is_err());
-        let mut changed = source;
-        changed["final_partuuids"]["root"] = json!(efi);
-        assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
-        let mut extended = payload;
-        extended["booted_composefs_digest"] = json!("b".repeat(128));
-        extended["installed_composefs_digest"] = json!("b".repeat(128));
-        extended["installed_update_origin"] = json!("ostree-unverified-image:docker://tilo:gen1");
-        assert!(
-            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V1={extended}\n").as_bytes())
+    fn vm_install_proofs_bind_the_guest_line_medium_and_signed_target() {
+        // Phase: vm_install_proof_requires_one_valid_guest_line_and_matching_source.
+        {
+            let digest = format!("sha256:{}", "a".repeat(64));
+            let efi = "11111111-1111-4111-8111-111111111111";
+            let boot = "22222222-2222-4222-8222-222222222222";
+            let root = "33333333-3333-4333-8333-333333333333";
+            let disk = "44444444-4444-4444-8444-444444444444";
+            let payload = json!({
+                "schema": "tilo.vm-install-image-proof.v1", "architecture": "arm64",
+                "booted_image_digest": digest, "installed_image_digest": digest,
+                "composefs_digest": "b".repeat(128), "target_uki_sha256": "c".repeat(64),
+                "disk_guid": disk, "partuuids": {"efi": efi, "boot": boot, "root": root},
+            });
+            let line = format!("TILO_VM_INSTALL_PROOF_V1={payload}\n");
+            let proof = super::parse_install_proof(line.as_bytes()).expect("valid guest proof");
+            let source = json!({"disk_guid": disk,
+                "final_partuuids": {"efi": efi, "boot": boot, "root": root}});
+            let checked = super::check_install_proof(&proof, &source, Some(&"b".repeat(128)))
+                .expect("matching source GPT");
+            assert_eq!(checked["guest_proof"]["disk_guid"], disk);
+            assert!(super::parse_install_proof(format!("{line}{line}").as_bytes()).is_err());
+            assert!(super::parse_install_proof(line.trim_end().as_bytes()).is_err());
+            let mut changed = source;
+            changed["final_partuuids"]["root"] = json!(efi);
+            assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
+            let mut extended = payload;
+            extended["booted_composefs_digest"] = json!("b".repeat(128));
+            extended["installed_composefs_digest"] = json!("b".repeat(128));
+            extended["installed_update_origin"] =
+                json!("ostree-unverified-image:docker://tilo:gen1");
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V1={extended}\n").as_bytes()
+                )
                 .is_ok()
-        );
-    }
-    #[cfg(windows)]
-    #[test]
-    fn vm_v2_proof_binds_distinct_medium_and_signed_target() {
-        let revision = "a".repeat(40);
-        let target = format!("sha256:{}", "b".repeat(64));
-        let origin = format!("code.tilo.so/tilo/tilo:lenovo-83ed-{revision}");
-        let ids = json!({
-            "efi": "11111111-1111-4111-8111-111111111111",
-            "boot": "22222222-2222-4222-8222-222222222222",
-            "root": "33333333-3333-4333-8333-333333333333",
-        });
-        let disk = "44444444-4444-4444-8444-444444444444";
-        let mut payload = json!({
-            "schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
-            "booted_image_digest": format!("sha256:{}", "e".repeat(64)),
-            "installed_image_digest": target,
-            "booted_composefs_digest": "f".repeat(128),
-            "installed_composefs_digest": "c".repeat(128),
-            "composefs_digest": "c".repeat(128),
-            "installed_update_origin": format!("ostree-unverified-image:docker://{origin}"),
-            "selected_target": {
-                "schema": "tilo.installer-offline-target.v1",
-                "target_ref": format!("code.tilo.so/tilo/tilo@{target}"),
-                "target_digest": target, "architecture": "aarch64",
-                "hardware_profile": "lenovo-83ed", "update_origin": origin,
-                "provenance": {"source_revision": revision,
-                    "firmware_manifest_sha256": "d".repeat(64),
-                    "firmware_candidate": format!("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
-                    "invocation_id": "123"},
-                "verifier_key_sha256": "e".repeat(64),
-            },
-            "target_uki_sha256": "d".repeat(64), "disk_guid": disk,
-            "partuuids": ids,
-        });
-        let line = format!("TILO_VM_INSTALL_PROOF_V2={payload}\n");
-        let proof = super::parse_install_proof(line.as_bytes()).expect("valid v2 guest proof");
-        let source = json!({"disk_guid": disk, "final_partuuids": ids});
-        let checked = super::check_install_proof(&proof, &source, Some(&"f".repeat(128)))
-            .expect("matching installer composefs and source GPT");
-        assert_eq!(checked["schema"], "tilo.windows-vm-install-proof-check.v2");
-        assert_eq!(checked["guest_proof"]["installed_image_digest"], target);
-        assert!(super::check_install_proof(&proof, &source, Some(&"c".repeat(128))).is_err());
-        payload["selected_target"]["target_digest"] = json!(format!("sha256:{}", "a".repeat(64)));
-        assert!(
-            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+            );
+        }
+
+        // A development VM may copy an identical composefs tree through a
+        // different OCI manifest. The copy digest is explicit and v2 remains
+        // the only proof accepted for a board install without first boot.
+        {
+            let installed = format!("sha256:{}", "a".repeat(64));
+            let mut payload = json!({
+                "schema": "tilo.vm-install-image-proof.v3", "architecture": "arm64",
+                "booted_image_digest": format!("sha256:{}", "b".repeat(64)),
+                "installed_image_digest": installed,
+                "copied_manifest_digest": installed,
+                "composefs_digest": "c".repeat(128),
+                "booted_composefs_digest": "c".repeat(128),
+                "installed_composefs_digest": "c".repeat(128),
+                "target_uki_sha256": "d".repeat(64),
+                "disk_guid": "44444444-4444-4444-8444-444444444444",
+                "partuuids": {
+                    "efi": "11111111-1111-4111-8111-111111111111",
+                    "boot": "22222222-2222-4222-8222-222222222222",
+                    "root": "33333333-3333-4333-8333-333333333333",
+                },
+            });
+            let line = format!("TILO_VM_INSTALL_PROOF_V3={payload}\n");
+            let proof = super::parse_install_proof(line.as_bytes()).expect("valid dev copy proof");
+            let source = json!({"disk_guid": "44444444-4444-4444-8444-444444444444",
+            "final_partuuids": {
+                "efi": "11111111-1111-4111-8111-111111111111",
+                "boot": "22222222-2222-4222-8222-222222222222",
+                "root": "33333333-3333-4333-8333-333333333333",
+            }});
+            let checked = super::check_install_proof(&proof, &source, Some(&"c".repeat(128)))
+                .expect("matching development copy");
+            assert_eq!(checked["schema"], "tilo.windows-vm-install-proof-check.v3");
+            payload["copied_manifest_digest"] = json!(format!("sha256:{}", "e".repeat(64)));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V3={payload}\n").as_bytes()
+                )
                 .is_err()
-        );
-        payload["selected_target"]["target_digest"] = json!(target);
-        // A board target on the public repository is refused.
-        payload["selected_target"]["target_ref"] =
-            json!(format!("registry.tilo.so/tilo/tilo@{target}"));
-        assert!(
-            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+            );
+        }
+
+        // Phase: vm_v2_proof_binds_distinct_medium_and_signed_target.
+        {
+            let revision = "a".repeat(40);
+            let target = format!("sha256:{}", "b".repeat(64));
+            let origin = format!("code.tilo.so/tilo/tilo:lenovo-83ed-{revision}");
+            let ids = json!({
+                "efi": "11111111-1111-4111-8111-111111111111",
+                "boot": "22222222-2222-4222-8222-222222222222",
+                "root": "33333333-3333-4333-8333-333333333333",
+            });
+            let disk = "44444444-4444-4444-8444-444444444444";
+            let mut payload = json!({
+                "schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
+                "booted_image_digest": format!("sha256:{}", "e".repeat(64)),
+                "installed_image_digest": target,
+                "booted_composefs_digest": "f".repeat(128),
+                "installed_composefs_digest": "c".repeat(128),
+                "composefs_digest": "c".repeat(128),
+                "installed_update_origin": format!("ostree-unverified-image:docker://{origin}"),
+                "selected_target": {
+                    "schema": "tilo.installer-offline-target.v1",
+                    "target_ref": format!("code.tilo.so/tilo/tilo@{target}"),
+                    "target_digest": target, "architecture": "aarch64",
+                    "hardware_profile": "lenovo-83ed", "update_origin": origin,
+                    "provenance": {"source_revision": revision,
+                        "firmware_manifest_sha256": "d".repeat(64),
+                        "firmware_candidate": format!("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
+                        "invocation_id": "123"},
+                    "verifier_key_sha256": "e".repeat(64),
+                },
+                "target_uki_sha256": "d".repeat(64), "disk_guid": disk,
+                "partuuids": ids,
+            });
+            let line = format!("TILO_VM_INSTALL_PROOF_V2={payload}\n");
+            let proof = super::parse_install_proof(line.as_bytes()).expect("valid v2 guest proof");
+            let source = json!({"disk_guid": disk, "final_partuuids": ids});
+            let checked = super::check_install_proof(&proof, &source, Some(&"f".repeat(128)))
+                .expect("matching installer composefs and source GPT");
+            assert_eq!(checked["schema"], "tilo.windows-vm-install-proof-check.v2");
+            assert_eq!(checked["guest_proof"]["installed_image_digest"], target);
+            assert!(super::check_install_proof(&proof, &source, Some(&"c".repeat(128))).is_err());
+            payload["selected_target"]["target_digest"] =
+                json!(format!("sha256:{}", "a".repeat(64)));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
+                )
                 .is_err()
-        );
-        payload["selected_target"]["hardware_profile"] = json!("generic");
-        payload["selected_target"]["update_origin"] = json!("registry.tilo.so/tilo/tilo:gen7");
-        payload["selected_target"]["provenance"]["generation"] = json!(7);
-        payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
-        payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
-        payload["installed_update_origin"] =
-            json!("ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:gen7");
-        assert!(
-            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+            );
+            payload["selected_target"]["target_digest"] = json!(target);
+            // A board target on the public repository is refused.
+            payload["selected_target"]["target_ref"] =
+                json!(format!("registry.tilo.so/tilo/tilo@{target}"));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
+                )
+                .is_err()
+            );
+            payload["selected_target"]["hardware_profile"] = json!("generic");
+            payload["selected_target"]["update_origin"] = json!("registry.tilo.so/tilo/tilo:gen7");
+            payload["selected_target"]["provenance"]["generation"] = json!(7);
+            payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
+            payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
+            payload["installed_update_origin"] =
+                json!("ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:gen7");
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
+                )
                 .is_ok()
-        );
+            );
+            // Explicit development targets remain a separate proof protocol.
+            let dev_origin = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci";
+            payload["schema"] = json!("tilo.vm-install-image-proof.v4");
+            payload["selected_target"]["schema"] = json!("tilo.installer-dev-target.v1");
+            payload["selected_target"]["target_ref"] =
+                json!(format!("registry.tilo.so/tilo/tilo-vm@{target}"));
+            payload["selected_target"]["hardware_profile"] = json!("lenovo-83ed");
+            payload["selected_target"]["update_origin"] = json!(dev_origin);
+            payload["selected_target"]["verifier_key_sha256"] = Value::Null;
+            payload["selected_target"]["provenance"]["generation"] = Value::Null;
+            payload["installed_update_origin"] =
+                json!(format!("ostree-unverified-image:docker://{dev_origin}"));
+            let dev_proof = super::parse_install_proof(
+                format!("TILO_VM_INSTALL_PROOF_V4={payload}\n").as_bytes(),
+            )
+            .expect("explicit development target");
+            assert_eq!(
+                super::check_install_proof(&dev_proof, &source, Some(&"f".repeat(128)))
+                    .expect("development target readback binding")["schema"],
+                "tilo.windows-vm-install-proof-check.v4"
+            );
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
+                )
+                .is_err()
+            );
+            payload["selected_target"]["verifier_key_sha256"] = json!("e".repeat(64));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V4={payload}\n").as_bytes()
+                )
+                .is_err()
+            );
+        }
     }
+
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_code_host_history_cannot_be_omitted_by_the_guest() {
+        let clean = json!({"schema":"tilo.installer-code-runtime.v1", "enabled":false,"port":null,"source":null});
+        assert!(super::check_installer_code_runtime(&clean, &json!([]), None).is_ok());
+        let hash = "a".repeat(64);
+        let history = json!([{"requested":{"sha256":hash},"acknowledged":true}]);
+        let enabled = json!({"schema":"tilo.installer-code-runtime.v1", "enabled":true,"port":2222,"source":"worktree"});
+        assert!(super::check_installer_code_runtime(&enabled, &history, Some(&hash)).is_ok());
+        assert!(super::check_installer_code_runtime(&enabled, &history, None).is_err());
+        assert!(super::check_installer_code_runtime(&enabled, &json!([]), Some(&hash)).is_err());
+        assert!(super::check_installer_code_runtime(&clean, &history, None).is_err());
+        assert!(super::check_installer_code_runtime(&clean, &json!([]), Some(&hash)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_code_window_closes_after_inflight_transport_releases_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let cycle = directory.path().to_path_buf();
+        let phase = cycle.join("installer-code-phase.json");
+        std::fs::write(&phase, r#"{"phase":"paused"}"#).unwrap();
+        let lock = cycle.join("installer-code-window.lock");
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            super::installer_code_phase(&cycle, json!({"phase":"closed"}))
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            std::fs::read_to_string(&phase).unwrap(),
+            r#"{"phase":"paused"}"#
+        );
+        drop(held);
+        std::fs::remove_file(lock).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(phase).unwrap(),
+            r#"{"phase":"closed"}"#
+        );
+    }
 
     fn plan(layout: Layout) -> Plan {
         Plan {
@@ -1401,8 +2061,14 @@ mod tests {
             external_target: None,
             skip_target_boot: false,
             layout,
+            filesystem: None,
+            resume: false,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
+            hostname: "scenario-tilo".into(),
+            keyboard_layout: None,
+            timezone: None,
+            locale: None,
             graphics: crate::scenario::Graphics::Software,
             cycle: "scenario-install-x".into(),
             out: PathBuf::from("/w/target/tilo-vm-scenarios/scenario-install-x"),
@@ -1421,204 +2087,225 @@ mod tests {
         }
     }
 
+    /// Retained runtime logs are scrubbed alongside artifacts; a scrub failure still checks the runtime and
+    /// preserves the pid for stop; a runtime scrub failure preserves the pid for a stop retry; a failed stop
+    /// keeps the pid and a successful retry removes the runtime.
     #[test]
-    fn retained_runtime_logs_are_scrubbed_alongside_artifacts() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("artifacts");
-        let run = dir.path().join("runtime");
-        std::fs::create_dir(&out).unwrap();
-        std::fs::create_dir(&run).unwrap();
-        std::fs::write(out.join("state.json"), "ready").unwrap();
-        std::fs::write(run.join("serial.log"), "typed accountsecret123").unwrap();
-        std::fs::write(run.join("uart.log"), "typed disksecret456").unwrap();
-        let withheld =
-            scrub_scenario_logs(&out, &run, &["accountsecret123", "disksecret456"]).unwrap();
-        assert_eq!(withheld.len(), 2);
-        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
-        assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
-        assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
-    }
-
-    #[test]
-    fn scrub_failure_still_checks_runtime_and_preserves_pid_for_stop() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("artifacts");
-        let run = dir.path().join("runtime");
-        std::fs::create_dir(&out).unwrap();
-        std::fs::create_dir(&run).unwrap();
-        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
-        let mut inspected = Vec::new();
-        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
-            inspected.push(path.to_path_buf());
-            if path == out {
-                Err(std::io::Error::other("injected artifact read failure"))
-            } else {
-                scrub(path, secrets)
-            }
-        })
-        .unwrap_err();
-        assert_eq!(error.to_string(), "injected artifact read failure");
-        assert_eq!(inspected, [out, run.clone()]);
-        assert!(run.is_dir(), "the pid file must survive until stop retries");
-        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
-    }
-
-    #[test]
-    fn runtime_scrub_failure_preserves_pid_for_stop_retry() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("artifacts");
-        let run = dir.path().join("runtime");
-        std::fs::create_dir(&out).unwrap();
-        std::fs::create_dir(&run).unwrap();
-        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
-        std::fs::write(run.join("qemu.pid"), "123").unwrap();
-        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
-            if path == run {
-                Err(std::io::Error::other("injected runtime read failure"))
-            } else {
-                scrub(path, secrets)
-            }
-        })
-        .unwrap_err();
-        assert_eq!(error.to_string(), "injected runtime read failure");
-        assert!(run.join("qemu.pid").exists());
-    }
-
-    #[test]
-    fn failed_stop_keeps_pid_and_successful_retry_removes_runtime() {
-        struct StopRunner {
-            status: &'static str,
-            calls: Vec<String>,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn runtime_scrubbing_and_stop_keep_the_pid_until_cleanup_succeeds() {
+        // Phase: retained_runtime_logs_are_scrubbed_alongside_artifacts.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("artifacts");
+            let run = dir.path().join("runtime");
+            std::fs::create_dir(&out).unwrap();
+            std::fs::create_dir(&run).unwrap();
+            std::fs::create_dir(out.join("storage")).unwrap();
+            std::fs::write(out.join("state.json"), "ready").unwrap();
+            let disk = out.join("storage/target.qcow2");
+            std::fs::write(&disk, "typed accountsecret123 in VM disk bytes").unwrap();
+            std::fs::write(run.join("serial.log"), "typed accountsecret123").unwrap();
+            std::fs::write(run.join("uart.log"), "typed disksecret456").unwrap();
+            let withheld =
+                scrub_scenario_logs(&out, &run, &["accountsecret123", "disksecret456"]).unwrap();
+            assert_eq!(withheld.len(), 2);
+            assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
+            assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
+            assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
+            assert!(!std::fs::read(disk).unwrap().is_empty());
         }
-        impl Runner for StopRunner {
-            fn output(
-                &mut self,
-                command: &CommandLine,
-            ) -> Result<crate::hypervisor::Output, CliError> {
-                let action = command.args.last().cloned().unwrap_or_default();
-                self.calls.push(action.clone());
-                Ok(crate::hypervisor::Output {
-                    success: true,
-                    status: "0".into(),
-                    stdout: if action == "status" {
-                        self.status.into()
+
+        // Phase: scrub_failure_still_checks_runtime_and_preserves_pid_for_stop.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("artifacts");
+            let run = dir.path().join("runtime");
+            std::fs::create_dir(&out).unwrap();
+            std::fs::create_dir(&run).unwrap();
+            std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+            let mut inspected = Vec::new();
+            let error =
+                scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+                    inspected.push(path.to_path_buf());
+                    if path == out {
+                        Err(std::io::Error::other("injected artifact read failure"))
                     } else {
-                        String::new()
-                    },
-                    stderr: String::new(),
+                        scrub(path, secrets)
+                    }
                 })
-            }
-            fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
-                Ok(false)
-            }
+                .unwrap_err();
+            assert_eq!(error.to_string(), "injected artifact read failure");
+            assert_eq!(inspected, [out, run.clone()]);
+            assert!(run.is_dir(), "the pid file must survive until stop retries");
+            assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
         }
-        let dir = tempfile::tempdir().unwrap();
-        let mut plan = plan(Layout::Erase);
-        plan.run = dir.path().join("runtime");
-        std::fs::create_dir(&plan.run).unwrap();
-        std::fs::write(plan.run.join("qemu.pid"), "123").unwrap();
-        std::fs::write(plan.run.join("serial.log"), "sensitive").unwrap();
-        let mut running = StopRunner {
-            status: "running",
-            calls: Vec::new(),
-        };
-        assert!(discard_unsanitized_runtime(&plan, &mut running).is_err());
-        assert_eq!(running.calls, ["stop", "status"]);
-        assert!(plan.run.join("qemu.pid").exists());
-        let mut stopped = StopRunner {
-            status: "stopped",
-            calls: Vec::new(),
-        };
-        discard_unsanitized_runtime(&plan, &mut stopped).unwrap();
-        assert_eq!(stopped.calls, ["stop", "status"]);
-        assert!(!plan.run.exists());
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn every_vm_call_shares_one_named_cycle_and_the_plan_names_its_console() {
-        let plan = plan(Layout::GuidedAlongside);
-        let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
-        assert_eq!(
-            boot.args,
-            ["os/dev/vm.sh", "boot-installer", "--2d", "--no-tpm"]
-        );
-        for key in [
-            "TILO_VM_CYCLE",
-            "TILO_INSTALLER_OUTPUT",
-            "TILO_INSTALLER_DISK",
-            "TILO_RUN",
-        ] {
-            assert!(boot.env.iter().any(|(k, _)| k == key), "{key}");
+        // Phase: runtime_scrub_failure_preserves_pid_for_stop_retry.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("artifacts");
+            let run = dir.path().join("runtime");
+            std::fs::create_dir(&out).unwrap();
+            std::fs::create_dir(&run).unwrap();
+            std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+            std::fs::write(run.join("qemu.pid"), "123").unwrap();
+            let error =
+                scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+                    if path == run {
+                        Err(std::io::Error::other("injected runtime read failure"))
+                    } else {
+                        scrub(path, secrets)
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.to_string(), "injected runtime read failure");
+            assert!(run.join("qemu.pid").exists());
         }
-        let described = plan.describe();
-        assert_eq!(described["layout"], "guided-alongside");
-        assert_eq!(
-            described["console"],
-            "/run/user/1000/tilo-vm-scenario-install-x/console.sock"
-        );
-        // The cycle directory is where vm.sh itself derives it; init-cycle
-        // refuses to clear anything else.
-        assert_eq!(
-            plan.cycle_dir,
-            plan.storage.join("vm-cycles").join(&plan.cycle)
-        );
-        assert!(
-            !described.to_string().contains("scenario-passphrase"),
-            "the plan never carries the secret"
-        );
+
+        // Phase: failed_stop_keeps_pid_and_successful_retry_removes_runtime.
+        {
+            struct StopRunner {
+                status: &'static str,
+                calls: Vec<String>,
+            }
+            impl Runner for StopRunner {
+                fn output(
+                    &mut self,
+                    command: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    let action = command.args.last().cloned().unwrap_or_default();
+                    self.calls.push(action.clone());
+                    Ok(crate::hypervisor::Output {
+                        success: true,
+                        status: "0".into(),
+                        stdout: if action == "status" {
+                            self.status.into()
+                        } else {
+                            String::new()
+                        },
+                        stderr: String::new(),
+                    })
+                }
+                fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                    Ok(false)
+                }
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let mut plan = plan(Layout::Erase);
+            plan.run = dir.path().join("runtime");
+            std::fs::create_dir(&plan.run).unwrap();
+            std::fs::write(plan.run.join("qemu.pid"), "123").unwrap();
+            std::fs::write(plan.run.join("serial.log"), "sensitive").unwrap();
+            let mut running = StopRunner {
+                status: "running",
+                calls: Vec::new(),
+            };
+            assert!(discard_unsanitized_runtime(&plan, &mut running).is_err());
+            assert_eq!(running.calls, ["stop", "status"]);
+            assert!(plan.run.join("qemu.pid").exists());
+            let mut stopped = StopRunner {
+                status: "stopped",
+                calls: Vec::new(),
+            };
+            discard_unsanitized_runtime(&plan, &mut stopped).unwrap();
+            assert_eq!(stopped.calls, ["stop", "status"]);
+            assert!(!plan.run.exists());
+        }
     }
 
-    #[cfg(windows)]
+    /// Every VM call shares one named cycle and the plan names its console; the Windows plan uses WHPX
+    /// transport and a TCP console; an external raw target is retained and passed to WHPX transport.
     #[test]
-    fn windows_plan_uses_whpx_transport_and_tcp_console() {
-        let plan = plan(Layout::Erase);
-        let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
-        assert_eq!(boot.program, "pwsh");
-        assert_eq!(
-            boot.args,
-            [
-                "-NoProfile",
-                "-File",
-                "os/dev/vm-windows.ps1",
-                "boot-installer",
-                "--2d",
-                "--no-tpm"
-            ]
-        );
-        assert_eq!(plan.console(), PathBuf::from("tcp://127.0.0.1:30001"));
-        assert!(
-            boot.env
-                .iter()
-                .any(|(key, value)| key == "TILO_CONSOLE_PORT" && value == "30001")
-        );
-        assert!(
-            boot.env
-                .iter()
-                .any(|(key, value)| key == "TILO_QMP_PORT" && value == "30002")
-        );
-        let described = plan.describe();
-        let commands = described["commands"].to_string();
-        assert!(commands.contains("boot-installer"));
-        assert!(commands.contains("boot-target"));
-        assert!(commands.contains("tcp://127.0.0.1:30001"));
-    }
+    fn scenario_plans_share_one_cycle_and_pick_the_platform_transport() {
+        // Phase: every_vm_call_shares_one_named_cycle_and_the_plan_names_its_console.
+        #[cfg(unix)]
+        {
+            let plan = plan(Layout::GuidedAlongside);
+            let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
+            assert_eq!(
+                boot.args,
+                ["os/dev/vm.sh", "boot-installer", "--2d", "--no-tpm"]
+            );
+            for key in [
+                "TILO_VM_CYCLE",
+                "TILO_INSTALLER_OUTPUT",
+                "TILO_INSTALLER_DISK",
+                "TILO_RUN",
+            ] {
+                assert!(boot.env.iter().any(|(k, _)| k == key), "{key}");
+            }
+            let described = plan.describe();
+            assert_eq!(described["layout"], "guided-alongside");
+            assert_eq!(
+                described["console"],
+                "/run/user/1000/tilo-vm-scenario-install-x/console.sock"
+            );
+            // The cycle directory is where vm.sh itself derives it; init-cycle
+            // refuses to clear anything else.
+            assert_eq!(
+                plan.cycle_dir,
+                plan.storage.join("vm-cycles").join(&plan.cycle)
+            );
+            assert!(
+                !described.to_string().contains("scenario-passphrase"),
+                "the plan never carries the secret"
+            );
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn external_raw_target_is_retained_and_passed_to_whpx_transport() {
-        let mut plan = plan(Layout::GuidedAlongside);
-        let target = PathBuf::from("C:/tilo-test/source.raw");
-        plan.external_target = Some(target.clone());
-        assert_eq!(plan.target(), target);
-        let boot = plan.vm(&["boot-installer"]);
-        assert!(boot.env.iter().any(|(key, value)| {
-            key == "TILO_INSTALL_TARGET_DISK" && value == &target.display().to_string()
-        }));
-        assert_eq!(plan.describe()["external_target"], true);
-        plan.skip_target_boot = true;
-        let described = plan.describe();
-        assert_eq!(described["skip_target_boot"], true);
-        assert!(!described["commands"].to_string().contains("boot-target"));
+        // Phase: windows_plan_uses_whpx_transport_and_tcp_console.
+        #[cfg(windows)]
+        {
+            let plan = plan(Layout::Erase);
+            let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
+            assert_eq!(boot.program, "pwsh");
+            assert_eq!(
+                boot.args,
+                [
+                    "-NoProfile",
+                    "-File",
+                    "os/dev/vm-windows.ps1",
+                    "boot-installer",
+                    "--2d",
+                    "--no-tpm"
+                ]
+            );
+            assert_eq!(plan.console(), PathBuf::from("tcp://127.0.0.1:30001"));
+            assert!(
+                boot.env
+                    .iter()
+                    .any(|(key, value)| key == "TILO_CONSOLE_PORT" && value == "30001")
+            );
+            assert!(
+                boot.env
+                    .iter()
+                    .any(|(key, value)| key == "TILO_QMP_PORT" && value == "30002")
+            );
+            let described = plan.describe();
+            let commands = described["commands"].to_string();
+            assert!(commands.contains("boot-installer"));
+            assert!(commands.contains("boot-target"));
+            assert!(commands.contains("tcp://127.0.0.1:30001"));
+        }
+
+        // Phase: external_raw_target_is_retained_and_passed_to_whpx_transport.
+        #[cfg(windows)]
+        {
+            let mut plan = plan(Layout::GuidedAlongside);
+            let target = PathBuf::from("C:/tilo-test/source.raw");
+            plan.external_target = Some(target.clone());
+            assert_eq!(plan.target(), target);
+            let boot = plan.vm(&["boot-installer"]);
+            assert!(boot.env.iter().any(|(key, value)| {
+                key == "TILO_INSTALL_TARGET_DISK" && value == &target.display().to_string()
+            }));
+            assert_eq!(plan.describe()["external_target"], true);
+            plan.skip_target_boot = true;
+            let described = plan.describe();
+            assert_eq!(described["skip_target_boot"], true);
+            assert!(!described["commands"].to_string().contains("boot-target"));
+        }
     }
 }

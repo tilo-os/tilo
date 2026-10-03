@@ -14,7 +14,6 @@
 //! neighbours' just-refreshed rects, keeping it in lockstep with the row's
 //! horizontal scroll without needing to know about scroll state.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -197,8 +196,6 @@ impl Default for ResizeHandle {
 }
 
 impl Widget for ResizeHandle {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -276,21 +273,10 @@ impl Widget for ResizeHandle {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hover = self.rect.contains(pt) && self.drag.is_none();
                 if let Some(origin) = self.drag {
                     let dx = pt.x - origin.cursor_x;
@@ -307,7 +293,7 @@ impl Widget for ResizeHandle {
                         )
                     };
                     self.pending = Some((new_left, new_right));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -329,10 +315,10 @@ impl Widget for ResizeHandle {
                     cursor_x,
                     left_w,
                     right_w,
-                    redistribute: modifiers.state().shift_key(),
+                    redistribute: ctx.modifiers.state().shift_key(),
                 });
                 self.hover = false;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -341,7 +327,7 @@ impl Widget for ResizeHandle {
             } if self.drag.is_some() => {
                 self.drag = None;
                 self.pending_commit = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -381,6 +367,7 @@ impl Widget for ResizeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     /// `min_group_px(2000)` is exactly 300, so the clamp cases below
     /// still read against a familiar bound.
@@ -391,295 +378,317 @@ mod tests {
     }
 
     #[test]
-    fn bounds_track_the_strip_not_a_fixed_pixel_range() {
-        // The legal width range is a property of the display: a fixed
-        // `[300, 1200]` could not express a 3840-px output's ceiling.
-        assert_eq!(max_group_px(1600.0), 1600.0);
-        assert_eq!(max_group_px(3840.0), 3840.0);
-        // The floor is a fraction too, with an absolute backstop so a
-        // narrow output doesn't yield an unusable sliver.
-        assert_eq!(min_group_px(3840.0), 576.0);
-        assert_eq!(min_group_px(1200.0), 240.0);
+    fn handle_bounds_follow_the_strip() {
+        // Case `bounds_track_the_strip_not_a_fixed_pixel_range`.
+        {
+            // The legal width range is a property of the display: a fixed
+            // `[300, 1200]` could not express a 3840-px output's ceiling.
+            assert_eq!(max_group_px(1600.0), 1600.0);
+            assert_eq!(max_group_px(3840.0), 3840.0);
+            // The floor is a fraction too, with an absolute backstop so a
+            // narrow output doesn't yield an unusable sliver.
+            assert_eq!(min_group_px(3840.0), 576.0);
+            assert_eq!(min_group_px(1200.0), 240.0);
+        }
+
+        // Case `handle_adopts_the_strips_bounds`.
+        {
+            let mut h = ResizeHandle::new();
+            h.set_strip_usable_px(3840.0);
+            assert_eq!(h.bounds(), (min_group_px(3840.0), 3840.0));
+        }
+
+        // Case `set_neighbour_rects_recomputes_hit_area`.
+        {
+            let mut h = ResizeHandle::new();
+            h.set_neighbour_rects(
+                Rect::new(0.0, 0.0, 600.0, 400.0),
+                Rect::new(608.0, 0.0, 1208.0, 400.0),
+            );
+            let r0 = h.get_rect();
+            // Gap centre (600 + 608) / 2 = 604; hit area extends 8 px each
+            // side → x0=596, x1=612.
+            assert!((r0.x0 - 596.0).abs() < 0.1);
+            assert!((r0.x1 - 612.0).abs() < 0.1);
+
+            h.set_neighbour_rects(
+                Rect::new(100.0, 0.0, 700.0, 400.0),
+                Rect::new(708.0, 0.0, 1308.0, 400.0),
+            );
+            let r1 = h.get_rect();
+            assert!((r1.x0 - 696.0).abs() < 0.1);
+            assert!((r1.x1 - 712.0).abs() < 0.1);
+        }
     }
 
     #[test]
-    fn handle_adopts_the_strips_bounds() {
-        let mut h = ResizeHandle::new();
-        h.set_strip_usable_px(3840.0);
-        assert_eq!(h.bounds(), (min_group_px(3840.0), 3840.0));
+    fn compute_widths_moves_symmetrically_and_clamps_to_bounds() {
+        // Case `compute_widths_symmetric_drag_within_bounds`.
+        {
+            // Two 600-px groups; drag 100 px right → left 700, right 500.
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(600.0, 600.0, 100.0, min, max);
+            assert_eq!(l, 700.0);
+            assert_eq!(r, 500.0);
+            assert_eq!(l + r, 1200.0);
+        }
+
+        // Case `compute_widths_clamps_left_at_min`.
+        {
+            // A leftward drag of 500 from left=400 would push it to -100; clamp
+            // pins it at min and right absorbs only the actual movement (100).
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(400.0, 600.0, -500.0, min, max);
+            assert_eq!(l, min, "left pinned at the strip's min");
+            assert_eq!(r, 700.0, "right absorbs only the actual movement (100)");
+            assert_eq!(l + r, 400.0 + 600.0, "pair sum is preserved");
+        }
+
+        // Case `compute_widths_clamps_right_at_min`.
+        {
+            // Symmetric of the above.
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(600.0, 400.0, 500.0, min, max);
+            assert_eq!(r, min, "right pinned at the strip's min");
+            assert_eq!(l, 700.0, "left absorbs the actual movement (100)");
+            assert_eq!(l + r, 600.0 + 400.0, "pair sum is preserved");
+        }
+
+        // Case `compute_widths_clamps_left_at_max`.
+        {
+            // Left starts 100 px short of max; a rightward drag of 500 pins
+            // it at the max, and right shrinks by the actual movement (100).
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(max - 100.0, 600.0, 500.0, min, max);
+            assert_eq!(l, max, "left pinned at the strip's max");
+            assert_eq!(r, 500.0, "right shrinks by the actual movement (100)");
+            assert_eq!(l + r, max - 100.0 + 600.0, "pair sum is preserved");
+        }
+
+        // Case `compute_widths_zero_dx_is_identity`.
+        {
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(450.0, 750.0, 0.0, min, max);
+            assert_eq!(l, 450.0);
+            assert_eq!(r, 750.0);
+        }
+
+        // Case `compute_widths_handles_extreme_negative_drag`.
+        {
+            let (min, max) = bounds();
+            let (l, r) = ResizeHandle::compute_widths(500.0, 500.0, -10_000.0, min, max);
+            assert_eq!(l, min);
+            assert!(r <= max);
+            assert!(r >= min);
+            assert_eq!(l + r, 1000.0, "pair sum preserved even at extreme drags");
+        }
+
+        // Case `independent_resize_grows_strip_without_squeezing_neighbour`.
+        {
+            let (min, max) = bounds();
+            let (left, right) =
+                ResizeHandle::compute_independent_widths(600.0, 750.0, 100.0, min, max);
+            assert_eq!(left, 700.0);
+            assert_eq!(right, 750.0, "ordinary resize must not touch the neighbour");
+            assert_eq!(
+                left + right,
+                1450.0,
+                "the infinite strip grows by the drag delta"
+            );
+        }
+
+        // Case `independent_resize_clamps_only_the_resized_group`.
+        {
+            let (min, max) = bounds();
+            let (left, right) =
+                ResizeHandle::compute_independent_widths(400.0, 750.0, -10_000.0, min, max);
+            assert_eq!(left, min);
+            assert_eq!(right, 750.0);
+        }
     }
 
     #[test]
-    fn compute_widths_symmetric_drag_within_bounds() {
-        // Two 600-px groups; drag 100 px right → left 700, right 500.
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(600.0, 600.0, 100.0, min, max);
-        assert_eq!(l, 700.0);
-        assert_eq!(r, 500.0);
-        assert_eq!(l + r, 1200.0);
-    }
+    fn drag_gesture_starts_only_on_the_hit_area() {
+        // Case `drag_press_drag_release_flow`.
+        {
+            let mut h = ResizeHandle::new();
+            // Two 600-wide groups starting at x=0 and x=608 (with the row's
+            // 8 px gap). The handle's hit rect is centred on x=604.
+            h.set_neighbour_rects(
+                Rect::new(0.0, 0.0, 600.0, 400.0),
+                Rect::new(608.0, 0.0, 1208.0, 400.0),
+            );
+            let mut handled = false;
+            let mut state = AutoCommit::new();
+            let path = automerge::ROOT.clone();
+            let modifiers = winit::event::Modifiers::default();
+            let mut focus: Option<NodeId> = None;
+            let dev = unsafe { std::mem::zeroed() };
+            let taffy: TaffyTree<()> = TaffyTree::new();
+            let node = NodeId::new(0);
+            let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
+            h.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(h.is_hovered(), "cursor in hit area → hover");
 
-    #[test]
-    fn compute_widths_clamps_left_at_min() {
-        // A leftward drag of 500 from left=400 would push it to -100; clamp
-        // pins it at min and right absorbs only the actual movement (100).
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(400.0, 600.0, -500.0, min, max);
-        assert_eq!(l, min, "left pinned at the strip's min");
-        assert_eq!(r, 700.0, "right absorbs only the actual movement (100)");
-        assert_eq!(l + r, 400.0 + 600.0, "pair sum is preserved");
-    }
+            h.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(h.is_dragging(), "press inside hit area → drag started");
+            assert!(!h.is_hovered(), "hover clears once drag begins");
 
-    #[test]
-    fn compute_widths_clamps_right_at_min() {
-        // Symmetric of the above.
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(600.0, 400.0, 500.0, min, max);
-        assert_eq!(r, min, "right pinned at the strip's min");
-        assert_eq!(l, 700.0, "left absorbs the actual movement (100)");
-        assert_eq!(l + r, 600.0 + 400.0, "pair sum is preserved");
-    }
+            h.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            let pulse = h
+                .take_pending()
+                .expect("mid-drag must publish a width pulse");
+            assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
+            assert_eq!(
+                pulse.1, 600.0,
+                "ordinary drag leaves the neighbour unchanged"
+            );
+            assert!(
+                h.take_pending().is_none(),
+                "take-pattern: second poll is None"
+            );
 
-    #[test]
-    fn compute_widths_clamps_left_at_max() {
-        // Left starts 100 px short of max; a rightward drag of 500 pins
-        // it at the max, and right shrinks by the actual movement (100).
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(max - 100.0, 600.0, 500.0, min, max);
-        assert_eq!(l, max, "left pinned at the strip's max");
-        assert_eq!(r, 500.0, "right shrinks by the actual movement (100)");
-        assert_eq!(l + r, max - 100.0 + 600.0, "pair sum is preserved");
-    }
+            h.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(!h.is_dragging(), "release ends drag");
+            assert!(h.take_pending_commit(), "release publishes a commit pulse");
+            assert!(!h.take_pending_commit(), "commit pulse is one-shot");
+        }
 
-    #[test]
-    fn compute_widths_zero_dx_is_identity() {
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(450.0, 750.0, 0.0, min, max);
-        assert_eq!(l, 450.0);
-        assert_eq!(r, 750.0);
-    }
+        // Case `press_outside_hit_area_does_not_start_drag`.
+        {
+            let mut h = ResizeHandle::new();
+            h.set_neighbour_rects(
+                Rect::new(0.0, 0.0, 600.0, 400.0),
+                Rect::new(608.0, 0.0, 1208.0, 400.0),
+            );
+            let dev = unsafe { std::mem::zeroed() };
+            let taffy: TaffyTree<()> = TaffyTree::new();
+            let node = NodeId::new(0);
+            let mut state = AutoCommit::new();
+            let path = automerge::ROOT.clone();
+            let modifiers = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut focus: Option<NodeId> = None;
+            // x=100 is well left of the gap centre (604).
+            h.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(!h.is_hovered(), "cursor outside hit area → no hover");
+            h.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(
+                !h.is_dragging(),
+                "press outside hit area must NOT start drag"
+            );
+        }
 
-    #[test]
-    fn independent_resize_grows_strip_without_squeezing_neighbour() {
-        let (min, max) = bounds();
-        let (left, right) = ResizeHandle::compute_independent_widths(600.0, 750.0, 100.0, min, max);
-        assert_eq!(left, 700.0);
-        assert_eq!(right, 750.0, "ordinary resize must not touch the neighbour");
-        assert_eq!(
-            left + right,
-            1450.0,
-            "the infinite strip grows by the drag delta"
-        );
-    }
-
-    #[test]
-    fn independent_resize_clamps_only_the_resized_group() {
-        let (min, max) = bounds();
-        let (left, right) =
-            ResizeHandle::compute_independent_widths(400.0, 750.0, -10_000.0, min, max);
-        assert_eq!(left, min);
-        assert_eq!(right, 750.0);
-    }
-
-    #[test]
-    fn compute_widths_handles_extreme_negative_drag() {
-        let (min, max) = bounds();
-        let (l, r) = ResizeHandle::compute_widths(500.0, 500.0, -10_000.0, min, max);
-        assert_eq!(l, min);
-        assert!(r <= max);
-        assert!(r >= min);
-        assert_eq!(l + r, 1000.0, "pair sum preserved even at extreme drags");
-    }
-
-    #[test]
-    fn drag_press_drag_release_flow() {
-        let mut h = ResizeHandle::new();
-        // Two 600-wide groups starting at x=0 and x=608 (with the row's
-        // 8 px gap). The handle's hit rect is centred on x=604.
-        h.set_neighbour_rects(
-            Rect::new(0.0, 0.0, 600.0, 400.0),
-            Rect::new(608.0, 0.0, 1208.0, 400.0),
-        );
-        let mut handled = false;
-        let mut state = AutoCommit::new();
-        let path = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut focus: Option<NodeId> = None;
-        let dev = unsafe { std::mem::zeroed() };
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
-        h.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(h.is_hovered(), "cursor in hit area → hover");
-
-        h.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(h.is_dragging(), "press inside hit area → drag started");
-        assert!(!h.is_hovered(), "hover clears once drag begins");
-
-        h.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        let pulse = h
-            .take_pending()
-            .expect("mid-drag must publish a width pulse");
-        assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
-        assert_eq!(
-            pulse.1, 600.0,
-            "ordinary drag leaves the neighbour unchanged"
-        );
-        assert!(
-            h.take_pending().is_none(),
-            "take-pattern: second poll is None"
-        );
-
-        h.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(!h.is_dragging(), "release ends drag");
-        assert!(h.take_pending_commit(), "release publishes a commit pulse");
-        assert!(!h.take_pending_commit(), "commit pulse is one-shot");
-    }
-
-    #[test]
-    fn press_outside_hit_area_does_not_start_drag() {
-        let mut h = ResizeHandle::new();
-        h.set_neighbour_rects(
-            Rect::new(0.0, 0.0, 600.0, 400.0),
-            Rect::new(608.0, 0.0, 1208.0, 400.0),
-        );
-        let dev = unsafe { std::mem::zeroed() };
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mut state = AutoCommit::new();
-        let path = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        // x=100 is well left of the gap centre (604).
-        h.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(!h.is_hovered(), "cursor outside hit area → no hover");
-        h.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(
-            !h.is_dragging(),
-            "press outside hit area must NOT start drag"
-        );
-    }
-
-    #[test]
-    fn cursor_shape_is_ew_resize_over_hit_area() {
-        let mut h = ResizeHandle::new();
-        h.set_neighbour_rects(
-            Rect::new(0.0, 0.0, 600.0, 400.0),
-            Rect::new(608.0, 0.0, 1208.0, 400.0),
-        );
-        assert_eq!(
-            Widget::cursor_shape(&h, Point::new(604.0, 200.0)),
-            Some(winit::window::CursorIcon::EwResize),
-            "pointer over the handle hit area requests an east-west resize cursor",
-        );
-        assert_eq!(
-            Widget::cursor_shape(&h, Point::new(100.0, 200.0)),
-            None,
-            "pointer well outside the handle defers (no cursor claim)",
-        );
-    }
-
-    #[test]
-    fn set_neighbour_rects_recomputes_hit_area() {
-        let mut h = ResizeHandle::new();
-        h.set_neighbour_rects(
-            Rect::new(0.0, 0.0, 600.0, 400.0),
-            Rect::new(608.0, 0.0, 1208.0, 400.0),
-        );
-        let r0 = h.get_rect();
-        // Gap centre (600 + 608) / 2 = 604; hit area extends 8 px each
-        // side → x0=596, x1=612.
-        assert!((r0.x0 - 596.0).abs() < 0.1);
-        assert!((r0.x1 - 612.0).abs() < 0.1);
-
-        h.set_neighbour_rects(
-            Rect::new(100.0, 0.0, 700.0, 400.0),
-            Rect::new(708.0, 0.0, 1308.0, 400.0),
-        );
-        let r1 = h.get_rect();
-        assert!((r1.x0 - 696.0).abs() < 0.1);
-        assert!((r1.x1 - 712.0).abs() < 0.1);
+        // Case `cursor_shape_is_ew_resize_over_hit_area`.
+        {
+            let mut h = ResizeHandle::new();
+            h.set_neighbour_rects(
+                Rect::new(0.0, 0.0, 600.0, 400.0),
+                Rect::new(608.0, 0.0, 1208.0, 400.0),
+            );
+            assert_eq!(
+                Widget::cursor_shape(&h, Point::new(604.0, 200.0)),
+                Some(winit::window::CursorIcon::EwResize),
+                "pointer over the handle hit area requests an east-west resize cursor",
+            );
+            assert_eq!(
+                Widget::cursor_shape(&h, Point::new(100.0, 200.0)),
+                None,
+                "pointer well outside the handle defers (no cursor claim)",
+            );
+        }
     }
 }

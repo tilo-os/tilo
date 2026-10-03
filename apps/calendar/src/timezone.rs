@@ -92,23 +92,20 @@ mod tests {
     }
 
     #[test]
-    fn berlin_dst_gap_advances_to_first_real_minute() {
+    fn berlin_dst_gap_and_fold_resolve_and_invalid_zone_is_refused() {
+        // DST gap advances to the first real minute.
         let wall = at((2026, 3, 29), 2, 30);
         let (normalized, resolution) = normalize_wall("Europe/Berlin", wall).unwrap();
         assert_eq!(normalized, at((2026, 3, 29), 3, 0));
         assert_eq!(resolution, Resolution::ShiftedForward { minutes: 30 });
-    }
 
-    #[test]
-    fn berlin_dst_fold_chooses_earlier_instant() {
+        // DST fold chooses the earlier instant.
         let wall = at((2026, 10, 25), 2, 30);
         let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
         assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));
         assert_eq!(resolution, Resolution::AmbiguousEarlier);
-    }
 
-    #[test]
-    fn invalid_zone_is_refused_instead_of_becoming_floating() {
+        // An invalid zone is refused instead of becoming floating.
         assert_eq!(canonical_zone("Mars/Olympus"), None);
         assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
     }

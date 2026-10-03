@@ -68,6 +68,7 @@ pub mod actions;
 pub mod analysis;
 pub mod app;
 pub mod doc;
+mod files;
 pub mod framework_history;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
@@ -81,6 +82,7 @@ pub mod pixels;
 pub mod places;
 mod presentation;
 pub mod reference;
+pub mod resource;
 pub mod search;
 pub mod strings;
 mod timeline_projection;
@@ -169,6 +171,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(PhotosApp::new_persistent(
         tilo_content::ContentStore::for_app(),
     ))
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.photos", app_root)
+        .component_actions(actions::register)
+        .as_definition("Photos")
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -328,8 +337,7 @@ pub fn seed_scenario(
     }
     if scenario == "error" {
         let path = dir.join("unreadable-image.png");
-        std::fs::create_dir_all(dir).ok();
-        if std::fs::write(&path, b"this is not an image").is_ok() {
+        if files::StateFile::at(&path).is_some_and(|file| file.write(b"this is not an image")) {
             let open = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
             PhotosDoc::set_image(doc, Some(&open));
         }
@@ -338,11 +346,10 @@ pub fn seed_scenario(
 
     let path = dir.join("harbour.png");
     let pattern = shots_pattern_variant(1200, 800, 4);
-    if let Some(png) = pixels::encode_png(&pattern) {
-        std::fs::create_dir_all(dir).ok();
-        if std::fs::write(&path, png).is_err() {
-            return;
-        }
+    if let Some(png) = pixels::encode_png(&pattern)
+        && !files::StateFile::at(&path).is_some_and(|file| file.write(&png))
+    {
+        return;
     }
     app.open_path(doc, &path.to_string_lossy());
     // The first imported photograph is part of the timeline fixture too.
@@ -411,8 +418,10 @@ pub fn seed_scenario(
                     _ => (720, 960),
                 };
                 let fixture = shots_pattern_variant(width, height, variant as u8);
-                if let Some(bytes) = pixels::encode_png(&fixture) {
-                    let _ = std::fs::write(&sample_path, bytes);
+                if let Some(bytes) = pixels::encode_png(&fixture)
+                    && let Some(file) = files::StateFile::at(&sample_path)
+                {
+                    let _ = file.write(&bytes);
                 }
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), width, height);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
@@ -571,6 +580,8 @@ pub fn seed_scenario(
     }
 }
 
+pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};
+
 #[cfg(test)]
 mod framework_history_tests;
 
@@ -583,43 +594,46 @@ mod camera_import_tests {
     use crate::doc::PhotosDoc;
 
     #[test]
-    fn camera_import_verifies_bytes_and_selects_one_content_addressed_photo() {
-        let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
-        let bytes = pixels::encode_png(&rgba).expect("fixture png");
-        let store = ContentStore::memory();
-        let hash = store.put(&bytes).expect("fixture content");
-        let media_id = format!("media:blake3:{hash}");
-        let mut doc = AutoCommit::new();
+    fn camera_import_and_gallery_fixtures_verify_real_content() {
+        eprintln!("phase camera_import_verifies_bytes_and_selects_one_content_addressed_photo");
+        {
+            let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
+            let bytes = pixels::encode_png(&rgba).expect("fixture png");
+            let store = ContentStore::memory();
+            let hash = store.put(&bytes).expect("fixture content");
+            let media_id = format!("media:blake3:{hash}");
+            let mut doc = AutoCommit::new();
 
-        let id = import_camera_media(&mut doc, &media_id, "Camera photo.png", &store)
-            .expect("verified import");
-        let again = import_camera_media(&mut doc, &media_id, "renamed.png", &store)
-            .expect("idempotent import");
+            let id = import_camera_media(&mut doc, &media_id, "Camera photo.png", &store)
+                .expect("verified import");
+            let again = import_camera_media(&mut doc, &media_id, "renamed.png", &store)
+                .expect("idempotent import");
 
-        assert_eq!(id, again);
-        let library = PhotosDoc::library(&doc);
-        assert_eq!(library.photos.len(), 1);
-        assert_eq!(
-            PhotosDoc::image(&doc).map(|image| image.content),
-            Some(Some(hash))
-        );
-    }
+            assert_eq!(id, again);
+            let library = PhotosDoc::library(&doc);
+            assert_eq!(library.photos.len(), 1);
+            assert_eq!(
+                PhotosDoc::image(&doc).map(|image| image.content),
+                Some(Some(hash))
+            );
+        }
 
-    #[test]
-    fn camera_import_refuses_missing_or_invalid_portable_bytes() {
-        let store = ContentStore::memory();
-        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
-        let missing = format!("media:blake3:{}", "0".repeat(64));
-        assert!(camera_import_photo(&missing, "x.png", &store).is_err());
-    }
+        eprintln!("phase camera_import_refuses_missing_or_invalid_portable_bytes");
+        {
+            let store = ContentStore::memory();
+            assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
+            let missing = format!("media:blake3:{}", "0".repeat(64));
+            assert!(camera_import_photo(&missing, "x.png", &store).is_err());
+        }
 
-    #[test]
-    fn gallery_fixtures_are_distinct_but_deterministic() {
-        let harbour = shots_pattern_variant(32, 20, 0);
-        let trail = shots_pattern_variant(32, 20, 1);
-        assert_eq!(harbour.w, 32);
-        assert_eq!(harbour.h, 20);
-        assert_ne!(harbour.bytes, trail.bytes);
-        assert_eq!(trail, shots_pattern_variant(32, 20, 1));
+        eprintln!("phase gallery_fixtures_are_distinct_but_deterministic");
+        {
+            let harbour = shots_pattern_variant(32, 20, 0);
+            let trail = shots_pattern_variant(32, 20, 1);
+            assert_eq!(harbour.w, 32);
+            assert_eq!(harbour.h, 20);
+            assert_ne!(harbour.bytes, trail.bytes);
+            assert_eq!(trail, shots_pattern_variant(32, 20, 1));
+        }
     }
 }

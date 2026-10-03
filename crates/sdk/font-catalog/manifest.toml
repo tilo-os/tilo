@@ -1,0 +1,366 @@
+schema = 1
+catalog_id = "tilo-fonts-fedora44-2026-09-12-v2"
+product_bytes = 43817716
+fixture_bytes = 44697512
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "NotoSans[wght].ttf"
+bytes = 712460
+sha256 = "fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf"
+rpm = "google-noto-sans-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans; Regular; PS `NotoSans-Regular`; v2.015; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans"
+post_script_name = "NotoSans-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "NotoSans-Italic[wght].ttf"
+bytes = 739728
+sha256 = "28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSans-Italic[wght].ttf"
+rpm = "google-noto-sans-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans; Italic; PS `NotoSans-Italic`; v2.015; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans"
+post_script_name = "NotoSans-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "NotoSerif[wght].ttf"
+bytes = 811080
+sha256 = "9374c4d81d2e21b03ac03fbc165458e8cf63e434a44c82193aa0305d20dc1037"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSerif[wght].ttf"
+rpm = "google-noto-serif-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Serif; Regular; PS `NotoSerif`; v2.015; `wght` 400/400/700"
+reserved_aliases = ["Noto Serif"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Serif"
+post_script_name = "NotoSerif"
+style = "normal"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "NotoSerif-Italic[wght].ttf"
+bytes = 849200
+sha256 = "30f1c0204b6bb16d7b6f0984ce6e355ad61d05656201b3d13a2b19bb9baa6779"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSerif-Italic[wght].ttf"
+rpm = "google-noto-serif-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Serif; Italic; PS `NotoSerif-Italic`; v2.015; `wght` 400/400/700"
+reserved_aliases = ["Noto Serif"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Serif"
+post_script_name = "NotoSerif-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "NotoSansMono[wght].ttf"
+bytes = 569204
+sha256 = "3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf"
+rpm = "google-noto-sans-mono-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Mono; Regular; PS `NotoSansMono-Regular`; v2.014; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Mono"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Mono"
+post_script_name = "NotoSansMono-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansMath-Regular.ttf"
+bytes = 990564
+sha256 = "d51afd5739c7ba6c44fcab35a88160e25dfb69a2d4ad0bd99533f8d894af1f96"
+source_path = "/usr/share/fonts/google-noto/NotoSansMath-Regular.ttf"
+rpm = "google-noto-sans-math-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Math; Regular; PS `NotoSansMath-Regular`; v3.000; static"
+reserved_aliases = ["Noto Sans Math"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Math-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Math"
+post_script_name = "NotoSansMath-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansArabic[wght].ttf"
+bytes = 239324
+sha256 = "3fae4d7239d1faa55b234bda8091019a5251ff79df40d5e29367d84bed2a8138"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf"
+rpm = "google-noto-sans-arabic-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Arabic; Regular; PS `NotoSansArabic-Regular`; v2.013; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Arabic"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Arabic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Arabic"
+post_script_name = "NotoSansArabic-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansHebrew[wght].ttf"
+bytes = 25296
+sha256 = "9d81d81ad592644487b03843da73a87b99cd28a2c4da4a096e1db8fbd14fda61"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansHebrew[wght].ttf"
+rpm = "google-noto-sans-hebrew-vf-fonts-0:20251201-2.fc44"
+source_metadata = "aliases Noto Sans Hebrew / Noto Sans Hebrew Light; default HB name Light; PS `NotoSansHebrew-Light`; v3.001; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Hebrew", "Noto Sans Hebrew Light"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Hebrew-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Hebrew"
+post_script_name = "NotoSansHebrew-Light"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansDevanagari[wght].ttf"
+bytes = 276816
+sha256 = "ffb0d05ef3d8e6d0c3d7c9380099127b003854242c11d0751b6a2e85e1f8f1b5"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf"
+rpm = "google-noto-sans-devanagari-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Devanagari; Regular; PS `NotoSansDevanagari-Regular`; v2.006; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Devanagari"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Devanagari-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Devanagari"
+post_script_name = "NotoSansDevanagari-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansBengali[wght].ttf"
+bytes = 165368
+sha256 = "71647364a0b9851a07db3207431256279bb8db9e8a4ba9d487ff2fe7431f5fcd"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansBengali[wght].ttf"
+rpm = "google-noto-sans-bengali-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Bengali; Regular; PS `NotoSansBengali-Regular`; v3.000; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Bengali"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Bengali-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Bengali"
+post_script_name = "NotoSansBengali-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansThai[wght].ttf"
+bytes = 31912
+sha256 = "13f52f79b04f01f2751a81052a5dee2df639fd4e13f4ac30821ab45c8dd5f7e7"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf"
+rpm = "google-noto-sans-thai-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Thai; Regular; PS `NotoSansThai-Regular`; v2.002; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Thai"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Thai-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Thai"
+post_script_name = "NotoSansThai-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansCJK-VF.ttc"
+bytes = 32682580
+sha256 = "d3d8256cdec8dbcb3552284bc6b20c734dd60c2ee9df83b5758e34807c4bac32"
+source_path = "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc"
+rpm = "google-noto-sans-cjk-vf-fonts-1:2.004-11.fc44"
+source_metadata = "collection indices 0..4: Noto Sans CJK JP, KR, SC, TC, HK; v2.004; `wght` 100/100/900"
+reserved_aliases = ["Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Sans CJK HK"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-CJK-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans CJK JP"
+post_script_name = "NotoSansCJKjp-Thin"
+style = "normal"
+[[font.faces]]
+index = 1
+family = "Noto Sans CJK KR"
+post_script_name = "NotoSansCJKkr-Thin"
+style = "normal"
+[[font.faces]]
+index = 2
+family = "Noto Sans CJK SC"
+post_script_name = "NotoSansCJKsc-Thin"
+style = "normal"
+[[font.faces]]
+index = 3
+family = "Noto Sans CJK TC"
+post_script_name = "NotoSansCJKtc-Thin"
+style = "normal"
+[[font.faces]]
+index = 4
+family = "Noto Sans CJK HK"
+post_script_name = "NotoSansCJKhk-Thin"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansSymbols[wght].ttf"
+bytes = 239720
+sha256 = "63724daeff6755a45933b9a5e3a3b41df5df8fe925c0f4c991f2f68c08a4182d"
+source_path = "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf"
+rpm = "google-noto-sans-symbols-vf-fonts-0:20251201-2.fc44"
+source_metadata = "Noto Sans Symbols; Regular; PS `NotoSansSymbols-Regular`; v2.003; `wght` 400/400/700"
+reserved_aliases = ["Noto Sans Symbols"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Symbols-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Symbols"
+post_script_name = "NotoSansSymbols-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "NotoSansSymbols2-Regular.ttf"
+bytes = 671568
+sha256 = "c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d"
+source_path = "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf"
+rpm = "google-noto-sans-symbols-2-fonts-0:20251201-2.fc44"
+source_metadata = "**Noto Sans Symbols 2**; Regular; PS `NotoSansSymbols2-Regular`; v2.008; static"
+reserved_aliases = ["Noto Sans Symbols 2"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Sans-Symbols-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Sans Symbols 2"
+post_script_name = "NotoSansSymbols2-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "Noto-COLRv1.ttf"
+bytes = 4812896
+sha256 = "94c6c870925aaafd3fdda338fc4b2e4dfb74260c9aefa87d4aa8a145a993a5a2"
+source_path = "/usr/share/fonts/google-noto-color-emoji-fonts/Noto-COLRv1.ttf"
+rpm = "google-noto-color-emoji-fonts-0:20250623-4.fc44"
+source_metadata = "Noto Color Emoji; Regular; PS `NotoColorEmoji`; v2.048 (`noto-emoji:20250612:c7a259fc...`); static COLRv1"
+reserved_aliases = ["Noto Color Emoji"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Noto-Color-Emoji-LICENSE.txt", "LICENSES/Noto-Color-Emoji-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Noto Color Emoji"
+post_script_name = "NotoColorEmoji"
+style = "normal"
+
+[[font]]
+scope = "fixture"
+file = "AdwaitaSans-Regular.ttf"
+bytes = 879796
+sha256 = "8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4"
+source_path = "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf"
+rpm = "adwaita-sans-fonts-0:50.0-1.fc44"
+source_metadata = "Adwaita Sans; Regular; PS `AdwaitaSans`; v4.001 git `9221beed3`; axes in native order `opsz` 14/14/32, `wght` 100/400/900"
+reserved_aliases = ["Adwaita Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Adwaita-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Adwaita Sans"
+post_script_name = "AdwaitaSans"
+style = "normal"
+
+[[license]]
+file = "LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSans-v2.015/OFL.txt"
+sha256 = "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Arabic-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansArabic-v2.013/OFL.txt"
+sha256 = "a7a5a25eb188bf1cd96982030d53e23c33485c69b1044a562254226857ee13af"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Hebrew-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansHebrew-v3.001/OFL.txt"
+sha256 = "9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Devanagari-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansDevanagari-v2.006/OFL.txt"
+sha256 = "a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Bengali-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansBengali-v3.000/OFL.txt"
+sha256 = "754f0e221aa7d5a915489f3bf1f20fe53ddc35ab2834a4d91656d78f9622de70"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Thai-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansThai-v2.002/OFL.txt"
+sha256 = "2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Math-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansMath-v3.000/OFL.txt"
+sha256 = "c9c63b8ed6cf76b2ce0c58b241acfc1195c2c928334c989c7047cbdac58773d9"
+
+[[license]]
+file = "LICENSES/Noto-Sans-Symbols-OFL.txt"
+source_in_license_scratch = "licenses/notofonts-releases/NotoSansSymbols-v2.003/OFL.txt"
+sha256 = "b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0"
+
+[[license]]
+file = "LICENSES/Noto-Sans-CJK-OFL.txt"
+source_in_license_scratch = "licenses/noto-cjk-Sans2.004/LICENSE"
+sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+
+[[license]]
+file = "LICENSES/Noto-Color-Emoji-LICENSE.txt"
+source_in_license_scratch = "licenses/noto-emoji-b3e3051/LICENSE"
+sha256 = "500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b"
+
+[[license]]
+file = "LICENSES/Noto-Color-Emoji-OFL.txt"
+source_in_license_scratch = "licenses/fedora-installed/google-noto-color-emoji-fonts/OFL.txt"
+sha256 = "ab2dcc4de7edccb08a7e453bb88dd21bd3035fd5e8c9a2e977368b0ba3992281"
+
+[[license]]
+file = "LICENSES/Adwaita-Sans-OFL.txt"
+source_in_license_scratch = "licenses/adwaita-fonts-50.0/LICENSE"
+sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
+
+[[license]]
+file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
+source_in_license_scratch = "licenses/../font-name-notices.txt"
+sha256 = "f3cbba1d449827c0a7c7d47d9cabb9e87a81a03136fb0bb1bf20df3744548374"

@@ -13,6 +13,10 @@ SCRIPT = Path(__file__).with_name("check-app-coverage.py")
 
 class CoverageTests(unittest.TestCase):
     def setUp(self):
+        self.fresh_fixture()
+
+    def fresh_fixture(self):
+        """Give each case its own temporary tree so no mutation leaks between cases."""
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -47,74 +51,77 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(process.stdout.startswith("{"), process.stderr)
         return process.returncode, json.loads(process.stdout)
 
-    def test_complete_coverage_is_not_a_performance_certificate(self):
+    def assert_fails(self, needle=None):
+        code, result = self.run_check()
+        self.assertEqual(code, 1)
+        if needle is not None:
+            self.assertTrue(any(needle in error for error in result["errors"]), result)
+        return result
+
+    def test_complete_coverage_passes_but_is_not_a_performance_certificate(self):
         code, result = self.run_check()
         self.assertEqual(code, 0)
         self.assertTrue(result["coverage_only"])
         self.assertFalse(result["performance_certified"])
 
-    def test_omitted_existing_and_new_apps_fail(self):
-        self.add_app("new-app", "new-package")
-        code, result = self.run_check()
-        self.assertEqual(code, 1)
-        self.assertTrue(any("apps/new-app/src/main.rs" in error for error in result["errors"]))
-        self.data["excluded"] = []
-        _, result = self.run_check()
-        self.assertTrue(any("apps/agent/src/main.rs" in error for error in result["errors"]))
+    def test_incomplete_or_inconsistent_inventory_fails(self):
+        with self.subTest(case="omitted new app"):
+            self.fresh_fixture()
+            self.add_app("new-app", "new-package")
+            self.assert_fails("apps/new-app/src/main.rs")
+        with self.subTest(case="omitted existing app"):
+            self.fresh_fixture()
+            self.add_app("new-app", "new-package")
+            self.data["excluded"] = []
+            self.assert_fails("apps/agent/src/main.rs")
 
-    def test_duplicates_within_and_across_groups_fail(self):
-        original = copy.deepcopy(self.data)
         for group in ("apps", "excluded"):
-            with self.subTest(group=group):
-                self.data = copy.deepcopy(original)
+            with self.subTest(case="duplicate", group=group):
+                self.fresh_fixture()
                 duplicate = copy.deepcopy(self.data["apps"][0])
                 duplicate["reason"] = "Duplicate exclusion"
                 self.data[group].append(duplicate)
-                code, result = self.run_check()
-                self.assertEqual(code, 1)
+                result = self.assert_fails()
                 self.assertTrue(any("duplicate" in error.lower() for error in result["errors"]))
 
-    def test_manifest_identifiers_and_exclusion_reason_are_checked(self):
-        self.data["apps"][0]["cargo_package"] = "wrong"
-        self.data["apps"][0]["binary"] = "wrong"
-        self.data["excluded"][0]["reason"] = " "
-        code, result = self.run_check()
-        self.assertEqual(code, 1)
-        for field in ("cargo_package", "binary", "reason"):
-            self.assertTrue(any(field in error for error in result["errors"]), result)
+        with self.subTest(case="manifest identifiers and exclusion reason"):
+            self.fresh_fixture()
+            self.data["apps"][0]["cargo_package"] = "wrong"
+            self.data["apps"][0]["binary"] = "wrong"
+            self.data["excluded"][0]["reason"] = " "
+            result = self.assert_fails()
+            for field in ("cargo_package", "binary", "reason"):
+                self.assertTrue(any(field in error for error in result["errors"]), result)
 
-    def test_unqualified_status_fails_even_with_evidence(self):
-        self.data["apps"][0]["status"] = "unqualified"
-        code, result = self.run_check()
-        self.assertEqual(code, 1)
-        self.assertEqual(result["unqualified_apps"], ["viewer"])
+        with self.subTest(case="unqualified status fails even with evidence"):
+            self.fresh_fixture()
+            self.data["apps"][0]["status"] = "unqualified"
+            self.assertEqual(self.assert_fails()["unqualified_apps"], ["viewer"])
 
-    def test_empty_or_missing_evidence_fails_even_when_qualified(self):
         for evidence in ([], ["missing.json"], [""]):
-            with self.subTest(evidence=evidence):
+            with self.subTest(case="empty or missing evidence fails even when qualified", evidence=evidence):
+                self.fresh_fixture()
                 self.data["apps"][0]["qualification_evidence"] = evidence
-                code, result = self.run_check()
-                self.assertEqual(code, 1)
-                self.assertTrue(any("evidence" in error for error in result["errors"]))
+                self.assert_fails("evidence")
 
-    def test_implicit_binary_and_stale_entry(self):
-        self.add_app("implicit", "implicit-package")
-        entry = {"app": "implicit", "cargo_package": "implicit-package",
-                 "binary": "implicit-package", "native_entrypoint": "apps/implicit/src/main.rs",
-                 "status": "qualified", "qualification_evidence": ["evidence.json"]}
-        self.data["apps"].append(entry)
-        self.data["gui_app_count"] = 2
-        self.assertEqual(self.run_check()[0], 0)
-        (self.root / entry["native_entrypoint"]).unlink()
-        code, result = self.run_check()
-        self.assertEqual(code, 1)
-        self.assertTrue(any("stale" in error for error in result["errors"]))
+        with self.subTest(case="implicit binary passes until its entry goes stale"):
+            self.fresh_fixture()
+            self.add_app("implicit", "implicit-package")
+            entry = {"app": "implicit", "cargo_package": "implicit-package",
+                     "binary": "implicit-package", "native_entrypoint": "apps/implicit/src/main.rs",
+                     "status": "qualified", "qualification_evidence": ["evidence.json"]}
+            self.data["apps"].append(entry)
+            self.data["gui_app_count"] = 2
+            self.assertEqual(self.run_check()[0], 0)
+            (self.root / entry["native_entrypoint"]).unlink()
+            self.assert_fails("stale")
 
-    def test_empty_source_tree_does_not_pass_vacuously(self):
-        for source in (self.root / "apps").glob("*/src/main.rs"):
-            source.unlink()
-        self.data = {"gui_app_count": 0, "apps": [], "excluded": []}
-        self.assertEqual(self.run_check()[0], 1)
+        with self.subTest(case="empty source tree does not pass vacuously"):
+            self.fresh_fixture()
+            for source in (self.root / "apps").glob("*/src/main.rs"):
+                source.unlink()
+            self.data = {"gui_app_count": 0, "apps": [], "excluded": []}
+            self.assertEqual(self.run_check()[0], 1)
 
 
 if __name__ == "__main__":

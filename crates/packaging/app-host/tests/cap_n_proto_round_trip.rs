@@ -23,6 +23,9 @@ use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use package_store::{Catalog, PackageStore, SystemStore};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 struct Harness {
     socket: PathBuf,
     _tmp: tempfile::TempDir,
@@ -56,7 +59,8 @@ impl Harness {
 
     async fn connect(&self) -> anyhow::Result<capnp_app_host::Client> {
         let mut last = None;
-        for _ in 0..40 {
+        let started = std::time::Instant::now();
+        while started.elapsed() < HANG_BOUND {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(mut stream) => {
                     use tokio::io::AsyncWriteExt;

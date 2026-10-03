@@ -180,42 +180,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unknown_profile_name_resolves_to_the_sandbox() {
-        for name in ["ush", "", "DSH", "dsh ", "developer", "anything"] {
-            assert_eq!(
-                Profile::parse(name),
-                Profile::Ush,
-                "{name:?} must not resolve to the profile that is not a sandbox"
-            );
+    fn profiles_parse_to_the_sandbox_and_differ_as_documented() {
+        // phase: an_unknown_profile_name_resolves_to_the_sandbox
+        {
+            for name in ["ush", "", "DSH", "dsh ", "developer", "anything"] {
+                assert_eq!(
+                    Profile::parse(name),
+                    Profile::Ush,
+                    "{name:?} must not resolve to the profile that is not a sandbox"
+                );
+            }
+            assert_eq!(Profile::parse("dsh"), Profile::Dsh);
         }
-        assert_eq!(Profile::parse("dsh"), Profile::Dsh);
-    }
+        // phase: dsh_is_not_reachable_from_an_app_launch
+        // The gate on the deliberate exception. If this ever returns true for
+        // `Dsh`, an app launch can acquire a shell with no syscall boundary.
+        {
+            assert!(!Profile::Dsh.reachable_from_app_launch());
+            assert!(Profile::Ush.reachable_from_app_launch());
+        }
+        // phase: the_postures_differ_in_exactly_the_documented_ways
+        {
+            assert!(Profile::Ush.confines_namespaces());
+            assert!(!Profile::Ush.grants_fuse());
+            assert!(!Profile::Ush.grants_subid_range());
 
-    /// The gate on the deliberate exception. If this ever returns true for
-    /// `Dsh`, an app launch can acquire a shell with no syscall boundary.
-    #[test]
-    fn dsh_is_not_reachable_from_an_app_launch() {
-        assert!(!Profile::Dsh.reachable_from_app_launch());
-        assert!(Profile::Ush.reachable_from_app_launch());
-    }
-
-    #[test]
-    fn the_postures_differ_in_exactly_the_documented_ways() {
-        assert!(Profile::Ush.confines_namespaces());
-        assert!(!Profile::Ush.grants_fuse());
-        assert!(!Profile::Ush.grants_subid_range());
-
-        assert!(!Profile::Dsh.confines_namespaces());
-        assert!(Profile::Dsh.grants_fuse());
-        assert!(Profile::Dsh.grants_subid_range());
+            assert!(!Profile::Dsh.confines_namespaces());
+            assert!(Profile::Dsh.grants_fuse());
+            assert!(Profile::Dsh.grants_subid_range());
+        }
     }
 
     #[test]
-    fn both_filters_compile_and_are_sock_filter_aligned() {
-        for profile in [Profile::Ush, Profile::Dsh] {
-            let bytes = compile_guest_filter(profile).unwrap();
-            assert!(!bytes.is_empty(), "{profile:?} produced an empty filter");
-            assert_eq!(bytes.len() % 8, 0, "{profile:?} blob is not 8-byte aligned");
+    fn both_filters_compile_aligned_and_dsh_relaxes_only_namespaces() {
+        // phase: both_filters_compile_and_are_sock_filter_aligned
+        {
+            for profile in [Profile::Ush, Profile::Dsh] {
+                let bytes = compile_guest_filter(profile).unwrap();
+                assert!(!bytes.is_empty(), "{profile:?} produced an empty filter");
+                assert_eq!(bytes.len() % 8, 0, "{profile:?} blob is not 8-byte aligned");
+            }
+        }
+        // phase: dsh_relaxes_only_the_namespace_rules
+        // `dsh` relaxes the namespace rules and nothing else — a filter that
+        // stopped denying `ptrace` or `bpf` would be a different claim than documented.
+        {
+            let strict = compile_guest_filter(Profile::Ush).unwrap();
+            let dev = compile_guest_filter(Profile::Dsh).unwrap();
+            assert!(
+                strict.len() > dev.len(),
+                "the sandbox filter must carry more program than the developer one \
+             (ush={} bytes, dsh={} bytes)",
+                strict.len(),
+                dev.len()
+            );
+            assert!(!dev.is_empty(), "dsh must not be `seccomp off`");
         }
     }
 
@@ -247,22 +266,6 @@ mod tests {
                 golden.len()
             );
         }
-    }
-
-    /// `dsh` relaxes the namespace rules and nothing else — a filter that
-    /// stopped denying `ptrace` or `bpf` would be a different claim than documented.
-    #[test]
-    fn dsh_relaxes_only_the_namespace_rules() {
-        let strict = compile_guest_filter(Profile::Ush).unwrap();
-        let dev = compile_guest_filter(Profile::Dsh).unwrap();
-        assert!(
-            strict.len() > dev.len(),
-            "the sandbox filter must carry more program than the developer one \
-             (ush={} bytes, dsh={} bytes)",
-            strict.len(),
-            dev.len()
-        );
-        assert!(!dev.is_empty(), "dsh must not be `seccomp off`");
     }
 
     /// The kernel is the only opinion that counts: install each filter in a
@@ -324,23 +327,17 @@ mod tests {
         libc::WEXITSTATUS(status)
     }
 
+    /// ush: the kernel refuses the guest its own namespace. dsh: the guest can
+    /// build a namespace but ptrace is still denied.
     #[test]
-    fn the_kernel_refuses_a_ush_guest_its_own_namespace() {
-        assert_eq!(
-            probe_under(Profile::Ush),
-            0,
-            "10 = a denied syscall succeeded, 11 = an allowed one was refused, \
-             12 = the filter would not install"
-        );
-    }
-
-    #[test]
-    fn the_kernel_lets_a_dsh_guest_build_a_namespace_but_still_denies_ptrace() {
-        assert_eq!(
-            probe_under(Profile::Dsh),
-            0,
-            "10 = a denied syscall succeeded, 11 = an allowed one was refused, \
-             12 = the filter would not install"
-        );
+    fn the_kernel_enforces_each_profiles_filter() {
+        for profile in [Profile::Ush, Profile::Dsh] {
+            assert_eq!(
+                probe_under(profile),
+                0,
+                "case {profile:?}: 10 = a denied syscall succeeded, 11 = an allowed one was refused, \
+                 12 = the filter would not install"
+            );
+        }
     }
 }

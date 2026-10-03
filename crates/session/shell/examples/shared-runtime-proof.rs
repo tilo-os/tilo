@@ -90,6 +90,10 @@ fn start_action(
 }
 
 /// Observe an invocation until it is terminal.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 fn wait_terminal(
     actions: &shell::shell::collab_broker::AppActionBroker,
     actor: &str,
@@ -141,6 +145,10 @@ fn wait_action(
 #[allow(
     clippy::too_many_lines,
     reason = "the proof is one linear scripted scenario whose emitted events are read in order"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
 )]
 fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -211,7 +219,7 @@ fn main() -> Result<()> {
         if benchmark {
             command
                 .env("TILO_PROFILE_OUT", root.join(format!("{id}.frames.jsonl")))
-                .env("QUICK_UI_PRESENT", "1")
+                .env("TILO_UI_PRESENT", "1")
                 .env("TILO_PROFILE_WINDOW_FRONT", "1")
                 .env("TILO_PROFILE_RESOURCES", "1")
                 .env(
@@ -322,13 +330,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        if let Ok(model) = qdoc::model::open(&document, &automerge::ROOT)
-            && let Some(block) = qdoc::model::materialize(&document, &model)
+        if let Ok(model) = tilo_doc::model::open(&document, &automerge::ROOT)
+            && let Some(block) = tilo_doc::model::materialize(&document, &model)
                 .blocks
                 .into_iter()
                 .find(|block| {
                     block.kind == "image"
-                        && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into()))
+                        && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.into()))
                 })
         {
             std::fs::write(root.join("received.automerge"), document.save())?;

@@ -33,6 +33,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
@@ -86,7 +90,8 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 /// Receive envelopes until a `Delta` arrives (skipping any interleaved
-/// `Ready`/`Pong`), returning its delta bytes. Panics on timeout.
+/// `Ready`/`Pong`), returning its delta bytes. A delta that never arrives
+/// hangs, and nextest's slow-timeout reports it.
 async fn recv_delta(client: &RelayClient, what: &str) -> Vec<u8> {
     loop {
         match recv_reply(client, what).await {
@@ -190,9 +195,8 @@ async fn reconnect_b_and_catch_up(
     let got2 = recv_delta(&b2, "B catch-up delta").await;
     doc_b.load_incoming(&got2).expect("B applies d2");
 
-    // The host writes the replay, then removes the replayed queue files, and
-    // only then acknowledges the subscription. Ready is therefore the point
-    // after which the queue is observably drained.
+    // The host writes the replay before it acknowledges the subscription, so
+    // Ready follows the catch-up delta and counts it.
     let ready = recv_reply(&b2, "B catch-up Ready").await;
     assert!(
         matches!(
@@ -233,12 +237,12 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     // A durable host that pins workspace 7 and knows A + B are members.
-    let host = spawn_relay(
+    let host = Box::pin(spawn_relay(
         &user,
         host_dev,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey()],
-    )
+    ))
     .await;
     let addr = host.relay.node_addr();
 
@@ -293,9 +297,9 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         })
         .unwrap();
 
-    // The host persists the fan-out, B's pending queue included, before it
-    // handles A's next envelope; A's round trip is that barrier.
-    round_trip(&a_client, "A offline edit").await;
+    // The host accepts the delta on A's stream and writes B's pending queue
+    // entry on its persistence turn, off that stream: A's Pong does not
+    // order the write, so wait for the queue itself.
     let b_hex = hex::encode(b.device_pubkey());
     let pending_dir = host
         .state_root
@@ -303,19 +307,23 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
+    let mut queued = count_delta_files(&pending_dir);
+    while queued == 0 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        queued = count_delta_files(&pending_dir);
+    }
     assert_eq!(
-        count_delta_files(&pending_dir),
-        1,
+        queued, 1,
         "A's offline edit must be store-and-forwarded to disk for B"
     );
 
     // ---- B reconnects and catches up. ----
     reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
 
-    // Queue drains after delivery.
-    assert_eq!(
-        count_delta_files(&pending_dir),
-        0,
-        "pending queue drains after B catches up"
-    );
+    // Queue drains after delivery. The drain follows the delivered flush on
+    // the host's persistence turn, so it may land just after B has applied
+    // it; a queue that never drains hangs and nextest's slow-timeout reports it.
+    while count_delta_files(&pending_dir) != 0 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }

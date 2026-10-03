@@ -261,35 +261,39 @@ impl Drop for Remote {
 mod tests {
     use super::*;
 
+    /// The SSH command is key-only and bounded, and the VM lock is the one the daemon takes.
     #[test]
-    fn ssh_command_is_key_only_and_bounded() {
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "127.0.0.1".into(),
-            port: 2223,
-        };
-        let line = ssh_command(
-            &endpoint,
-            Some("/k/id"),
-            &["tilo-vmd".into(), "rpc".into()],
-            false,
-        );
-        assert_eq!(
-            line.display(),
-            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
-             -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
-        );
-        let interactive = ssh_command(&endpoint, None, &[], true);
-        assert!(interactive.args.contains(&"-t".to_string()));
-    }
+    fn remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock() {
+        // Phase: ssh_command_is_key_only_and_bounded.
+        {
+            let endpoint = SshEndpoint {
+                user: "root".into(),
+                host: "127.0.0.1".into(),
+                port: 2223,
+            };
+            let line = ssh_command(
+                &endpoint,
+                Some("/k/id"),
+                &["tilo-vmd".into(), "rpc".into()],
+                false,
+            );
+            assert_eq!(
+                line.display(),
+                "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
+                 -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
+            );
+            let interactive = ssh_command(&endpoint, None, &[], true);
+            assert!(interactive.args.contains(&"-t".to_string()));
+        }
 
-    #[test]
-    fn vm_lock_is_the_one_the_daemon_takes() {
-        let command = vm_lock_command().join(" ");
-        assert!(
-            command.contains("flock --nonblock /var/lib/tilo-vm/locks/vm.lock"),
-            "{command}"
-        );
-        assert!(command.contains("echo locked"));
+        // Phase: vm_lock_is_the_one_the_daemon_takes.
+        {
+            let command = vm_lock_command().join(" ");
+            assert!(
+                command.contains("flock --nonblock /var/lib/tilo-vm/locks/vm.lock"),
+                "{command}"
+            );
+            assert!(command.contains("echo locked"));
+        }
     }
 }

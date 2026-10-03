@@ -33,7 +33,10 @@ esac
 # pulseaudio: only the private software endpoint tools/with-headless-audio.sh
 # starts; it replaces PipeWire's PulseAudio shim where that is installed.
 # bubblewrap, GNOME Text Editor, cryptsetup, swtpm and tpm2-tools are test
-# subjects that their suites refuse to skip.
+# subjects that their suites refuse to skip. libsecret (secret-tool) and
+# gnome-keyring are the Secret Service a session keeps its MLS keys in: a
+# headless session runs one, unlocked, so its apps' channels open as a
+# person's do.
 install_test_runtime_fedora() {
     if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
         dnf swap -y pipewire-pulseaudio pulseaudio
@@ -51,7 +54,8 @@ install_test_runtime_fedora() {
         google-noto-sans-thai-fonts \
         vulkan-loader mesa-vulkan-drivers \
         bubblewrap gnome-text-editor \
-        cryptsetup swtpm swtpm-tools tpm2-tools
+        cryptsetup swtpm swtpm-tools tpm2-tools \
+        libsecret gnome-keyring
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the

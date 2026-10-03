@@ -252,6 +252,38 @@ impl<R: Read + Seek> BoundedArchive<R> {
         read_capped(file, name, declared, cap, max_total, &mut self.total)
     }
 
+    /// The first `len` bytes of the part `name` (fewer when it is shorter),
+    /// inflating no more than that: for a header check on a part too large
+    /// to read whole.
+    ///
+    /// # Errors
+    /// [`ZipError::Missing`] when there is no such part, a read failure
+    /// otherwise.
+    pub fn read_prefix(&mut self, name: &str, len: usize) -> Result<Vec<u8>, ZipError> {
+        let file = match self.archive.by_name(name) {
+            Ok(file) => file,
+            Err(RawZipError::FileNotFound) => {
+                return Err(ZipError::Missing {
+                    name: name.to_string(),
+                });
+            }
+            Err(source) => {
+                return Err(ZipError::Member {
+                    name: name.to_string(),
+                    source,
+                });
+            }
+        };
+        let mut prefix = Vec::with_capacity(len);
+        file.take(len as u64)
+            .read_to_end(&mut prefix)
+            .map_err(|source| ZipError::Read {
+                name: name.to_string(),
+                source,
+            })?;
+        Ok(prefix)
+    }
+
     /// [`read`](Self::read), decoded as UTF-8. A doctype is allowed — use
     /// [`read_xml`](Self::read_xml) for formats whose XML never carries one.
     ///
@@ -447,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_normal_package() {
+    fn normal_packages_read_and_missing_or_non_utf8_parts_are_distinct_errors() {
         let z = zip_with(
             &[("a.xml", b"<x/>"), ("b.bin", b"\x00\x01\x02")],
             CompressionMethod::Deflated,
@@ -456,10 +488,26 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].0, "a.xml");
         assert_eq!(parts[1].1, b"\x00\x01\x02");
+
+        let z = zip_with(&[("a.bin", b"\xff\xfe")], CompressionMethod::Stored);
+        let mut archive = BoundedArchive::from_bytes(&z, ZipLimits::default()).unwrap();
+        assert!(matches!(
+            archive.read("nope", u64::MAX),
+            Err(ZipError::Missing { .. })
+        ));
+        assert!(matches!(
+            archive.read_text("a.bin", u64::MAX),
+            Err(ZipError::NotUtf8 { .. })
+        ));
     }
 
     #[test]
-    fn rejects_too_many_parts() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture per limit, each with its own before/during-inflation assertions"
+    )]
+    fn size_limits_stop_bombs_before_and_during_inflation() {
+        // Too many entries.
         let entries: Vec<(String, Vec<u8>)> =
             (0..20u8).map(|i| (format!("p{i}.dat"), vec![i])).collect();
         let refs: Vec<(&str, &[u8])> = entries
@@ -484,12 +532,10 @@ mod tests {
                 limit: 8
             })
         ));
-    }
 
-    #[test]
-    fn rejects_oversized_part_by_declared_size() {
-        // A genuine bomb: ~4 MiB of zeros deflates to a few KB but declares its true size
-        // in the entry header — the pre-check must reject it without inflating the payload.
+        // A genuine bomb: ~4 MiB of zeros deflates to a few KB but declares its
+        // true size in the entry header — the pre-check must reject it without
+        // inflating the payload.
         let bomb = vec![0u8; 4 * 1024 * 1024];
         let z = zip_with(&[("content.xml", &bomb)], CompressionMethod::Deflated);
         assert!(
@@ -515,10 +561,9 @@ mod tests {
             archive.read("content.xml", u64::MAX),
             Err(ZipError::PartTooLarge { .. })
         ));
-    }
 
-    #[test]
-    fn rejects_oversized_total() {
+        // Three half-MiB parts against a 1 MiB total: refused up front, and the
+        // running total spans named reads.
         let part = vec![7u8; 512 * 1024];
         let z = zip_with(
             &[("a.dat", &part), ("b.dat", &part), ("c.dat", &part)],
@@ -538,19 +583,6 @@ mod tests {
             archive.check_declared_sizes(),
             Err(ZipError::TotalTooLarge { .. })
         ));
-    }
-
-    #[test]
-    fn running_total_spans_named_reads() {
-        let part = vec![7u8; 512 * 1024];
-        let z = zip_with(
-            &[("a.dat", &part), ("b.dat", &part), ("c.dat", &part)],
-            CompressionMethod::Deflated,
-        );
-        let limits = ZipLimits {
-            max_total_bytes: 1024 * 1024,
-            ..ZipLimits::default()
-        };
         let mut archive = BoundedArchive::from_bytes(&z, limits).unwrap();
         archive.read("a.dat", u64::MAX).unwrap();
         archive.read("b.dat", u64::MAX).unwrap();
@@ -558,10 +590,8 @@ mod tests {
             archive.read("c.dat", u64::MAX),
             Err(ZipError::TotalTooLarge { .. })
         ));
-    }
 
-    #[test]
-    fn per_read_cap_narrows_the_part_limit() {
+        // A per-read cap narrows the part limit.
         let z = zip_with(&[("a.txt", b"hello world")], CompressionMethod::Deflated);
         let mut archive = BoundedArchive::from_bytes(&z, ZipLimits::default()).unwrap();
         let err = archive.read("a.txt", 4).unwrap_err();
@@ -577,12 +607,9 @@ mod tests {
             "got {err}"
         );
         assert_eq!(archive.read_text("a.txt", 11).unwrap(), "hello world");
-    }
 
-    #[test]
-    fn lying_header_is_stopped_by_the_hard_limited_reader() {
-        // Declares 4 bytes, actually stores 4 KiB: the declared-size check passes,
-        // so only the hard-limited reader can catch it.
+        // Declares 4 bytes, actually stores 4 KiB: the declared-size check
+        // passes, so only the hard-limited reader can catch it.
         let payload = vec![b'x'; 4096];
         let mut z = zip_with(&[("a.dat", &payload)], CompressionMethod::Stored);
         forge_declared_size(&mut z, 4);
@@ -605,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dtd_in_xml_part() {
+    fn dtds_are_refused_only_in_parsed_xml_prologs() {
         let evil = br#"<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY a "boom">]><doc>&a;</doc>"#;
         let z = zip_with(&[("content.xml", evil)], CompressionMethod::Deflated);
         let err = read_zip_parts(&z, &ZipLimits::default()).unwrap_err();
@@ -618,11 +645,9 @@ mod tests {
             archive.read_xml("content.xml", u64::MAX),
             Err(ZipError::Dtd { .. })
         ));
-    }
 
-    #[test]
-    fn read_text_admits_a_doctype() {
-        // EPUB 2 XHTML legitimately starts with `<!DOCTYPE html ...>`.
+        // EPUB 2 XHTML legitimately starts with `<!DOCTYPE html ...>`; read as
+        // text it is admitted.
         let xhtml = b"<!DOCTYPE html><html/>";
         let z = zip_with(&[("ch1.xhtml", xhtml)], CompressionMethod::Deflated);
         let mut archive = BoundedArchive::from_bytes(&z, ZipLimits::default()).unwrap();
@@ -630,35 +655,15 @@ mod tests {
             archive.read_text("ch1.xhtml", u64::MAX).unwrap().as_bytes(),
             xhtml
         );
-    }
 
-    #[test]
-    fn allows_doctype_bytes_in_binary_part() {
         // The same bytes inside a non-XML part are harmless (never parsed as XML).
         let z = zip_with(
             &[("image.png", b"<!DOCTYPE not-xml>")],
             CompressionMethod::Deflated,
         );
-        let parts = read_zip_parts(&z, &ZipLimits::default()).unwrap();
-        assert_eq!(parts.len(), 1);
-    }
+        assert_eq!(read_zip_parts(&z, &ZipLimits::default()).unwrap().len(), 1);
 
-    #[test]
-    fn missing_and_non_utf8_parts_are_distinct_errors() {
-        let z = zip_with(&[("a.bin", b"\xff\xfe")], CompressionMethod::Stored);
-        let mut archive = BoundedArchive::from_bytes(&z, ZipLimits::default()).unwrap();
-        assert!(matches!(
-            archive.read("nope", u64::MAX),
-            Err(ZipError::Missing { .. })
-        ));
-        assert!(matches!(
-            archive.read_text("a.bin", u64::MAX),
-            Err(ZipError::NotUtf8 { .. })
-        ));
-    }
-
-    #[test]
-    fn contains_dtd_is_case_insensitive_and_bounded_to_the_prolog() {
+        // Detection is case-insensitive and bounded to the prolog.
         assert!(contains_dtd(b"<!doctype x>"));
         assert!(contains_dtd(b"<!EnTiTy a 'b'>"));
         assert!(!contains_dtd(b"<doc/>"));

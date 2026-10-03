@@ -344,17 +344,6 @@ mod tests {
     use crate::testutil::solid_png;
 
     #[test]
-    fn image_thumb_decodes_and_caps_the_long_edge() {
-        let png = solid_png(800, 400, [12, 180, 90]);
-        let t = image_thumb(&png, 256).expect("decodes");
-        assert!(t.is_valid());
-        assert_eq!(t.max_edge(), 256, "long edge capped to the target");
-        assert_eq!((t.width, t.height), (256, 128), "aspect ratio preserved");
-        // A pixel is the source colour (downscale of a solid image is that colour).
-        assert_eq!(&t.rgba[0..3], &[12, 180, 90]);
-    }
-
-    #[test]
     fn a_box_fits_both_axes() {
         let png = solid_png(400, 400, [1, 2, 3]);
         let t = image_thumb(&png, ThumbSize::new(160, 90)).expect("decodes");
@@ -366,33 +355,6 @@ mod tests {
         let wide = image_thumb(&solid_png(1920, 1080, [1, 2, 3]), ThumbSize::new(160, 90))
             .expect("decodes");
         assert_eq!((wide.width, wide.height), (160, 90));
-    }
-
-    #[test]
-    fn small_images_are_not_upscaled() {
-        let png = solid_png(40, 30, [255, 0, 0]);
-        let t = image_thumb(&png, 256).expect("decodes");
-        assert_eq!(
-            (t.width, t.height),
-            (40, 30),
-            "never enlarged past the source"
-        );
-    }
-
-    #[test]
-    fn png_round_trips_through_encode_decode() {
-        let png = solid_png(64, 48, [10, 20, 200]);
-        let t = image_thumb(&png, 256).unwrap();
-        let encoded = encode_png(&t).expect("encodes");
-        let back = decode_png(&encoded).expect("decodes");
-        assert_eq!((back.width, back.height), (t.width, t.height));
-        assert_eq!(back.rgba, t.rgba, "PNG is lossless: exact round-trip");
-    }
-
-    #[test]
-    fn corrupt_bytes_decode_to_none() {
-        assert!(image_thumb(&[0xDE, 0xAD, 0xBE, 0xEF], 256).is_none());
-        assert!(decode_png(b"not a png").is_none());
     }
 
     /// A header declaring more pixels than the budget is refused before the
@@ -439,10 +401,47 @@ mod tests {
     }
 
     #[test]
-    fn generate_dispatches_images_and_declines_badges() {
-        let png = solid_png(100, 100, [1, 2, 3]);
-        assert!(generate(&Source::Bytes(&png), FileCategory::Image, 64).is_some());
-        // A badge category never attempts a decode.
-        assert!(generate(&Source::Bytes(&png), FileCategory::Archive, 64).is_none());
+    fn image_thumbnails_decode_cap_and_encode_or_decline() {
+        // Phase `image_thumb_decodes_and_caps_the_long_edge`.
+        {
+            let png = solid_png(800, 400, [12, 180, 90]);
+            let t = image_thumb(&png, 256).expect("decodes");
+            assert!(t.is_valid());
+            assert_eq!(t.max_edge(), 256, "long edge capped to the target");
+            assert_eq!((t.width, t.height), (256, 128), "aspect ratio preserved");
+            // A pixel is the source colour (downscale of a solid image is that colour).
+            assert_eq!(&t.rgba[0..3], &[12, 180, 90]);
+        }
+        // Phase `small_images_are_not_upscaled`.
+        {
+            let png = solid_png(40, 30, [255, 0, 0]);
+            let t = image_thumb(&png, 256).expect("decodes");
+            assert_eq!(
+                (t.width, t.height),
+                (40, 30),
+                "never enlarged past the source"
+            );
+        }
+        // Phase `png_round_trips_through_encode_decode`.
+        {
+            let png = solid_png(64, 48, [10, 20, 200]);
+            let t = image_thumb(&png, 256).unwrap();
+            let encoded = encode_png(&t).expect("encodes");
+            let back = decode_png(&encoded).expect("decodes");
+            assert_eq!((back.width, back.height), (t.width, t.height));
+            assert_eq!(back.rgba, t.rgba, "PNG is lossless: exact round-trip");
+        }
+        // Phase `corrupt_bytes_decode_to_none`.
+        {
+            assert!(image_thumb(&[0xDE, 0xAD, 0xBE, 0xEF], 256).is_none());
+            assert!(decode_png(b"not a png").is_none());
+        }
+        // Phase `generate_dispatches_images_and_declines_badges`.
+        {
+            let png = solid_png(100, 100, [1, 2, 3]);
+            assert!(generate(&Source::Bytes(&png), FileCategory::Image, 64).is_some());
+            // A badge category never attempts a decode.
+            assert!(generate(&Source::Bytes(&png), FileCategory::Archive, 64).is_none());
+        }
     }
 }

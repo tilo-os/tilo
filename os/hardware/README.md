@@ -33,6 +33,8 @@ system-firmware list. `firmware` maps local input basenames
 to unique paths under `/usr/lib/firmware/`; an empty mapping needs no local
 firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
+The optional `always_on` (version 2, default `false`) marks a board that is
+an always-on host rather than a personal computer; see the Orange Pi below.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -106,29 +108,14 @@ the immutable hardware metadata. The installer uses that reference, permits an
 identical override, and rejects a conflicting override before any disk work.
 Generic images retain the official `latest` default and trusted overrides.
 
-### Development CI firmware input
-
-The manual `development-compile.yml` workflow accepts `hardware_profile`,
-`firmware_candidate` and `firmware_manifest_sha256`. Non-generic full builds
-require an immutable `code.tilo.so/tilo/NAME@sha256:DIGEST` firmware artifact
-and an independently reviewed SHA-256 of its exact `manifest.json` bytes.
-The artifact is a native Linux OCI image containing only `/firmware/`, with the
-manifest and exactly the files named by the selected hardware definition.
-Package those data files with a `FROM scratch` / `COPY` image; no executable
-image content is needed.
-
-The importer never executes the artifact. It checks the native image identity,
-manifest pin, profile and every file hash before staging data into the ignored
-firmware directory. Different existing firmware is rejected rather than
-overwritten. Import failures stop before cache probes, signing or compilation.
-The workflow retains a public `firmware-import.json` receipt.
-
 ### CI-built Lenovo install image
 
 `build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
-`main`-branch dispatch with `publish=true`. Supply the same independently
-reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256` as the
-development importer. CI imports those inert files on the native ARM64 runner,
+`main`-branch dispatch with `publish=true`. Supply an independently
+reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256`. The
+artifact is a native Linux OCI image containing only `/firmware/`: the manifest
+and exactly the files named by the selected hardware definition, packaged with
+a `FROM scratch` / `COPY` image. CI imports those inert files on the native ARM64 runner,
 builds and independently rebuilds the image, closes the composefs/UKI seal by
 installing it to a disposable disk, signs its target prediction, and publishes
 the signed ARM64 image at
@@ -184,6 +171,63 @@ These checks prepare build inputs; a signed image, VM installer checks, and a
 live boot on the laptop are still needed to establish bootability. Other
 firmware dependencies, including Wi-Fi and Bluetooth, must be checked against
 the chosen kernel and image packages.
+
+## Orange Pi 3B v2.1
+
+`orangepi-3b-v2-1` is the Xunlong Orange Pi 3B hardware revision v2.1
+(RK3566). The profile embeds `rockchip/rk3566-orangepi-3b-v2.1.dtb` and names
+the SD-card drivers the UKI needs before the root is mounted. The Wi-Fi
+driver (`mmc_core`, `cfg80211`, `brcmutil`, `brcmfmac`) is there too: the
+SDIO radio is enumerated by that same controller before the root is mounted,
+and nothing binds it later. So are the HDMI modules (`rockchipdrm`, `dw-hdmi`,
+`phy-rockchip-inno-hdmi`, `display-connector`); mainline U-Boot for this board
+has no video driver, so the monitor stays dark until Linux drives it.
+
+Fedora's `linux-firmware` does not ship the AP6256 files `brcmfmac` loads.
+`os/dev/fetch-orangepi-wifi-firmware.sh` stages Armbian's published
+`brcmfmac43456-sdio.{bin,clm_blob,txt}`, pinned by SHA-256 in
+`os/external-assets/github-assets.tsv`, into
+`os/hardware/firmware/orangepi-3b-v2-1/` with their manifest; the aarch64 dev
+lane runs it before building the board image. The SDIO node has no
+`brcm,board-type`, so the driver first asks for names carrying the machine's
+compatible string, `brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.*`; the
+profile installs both sets. The NVRAM text names Broadcom's sample MAC
+`00:90:4c:c5:12:38`; the image installs it without that line, so boards do
+not share one address. NetworkManager keeps the permanent MAC for `brcmfmac`
+(`os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf`): the driver drops the
+link when the address is changed.
+
+The profile is `"always_on": true`. `os/dev/install-board-layer.sh` gives such
+a board image a session instead of a greeter:
+`tilo-board-headless-session@<account>.service`, enabled by the disk step for
+the account it creates, runs the person's Tilo session headless, and on the
+display while a sink is connected (`tilo-seat-session`). greetd and sleep are
+masked, chrony accepts the first NTS certificate before the clock can be
+checked against it (the board has no battery-backed clock), and
+`tilo-boot-health` judges the boot by that session.
+
+The disk puts a 15 MiB unformatted hole at the 1 MiB alignment so the ESP starts at LBA 32768. `idbloader.img` sits in the unpartitioned sectors before that hole, and `u-boot.itb` sits inside the hole. `os/dev/build-orangepi-uboot.sh`
+builds mainline U-Boot for `orangepi-3b-rk3566` and
+`os/dev/install-rockchip-loader.py` writes `idbloader.img` at LBA 64 and
+`u-boot.itb` at LBA 16384. The mask ROM loads that U-Boot, which EFI-boots the
+UKI. The first partition must start at or after LBA 32768; a closer partition
+is refused before any loader byte is written.
+
+CI builds this profile from an explicit `workflow_dispatch` with
+`hardware_profile=orangepi-3b-v2-1` on the native ARM64 runner. The image is
+one aarch64 disk at generation 1. It does not enter the generic `latest` /
+`genN` series. Dispatch it with publication left off; a signed board channel
+is separate from that disk build.
+
+```sh
+TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
+  TILO_TARGET_IMGREF=registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-<commit> \
+  ./os/build.sh --local
+```
+
+`TILO_BUILD_ARCH` is only for an x86 builder that emulates aarch64. A native
+ARM builder leaves it unset. CI dispatches `hardware_profile=orangepi-3b-v2-1`
+with publication left off.
 
 The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the

@@ -19,7 +19,10 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+    crate::provides!(
+        dyn crate::widget::Continuable,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -45,21 +48,6 @@ impl Widget for LocalEffectProbe {
     ) {
     }
 
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "local-effect-probe"
     }
@@ -68,6 +56,33 @@ impl Widget for LocalEffectProbe {
         KurboRect::ZERO
     }
 
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[EFFECT_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        assert!(matches!(
+            kind,
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
+        ));
+        assert_eq!(type_id, EFFECT_TYPE);
+        self.operations.set(self.operations.get().saturating_add(1));
+        self.captured.borrow().as_ref().unwrap().wake();
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::resources::PublishesResources for LocalEffectProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         vec![
             tilo_actions::Resource::new("private-tab", "test.tab", "Private tab")
@@ -93,36 +108,6 @@ impl Widget for LocalEffectProbe {
                     .with_contract(tilo_actions::ActionContract::view()),
                 ),
         ]
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[EFFECT_TYPE]
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
-        _: &automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        assert!(matches!(
-            kind,
-            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
-        ));
-        assert_eq!(type_id, EFFECT_TYPE);
-        self.operations.set(self.operations.get().saturating_add(1));
-        self.captured.borrow().as_ref().unwrap().wake();
-        Ok(Some(tilo_actions::ActionOutput::default()))
-    }
-
-    fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn crate::widget::Continuable> {
-        Some(self)
     }
 }
 
@@ -174,9 +159,7 @@ fn assert_local_app_behavior() {
         crate::widget::ResourceOperationStart::Completed(_)
     ));
     assert_eq!(operations.get(), 1, "local Effect must actually execute");
-    let wake = wake_rx
-        .recv_timeout(crate::time::Duration::from_secs(1))
-        .unwrap();
+    let wake = tilo_test_env::recv("the local effect's wake", &wake_rx);
     app.needs_sync = false;
     assert!(
         app.accept_wake(&wake),
@@ -337,5 +320,11 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
         "isolated local app test failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    // libtest exits 0 when `--exact` selects nothing; require the child ran.
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+        "the child ran no test: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
 }

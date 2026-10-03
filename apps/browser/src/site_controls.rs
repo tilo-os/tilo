@@ -28,7 +28,7 @@ impl Exceptions {
         origin(url).is_some_and(|o| self.0.contains(&o))
     }
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        atomic_file::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
+        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
     }
     fn load(path: &Path) -> Self {
         if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
@@ -45,7 +45,7 @@ impl Exceptions {
         rules
     }
 }
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::{
     LocalState,
     tokens::TextRole,
@@ -100,7 +100,7 @@ impl Default for SiteControls {
             query: None,
             action: None,
             pending_reload: None,
-            next_poll: Instant::now(),
+            next_poll: ui::time::now(),
             notice: String::new(),
             filters: crate::native_blocker::status(),
             persistent: false,
@@ -141,7 +141,7 @@ impl SiteControls {
         self.pending_reload = None;
         self.pending.set(None);
         self.notice.clear();
-        self.next_poll = Instant::now();
+        self.next_poll = ui::time::now();
     }
     pub fn close(&mut self) {
         self.open = false;
@@ -212,7 +212,7 @@ impl SiteControls {
                     // replaceable button-intent slot. Dismissal must not lose it.
                     self.pending_reload = Some((origin, generation));
                 }
-                self.next_poll = Instant::now();
+                self.next_poll = ui::time::now();
                 true
             }
             _ => false,
@@ -247,7 +247,7 @@ impl SiteControls {
         if kind != "reload" {
             self.notice = "Working…".into();
         }
-        self.action = Some((request_id, origin, generation, kind, Instant::now()));
+        self.action = Some((request_id, origin, generation, kind, ui::time::now()));
         true
     }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
@@ -264,7 +264,7 @@ impl SiteControls {
                 Pending::Open(information) => {
                     self.open = true;
                     self.information = information;
-                    self.next_poll = Instant::now();
+                    self.next_poll = ui::time::now();
                     self.notice.clear();
                 }
                 Pending::Close => self.close(),
@@ -283,7 +283,7 @@ impl SiteControls {
             self.filters = filters;
             dirty |= self.open;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         if self.open && now >= self.next_poll {
             self.next_poll = now + Duration::from_secs(1);
             if self
@@ -568,194 +568,259 @@ mod tests {
             self.0.drain_events()
         }
     }
+    /// Origin canonicalisation, exceptions, private sharing and certificate text.
     #[test]
-    fn canonical_origin_rejects_nonweb_and_preserves_ports() {
-        assert_eq!(
-            origin("HTTPS://User:pass@EXAMPLE.com:443/path?q=1#x"),
-            Some("https://example.com".into())
-        );
-        assert_eq!(
-            origin("http://[::1]:8080/a"),
-            Some("http://[::1]:8080".into())
-        );
-        for url in [
-            "data:text/html,test",
-            "about:blank",
-            "file:///tmp/a",
-            "https://",
-            "null",
-        ] {
-            assert_eq!(origin(url), None);
-        }
-    }
-    #[test]
-    fn exceptions_roundtrip_exact_origins_and_reenable() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("sites.json");
-        let mut rules = Exceptions::default();
-        rules.set("https://EXAMPLE.com:443/path", true);
-        rules.save(&path).unwrap();
-        let mut loaded = Exceptions::load(&path);
-        assert!(loaded.contains("https://example.com/other"));
-        assert!(!loaded.contains("http://example.com/"));
-        assert!(!loaded.contains("https://example.com:444/"));
-        loaded.set("https://example.com/", false);
-        assert!(!loaded.contains("https://example.com/"));
-    }
-    #[test]
-    fn navigation_discards_count_pending_actions_and_stale_status() {
-        let mut controls = SiteControls::default();
-        controls.open = true;
-        controls.committed = Some("https://one.test".into());
-        controls.query = Some((7, Instant::now()));
-        controls.notice = "old notice".into();
-        controls.navigation("https://two.test/page");
-        assert!(!controls.open);
-        assert!(controls.query.is_none());
-        assert!(controls.notice.is_empty());
-        assert_eq!(controls.committed.as_deref(), Some("https://two.test"));
-        assert!(!controls.apply(WebViewEvent::SiteResult {
-            request_id: 7,
-            origin: "https://one.test".into(),
-            generation: 1,
-            action: "clear".into(),
-            success: true,
-            message: "cleared".into()
-        }));
-        assert!(controls.notice.is_empty());
-    }
-
-    #[test]
-    fn site_panel_has_a_visible_scroll_viewport_and_actionable_children() {
-        fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children().iter().find_map(|c| find(*c, id))
-        }
-
-        let mut controls = SiteControls::default();
-        controls.open = true;
-        controls.committed = Some("https://example.test".into());
-        let theme = ui::theme::Theme::dark();
-        let mut panel = controls.panel(480.0, 444.0, 2.0 * theme.tokens.spacing.s16);
-        let mut tree = taffy::TaffyTree::<()>::new();
-        let mut nodes = std::collections::HashMap::new();
-        let mut text = ui::text_render::TextRenderer::new();
-        let node = panel.build_layout(&mut tree, &theme, &mut nodes);
-        tree.compute_layout_with_measure(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(480.0),
-                height: taffy::AvailableSpace::Definite(444.0),
-            },
-            |known, available, node, _, _| {
-                nodes.get(&node).map_or(taffy::Size::ZERO, |ptr| unsafe {
-                    (**ptr).measure(known, available, &mut text)
-                })
-            },
-        )
-        .unwrap();
-        panel.apply_layout(&tree, node, vello::kurbo::Point::ORIGIN);
-        let scroll = panel.children()[0];
-        assert!(
-            scroll.get_rect().height() > 100.0,
-            "scroll viewport: {:?}",
-            scroll.get_rect()
-        );
-        let done = find(panel.as_ref(), "browser.site.close").unwrap();
-        assert!(done.height() > 0.0);
-        assert!(scroll.get_rect().contains(done.center()));
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled;
-        let mut focus = None;
-        for event in [
-            winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(done.center().x, done.center().y),
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            },
-        ] {
-            handled = false;
-            panel.handle_event(
-                &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn site_origins_exceptions_and_certificates_are_canonical() {
+        // Phase `canonical_origin_rejects_nonweb_and_preserves_ports`.
+        {
+            assert_eq!(
+                origin("HTTPS://User:pass@EXAMPLE.com:443/path?q=1#x"),
+                Some("https://example.com".into())
             );
+            assert_eq!(
+                origin("http://[::1]:8080/a"),
+                Some("http://[::1]:8080".into())
+            );
+            for url in [
+                "data:text/html,test",
+                "about:blank",
+                "file:///tmp/a",
+                "https://",
+                "null",
+            ] {
+                assert_eq!(origin(url), None);
+            }
         }
-        let intent = panel
-            .take_control_invocation()
-            .expect("pointer emits the Done operation");
-        assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
-        let result = panel
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.site.close").unwrap(),
-                &doc,
-                &automerge::ROOT,
+
+        // Phase `exceptions_roundtrip_exact_origins_and_reenable`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("sites.json");
+            let mut rules = Exceptions::default();
+            rules.set("https://EXAMPLE.com:443/path", true);
+            rules.save(&path).unwrap();
+            let mut loaded = Exceptions::load(&path);
+            assert!(loaded.contains("https://example.com/other"));
+            assert!(!loaded.contains("http://example.com/"));
+            assert!(!loaded.contains("https://example.com:444/"));
+            loaded.set("https://example.com/", false);
+            assert!(!loaded.contains("https://example.com/"));
+        }
+
+        // Phase `private_tabs_share_runtime_exceptions_without_disk_persistence`.
+        {
+            let recorder = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
+            let normal = tempfile::tempdir().unwrap();
+            let normal_file = normal.path().join("site-exceptions.json");
+            let mut normal_exceptions = Exceptions::default();
+            normal_exceptions.set("https://normal.test", true);
+            normal_exceptions.save(&normal_file).unwrap();
+            let normal_before = std::fs::read(&normal_file).unwrap();
+            let mut first = SiteControls::default();
+            let mut second = SiteControls::default();
+            first.initialize(&engine, false);
+            second.share_runtime_state(&first);
+            first.committed = Some("https://private.test".into());
+            first.action = Some((
+                7,
+                "https://private.test".into(),
+                3,
+                "disable".into(),
+                ui::time::now(),
+            ));
+            assert!(first.apply(WebViewEvent::SiteResult {
+                request_id: 7,
+                origin: "https://private.test".into(),
+                generation: 3,
+                action: "disable".into(),
+                success: true,
+                message: "disabled".into(),
+            }));
+            assert!(
+                second
+                    .runtime_exceptions
+                    .lock()
+                    .unwrap()
+                    .contains("https://private.test/child")
+            );
+            second.initialize(&engine, false);
+            assert!(recorder.commands().iter().any(|command| {
+                matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
+            }));
+            assert_eq!(std::fs::read(normal_file).unwrap(), normal_before);
+        }
+
+        // Phase `certificate_dates_and_protocol_versions_are_human_readable`.
+        {
+            assert_eq!(unix_date(0), "1970-01-01 00:00");
+            assert_eq!(
+                certificate_date(11_644_473_600.0 * 1_000_000.0 + 86400.0 * 1_000_000.0),
+                "1970-01-02 00:00 UTC"
+            );
+            assert_eq!(tls_version(6), "TLS 1.3");
+        }
+    }
+    /// Panel viewport, navigation discards and bounded polling.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn site_panel_is_scrollable_and_discards_stale_state_on_navigation() {
+        // Phase `navigation_discards_count_pending_actions_and_stale_status`.
+        {
+            let mut controls = SiteControls::default();
+            controls.open = true;
+            controls.committed = Some("https://one.test".into());
+            controls.query = Some((7, ui::time::now()));
+            controls.notice = "old notice".into();
+            controls.navigation("https://two.test/page");
+            assert!(!controls.open);
+            assert!(controls.query.is_none());
+            assert!(controls.notice.is_empty());
+            assert_eq!(controls.committed.as_deref(), Some("https://two.test"));
+            assert!(!controls.apply(WebViewEvent::SiteResult {
+                request_id: 7,
+                origin: "https://one.test".into(),
+                generation: 1,
+                action: "clear".into(),
+                success: true,
+                message: "cleared".into()
+            }));
+            assert!(controls.notice.is_empty());
+        }
+
+        // Phase `site_panel_has_a_visible_scroll_viewport_and_actionable_children`.
+        {
+            fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+                if w.test_id() == Some(id) {
+                    return Some(w.get_rect());
+                }
+                w.children().iter().find_map(|c| find(*c, id))
+            }
+
+            let mut controls = SiteControls::default();
+            controls.open = true;
+            controls.committed = Some("https://example.test".into());
+            let theme = ui::theme::Theme::dark();
+            let mut panel = controls.panel(480.0, 444.0, 2.0 * theme.tokens.spacing.s16);
+            let mut tree = taffy::TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            let mut text = ui::text_render::TextRenderer::new();
+            let node = panel.build_layout(&mut tree, &theme, &mut nodes);
+            tree.compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(444.0),
+                },
+                |known, available, node, _, _| {
+                    nodes.get(&node).map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut text)
+                    })
+                },
             )
             .unwrap();
-        assert!(result.is_some());
-        assert!(matches!(controls.pending.get(), Some(Pending::Close)));
-    }
-
-    #[test]
-    fn polling_is_bounded_and_stale_buttons_cannot_act_after_navigation() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut controls = SiteControls::default();
-        controls.committed = Some("https://one.test".into());
-        controls.open = true;
-        for _ in 0..100 {
-            controls.sync(&engine);
+            panel.apply_layout(&tree, node, vello::kurbo::Point::ORIGIN);
+            let scroll = panel.children()[0];
+            assert!(
+                scroll.get_rect().height() > 100.0,
+                "scroll viewport: {:?}",
+                scroll.get_rect()
+            );
+            let done = find(panel.as_ref(), "browser.site.close").unwrap();
+            assert!(done.height() > 0.0);
+            assert!(scroll.get_rect().contains(done.center()));
+            let mut doc = automerge::AutoCommit::new();
+            let mut handled;
+            let mut focus = None;
+            for event in [
+                winit::event::WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(done.center().x, done.center().y),
+                },
+                winit::event::WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                },
+                winit::event::WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                },
+            ] {
+                handled = false;
+                panel.handle_event(
+                    &event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &tree,
+                    },
+                );
+            }
+            let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
+                .expect("pointer emits the Done operation");
+            assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
+            let result = panel
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.close").unwrap(),
+                    ),
+                    &mut doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert!(result.is_some());
+            assert!(matches!(controls.pending.get(), Some(Pending::Close)));
         }
-        assert_eq!(
-            capture
-                .commands()
-                .iter()
-                .filter(|c| matches!(c, WebViewCommand::RequestSiteStatus { .. }))
-                .count(),
-            1
-        );
-        controls.navigation("https://two.test");
-        controls.pending.set(Some(Pending::Action {
-            origin: "https://one.test".into(),
-            generation: 1,
-            kind: "clear".into(),
-        }));
-        controls.sync(&engine);
-        assert!(
-            !capture
-                .commands()
-                .iter()
-                .any(|c| matches!(c, WebViewCommand::SiteAction { .. }))
-        );
-    }
-    #[test]
-    fn certificate_dates_and_protocol_versions_are_human_readable() {
-        assert_eq!(unix_date(0), "1970-01-01 00:00");
-        assert_eq!(
-            certificate_date(11_644_473_600.0 * 1_000_000.0 + 86400.0 * 1_000_000.0),
-            "1970-01-02 00:00 UTC"
-        );
-        assert_eq!(tls_version(6), "TLS 1.3");
+
+        // Phase `polling_is_bounded_and_stale_buttons_cannot_act_after_navigation`.
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut controls = SiteControls::default();
+            controls.committed = Some("https://one.test".into());
+            controls.open = true;
+            for _ in 0..100 {
+                controls.sync(&engine);
+            }
+            assert_eq!(
+                capture
+                    .commands()
+                    .iter()
+                    .filter(|c| matches!(c, WebViewCommand::RequestSiteStatus { .. }))
+                    .count(),
+                1
+            );
+            controls.navigation("https://two.test");
+            controls.pending.set(Some(Pending::Action {
+                origin: "https://one.test".into(),
+                generation: 1,
+                kind: "clear".into(),
+            }));
+            controls.sync(&engine);
+            assert!(
+                !capture
+                    .commands()
+                    .iter()
+                    .any(|c| matches!(c, WebViewCommand::SiteAction { .. }))
+            );
+        }
     }
 
     fn protection_toggle(kind: &str) -> SiteControls {
@@ -778,7 +843,13 @@ mod tests {
                 expires: 0.0,
                 permissions: Vec::new(),
             }),
-            action: Some((7, "https://one.test".into(), 3, kind.into(), Instant::now())),
+            action: Some((
+                7,
+                "https://one.test".into(),
+                3,
+                kind.into(),
+                ui::time::now(),
+            )),
             ..SiteControls::default()
         }
     }
@@ -794,172 +865,136 @@ mod tests {
         }
     }
 
+    /// Protection reload success, cancellation and stale replies.
     #[test]
-    fn successful_protection_toggle_reloads_once_even_after_panel_dismissal() {
-        for kind in ["enable", "disable"] {
-            for dismiss in [false, true] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn protection_toggle_reloads_only_after_a_current_success() {
+        // Phase `successful_protection_toggle_reloads_once_even_after_panel_dismissal`.
+        {
+            for kind in ["enable", "disable"] {
+                for dismiss in [false, true] {
+                    let recorder = ui::webview::test_engine::TestEngine::new();
+                    let engine: SharedEngine = recorder.clone();
+                    let mut controls = protection_toggle(kind);
+                    assert!(controls.apply(toggle_reply(kind, true)));
+                    assert_eq!(
+                        controls
+                            .runtime_exceptions
+                            .lock()
+                            .unwrap()
+                            .contains("https://one.test"),
+                        kind == "disable"
+                    );
+                    assert!(
+                        !controls.apply(toggle_reply(kind, true)),
+                        "duplicate toggle reply"
+                    );
+                    if dismiss {
+                        controls.close();
+                    }
+                    controls.sync(&engine);
+                    controls.sync(&engine);
+                    let reloads: Vec<_> = recorder.commands().into_iter().filter(|command| {
+                        matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")
+                    }).collect();
+                    assert_eq!(reloads.len(), 1, "{kind}, dismiss={dismiss}");
+                    let WebViewCommand::SiteAction {
+                        request_id,
+                        origin,
+                        generation,
+                        ..
+                    } = &reloads[0]
+                    else {
+                        unreachable!()
+                    };
+                    assert_ne!(*request_id, 7);
+                    assert_eq!(origin, "https://one.test");
+                    assert_eq!(*generation, 3);
+                    assert!(controls.apply(WebViewEvent::SiteResult {
+                        request_id: *request_id,
+                        origin: origin.clone(),
+                        generation: *generation,
+                        action: "reload".into(),
+                        success: true,
+                        message: "Reloading".into(),
+                    }));
+                    controls.sync(&engine);
+                    assert_eq!(recorder.commands().iter().filter(|command| matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")).count(), 1);
+                }
+            }
+        }
+
+        // Phase `protection_reload_is_cancelled_by_navigation_or_new_document`.
+        {
+            for target in [
+                "https://two.test/page",
+                "https://one.test/other",
+                "new-generation",
+            ] {
                 let recorder = ui::webview::test_engine::TestEngine::new();
                 let engine: SharedEngine = recorder.clone();
-                let mut controls = protection_toggle(kind);
-                assert!(controls.apply(toggle_reply(kind, true)));
-                assert_eq!(
-                    controls
-                        .runtime_exceptions
-                        .lock()
-                        .unwrap()
-                        .contains("https://one.test"),
-                    kind == "disable"
-                );
-                assert!(
-                    !controls.apply(toggle_reply(kind, true)),
-                    "duplicate toggle reply"
-                );
-                if dismiss {
-                    controls.close();
+                let mut controls = protection_toggle("disable");
+                assert!(controls.apply(toggle_reply("disable", true)));
+                if target == "new-generation" {
+                    controls.status.as_mut().unwrap().generation = 4;
+                } else {
+                    controls.navigation(target);
                 }
                 controls.sync(&engine);
-                controls.sync(&engine);
-                let reloads: Vec<_> = recorder.commands().into_iter().filter(|command| {
-                    matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")
-                }).collect();
-                assert_eq!(reloads.len(), 1, "{kind}, dismiss={dismiss}");
-                let WebViewCommand::SiteAction {
+                assert!(
+                    !recorder
+                        .commands()
+                        .iter()
+                        .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
+                    "{target}"
+                );
+            }
+        }
+
+        // Phase `failed_or_stale_protection_replies_do_not_reload`.
+        {
+            for case in [
+                "failure",
+                "request",
+                "origin",
+                "generation",
+                "action",
+                "navigation",
+            ] {
+                let recorder = ui::webview::test_engine::TestEngine::new();
+                let engine: SharedEngine = recorder.clone();
+                let mut controls = protection_toggle("disable");
+                let mut reply = toggle_reply("disable", case != "failure");
+                if let WebViewEvent::SiteResult {
                     request_id,
                     origin,
                     generation,
+                    action,
                     ..
-                } = &reloads[0]
-                else {
-                    unreachable!()
-                };
-                assert_ne!(*request_id, 7);
-                assert_eq!(origin, "https://one.test");
-                assert_eq!(*generation, 3);
-                assert!(controls.apply(WebViewEvent::SiteResult {
-                    request_id: *request_id,
-                    origin: origin.clone(),
-                    generation: *generation,
-                    action: "reload".into(),
-                    success: true,
-                    message: "Reloading".into(),
-                }));
-                controls.sync(&engine);
-                assert_eq!(recorder.commands().iter().filter(|command| matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")).count(), 1);
-            }
-        }
-    }
-
-    #[test]
-    fn protection_reload_is_cancelled_by_navigation_or_new_document() {
-        for target in [
-            "https://two.test/page",
-            "https://one.test/other",
-            "new-generation",
-        ] {
-            let recorder = ui::webview::test_engine::TestEngine::new();
-            let engine: SharedEngine = recorder.clone();
-            let mut controls = protection_toggle("disable");
-            assert!(controls.apply(toggle_reply("disable", true)));
-            if target == "new-generation" {
-                controls.status.as_mut().unwrap().generation = 4;
-            } else {
-                controls.navigation(target);
-            }
-            controls.sync(&engine);
-            assert!(
-                !recorder
-                    .commands()
-                    .iter()
-                    .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
-                "{target}"
-            );
-        }
-    }
-
-    #[test]
-    fn failed_or_stale_protection_replies_do_not_reload() {
-        for case in [
-            "failure",
-            "request",
-            "origin",
-            "generation",
-            "action",
-            "navigation",
-        ] {
-            let recorder = ui::webview::test_engine::TestEngine::new();
-            let engine: SharedEngine = recorder.clone();
-            let mut controls = protection_toggle("disable");
-            let mut reply = toggle_reply("disable", case != "failure");
-            if let WebViewEvent::SiteResult {
-                request_id,
-                origin,
-                generation,
-                action,
-                ..
-            } = &mut reply
-            {
-                match case {
-                    "request" => *request_id = 8,
-                    "origin" => *origin = "https://two.test".into(),
-                    "generation" => *generation = 4,
-                    "action" => *action = "enable".into(),
-                    "navigation" => controls.navigation("https://one.test/other"),
-                    _ => {}
+                } = &mut reply
+                {
+                    match case {
+                        "request" => *request_id = 8,
+                        "origin" => *origin = "https://two.test".into(),
+                        "generation" => *generation = 4,
+                        "action" => *action = "enable".into(),
+                        "navigation" => controls.navigation("https://one.test/other"),
+                        _ => {}
+                    }
                 }
+                assert_eq!(controls.apply(reply), case == "failure");
+                controls.sync(&engine);
+                assert!(
+                    !recorder
+                        .commands()
+                        .iter()
+                        .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
+                    "{case}"
+                );
             }
-            assert_eq!(controls.apply(reply), case == "failure");
-            controls.sync(&engine);
-            assert!(
-                !recorder
-                    .commands()
-                    .iter()
-                    .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
-                "{case}"
-            );
         }
-    }
-
-    #[test]
-    fn private_tabs_share_runtime_exceptions_without_disk_persistence() {
-        let recorder = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
-        let normal = tempfile::tempdir().unwrap();
-        let normal_file = normal.path().join("site-exceptions.json");
-        let mut normal_exceptions = Exceptions::default();
-        normal_exceptions.set("https://normal.test", true);
-        normal_exceptions.save(&normal_file).unwrap();
-        let normal_before = std::fs::read(&normal_file).unwrap();
-        let mut first = SiteControls::default();
-        let mut second = SiteControls::default();
-        first.initialize(&engine, false);
-        second.share_runtime_state(&first);
-        first.committed = Some("https://private.test".into());
-        first.action = Some((
-            7,
-            "https://private.test".into(),
-            3,
-            "disable".into(),
-            Instant::now(),
-        ));
-        assert!(first.apply(WebViewEvent::SiteResult {
-            request_id: 7,
-            origin: "https://private.test".into(),
-            generation: 3,
-            action: "disable".into(),
-            success: true,
-            message: "disabled".into(),
-        }));
-        assert!(
-            second
-                .runtime_exceptions
-                .lock()
-                .unwrap()
-                .contains("https://private.test/child")
-        );
-        second.initialize(&engine, false);
-        assert!(recorder.commands().iter().any(|command| {
-            matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
-        }));
-        assert_eq!(std::fs::read(normal_file).unwrap(), normal_before);
     }
 }

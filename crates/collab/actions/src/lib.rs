@@ -100,23 +100,27 @@ pub mod protocol;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod schema;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
+    AGENT_TASK_PARTICIPANT_PREFIX, ARGS_FACET, ActionApp, ActionContext, ActionFacet, ActionGroup,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
+    ParticipantId, args_summary,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DiscoveryScope,
-    ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
+    DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, replay,
+    dispatch_with_context, invoking_context, replay,
 };
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
@@ -135,10 +139,20 @@ pub use params::{
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;
+#[allow(
+    deprecated,
+    reason = "existing app impls still name this trait until they publish through tilo_resource"
+)]
+pub use resource::ResourceProvider;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
+    ResourcePresentation, ResourceViewMountSpec, ResourceViewSpec, flatten,
+};
+pub use schema::{
+    CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
+    catalogue_schema, catalogue_schema_bytes,
 };
 
 #[cfg(test)]
@@ -186,10 +200,90 @@ mod tests {
         }
     }
 
+    /// A read marker: shared state about the document, not its content.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Seen(i64);
+
+    const SEEN_TYPE: &str = "test.seen";
+
+    impl Action for Seen {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            doc.put(&ROOT, "seen", ScalarValue::Int(self.0))?;
+            Ok(())
+        }
+
+        fn change_kind(&self) -> ChangeKind {
+            ChangeKind::Housekeeping
+        }
+    }
+
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         r.register::<Counter>(COUNTER_TYPE);
+        r.register::<Seen>(SEEN_TYPE);
         r
+    }
+
+    fn last_message(doc: &mut AutoCommit) -> Option<String> {
+        let heads = doc.get_heads();
+        doc.get_change_by_hash(heads.first()?)?
+            .message()
+            .map(ToString::to_string)
+    }
+
+    fn last_context(doc: &mut AutoCommit) -> Option<ActionContext> {
+        ActionContext::from_change_message(&last_message(doc)?)
+    }
+
+    /// The executor writes an action's declared kind into its change, with or
+    /// without a caller's context, and replay reproduces the same change.
+    #[test]
+    fn declared_housekeeping_travels_in_the_change_and_content_writes_nothing_new() {
+        let (mut a, mut b) = two_replicas();
+        let env = apply_local(
+            &mut a,
+            &Seen(3),
+            EncodedAction::encode(SEEN_TYPE, &Seen(3)).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            env.context
+                .as_ref()
+                .is_some_and(ActionContext::is_housekeeping)
+        );
+        assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
+        replay(&mut b, &env, &registry()).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
+
+        let labelled =
+            ActionContext::for_resource("Mark as read", "c:1", "chat.channel", "general");
+        apply_local_with_context(
+            &mut a,
+            &Seen(4),
+            EncodedAction::encode(SEEN_TYPE, &Seen(4)).unwrap(),
+            None,
+            labelled,
+        )
+        .unwrap();
+        let context = last_context(&mut a).unwrap();
+        assert!(context.is_housekeeping());
+        assert_eq!(
+            context.action_label, "Mark as read",
+            "the caller's context is kept"
+        );
+
+        let put = Counter::Put {
+            key: "score".into(),
+            value: 1,
+        };
+        let env = apply_local(
+            &mut a,
+            &put,
+            EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(env.context, None, "content without context stays as it was");
+        assert_eq!(last_message(&mut a), None);
     }
 
     /// Seed two independent replicas that share history (so a replayed
@@ -203,10 +297,19 @@ mod tests {
         (a, b)
     }
 
+    /// An action replays to an identical doc on a peer, concurrent envelopes replay from their
+    /// recorded base, and a replayed change dedupes against a native Automerge merge.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn envelopes_replay_deterministically_on_peers() {
+        action_replays_to_identical_doc_on_peer();
+        concurrent_envelopes_replay_from_their_recorded_base();
+        replayed_change_dedupes_against_native_automerge_merge();
+    }
+
     /// THE HEADLINE TEST. An action applied on replica A, replicated, and
     /// replayed on replica B (from the same state) yields the **identical**
     /// document — same head hashes, not merely the same values.
-    #[test]
     fn action_replays_to_identical_doc_on_peer() {
         let (mut a, mut b) = two_replicas();
         assert_eq!(
@@ -244,7 +347,6 @@ mod tests {
     /// Replay must still reproduce each action at its recorded base and merge
     /// the resulting CRDT change; applying either payload directly to the
     /// newer live state would make document-reading actions order-dependent.
-    #[test]
     fn concurrent_envelopes_replay_from_their_recorded_base() {
         let (mut a, mut b) = two_replicas();
         let left = Counter::Put {
@@ -286,7 +388,6 @@ mod tests {
     /// so if the replicas later exchange native Automerge changes (ordinary
     /// CRDT sync) the duplicate dedupes instead of double-applying — why
     /// pinning actor + time on every apply matters.
-    #[test]
     fn replayed_change_dedupes_against_native_automerge_merge() {
         let (mut a, mut b) = two_replicas();
         let action = Counter::Append {
@@ -318,9 +419,21 @@ mod tests {
         assert_eq!(b.length(&list), 1, "no double-apply");
     }
 
+    /// Client-local dispatch applies and replicates; server-preferred routes to the host without a
+    /// local apply and refuses without a host; the registry rejects unknown types and flattens nested
+    /// resources.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn dispatch_routes_by_placement_and_the_registry_knows_its_types() {
+        client_local_dispatch_applies_and_replicates();
+        server_preferred_routes_to_host_without_local_apply();
+        server_preferred_refuses_without_host();
+        registry_rejects_unknown_type();
+        flatten_walks_nested_resources();
+    }
+
     /// `ClientLocal` dispatch applies locally and replicates exactly one
     /// envelope through the transport.
-    #[test]
     fn client_local_dispatch_applies_and_replicates() {
         let (mut a, _) = two_replicas();
         let action = Counter::Put {
@@ -350,7 +463,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn server_preferred_routes_to_host_without_local_apply() {
         let (mut a, _) = two_replicas();
         let before = a.get_heads();
@@ -371,7 +483,6 @@ mod tests {
         assert_eq!(d.envelope().locus, ExecutionLocus::ServerPreferred);
     }
 
-    #[test]
     fn server_preferred_refuses_without_host() {
         let (mut a, _) = two_replicas();
         let before = a.get_heads();
@@ -392,7 +503,6 @@ mod tests {
         assert!(a.get(&ROOT, "queue").unwrap().is_none());
     }
 
-    #[test]
     fn registry_rejects_unknown_type() {
         let reg = registry();
         let bogus = EncodedAction {
@@ -417,7 +527,6 @@ mod tests {
 
     /// Resource forests flatten depth-first, parents before children, with
     /// composite keys.
-    #[test]
     fn flatten_walks_nested_resources() {
         let put = Counter::Put {
             key: "k".into(),

@@ -1,9 +1,9 @@
 //! Opt-in client exercise: connect to an already admitted administrative session.
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tilo_ntfs_protocol::{CHUNK_BYTES, HASH_BYTES, Identity, client::Client};
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, path::Path};
+    use tilo_ntfs_protocol::{CHUNK_BYTES, HASH_BYTES, Identity, client::Client};
     let locator: serde_json::Value =
         serde_json::from_str(&std::env::var("TILO_NTFS_SESSION_LOCATOR")?)?;
     let path = locator

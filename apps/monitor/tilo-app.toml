@@ -14,10 +14,19 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Reads system and process information."
+
+[package.names]
+de = "Systemüberwachung"
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["clipboard", "files.paths", "processes", "system-info"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -63,10 +63,11 @@ the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 `--hypervisor whpx` to select it explicitly. It never falls back to software
 CPU emulation.
 
-For component swaps that build inside the VM, install MSYS2's `rsync`
-package too (`pacman -S rsync`). `tilo-vm` discovers the default per-user
-location automatically without changing `PATH` and passes the Windows
-worktree as an MSYS2 `/c/...` path, so `rsync` treats it as a local source.
+For component swaps that build inside the VM, install MSYS2's `rsync` and
+`openssh` packages too (`pacman -S rsync openssh`). `tilo-vm` discovers their
+default per-user location without changing `PATH`, uses the matching MSYS2
+SSH transport, and passes the Windows worktree as an MSYS2 `/c/...` path so
+`rsync` treats it as a local source.
 
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
@@ -75,13 +76,15 @@ respective volume. The guest gets the host CPU through WHPX, a PCI serial
 device for Linux `console=ttyS0`, a separate firmware UART, a user network
 with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
 display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
-`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
-through QMP and waits for QEMU to exit.
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest to power off
+through SSH first, then uses the QMP power button if SSH is unavailable.
 
 For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
-virtual GPU, USB devices and VNC. `--memory-mb` controls guest RAM; less RAM
-can shorten WHPX's cold start, but choose enough for the components being
-tested. A 2 GiB VM is suitable only for light service work. Neither option
+virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
+`--memory-mb 8192` when an in-guest build needs more. On a Snapdragon X Elite
+Windows ARM64 host, the same cached direct-boot disk reached SSH in 22 seconds
+with 3 GiB, versus 44 seconds with 8 GiB; a full stop and restart with 3 GiB
+took 28 seconds. A 2 GiB VM is suitable only for light service work. Neither option
 changes the disk image or the installer test path.
 
 ### Direct kernel boot for a fast service VM
@@ -90,8 +93,11 @@ WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
 `Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
 and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
 publishes the three checksum-listed companion files under `directBoot` in
-`tilo-vm-disk-aarch64.json`. Download those files into one directory;
-for a local disk, an operator may extract the same files from its UKI.
+`tilo-vm-disk-aarch64.json`. On WHPX, `vm create` with a published disk
+downloads and verifies the matching companions automatically. The source
+revision, architecture, package URLs, file names and SHA-256 values must agree
+with the selected disk manifest. For a local disk, an operator may extract the
+same files from its UKI.
 The bundle JSON beside `Image` and `initrd` has this shape:
 
 ```json
@@ -103,11 +109,17 @@ The bundle JSON beside `Image` and `initrd` has this shape:
 }
 ```
 
-Create the COW VM with `--direct-boot-bundle` to validate and register these
-files before the image download or disk creation:
+Create a published COW VM with direct boot automatically:
 
 ```powershell
-tilo-vm vm create dev --hypervisor whpx --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
+tilo-vm vm create dev --hypervisor whpx --tag main-1a2b3c4 --headless --memory-mb 2048
+```
+
+For a local disk, pass `--direct-boot-bundle` to validate and register its
+manually prepared files before disk creation:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --image C:\tilo-vm\disk.qcow2 --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
 ```
 
 Alternatively, add a `direct_kernel` table to an existing VM's
@@ -220,6 +232,19 @@ The ESP is attached read-only with the first boot index, so firmware boots its
 loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
 support it; keep the ESP on a local drive.
 
+### WHPX monitor diagnostics
+
+`tilo-vm vm control` sends a QEMU monitor command through the VM's local QMP
+connection. It works before guest SSH is available:
+
+```sh
+tilo-vm vm control info status
+tilo-vm vm control info block
+```
+
+`tilo-vm vm shot` captures the real VM display. Use `tilo-vm control` for the
+running compositor's semantic actions; monitor commands manage the VM itself.
+
 ## The root SSH key
 
 `tilo-vm` reaches the VM as root with a key, never a password. `vm create`
@@ -232,7 +257,7 @@ at creation where the hypervisor has a channel for credentials:
 | Adapter | How the key gets in |
 |---|---|
 | libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
-| whpx | at boot: the same credential in QEMU's SMBIOS type 11 OEM string |
+| whpx | at boot: direct-kernel ARM64 passes the public key with `systemd.set_credential_binary=` on the kernel command line; firmware boots use QEMU's SMBIOS type 11 OEM string |
 | UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
 
 The one-time step logs in with the dev account's password (`tester`,

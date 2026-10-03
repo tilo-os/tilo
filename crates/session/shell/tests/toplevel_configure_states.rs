@@ -326,6 +326,7 @@ fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
     h.focus(second);
     let first_states = h.last_states("org.example.First");
     let second_states = h.last_states("org.example.Second");
+    drop(h);
     assert!(
         !first_states.contains(&ACTIVATED),
         "the tile that lost focus must be told so, or two windows look focused \
@@ -358,6 +359,7 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
     xdg.set_window_geometry(20, 20, 100, 80);
     surface.commit();
     h.pump();
+    drop(h);
 
     assert_eq!(
         store.frame_size(id),
@@ -374,4 +376,79 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
          (20, 20) at the tile's corner",
     );
     store.forget(id);
+}
+
+/// Super+F on a tiled client: the fullscreen configure sizes it to the
+/// output, and the promoted tile still laid out beneath must not size it
+/// back to the tile. Leaving fullscreen hands the tile size back.
+#[test]
+fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
+    const FULLSCREEN: u32 = 2;
+    let mut h = Harness::new();
+    h.state.output_size = (1280, 900);
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.example.Terminal");
+    toplevel.set_app_id("org.example.Terminal".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.example.Terminal");
+    let store = shell::compositor::foreign::store();
+    let column = Rect::new(0.0, 0.0, 320.0, 820.0);
+    store.note_placement(id, column);
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let last = |h: &Harness| {
+        h.client.configures.lock().expect("configures")["org.example.Terminal"]
+            .last()
+            .cloned()
+            .expect("configured")
+    };
+    let (width, height, states) = last(&h);
+    assert!(states.contains(&FULLSCREEN), "states: {states:?}");
+    assert_eq!(
+        (width, height),
+        (1280, 900),
+        "fullscreen is the output, not the column"
+    );
+
+    // The promoted tile reports its own rect every frame.
+    store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 900.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let after_tile = last(&h);
+    assert_eq!(
+        (after_tile.0, after_tile.1),
+        (width, height),
+        "the tile must not resize a fullscreen client to its column"
+    );
+
+    toplevel.unset_fullscreen();
+    h.pump();
+    store.note_placement(id, column);
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let restored = last(&h);
+    drop(h);
+    store.forget(id);
+    assert!(
+        !restored.2.contains(&FULLSCREEN),
+        "states: {:?}",
+        restored.2
+    );
+    assert_eq!(
+        (restored.0, restored.1),
+        (320, 820),
+        "leaving fullscreen gives the client its tile back"
+    );
 }

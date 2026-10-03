@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "limit-input", "action": "set_value", "value": "100"}},
+  {"perform": {"target": "run-task", "action": "activate"}},
+  {"expect": {"target": "task-result", "role": "static_text", "name_contains": "Found 25", "timeout_ms": 5000}}
+]

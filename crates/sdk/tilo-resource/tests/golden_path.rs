@@ -75,150 +75,375 @@ impl Board {
     }
 }
 
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Channel {
+    pub topic: String,
+    pub read: i64,
+}
+
+#[resource(kind = "test.channel", label = "Channel")]
+impl Channel {
+    /// Set the topic.
+    #[action]
+    pub fn set_topic(&mut self, topic: String) {
+        self.topic = topic;
+    }
+
+    /// Mark the channel read.
+    #[action(housekeeping)]
+    pub fn mark_read(&mut self, count: i64) {
+        self.read = count;
+    }
+}
+
+#[test]
+fn a_housekeeping_action_says_so_in_its_change() {
+    let housekeeping = |replica: &mut Replica<Channel>| {
+        replica.versions().last().is_some_and(|version| {
+            version
+                .context
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContext::is_housekeeping)
+        })
+    };
+    let mut channel = Replica::<Channel>::new();
+    channel.apply(Channel::MARK_READ.with(3)).unwrap();
+    assert!(housekeeping(&mut channel));
+    channel
+        .apply(Channel::SET_TOPIC.with("Launch".into()))
+        .unwrap();
+    assert!(!housekeeping(&mut channel));
+    channel
+        .apply(Invoke::group([Channel::MARK_READ.with(4)]))
+        .unwrap();
+    assert!(
+        housekeeping(&mut channel),
+        "a group of housekeeping is housekeeping"
+    );
+    channel
+        .apply(Invoke::group([
+            Channel::MARK_READ.with(5),
+            Channel::SET_TOPIC.with("Ship".into()),
+        ]))
+        .unwrap();
+    assert!(
+        !housekeeping(&mut channel),
+        "one content change makes it content"
+    );
+    assert_eq!(channel.state().unwrap().read, 5);
+}
+
 fn card_ids(replica: &Replica<Board>) -> Vec<Id> {
     replica.state().unwrap().cards.ids().cloned().collect()
 }
 
 #[test]
-fn methods_become_declared_typed_actions() {
-    let decls = Board::declarations();
-    let ids: Vec<_> = decls.iter().map(|decl| decl.id).collect();
-    assert_eq!(
-        ids,
-        [
-            "rename",
-            "add-card",
-            "advance",
-            "move-card",
-            "delete-card",
-            "clear"
-        ]
-    );
-    let rename = decls.first().unwrap();
-    assert_eq!(rename.label, "Rename the board");
-    assert_eq!(rename.params.first().unwrap().name, "title");
-    let clear = decls.last().unwrap();
-    assert!(clear.destructive);
-    assert_eq!(clear.permission, tilo_actions::PermissionRequirement::Admin);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn declared_actions_are_typed_and_apply_through_the_one_door() {
+    // phase: methods_become_declared_typed_actions
+    {
+        let decls = Board::declarations();
+        let ids: Vec<_> = decls.iter().map(|decl| decl.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "rename",
+                "add-card",
+                "advance",
+                "move-card",
+                "delete-card",
+                "clear"
+            ]
+        );
+        let rename = decls.first().unwrap();
+        assert_eq!(rename.label, "Rename the board");
+        assert_eq!(rename.params.first().unwrap().name, "title");
+        let clear = decls.last().unwrap();
+        assert!(clear.destructive);
+        assert_eq!(clear.permission, tilo_actions::PermissionRequirement::Admin);
 
-    // The published tree is what the palette, agents and scripts see.
-    let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
-    let published_ids: Vec<_> = published
-        .actions
-        .iter()
-        .map(|spec| spec.id.as_str())
-        .collect();
-    assert!(published_ids.contains(&"add-card"));
-    assert!(published_ids.contains(&tilo_resource::APPLY));
-}
-
-#[test]
-fn actions_apply_through_the_same_door_as_every_surface() {
-    let mut board = Replica::<Board>::new();
-    board.apply(Board::RENAME.with("Launch".into())).unwrap();
-    board.set_now_ms(42_000);
-    board
-        .apply(Board::ADD_CARD.with("Write docs".into()))
-        .unwrap();
-    board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
-    let state = board.state().unwrap();
-    assert_eq!(state.title, "Launch");
-    let texts: Vec<_> = state
-        .cards
-        .values()
-        .map(|card| card.text.as_str())
-        .collect();
-    assert_eq!(texts, ["Write docs", "Ship"]);
-    assert!(state.cards.values().all(|card| card.created_ms == 42_000));
-
-    let first = card_ids(&board).remove(0);
-    board.apply(Board::ADVANCE.with(first.clone())).unwrap();
-    assert_eq!(board.state().unwrap().cards[&first].stage, Stage::Doing);
-
-    // A refusal is the app answering, and changes nothing.
-    let heads = board.heads();
-    let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
-    assert!(
-        matches!(refused, Err(tilo_actions::ActionError::Refused(reason)) if reason == "no such card")
-    );
-    assert_eq!(board.heads(), heads);
-}
-
-#[test]
-fn replaying_the_log_reproduces_the_document_exactly() {
-    let mut origin = Replica::<Board>::new();
-    let mut peer = origin.fork();
-    origin.apply(Board::ADD_CARD.with("a".into())).unwrap();
-    origin.apply(Board::ADD_CARD.with("b".into())).unwrap();
-    let second = card_ids(&origin).remove(1);
-    origin.apply(Board::MOVE_CARD.with((second, 0))).unwrap();
-    for envelope in origin.log().to_vec() {
-        peer.replay(&envelope).unwrap();
+        // The published tree is what the palette, agents and scripts see.
+        let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
+        let published_ids: Vec<_> = published
+            .actions
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect();
+        assert!(published_ids.contains(&"add-card"));
+        assert!(published_ids.contains(&tilo_resource::APPLY));
     }
-    assert_eq!(peer.heads(), origin.heads());
-    assert_eq!(peer.state().unwrap(), origin.state().unwrap());
+    // phase: actions_apply_through_the_same_door_as_every_surface
+    {
+        let mut board = Replica::<Board>::new();
+        board.apply(Board::RENAME.with("Launch".into())).unwrap();
+        board.set_now_ms(42_000);
+        board
+            .apply(Board::ADD_CARD.with("Write docs".into()))
+            .unwrap();
+        board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
+        let state = board.state().unwrap();
+        assert_eq!(state.title, "Launch");
+        let texts: Vec<_> = state
+            .cards
+            .values()
+            .map(|card| card.text.as_str())
+            .collect();
+        assert_eq!(texts, ["Write docs", "Ship"]);
+        assert!(state.cards.values().all(|card| card.created_ms == 42_000));
+
+        let first = card_ids(&board).remove(0);
+        board.apply(Board::ADVANCE.with(first.clone())).unwrap();
+        assert_eq!(board.state().unwrap().cards[&first].stage, Stage::Doing);
+
+        // A refusal is the app answering, and changes nothing.
+        let heads = board.heads();
+        let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
+        assert!(
+            matches!(refused, Err(tilo_actions::ActionError::Refused(reason)) if reason == "no such card")
+        );
+        assert_eq!(board.heads(), heads);
+    }
+    // phase: a_group_is_one_change_that_replays_exactly
+    {
+        let mut first = Replica::<Board>::new();
+        let mut second = first.fork();
+        let before = first.versions().len();
+        first
+            .apply(Invoke::group([
+                Board::ADD_CARD.with("milk".into()),
+                Board::ADD_CARD.with("milk".into()),
+                Board::RENAME.with("Shopping".into()),
+            ]))
+            .unwrap();
+        let state = first.state().unwrap();
+        assert_eq!(state.cards.len(), 2, "each member mints its own id");
+        assert_eq!(state.title, "Shopping");
+        assert_eq!(first.versions().len(), before + 1, "one change");
+        for envelope in first.log().to_vec() {
+            second.replay(&envelope).unwrap();
+        }
+        assert_eq!(first.heads(), second.heads());
+        assert_eq!(second.state().unwrap(), state);
+
+        // A member that refuses refuses the whole group.
+        let missing = Id::from_raw("missing");
+        assert!(
+            first
+                .apply(Invoke::group([
+                    Board::ADD_CARD.with("eggs".into()),
+                    Board::ADVANCE.with(missing),
+                ]))
+                .is_err()
+        );
+        assert_eq!(first.state().unwrap(), state);
+    }
+    // phase: actions_on_a_collection_item_are_offered_on_the_item
+    {
+        let mut board = Replica::<Board>::new();
+        board
+            .apply(Board::ADD_CARD.with("Write docs".into()))
+            .unwrap();
+        board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
+        let state = board.state().unwrap();
+        let published = tilo_resource::publish::<Board>("board", "Board", &state);
+
+        // One child resource per card, labelled by the card's text.
+        let labels: Vec<_> = published
+            .children
+            .iter()
+            .map(|child| child.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Write docs", "Ship"]);
+        let first = state.cards.ids().next().unwrap();
+        let card = published.children.first().unwrap();
+        assert_eq!(
+            card.id.as_str(),
+            tilo_resource::items::item_resource_id::<Board>("cards", first)
+        );
+        assert_eq!(
+            tilo_resource::items::item_of_resource::<Board>(card.id.as_str()),
+            Some(("cards", first.clone()))
+        );
+
+        // Its actions are the card actions, with the card already bound: only
+        // the remaining parameters are asked for.
+        let actions: Vec<_> = card.actions.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(actions, ["advance", "move-card", "delete-card"]);
+        let advance = card.actions.first().unwrap();
+        assert!(advance.params().is_empty());
+        let move_card = card.actions.get(1).unwrap();
+        let params: Vec<_> = move_card
+            .params()
+            .iter()
+            .map(|param| param.name.as_ref())
+            .collect();
+        assert_eq!(params, ["index"]);
+        let delete = card.actions.get(2).unwrap();
+        assert_eq!(
+            delete.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm,
+            "a destructive item action still asks"
+        );
+
+        // The record keeps the id-taking action for scripts and agents, but a
+        // person picks it on the card, so it is no palette row of its own.
+        let on_record = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "advance")
+            .unwrap();
+        assert!(on_record.is_programmatic());
+        assert!(
+            !published
+                .actions
+                .iter()
+                .find(|spec| spec.id == "rename")
+                .unwrap()
+                .is_programmatic()
+        );
+    }
 }
 
 #[test]
-fn collaborators_edit_concurrently_and_converge() {
-    let mut alice = Replica::<Board>::new().as_author("alice");
-    alice.apply(Board::ADD_CARD.with("shared".into())).unwrap();
-    let mut bob = alice.fork().as_author("bob");
-    let shared = card_ids(&alice).remove(0);
+fn documents_replay_converge_version_index_and_migrate() {
+    // phase: replaying_the_log_reproduces_the_document_exactly
+    {
+        let mut origin = Replica::<Board>::new();
+        let mut peer = origin.fork();
+        origin.apply(Board::ADD_CARD.with("a".into())).unwrap();
+        origin.apply(Board::ADD_CARD.with("b".into())).unwrap();
+        let second = card_ids(&origin).remove(1);
+        origin.apply(Board::MOVE_CARD.with((second, 0))).unwrap();
+        for envelope in origin.log().to_vec() {
+            peer.replay(&envelope).unwrap();
+        }
+        assert_eq!(peer.heads(), origin.heads());
+        assert_eq!(peer.state().unwrap(), origin.state().unwrap());
+    }
+    // phase: collaborators_edit_concurrently_and_converge
+    {
+        let mut alice = Replica::<Board>::new().as_author("alice");
+        alice.apply(Board::ADD_CARD.with("shared".into())).unwrap();
+        let mut bob = alice.fork().as_author("bob");
+        let shared = card_ids(&alice).remove(0);
 
-    alice
-        .apply(Board::RENAME.with("Alice's board".into()))
-        .unwrap();
-    alice.apply(Board::ADVANCE.with(shared.clone())).unwrap();
-    bob.apply(Board::ADD_CARD.with("from bob".into())).unwrap();
-    bob.apply(Board::MOVE_CARD.with((shared.clone(), 1)))
-        .unwrap();
+        alice
+            .apply(Board::RENAME.with("Alice's board".into()))
+            .unwrap();
+        alice.apply(Board::ADVANCE.with(shared.clone())).unwrap();
+        bob.apply(Board::ADD_CARD.with("from bob".into())).unwrap();
+        bob.apply(Board::MOVE_CARD.with((shared.clone(), 1)))
+            .unwrap();
 
-    alice.sync_with(&mut bob).unwrap();
-    let a = alice.state().unwrap();
-    assert_eq!(a, bob.state().unwrap());
-    assert_eq!(a.title, "Alice's board");
-    assert_eq!(a.cards.len(), 2);
-    // Alice's field edit and Bob's move of the same card both survive.
-    assert_eq!(a.cards[&shared].stage, Stage::Doing);
-    assert_eq!(a.cards.position(&shared), Some(1));
+        alice.sync_with(&mut bob).unwrap();
+        let a = alice.state().unwrap();
+        assert_eq!(a, bob.state().unwrap());
+        assert_eq!(a.title, "Alice's board");
+        assert_eq!(a.cards.len(), 2);
+        // Alice's field edit and Bob's move of the same card both survive.
+        assert_eq!(a.cards[&shared].stage, Stage::Doing);
+        assert_eq!(a.cards.position(&shared), Some(1));
+    }
+    // phase: history_is_attributed_and_any_version_reads_back
+    {
+        let mut board = Replica::<Board>::new().as_author("alice");
+        board.apply(Board::RENAME.with("v1".into())).unwrap();
+        let v1 = board.heads();
+        board.apply(Board::RENAME.with("v2".into())).unwrap();
+        let versions = board.versions();
+        let last = versions.last().unwrap();
+        assert_eq!(last.actor, hex(b"alice"));
+        assert_eq!(last.summary().as_deref(), Some("Rename the board · Board"));
+        assert_eq!(board.state_at(&v1).unwrap().title, "v1");
+        assert_eq!(board.state().unwrap().title, "v2");
+    }
+    // phase: search_indexes_text_fields_by_default
+    {
+        let mut board = Replica::<Board>::new();
+        board.apply(Board::RENAME.with("Roadmap".into())).unwrap();
+        board
+            .apply(Board::ADD_CARD.with("Quarterly review".into()))
+            .unwrap();
+        let entries = Board::search(&board.state().unwrap());
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("Quarterly review"));
+    }
+    // phase: a_record_reads_documents_written_by_an_older_schema
+    {
+        use automerge::transaction::Transactable;
+        let mut doc = tilo_resource::Doc::new();
+        doc.put(automerge::ROOT, "title", "legacy scalar title")
+            .unwrap();
+        let board = <Board as Resource>::read(&doc).unwrap();
+        assert_eq!(board.title, "legacy scalar title");
+        assert!(board.cards.is_empty());
+    }
 }
 
 #[test]
-fn history_is_attributed_and_any_version_reads_back() {
-    let mut board = Replica::<Board>::new().as_author("alice");
-    board.apply(Board::RENAME.with("v1".into())).unwrap();
-    let v1 = board.heads();
-    board.apply(Board::RENAME.with("v2".into())).unwrap();
-    let versions = board.versions();
-    let last = versions.last().unwrap();
-    assert_eq!(last.actor, hex(b"alice"));
-    assert_eq!(last.summary().as_deref(), Some("Rename the board · Board"));
-    assert_eq!(board.state_at(&v1).unwrap().title, "v1");
-    assert_eq!(board.state().unwrap().title, "v2");
-}
+fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
+    use serde_json::json;
 
-#[test]
-fn search_indexes_text_fields_by_default() {
-    let mut board = Replica::<Board>::new();
-    board.apply(Board::RENAME.with("Roadmap".into())).unwrap();
-    board
-        .apply(Board::ADD_CARD.with("Quarterly review".into()))
-        .unwrap();
-    let entries = Board::search(&board.state().unwrap());
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].text.contains("Quarterly review"));
-}
+    let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
+    let schema = |id: &str| {
+        published
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap()
+            .params()
+            .first()
+            .unwrap()
+            .schema
+            .clone()
+            .unwrap()
+    };
+    let declared = json!([
+        "rename",
+        "add-card",
+        "advance",
+        "move-card",
+        "delete-card",
+        "clear"
+    ]);
+    let apply = schema(tilo_resource::APPLY);
+    let operations = apply["properties"]["op"]["oneOf"].as_array().unwrap();
+    assert_eq!(operations.len(), 1, "{apply}");
+    assert_eq!(operations[0]["properties"]["action"]["enum"], declared);
+    let group = schema(tilo_resource::GROUP);
+    assert_eq!(
+        group["items"]["oneOf"][0]["properties"]["action"]["enum"],
+        declared
+    );
+    assert_eq!(
+        group["items"]["oneOf"][1]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
+        tilo_resource::schema::undescribed(&apply)
+    );
 
-#[test]
-fn a_record_reads_documents_written_by_an_older_schema() {
-    use automerge::transaction::Transactable;
-    let mut doc = tilo_resource::Doc::new();
-    doc.put(automerge::ROOT, "title", "legacy scalar title")
-        .unwrap();
-    let board = <Board as Resource>::read(&doc).unwrap();
-    assert_eq!(board.title, "legacy scalar title");
-    assert!(board.cards.is_empty());
+    let invoke = |value: serde_json::Value| {
+        let mut args = serde_json::Map::new();
+        args.insert(tilo_resource::APPLY_PARAM.into(), value);
+        tilo_resource::build_action::<Board>(tilo_resource::APPLY, &args, 0)
+    };
+    assert!(invoke(json!({"op": {"action": "rename", "args": {"title": "Q3"}}})).is_ok());
+    let refused = invoke(json!({"op": {"action": "rename", "args": {"title": 3}}})).unwrap_err();
+    assert!(refused.starts_with("rename: "), "{refused}");
+    let refused = invoke(json!({"op": {"action": "rename", "args": {"name": "Q3"}}})).unwrap_err();
+    assert!(refused.contains("name"), "{refused}");
+
+    let mut args = serde_json::Map::new();
+    args.insert(
+        tilo_resource::GROUP_PARAM.into(),
+        json!([
+            {"action": "rename", "args": {"title": "Q3"}},
+            {"action": "move-card", "args": {"card": "c1"}},
+        ]),
+    );
+    let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
+    assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -227,105 +452,4 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
         out
     })
-}
-
-#[test]
-fn a_group_is_one_change_that_replays_exactly() {
-    let mut first = Replica::<Board>::new();
-    let mut second = first.fork();
-    let before = first.versions().len();
-    first
-        .apply(Invoke::group([
-            Board::ADD_CARD.with("milk".into()),
-            Board::ADD_CARD.with("milk".into()),
-            Board::RENAME.with("Shopping".into()),
-        ]))
-        .unwrap();
-    let state = first.state().unwrap();
-    assert_eq!(state.cards.len(), 2, "each member mints its own id");
-    assert_eq!(state.title, "Shopping");
-    assert_eq!(first.versions().len(), before + 1, "one change");
-    for envelope in first.log().to_vec() {
-        second.replay(&envelope).unwrap();
-    }
-    assert_eq!(first.heads(), second.heads());
-    assert_eq!(second.state().unwrap(), state);
-
-    // A member that refuses refuses the whole group.
-    let missing = Id::from_raw("missing");
-    assert!(
-        first
-            .apply(Invoke::group([
-                Board::ADD_CARD.with("eggs".into()),
-                Board::ADVANCE.with(missing),
-            ]))
-            .is_err()
-    );
-    assert_eq!(first.state().unwrap(), state);
-}
-
-#[test]
-fn actions_on_a_collection_item_are_offered_on_the_item() {
-    let mut board = Replica::<Board>::new();
-    board
-        .apply(Board::ADD_CARD.with("Write docs".into()))
-        .unwrap();
-    board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
-    let state = board.state().unwrap();
-    let published = tilo_resource::publish::<Board>("board", "Board", &state);
-
-    // One child resource per card, labelled by the card's text.
-    let labels: Vec<_> = published
-        .children
-        .iter()
-        .map(|child| child.label.as_str())
-        .collect();
-    assert_eq!(labels, ["Write docs", "Ship"]);
-    let first = state.cards.ids().next().unwrap();
-    let card = published.children.first().unwrap();
-    assert_eq!(
-        card.id.as_str(),
-        tilo_resource::items::item_resource_id::<Board>("cards", first)
-    );
-    assert_eq!(
-        tilo_resource::items::item_of_resource::<Board>(card.id.as_str()),
-        Some(("cards", first.clone()))
-    );
-
-    // Its actions are the card actions, with the card already bound: only
-    // the remaining parameters are asked for.
-    let actions: Vec<_> = card.actions.iter().map(|spec| spec.id.as_str()).collect();
-    assert_eq!(actions, ["advance", "move-card", "delete-card"]);
-    let advance = card.actions.first().unwrap();
-    assert!(advance.params().is_empty());
-    let move_card = card.actions.get(1).unwrap();
-    let params: Vec<_> = move_card
-        .params()
-        .iter()
-        .map(|param| param.name.as_ref())
-        .collect();
-    assert_eq!(params, ["index"]);
-    let delete = card.actions.get(2).unwrap();
-    assert_eq!(
-        delete.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::Confirm,
-        "a destructive item action still asks"
-    );
-
-    // The record keeps the id-taking action for scripts and agents, but a
-    // person picks it on the card, so it is no palette row of its own.
-    let on_record = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "advance")
-        .unwrap();
-    assert!(on_record.is_programmatic());
-    assert!(
-        !published
-            .actions
-            .iter()
-            .find(|spec| spec.id == "rename")
-            .unwrap()
-            .is_programmatic()
-    );
 }

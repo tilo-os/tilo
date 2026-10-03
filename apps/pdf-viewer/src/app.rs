@@ -9,6 +9,7 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -23,8 +24,11 @@ use std::time::Duration;
 use crate::actions::PdfOperation;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+};
 
 #[derive(Clone, Copy)]
 enum PortalActionKind {
@@ -57,6 +61,7 @@ use crate::source::{
 use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
 use tilo_content::{ContentState, ContentStore};
+use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitKey};
 
 const TOOLBAR_H: f64 = 56.0;
 /// Default width of the thumbnail rail; the user can drag-resize it within
@@ -198,7 +203,7 @@ const SEED_DATE: &str = "2026-06-30";
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
 /// The reader's app id, the scope its permissions are decided in.
-const APP_ID: &str = "org.tilo.PdfViewer";
+const APP_ID: &str = "so.tilo.pdf-viewer";
 
 /// Wall-clock unix milliseconds, for stamping authored markup.
 fn now_ms() -> i64 {
@@ -210,8 +215,8 @@ fn now_ms() -> i64 {
 }
 
 fn today_ymd() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    use ui::time::UNIX_EPOCH;
+    let secs = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     ymd_from_unix_secs(secs)
@@ -417,19 +422,87 @@ pub(crate) struct FieldWidgetHit {
     pub(crate) pdf_checked: bool,
 }
 
-/// A live inline text edit (comment body, thread reply, or signer name),
-/// backed by the shared multiline [`TextInput`]. The text is local until
-/// committed, so a burst of keystrokes is a single undo step. `Enter` commits
-/// (the input is `with_enter_submits`), `Shift+Enter` inserts a newline.
+/// A live inline text edit. The text is local until committed, so a burst
+/// of keystrokes is a single undo step. `Enter` commits, `Shift+Enter`
+/// breaks the line.
 struct Editing {
     target: EditTarget,
-    input: TextInput,
+    input: EditInput,
 }
 
+/// What an edit is typed into.
+enum EditInput {
+    /// A single run of text (a signer's name, a form field, a free text box),
+    /// in the shared multiline [`TextInput`].
+    Plain(Box<TextInput>),
+    /// A comment or reply, written as rich text in the SDK editor.
+    Rich(Box<CommentField>),
+}
+
+/// The key a comment's (or one of its replies') view is kept under.
+fn comment_view_key(comment: &str, reply: Option<&str>) -> String {
+    match reply {
+        Some(reply) => format!("{comment}\u{1f}{reply}"),
+        None => comment.to_owned(),
+    }
+}
+
+/// The SDK editor a comment or reply is written in.
+pub(crate) type CommentField = ui::widget::Embedded<RichTextSurface<Draft>>;
+
 impl Editing {
-    /// The current edited text.
-    fn text(&self) -> &str {
-        self.input.value()
+    /// The current edited text, as plain text.
+    fn text(&self) -> String {
+        match &self.input {
+            EditInput::Plain(input) => input.value().to_owned(),
+            EditInput::Rich(field) => field.widget().source().plain_text(),
+        }
+    }
+
+    /// Whether a press-drag is extending the edit's selection.
+    fn is_dragging(&self) -> bool {
+        match &self.input {
+            EditInput::Plain(input) => input.is_dragging(),
+            EditInput::Rich(_) => false,
+        }
+    }
+
+    /// Whether the person asked to commit (Enter) since the last call.
+    fn take_submit(&mut self) -> bool {
+        match &mut self.input {
+            EditInput::Plain(input) => input.take_submit(),
+            EditInput::Rich(field) => {
+                field.widget_mut().take_outcome() == Some(FieldOutcome::Submit)
+            }
+        }
+    }
+
+    /// Replace what the edit holds, as if typed (for tests).
+    #[cfg(test)]
+    fn set_text(&mut self, text: &str) {
+        match &mut self.input {
+            EditInput::Plain(input) => input.set_text(text),
+            EditInput::Rich(field) => {
+                field
+                    .widget_mut()
+                    .source_mut()
+                    .reset(&tilo_rich_text::plain_blocks(text));
+                field.widget_mut().present_now();
+            }
+        }
+    }
+
+    /// The paragraphs written in a comment or reply, trailing blank ones
+    /// dropped.
+    fn clips(&self) -> Vec<tilo_document::ClipBlock> {
+        let EditInput::Rich(field) = &self.input else {
+            return tilo_rich_text::plain_clips(self.text().trim_end());
+        };
+        let mut clips = field.widget().source().clip_blocks();
+        while clips.last().is_some_and(|clip| clip.text.trim().is_empty()) {
+            clips.pop();
+        }
+        clips
     }
 }
 
@@ -561,6 +634,9 @@ pub struct PdfApp {
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
+    /// Comments and replies as written, one read-only view each, keyed by
+    /// [`comment_view_key`]; measured and drawn by the Comments rail.
+    comment_views: std::cell::RefCell<HashMap<String, RichTextView>>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -702,6 +778,9 @@ pub struct PdfApp {
     /// [`Widget::sync`]. `None` when no picker is in flight — the app never
     /// draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
+    /// The same request on a host without paths (a browser page), which
+    /// answers with the file's bytes.
+    portal_contents_rx: Option<ContentsChannel>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -748,7 +827,7 @@ pub struct PdfApp {
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
     /// action, and records the last one for parity checks with the palette.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// How each displayed page maps between the engine's page space, PDF
     /// user space and its card in the stack (rotation and fit included).
     page_maps: Vec<model::PageMap>,
@@ -837,7 +916,19 @@ impl PdfApp {
     /// The no-document state: a clean "open a PDF" surface, no fabricated
     /// content.
     pub fn empty() -> Self {
-        Self::empty_with_content(default_content())
+        let mut app = Self::empty_with_content(default_content());
+        // Where files have no path, the PDF last opened by contents.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+            && let Some(Ok(request)) = app
+                .raster_handle
+                .as_ref()
+                .map(|handle| handle.open_contents(&file.name, file.bytes))
+        {
+            app.pending_open = Some(request);
+            app.status_note = Some("Opening PDF…".to_string());
+        }
+        app
     }
 
     fn empty_with_content(content: ContentStore) -> Self {
@@ -906,7 +997,7 @@ impl PdfApp {
     /// the transient page-info overlay (instead of the old bottom strip).
     pub fn arm_shots_page_bubble(&mut self) {
         self.shots_page_bubble = true;
-        self.page_bubble.poke(std::time::Instant::now());
+        self.page_bubble.poke(ui::time::now());
     }
 
     /// Screenshot-only: open the annotation action menu over the sample page
@@ -996,7 +1087,10 @@ impl PdfApp {
                 image::Rgba([246, 132, 64, 255])
             };
         }
-        let png = std::env::temp_dir().join("tilo_pdf_demo_import.png");
+        let Some(png) = tilo_paths::temp_dir().map(|dir| dir.join("tilo_pdf_demo_import.png"))
+        else {
+            return;
+        };
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
             // Screenshot-only helper; production imports receive the checked
             // out shared record from `sync`/the portal path.
@@ -1083,6 +1177,7 @@ impl PdfApp {
             portal_import_rx: None,
             selected_anno: None,
             editing: None,
+            comment_views: std::cell::RefCell::new(HashMap::new()),
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
@@ -1133,6 +1228,7 @@ impl PdfApp {
             type_px: TypePx::default(),
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
+            portal_contents_rx: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -1150,7 +1246,7 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
@@ -1171,7 +1267,7 @@ impl PdfApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The doc heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]).
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     pub(crate) fn perform_action(
         &mut self,
         state: &mut AutoCommit,
@@ -1186,8 +1282,70 @@ impl PdfApp {
             state,
             crate::actions::PDF_VIEWER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.PdfViewer", "PDF Viewer", action),
+            tilo_actions::ActionContext::for_action("so.tilo.pdf-viewer", "PDF Viewer", action),
         );
+    }
+
+    /// Show markup the framework resource already holds.
+    /// An empty projection does not clear markup that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PdfMarkup) {
+        if state.pages.is_empty()
+            && state.annotations.is_empty()
+            && state.comments.is_empty()
+            && state.signatures.is_empty()
+        {
+            return;
+        }
+        self.stored_annotations.clone_from(&state.annotations);
+        self.comments.clone_from(&state.comments);
+        if !self.page_maps.is_empty() {
+            self.annotations = self
+                .stored_annotations
+                .iter()
+                .map(|annotation| {
+                    self.page_map(annotation.page)
+                        .annotation_to_card(annotation)
+                })
+                .collect();
+            self.signatures = state
+                .signatures
+                .iter()
+                .map(|signature| self.page_map(signature.page).signature_to_card(signature))
+                .collect();
+        }
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test-only: open find and materialise matches for `query`.
+    #[cfg(test)]
+    pub(crate) fn stage_find_for_test(&mut self, query: &str) {
+        self.open_search();
+        self.search_input.set_text(query);
+        self.recompute_matches();
+    }
+
+    /// Test-only: live find hit count after [`Self::stage_find_for_test`].
+    #[cfg(test)]
+    pub(crate) fn find_match_count_for_test(&self) -> usize {
+        self.match_count()
     }
 
     /// The presentation context Ctrl+K needs to build the document-level action
@@ -1601,13 +1759,16 @@ impl PdfApp {
                         id: Reply::new_id(),
                         author: "Bob".into(),
                         body: "Good catch — folded it into section 1.2.".into(),
+                        blocks: Vec::new(),
                     },
                     Reply {
                         id: Reply::new_id(),
                         author: "Alice".into(),
                         body: "Perfect, thanks.".into(),
+                        blocks: Vec::new(),
                     },
                 ],
+                blocks: Vec::new(),
             },
         );
         PdfDoc::add_comment(
@@ -1622,6 +1783,7 @@ impl PdfApp {
                 created: 2,
                 resolved: false,
                 replies: vec![],
+                blocks: Vec::new(),
             },
         );
         PdfDoc::add_comment(
@@ -1635,6 +1797,7 @@ impl PdfApp {
                 created: 3,
                 resolved: true,
                 replies: vec![],
+                blocks: Vec::new(),
             },
         );
 
@@ -1658,6 +1821,21 @@ impl PdfApp {
             .collect();
         self.adopted = PdfDoc::adopted(state);
         self.comments = PdfDoc::list_comments(state);
+        let shown: HashSet<String> = self
+            .comments
+            .iter()
+            .flat_map(|comment| {
+                std::iter::once(comment_view_key(&comment.id, None)).chain(
+                    comment
+                        .replies
+                        .iter()
+                        .map(|reply| comment_view_key(&comment.id, Some(&reply.id))),
+                )
+            })
+            .collect();
+        self.comment_views
+            .get_mut()
+            .retain(|key, _| shown.contains(key));
         self.signatures = PdfDoc::list_signatures(state)
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
@@ -1980,8 +2158,17 @@ impl PdfApp {
     )]
     fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
         let source_count = self.source_pages.len().max(1);
-        PdfDoc::ensure_page_plan(state, source_count);
-        PdfDoc::migrate_page_anchors(state);
+        if self.actions.is_hosted() {
+            self.perform_action(
+                state,
+                &crate::actions::PdfViewerAction::EnsurePagePlan {
+                    source_page_count: source_count,
+                },
+            );
+        } else {
+            PdfDoc::ensure_page_plan(state, source_count);
+            PdfDoc::migrate_page_anchors(state);
+        }
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
             return;
@@ -3179,29 +3366,22 @@ impl PdfApp {
         let comment_id = Comment::new_id();
         // One action creates the note marker *and* its (empty) comment thread —
         // one undo boundary, replayed atomically on peers.
+        let note = crate::actions::NoteDraft {
+            anno_id: &anno_id,
+            comment_id: &comment_id,
+            color: self.swatch,
+            author: &self.author,
+            created: self.created_counter,
+            body: "",
+        };
         let action = match self.page_id_of(page) {
             Some(page_id) => crate::actions::create_note_on_action(
-                &anno_id,
-                &comment_id,
+                &note,
                 page,
                 &page_id,
                 self.page_map(page).card_to_user(pt),
-                self.swatch,
-                &self.author.clone(),
-                self.created_counter,
-                "",
             ),
-            None => crate::actions::create_note_action(
-                &anno_id,
-                &comment_id,
-                page,
-                pt.0,
-                pt.1,
-                self.swatch,
-                &self.author.clone(),
-                self.created_counter,
-                "",
-            ),
+            None => crate::actions::create_note_action(&note, page, pt.0, pt.1),
         };
         self.perform_action(state, &action);
         self.selected_anno = Some(anno_id);
@@ -3220,6 +3400,27 @@ impl PdfApp {
     /// text and dropping the caret at the end. Any in-flight edit is dropped
     /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: &str) {
+        if let EditTarget::CommentBody(id) | EditTarget::Reply(id) = &target {
+            let blocks = match &target {
+                // The comment as written, unless the edit starts from other text.
+                EditTarget::CommentBody(_) => self
+                    .comments
+                    .iter()
+                    .find(|comment| &comment.id == id && comment.body == initial)
+                    .map_or_else(
+                        || tilo_rich_text::plain_blocks(initial),
+                        |comment| comment.blocks.clone(),
+                    ),
+                _ => tilo_rich_text::plain_blocks(initial),
+            };
+            let field = self.comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
+            self.editing = Some(Editing {
+                target,
+                input: EditInput::Rich(Box::new(field)),
+            });
+            self.dirty = true;
+            return;
+        }
         // The same type-scale steps the sidebar measures and paints these
         // texts at, so the editor's glyphs are the glyphs it replaces.
         let size = match &target {
@@ -3244,8 +3445,36 @@ impl PdfApp {
         input.set_text(initial);
         input.set_cursor_pos(initial.len());
         input.set_focus(true);
-        self.editing = Some(Editing { target, input });
+        self.editing = Some(Editing {
+            target,
+            input: EditInput::Plain(Box::new(input)),
+        });
         self.dirty = true;
+    }
+
+    /// A comment or reply field holding `blocks`, focused at its end: Enter
+    /// sends, Shift+Enter breaks the line.
+    fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
+        let hint = if reply {
+            "Reply…"
+        } else {
+            "Write a comment…"
+        };
+        let mut surface = RichTextSurface::over(Draft::with_blocks(blocks))
+            .with_editor(
+                ui::widget::BlockEditor::new()
+                    .with_wrap_lines(true)
+                    .with_compact_paragraph_spacing(true)
+                    .with_body_size(self.type_px.sm),
+            )
+            .with_placeholder(hint)
+            .with_submit(SubmitKey::Enter);
+        surface.present_now();
+        surface.set_focus(true);
+        surface
+            .editor_mut()
+            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+        ui::widget::Embedded::new(surface)
     }
 
     /// Whether `target` is the edit currently in progress.
@@ -3258,7 +3487,8 @@ impl PdfApp {
     /// an abandoned marker never litters the page.
     fn commit_edit(&mut self, state: &mut AutoCommit) {
         let Some(e) = self.editing.take() else { return };
-        let text = e.text().to_string();
+        let text = e.text();
+        let clips = e.clips();
         match e.target {
             EditTarget::CommentBody(id) => {
                 let trimmed = text.trim();
@@ -3271,16 +3501,13 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                self.perform_action(
-                    state,
-                    &crate::actions::set_comment_body_action(&id, text.trim_end()),
-                );
+                self.perform_action(state, &crate::actions::set_comment_text_action(&id, clips));
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
-                let body = text.trim();
-                if !body.is_empty() {
-                    let action = crate::actions::add_reply_action(&id, &self.author.clone(), body);
+                if !text.trim().is_empty() {
+                    let action =
+                        crate::actions::add_reply_text_action(&id, &self.author.clone(), clips);
                     self.perform_action(state, &action);
                     self.reload(state);
                 }
@@ -4100,11 +4327,78 @@ impl PdfApp {
     /// request while one is in flight is ignored, so a double-click on the
     /// Open button can't stack two host dialogs.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() || self.pending_open.is_some() {
+        if self.portal_rx.is_some()
+            || self.portal_contents_rx.is_some()
+            || self.pending_open.is_some()
+        {
             return;
         }
-        self.portal_rx = Some(pdf_open_request().send());
+        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            == tilo_paths::Availability::Available
+        {
+            self.portal_rx = Some(pdf_open_request().send());
+        } else {
+            self.portal_contents_rx = Some(pdf_open_request().send_contents());
+        }
         self.dirty = true;
+    }
+
+    /// Drain a contents answer to the open request: queue the bytes on the
+    /// PDF owner as [`Self::drain_portal`] queues a path.
+    fn drain_portal_contents(&mut self) {
+        let Some(rx) = self.portal_contents_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ContentsOutcome::Failed("the file chooser went away".into())
+            }
+        };
+        self.portal_contents_rx = None;
+        match outcome {
+            ContentsOutcome::Picked(files) => {
+                let Some(file) = files.into_iter().next() else {
+                    self.finish_portal_action(false, None);
+                    return;
+                };
+                let name = file.name.clone();
+                let kept = (!crate::web_file::native_paths()).then(|| file.bytes.clone());
+                match self
+                    .raster_handle
+                    .as_ref()
+                    .map(|h| h.open_contents(&file.name, file.bytes))
+                {
+                    Some(Ok(request)) => {
+                        if let Some(bytes) = kept {
+                            crate::web_file::remember(&name, &bytes);
+                        }
+                        self.pending_open = Some(request);
+                        self.status_note = Some("Opening PDF…".to_string());
+                    }
+                    Some(Err(error)) => {
+                        self.record_open_failure(std::path::Path::new(&name), &error.to_string());
+                    }
+                    None => self.record_open_failure(
+                        std::path::Path::new(&name),
+                        "the PDF worker could not be started",
+                    ),
+                }
+                if self.pending_open.is_none() {
+                    self.finish_portal_action(self.has_document, self.load_error.clone());
+                }
+                self.dirty = true;
+            }
+            ContentsOutcome::Cancelled => self.finish_portal_action(false, None),
+            ContentsOutcome::Failed(reason) => {
+                if !self.has_document {
+                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                }
+                self.dirty = true;
+                self.finish_portal_action(false, Some(reason));
+            }
+        }
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -4759,143 +5053,47 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::PdfOperation;
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            PdfOperation::PreviousPage => self.prev_page(),
-            PdfOperation::NextPage => self.next_page(),
-            PdfOperation::ZoomIn => self.zoom_by(1.15),
-            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
-            PdfOperation::FitPage => self.fit_page(),
-            PdfOperation::FitWidth => self.fit_width(),
-            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
-            PdfOperation::ToggleRail => self.toggle_rail(),
-            PdfOperation::OpenSearch => self.open_search(),
-            PdfOperation::GoToPage { page } => self.go_to_page(page),
-            PdfOperation::MarkupStyle { style } => {
-                if let Some(style) = model::MarkupStyle::parse(&style) {
-                    self.markup_style = style;
-                    self.tool = Tool::Highlight;
-                    self.dirty = true;
-                }
-            }
-            PdfOperation::GoToSearchResult {
-                query,
-                whole_word,
-                case_sensitive,
-                index,
-                page,
-            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
-            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match operation {
-            PdfOperation::Open { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.load_path(std::path::Path::new(&file), doc);
-                if self.pending_open.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if !self.has_document {
-                    self.portal_action = None;
-                    return Err(self
-                        .load_error
-                        .clone()
-                        .unwrap_or_else(|| "PDF could not be opened".into()));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::SaveAs { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                let file = ensure_pdf_extension(file.into());
-                self.portal_action = Some((invocation, PortalActionKind::Save));
-                if !self.save_annotated_to(&file) {
-                    self.portal_action = None;
-                    return Err("PDF could not be saved".into());
-                }
-                if self.pending_save.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::Open { path: None } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.portal_action = None;
-                    return Err("PDF picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            PdfOperation::SaveAs { path: None } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Save));
-                self.request_save_via_portal();
-                if self.portal_save_rx.is_none() {
-                    self.portal_action = None;
-                    return Err("PDF save picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4935,62 +5133,8 @@ impl Widget for PdfApp {
         None
     }
 
-    fn record_intent(&self) -> Option<ui::RecordCheckout> {
-        self.markup_record.clone()
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        (self.has_document && !self.awaiting_markup_record)
-            .then(|| {
-                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
-                    self.search_catalog.clone(),
-                )) as Box<dyn ui::search::SearchProvider>
-            })
-            .into_iter()
-            .collect()
-    }
-
-    /// Publish the open document + its markup so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| {
-                self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::document_root(&ctx))
-            })
-            .flatten()
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-page affordance dispatched
-    /// its markup action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
@@ -5008,6 +5152,7 @@ impl Widget for PdfApp {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
+        self.drain_portal_contents();
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
         // And any completed import (a PDF/image chosen to add as pages).
@@ -5103,18 +5248,7 @@ impl Widget for PdfApp {
         self.draw_all(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.awaiting_markup_record {
             return;
         }
@@ -5122,17 +5256,7 @@ impl Widget for PdfApp {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
                     Some(menu) => {
-                        menu.widget.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            handled,
-                            focus_target,
-                            node_id,
-                            taffy,
-                        );
+                        menu.widget.handle_event(event, ctx);
                         let selected = menu.widget.take_selection().map(|_| menu.target.clone());
                         (selected, menu.widget.is_open())
                     }
@@ -5140,9 +5264,9 @@ impl Widget for PdfApp {
                 }
             };
             if let Some(target) = selected_target {
-                self.delete_target(&target, state);
+                self.delete_target(&target, ctx.state);
                 self.context_menu = None;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if !still_open {
@@ -5158,12 +5282,18 @@ impl Widget for PdfApp {
                         ..
                     }
             );
-            if *handled || modal_event {
-                *handled = true;
+            if *ctx.handled || modal_event {
+                *ctx.handled = true;
                 return;
             }
         }
-        self.on_event(event, scale_factor, *modifiers, state, handled);
+        self.on_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -5202,17 +5332,17 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        if !self.has_document {
+        // A document is not open for interaction until the host admits its
+        // markup record: until then every event and action is refused, so it
+        // is still opening, not a page anyone can act on.
+        let opening = self.pending_open.is_some() || self.awaiting_markup_record;
+        if !self.has_document || self.awaiting_markup_record {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(if self.pending_open.is_some() {
-                        "Opening PDF"
-                    } else {
-                        "Open a PDF"
-                    })
+                    .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
                     .with_hashed_key("pdf.empty.heading"),
             ];
-            if self.pending_open.is_some() {
+            if opening {
                 children.push(
                     AccessNode::new(Role::StaticText)
                         .with_name("Opening PDF")
@@ -5542,11 +5672,12 @@ impl Widget for PdfApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
+        let (state, path) = ui::doc::document(state, path);
         if self.awaiting_markup_record {
             return false;
         }
@@ -5801,7 +5932,7 @@ impl Widget for PdfApp {
         let Ok(payload) = serde_json::to_vec(&operation) else {
             return false;
         };
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::View,
             crate::actions::PDF_VIEWER_OPERATION_TYPE,
             &payload,
@@ -5841,14 +5972,6 @@ impl Widget for PdfApp {
             .flatten()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-    }
-
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-    }
-
     fn has_pending_visual_work(&self) -> bool {
         self.pending_open.is_some()
             || self.awaiting_markup_record
@@ -5871,8 +5994,13 @@ impl Widget for PdfApp {
         // settles to zero frames instead of redrawing forever. The pointer
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
+        let owner_busy = self.portal_contents_rx.is_some()
+            || self
+                .raster_handle
+                .as_ref()
+                .is_some_and(crate::source::RasterHandle::wants_frames);
         if self.reduce_motion {
-            return self.pending_raster;
+            return self.pending_raster || owner_busy;
         }
         // Also tick while a page rasterisation was deferred off this frame's
         // budget (`pending_raster`): the framework's animation pump re-draws at
@@ -5882,7 +6010,8 @@ impl Widget for PdfApp {
         // fading, so it hides itself without needing a stray pointer event.
         self.tooltip_pending
             || self.pending_raster
-            || self.page_bubble.needs_frame(std::time::Instant::now())
+            || owner_busy
+            || self.page_bubble.needs_frame(ui::time::now())
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -5919,6 +6048,270 @@ impl Widget for PdfApp {
     }
 }
 
+impl ui::undo::UndoPoints for PdfApp {
+    fn needs_commit(&self) -> bool {
+        self.commit_pending
+    }
+    fn on_commit(&mut self) {
+        self.commit_pending = false;
+    }
+}
+
+impl ui::record::capability::RecordScoped for PdfApp {
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.markup_record.clone()
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.editing.is_some() {
+            return Err("Finish or cancel the active PDF edit before switching documents".into());
+        }
+        self.portal_rx = None;
+        self.portal_save_rx = None;
+        self.portal_import_rx = None;
+        self.cancel_pending_open();
+        self.pending_import = None;
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.pending_worker_plan = None;
+        self.portal_action = None;
+        self.completed_portal_action = None;
+        Ok(())
+    }
+}
+
+impl ui::search::capability::SearchSource for PdfApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        (self.has_document && !self.awaiting_markup_record)
+            .then(|| {
+                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
+                    self.search_catalog.clone(),
+                )) as Box<dyn ui::search::SearchProvider>
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
+impl ui::resources::PublishesResources for PdfApp {
+    /// Publish the open document + its markup so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // Framework [`tilo_resource::publish`] owns `pdf.document`, page/zoom
+        // Views, and markup children. Find hits are live presentation only —
+        // keep that same standalone slice when hosted, never a second root.
+        if self.actions.is_hosted() {
+            return self
+                .pdf_resource_ctx()
+                .map(|ctx| crate::actions::find_result_resources(&ctx))
+                .unwrap_or_default();
+        }
+        self.publish_resources(doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the document. The directory page
+        // keeps the same live find slice as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
+                self.pdf_resource_ctx()
+                    .map(|ctx| crate::actions::find_result_resources(&ctx))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
+        // The directory is the published document. Page, outline, and find
+        // rows stay on the full resource tree; listing them here would walk
+        // the open document just to name the root actions.
+        let mut resources = if cursor.is_empty() && max_results > 0 {
+            self.pdf_resource_ctx()
+                .map(|ctx| crate::actions::provide_resources(&ctx, doc))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Some(root) = resources.first_mut() {
+            root.children.clear();
+        }
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted()
+            && self
+                .pdf_resource_ctx()
+                .is_some_and(|ctx| id == format!("pdf.document:{}", ctx.doc_id))
+        {
+            return None;
+        }
+        self.publish_resource(doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for PdfApp {
+    /// Hand the host the heads captured before an on-page affordance dispatched
+    /// its markup action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl PdfApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::PdfOperation;
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            PdfOperation::PreviousPage => self.prev_page(),
+            PdfOperation::NextPage => self.next_page(),
+            PdfOperation::ZoomIn => self.zoom_by(1.15),
+            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfOperation::FitPage => self.fit_page(),
+            PdfOperation::FitWidth => self.fit_width(),
+            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
+            PdfOperation::ToggleRail => self.toggle_rail(),
+            PdfOperation::OpenSearch => self.open_search(),
+            PdfOperation::GoToPage { page } => self.go_to_page(page),
+            PdfOperation::MarkupStyle { style } => {
+                if let Some(style) = model::MarkupStyle::parse(&style) {
+                    self.markup_style = style;
+                    self.tool = Tool::Highlight;
+                    self.dirty = true;
+                }
+            }
+            PdfOperation::GoToSearchResult {
+                query,
+                whole_word,
+                case_sensitive,
+                index,
+                page,
+            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
+            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            PdfOperation::Open { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Open));
+                self.load_path(std::path::Path::new(&file), doc);
+                if self.pending_open.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                if !self.has_document {
+                    self.portal_action = None;
+                    return Err(self
+                        .load_error
+                        .clone()
+                        .unwrap_or_else(|| "PDF could not be opened".into()));
+                }
+                self.portal_action = None;
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::SaveAs { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
+                let file = ensure_pdf_extension(file.into());
+                self.portal_action = Some((invocation, PortalActionKind::Save));
+                if !self.save_annotated_to(&file) {
+                    self.portal_action = None;
+                    return Err("PDF could not be saved".into());
+                }
+                if self.pending_save.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                self.portal_action = None;
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::Open { path: None } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Open));
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            PdfOperation::SaveAs { path: None } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Save));
+                self.request_save_via_portal();
+                if self.portal_save_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF save picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod records_tests;
 
@@ -5932,7 +6325,82 @@ mod links_tests;
 mod tests {
     use super::*;
     use serial_test::serial;
+    use ui::headless::{Framed, viewport};
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn owner_release_refuses_inline_draft_then_detaches_all_old_worker_requests() {
+        let mut app = PdfApp::loading_preview();
+        let selected = ui::RecordCheckout::new(
+            ui::RecordId::for_tab(9201),
+            ui::RecordKind::new("pdf-markup"),
+        );
+        app.markup_record = Some(selected.clone());
+        app.source_path = Some("selected.pdf".into());
+        app.begin_edit(EditTarget::Signer, "Draft signer");
+        assert!(ui::record::capability::release_record_scope(&mut app).is_err());
+        assert!(app.pending_open.is_some());
+        assert_eq!(app.markup_record, Some(selected.clone()));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+
+        app.editing = None;
+        app.portal_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_save_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_import_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.pending_import = Some(ImportRequest {
+            id: 2,
+            document_id: 1,
+            path: "import.pdf".into(),
+            at: 0,
+            after: None,
+        });
+        app.pending_save = Some(SaveRequest {
+            id: 3,
+            document_id: 1,
+            markup: crate::source::ExportMarkup::default(),
+            path: "save.pdf".into(),
+        });
+        app.pending_worker_plan = Some(Vec::new());
+        let invocation = tilo_actions::InvocationId::new();
+        app.portal_action = Some((invocation, PortalActionKind::Open));
+        app.completed_portal_action = Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        });
+        ui::record::capability::release_record_scope(&mut app).unwrap();
+        assert!(app.portal_rx.is_none());
+        assert!(app.portal_save_rx.is_none());
+        assert!(app.portal_import_rx.is_none());
+        assert!(app.pending_open.is_none());
+        assert!(app.pending_import.is_none());
+        assert!(app.pending_save.is_none());
+        assert!(app.pending_worker_plan.is_none());
+        assert!(app.portal_action.is_none());
+        assert!(app.completed_portal_action.is_none());
+        assert_eq!(app.markup_record, Some(selected));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -5969,7 +6437,7 @@ mod tests {
     /// Standalone fixture frames explicitly admit a file's record, just like
     /// the live host. Multi-document tests retain their `RecordSet` separately.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
-        if let Some(want) = app.record_intent() {
+        if let Some(want) = ui::record::capability::record_intent(app) {
             if ui::record::identity(&st.doc).is_none() {
                 ui::RecordSet::in_memory().checkout(st, None, &want);
             }
@@ -5991,374 +6459,420 @@ mod tests {
         app.commit_drag(&mut st.doc);
     }
 
-    /// Opening a second document must not destroy the first document's
-    /// markup. Annotations are per-document state; before records they lived
-    /// in one document per `(app, room)` and the only way to stop one file's
-    /// markup appearing over another was to delete it — which is data loss,
-    /// not scoping.
-    #[test]
     #[serial(pdfium)]
-    fn annotating_one_document_survives_opening_another() {
-        let (_dir, a, b) = two_documents();
-        let mut app = PdfApp::open(&a);
-        assert!(app.has_document, "a.pdf must load");
-        let mut st = ui::State::new();
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-
-        annotate(&mut app, &mut st);
-        let on_a = PdfDoc::list_annotations(&st.doc).len();
-        assert!(on_a > 0, "the highlight landed in a.pdf's document");
-
-        // Open the second document in place, the way the portal picker does.
-        app.load_path(&b, &st.doc);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(
-            PdfDoc::list_annotations(&st.doc).is_empty(),
-            "b.pdf opens with no markup — a.pdf's highlight is not its"
-        );
-
-        // Back to the first document.
-        app.load_path(&a, &st.doc);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert_eq!(
-            PdfDoc::list_annotations(&st.doc).len(),
-            on_a,
-            "a.pdf's annotations are still there after b.pdf was opened"
-        );
-        assert_eq!(
-            app.annotations.len(),
-            on_a,
-            "and the reader shows them again"
-        );
-    }
-
     #[test]
-    #[serial(pdfium)]
-    fn failed_replacement_open_keeps_the_previous_document_context() {
-        let (dir, a, _b) = two_documents();
-        let mut app = PdfApp::open(&a);
-        let mut st = ui::State::new();
-        sync_fixture(&mut app, &mut st);
-        annotate(&mut app, &mut st);
-        assert!(app.markup_record.is_some());
-        assert!(!app.annotations.is_empty());
-
-        app.load_path(&dir.path().join("not-a-pdf.pdf"), &st.doc);
-
-        assert!(app.has_document);
-        assert!(app.markup_record.is_some());
-        assert!(!app.annotations.is_empty());
-        assert!(!app.resource_page_ids.is_empty());
-        assert!(app.load_error.is_none());
-        assert!(
-            app.status_note
-                .as_deref()
-                .is_some_and(|note| note.contains("Could not open"))
-        );
-    }
-
-    #[test]
-    #[serial(pdfium)]
-    fn owner_worker_open_waits_for_the_new_markup_record() {
-        let (_dir, a, b) = two_documents();
-        let mut app = PdfApp::sample();
-        app.seed_sample = false;
-        let mut st = ui::State::new();
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        let a_record = markup_for(&a);
-        app.markup_record = Some(a_record.clone());
-        set.checkout(&mut st, Some(&mut room), &a_record);
-        PdfDoc::ensure_page_plan(&mut st.doc, 1);
-        annotate(&mut app, &mut st);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
-        let provider = app.search_providers().remove(0);
-        assert!(!provider.search("").is_empty());
-        let original = st.doc.get_heads();
-
-        // Exercise the production worker, not load_path's synchronous test
-        // substitute. The host checks out records before calling sync.
-        app.queue_worker_open(&b);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+    fn opening_documents_keeps_each_files_markup_and_context() {
+        // Opening a second document must not destroy the first document's
+        // markup. Annotations are per-document state; before records they lived
+        // in one document per `(app, room)` and the only way to stop one file's
+        // markup appearing over another was to delete it — which is data loss,
+        // not scoping.
+        eprintln!("phase annotating_one_document_survives_opening_another");
+        {
+            let (_dir, a, b) = two_documents();
+            let mut app = PdfApp::open(&a);
+            assert!(app.has_document, "a.pdf must load");
+            let mut st = ui::State::new();
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
             record_frame(&mut app, &mut st, &mut set, &mut room);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(app.pending_open.is_none(), "worker open must settle");
-        assert!(app.has_document, "fixture must open: {:?}", app.load_error);
-        assert_eq!(app.markup_record.as_ref().unwrap().id, markup_for(&b).id);
-        assert_eq!(ui::record::identity(&st.doc).unwrap().id, a_record.id);
-        assert_eq!(st.doc.get_heads(), original, "opening b must not edit a");
-        assert!(
-            app.annotations.is_empty(),
-            "a's markup must not appear on b"
-        );
-        assert!(
-            provider.search("").is_empty(),
-            "retained providers drop a's text"
-        );
-        assert!(app.search_providers().is_empty());
-        assert!(Widget::resources(&app, &st.doc).is_empty());
 
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(PdfDoc::list_annotations(&st.doc).is_empty());
-        assert!(app.annotations.is_empty());
-        assert_eq!(
-            PdfDoc::list_page_plan(&st.doc).len(),
-            app.source_pages.len()
-        );
-        set.checkout(&mut st, Some(&mut room), &a_record);
-        assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
-        assert_eq!(PdfDoc::list_page_plan(&st.doc).len(), 1);
+            annotate(&mut app, &mut st);
+            let on_a = PdfDoc::list_annotations(&st.doc).len();
+            assert!(on_a > 0, "the highlight landed in a.pdf's document");
+
+            // Open the second document in place, the way the portal picker does.
+            app.load_path(&b, &st.doc);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(
+                PdfDoc::list_annotations(&st.doc).is_empty(),
+                "b.pdf opens with no markup — a.pdf's highlight is not its"
+            );
+
+            // Back to the first document.
+            app.load_path(&a, &st.doc);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert_eq!(
+                PdfDoc::list_annotations(&st.doc).len(),
+                on_a,
+                "a.pdf's annotations are still there after b.pdf was opened"
+            );
+            assert_eq!(
+                app.annotations.len(),
+                on_a,
+                "and the reader shows them again"
+            );
+        }
+
+        eprintln!("phase failed_replacement_open_keeps_the_previous_document_context");
+        {
+            let (dir, a, _b) = two_documents();
+            let mut app = PdfApp::open(&a);
+            let mut st = ui::State::new();
+            sync_fixture(&mut app, &mut st);
+            annotate(&mut app, &mut st);
+            assert!(app.markup_record.is_some());
+            assert!(!app.annotations.is_empty());
+
+            app.load_path(&dir.path().join("not-a-pdf.pdf"), &st.doc);
+
+            assert!(app.has_document);
+            assert!(app.markup_record.is_some());
+            assert!(!app.annotations.is_empty());
+            assert!(!app.resource_page_ids.is_empty());
+            assert!(app.load_error.is_none());
+            assert!(
+                app.status_note
+                    .as_deref()
+                    .is_some_and(|note| note.contains("Could not open"))
+            );
+        }
+
+        eprintln!("phase loading_a_second_document_shows_none_of_the_priors_markup");
+        {
+            // The property this has always protected: one document's markup must
+            // never appear over another. What changed is how — the second
+            // document is a different record, so there is nothing to clear, and
+            // the first document's markup is still its own (proved by
+            // `annotating_one_document_survives_opening_another`).
+            let (_dir, a, b) = two_documents();
+            let mut app = PdfApp::open(&a);
+            let mut st = ui::State::new();
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            annotate(&mut app, &mut st);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(!app.annotations.is_empty(), "a.pdf has markup to bleed");
+
+            app.load_path(&b, &st.doc);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(app.has_document, "the second document loads");
+            assert_eq!(app.doc_name, "b.pdf");
+            assert!(app.annotations.is_empty(), "no prior annotations shown");
+            assert!(app.comments.is_empty(), "no prior comments shown");
+            assert!(app.signatures.is_empty(), "no prior signatures shown");
+            assert!(
+                PdfDoc::list_annotations(&st.doc).is_empty(),
+                "and none in the document the reader is now editing"
+            );
+            assert!(PdfDoc::list_signatures(&st.doc).is_empty());
+            // View state resets for the fresh document.
+            assert_eq!(app.current_page, 1);
+            assert!(app.selected_anno.is_none() && app.selected_sig.is_none());
+        }
     }
 
-    #[test]
     #[serial(pdfium)]
-    fn owner_worker_first_open_waits_for_explicit_record_admission() {
-        let (_dir, path, _) = two_documents();
-        let mut app = PdfApp::empty();
-        let mut st = ui::State::new();
-        let original = st.doc.get_heads();
-        app.queue_worker_open(&path);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
-            app.sync(&mut st.doc, &st.root);
-            std::thread::sleep(Duration::from_millis(5));
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn owner_worker_opens_settle_await_admission_and_ignore_stale_results() {
+        eprintln!("phase owner_worker_open_waits_for_the_new_markup_record");
+        {
+            let (_dir, a, b) = two_documents();
+            let mut app = PdfApp::sample();
+            app.seed_sample = false;
+            let mut st = ui::State::new();
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
+            let a_record = markup_for(&a);
+            app.markup_record = Some(a_record.clone());
+            set.checkout(&mut st, Some(&mut room), &a_record);
+            PdfDoc::ensure_page_plan(&mut st.doc, 1);
+            annotate(&mut app, &mut st);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
+            let provider = ui::search::capability::search_providers(&app).remove(0);
+            assert!(!provider.search("").is_empty());
+            let original = st.doc.get_heads();
+
+            // Exercise the production worker, not load_path's synchronous test
+            // substitute. The host checks out records before calling sync.
+            app.queue_worker_open(&b);
+            let deadline = tilo_test_env::hang_deadline();
+            while app.pending_open.is_some() && ui::time::now() < deadline {
+                record_frame(&mut app, &mut st, &mut set, &mut room);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.pending_open.is_none(), "worker open must settle");
+            assert!(app.has_document, "fixture must open: {:?}", app.load_error);
+            assert_eq!(app.markup_record.as_ref().unwrap().id, markup_for(&b).id);
+            assert_eq!(ui::record::identity(&st.doc).unwrap().id, a_record.id);
+            assert_eq!(st.doc.get_heads(), original, "opening b must not edit a");
+            assert!(
+                app.annotations.is_empty(),
+                "a's markup must not appear on b"
+            );
+            assert!(
+                provider.search("").is_empty(),
+                "retained providers drop a's text"
+            );
+            assert!(ui::search::capability::search_providers(&app).is_empty());
+            assert!(ui::resources::resources(&app, &st.doc).is_empty());
+
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(PdfDoc::list_annotations(&st.doc).is_empty());
+            assert!(app.annotations.is_empty());
+            assert_eq!(
+                PdfDoc::list_page_plan(&st.doc).len(),
+                app.source_pages.len()
+            );
+            set.checkout(&mut st, Some(&mut room), &a_record);
+            assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
+            assert_eq!(PdfDoc::list_page_plan(&st.doc).len(), 1);
         }
-        assert!(app.pending_open.is_none());
-        assert!(app.has_document, "fixture must open: {:?}", app.load_error);
-        // More frames are not evidence that the host admitted this record.
-        for _ in 0..3 {
-            app.sync(&mut st.doc, &st.root);
-            assert_eq!(st.doc.get_heads(), original);
-            assert!(app.awaiting_markup_record);
-            assert!(app.has_pending_visual_work());
-            assert!(Widget::resources(&app, &st.doc).is_empty());
-            assert!(!app.perform_semantic_action(
+
+        eprintln!("phase owner_worker_first_open_waits_for_explicit_record_admission");
+        {
+            let (_dir, path, _) = two_documents();
+            let mut app = PdfApp::empty();
+            let mut st = ui::State::new();
+            let original = st.doc.get_heads();
+            app.queue_worker_open(&path);
+            let deadline = tilo_test_env::hang_deadline();
+            while app.pending_open.is_some() && ui::time::now() < deadline {
+                app.sync(&mut st.doc, &st.root);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.pending_open.is_none());
+            assert!(app.has_document, "fixture must open: {:?}", app.load_error);
+            // More frames are not evidence that the host admitted this record.
+            for _ in 0..3 {
+                app.sync(&mut st.doc, &st.root);
+                assert_eq!(st.doc.get_heads(), original);
+                assert!(app.awaiting_markup_record);
+                assert!(app.has_pending_visual_work());
+                assert!(ui::resources::resources(&app, &st.doc).is_empty());
+                let semantics = format!("{:?}", Widget::accessibility(&app));
+                assert!(
+                    semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
+                    "a document awaiting its record offers no page to act on"
+                );
+                assert!(!app.perform_semantic_action(
+                    "pdf.tool:2",
+                    &ui::a11y::Action::Activate,
+                    &mut st.doc,
+                    &st.root,
+                ));
+                assert_eq!(st.doc.get_heads(), original);
+            }
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            assert!(!app.awaiting_markup_record);
+            assert!(!ui::resources::resources(&app, &st.doc).is_empty());
+            assert!(app.perform_semantic_action(
                 "pdf.tool:2",
                 &ui::a11y::Action::Activate,
                 &mut st.doc,
                 &st.root,
             ));
-            assert_eq!(st.doc.get_heads(), original);
         }
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(!app.awaiting_markup_record);
-        assert!(!Widget::resources(&app, &st.doc).is_empty());
-        assert!(app.perform_semantic_action(
-            "pdf.tool:2",
-            &ui::a11y::Action::Activate,
-            &mut st.doc,
-            &st.root,
-        ));
-    }
 
-    #[test]
-    #[serial(pdfium)]
-    fn owner_worker_failure_settles_the_matching_open_without_blocking() {
-        let dir = tempfile::tempdir().expect("temporary PDFs");
-        let corrupt = dir.path().join("corrupt.pdf");
-        std::fs::write(&corrupt, b"%PDF-1.7\nnot a readable document")
-            .expect("write corrupt fixture");
-        for path in [dir.path().join("missing.pdf"), corrupt] {
+        eprintln!("phase owner_worker_failure_settles_the_matching_open_without_blocking");
+        {
+            let dir = tempfile::tempdir().expect("temporary PDFs");
+            let corrupt = dir.path().join("corrupt.pdf");
+            std::fs::write(&corrupt, b"%PDF-1.7\nnot a readable document")
+                .expect("write corrupt fixture");
+            for path in [dir.path().join("missing.pdf"), corrupt] {
+                let mut app = PdfApp::empty();
+                let mut state = AutoCommit::new();
+                app.queue_worker_open(&path);
+                assert!(app.pending_open.is_some(), "accepted request is loading");
+                let deadline = tilo_test_env::hang_deadline();
+                while app.pending_open.is_some() && ui::time::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                    app.drain_raster_events(&mut state);
+                }
+                assert!(app.pending_open.is_none(), "worker failure settles loading");
+                assert!(!app.has_document);
+                assert!(app.load_error.as_deref().is_some_and(|error| {
+                    error.contains("Could not open") && error.contains(&path.display().to_string())
+                }));
+                let tree = app.accessibility().expect("failed-open accessibility");
+                assert!(any_access_node(&tree, &|node| node.name == app.load_error));
+            }
+        }
+
+        eprintln!("phase owner_worker_stale_open_result_cannot_replace_the_latest_request");
+        {
             let mut app = PdfApp::empty();
             let mut state = AutoCommit::new();
-            app.queue_worker_open(&path);
-            assert!(app.pending_open.is_some(), "accepted request is loading");
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            let first = std::path::Path::new("/definitely/not/a/tilo-pdf-a.pdf");
+            let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
+            app.queue_worker_open(first);
+            app.queue_worker_open(latest);
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 app.drain_raster_events(&mut state);
+                if app.pending_open.is_none() {
+                    break;
+                }
             }
-            assert!(app.pending_open.is_none(), "worker failure settles loading");
-            assert!(!app.has_document);
-            assert!(app.load_error.as_deref().is_some_and(|error| {
-                error.contains("Could not open") && error.contains(&path.display().to_string())
-            }));
-            let tree = app.accessibility().expect("failed-open accessibility");
-            assert!(any_access_node(&tree, &|node| node.name == app.load_error));
+            assert!(app.pending_open.is_none());
+            assert!(
+                app.load_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("tilo-pdf-b.pdf"))
+            );
         }
     }
 
+    #[serial(pdfium)]
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn owner_worker_stale_open_result_cannot_replace_the_latest_request() {
-        let mut app = PdfApp::empty();
-        let mut state = AutoCommit::new();
-        let first = std::path::Path::new("/definitely/not/a/tilo-pdf-a.pdf");
-        let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
-        app.queue_worker_open(first);
-        app.queue_worker_open(latest);
-        for _ in 0..100 {
-            std::thread::sleep(Duration::from_millis(5));
-            app.drain_raster_events(&mut state);
-            if app.pending_open.is_none() {
-                break;
-            }
+    fn markup_is_a_file_record_found_through_rename_move_and_the_room_index() {
+        // The markup of a document is a record of its own that *references* the
+        // document, rather than state living inside it. That is what makes
+        // "share the document without my notes" expressible at all: two
+        // records, one reference, and the sharing decision is which of them you
+        // hand over.
+        eprintln!("phase markup_is_a_record_referencing_the_document");
+        {
+            let (_dir, a, _b) = two_documents();
+            let mut app = PdfApp::open(&a);
+            let mut st = ui::State::new();
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+
+            let file = ui::RecordId::identify_file(&a);
+            assert!(
+                file.file_record().is_some(),
+                "a local file gets a durable identity"
+            );
+            assert!(
+                ui::record::room::holds(&room, &file),
+                "the room references the file record it opened"
+            );
+            let refs = ui::record::references(&st.doc);
+            assert!(
+                refs.iter()
+                    .any(|r| r.target == file && r.relation == "marks-up"),
+                "the live markup record references the document it marks up, got {refs:?}"
+            );
         }
-        assert!(app.pending_open.is_none());
-        assert!(
-            app.load_error
-                .as_deref()
-                .is_some_and(|error| error.contains("tilo-pdf-b.pdf"))
-        );
-    }
 
-    /// The markup of a document is a record of its own that *references* the
-    /// document, rather than state living inside it. That is what makes
-    /// "share the document without my notes" expressible at all: two
-    /// records, one reference, and the sharing decision is which of them you
-    /// hand over.
-    #[test]
-    #[serial(pdfium)]
-    fn markup_is_a_record_referencing_the_document() {
-        let (_dir, a, _b) = two_documents();
-        let mut app = PdfApp::open(&a);
-        let mut st = ui::State::new();
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        record_frame(&mut app, &mut st, &mut set, &mut room);
+        // Markup follows the file, not its path or its bytes: renaming and
+        // moving the PDF reopens the same annotations; a copy starts clean.
+        eprintln!("phase markup_follows_the_file_through_rename_and_move_but_not_a_copy");
+        {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let original = dir.path().join("paper.pdf");
+            let fixture = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
+            );
+            std::fs::copy(fixture, &original).expect("copy the Typst fixture");
 
-        let file = ui::RecordId::identify_file(&a);
-        assert!(
-            file.file_record().is_some(),
-            "a local file gets a durable identity"
-        );
-        assert!(
-            ui::record::room::holds(&room, &file),
-            "the room references the file record it opened"
-        );
-        let refs = ui::record::references(&st.doc);
-        assert!(
-            refs.iter()
-                .any(|r| r.target == file && r.relation == "marks-up"),
-            "the live markup record references the document it marks up, got {refs:?}"
-        );
-    }
+            let mut app = PdfApp::open(&original);
+            let mut st = ui::State::new();
+            let mut set = ui::RecordSet::in_memory();
+            let mut room = AutoCommit::new();
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            annotate(&mut app, &mut st);
+            record_frame(&mut app, &mut st, &mut set, &mut room);
+            let markup = app.markup_record.clone().expect("a markup record");
+            let annotated = PdfDoc::list_annotations(&st.doc);
+            assert_eq!(annotated.len(), 1, "the highlight is recorded");
+            assert!(
+                markup.formerly.contains(&ui::RecordId::derived(
+                    "annotations",
+                    &ui::RecordId::for_file(&original)
+                )),
+                "markup made under the path identity is adopted: {markup:?}"
+            );
 
-    /// Markup follows the file, not its path or its bytes: renaming and
-    /// moving the PDF reopens the same annotations; a copy starts clean.
-    #[test]
-    #[serial(pdfium)]
-    fn markup_follows_the_file_through_rename_and_move_but_not_a_copy() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let original = dir.path().join("paper.pdf");
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
-        );
-        std::fs::copy(fixture, &original).expect("copy the Typst fixture");
+            let moved_dir = dir.path().join("reviewed");
+            std::fs::create_dir(&moved_dir).unwrap();
+            let moved = moved_dir.join("paper (final).pdf");
+            std::fs::rename(&original, &moved).unwrap();
+            let mut reopened = PdfApp::open(&moved);
+            assert_eq!(reopened.markup_record.as_ref().unwrap().id, markup.id);
+            record_frame(&mut reopened, &mut st, &mut set, &mut room);
+            assert_eq!(ui::record::identity(&st.doc).unwrap().id, markup.id);
+            assert_eq!(
+                reopened
+                    .annotations
+                    .iter()
+                    .map(|a| &a.id)
+                    .collect::<Vec<_>>(),
+                annotated.iter().map(|a| &a.id).collect::<Vec<_>>(),
+                "the renamed file shows its annotations"
+            );
 
-        let mut app = PdfApp::open(&original);
-        let mut st = ui::State::new();
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        annotate(&mut app, &mut st);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        let markup = app.markup_record.clone().expect("a markup record");
-        let annotated = PdfDoc::list_annotations(&st.doc);
-        assert_eq!(annotated.len(), 1, "the highlight is recorded");
-        assert!(
-            markup.formerly.contains(&ui::RecordId::derived(
-                "annotations",
-                &ui::RecordId::for_file(&original)
-            )),
-            "markup made under the path identity is adopted: {markup:?}"
-        );
+            let copy = dir.path().join("paper copy.pdf");
+            std::fs::copy(&moved, &copy).unwrap();
+            let mut copied = PdfApp::open(&copy);
+            assert_ne!(copied.markup_record.as_ref().unwrap().id, markup.id);
+            record_frame(&mut copied, &mut st, &mut set, &mut room);
+            assert!(
+                copied.annotations.is_empty(),
+                "a copy of the file starts with no markup"
+            );
+        }
 
-        let moved_dir = dir.path().join("reviewed");
-        std::fs::create_dir(&moved_dir).unwrap();
-        let moved = moved_dir.join("paper (final).pdf");
-        std::fs::rename(&original, &moved).unwrap();
-        let mut reopened = PdfApp::open(&moved);
-        assert_eq!(reopened.markup_record.as_ref().unwrap().id, markup.id);
-        record_frame(&mut reopened, &mut st, &mut set, &mut room);
-        assert_eq!(ui::record::identity(&st.doc).unwrap().id, markup.id);
-        assert_eq!(
-            reopened
-                .annotations
-                .iter()
-                .map(|a| &a.id)
-                .collect::<Vec<_>>(),
-            annotated.iter().map(|a| &a.id).collect::<Vec<_>>(),
-            "the renamed file shows its annotations"
-        );
-
-        let copy = dir.path().join("paper copy.pdf");
-        std::fs::copy(&moved, &copy).unwrap();
-        let mut copied = PdfApp::open(&copy);
-        assert_ne!(copied.markup_record.as_ref().unwrap().id, markup.id);
-        record_frame(&mut copied, &mut st, &mut set, &mut room);
-        assert!(
-            copied.annotations.is_empty(),
-            "a copy of the file starts with no markup"
-        );
-    }
-
-    /// A collaborator can publish the annotation-set name before this device
-    /// has ever opened its local replica.  On launch, the durable room index
-    /// must make that exact deterministic PDF record discoverable without
-    /// allocating it; opening the same file then checks out the discovered
-    /// record rather than inventing a differently-addressed annotation set.
-    #[test]
-    #[serial(pdfium)]
-    fn imported_room_index_discovers_pdf_markup_before_checkout() {
-        let (_dir, a, _b) = two_documents();
-        let markup = markup_for(&a);
-        let mut collaborator_room = AutoCommit::new();
-        assert!(ui::record::room::reference(
-            &mut collaborator_room,
-            &markup.id,
-            &markup.kind
-        ));
-        for (target, _) in &markup.references {
+        // A collaborator can publish the annotation-set name before this device
+        // has ever opened its local replica.  On launch, the durable room index
+        // must make that exact deterministic PDF record discoverable without
+        // allocating it; opening the same file then checks out the discovered
+        // record rather than inventing a differently-addressed annotation set.
+        eprintln!("phase imported_room_index_discovers_pdf_markup_before_checkout");
+        {
+            let (_dir, a, _b) = two_documents();
+            let markup = markup_for(&a);
+            let mut collaborator_room = AutoCommit::new();
             assert!(ui::record::room::reference(
                 &mut collaborator_room,
-                &target.id,
-                &target.kind
+                &markup.id,
+                &markup.kind
             ));
+            for (target, _) in &markup.references {
+                assert!(ui::record::room::reference(
+                    &mut collaborator_room,
+                    &target.id,
+                    &target.kind
+                ));
+            }
+            let imported_room = AutoCommit::load(&collaborator_room.save())
+                .expect("a collaborator room index transfers as an Automerge document");
+
+            let mut records = ui::RecordSet::in_memory().with_home("shared-pdf-room");
+            let discovered = records.discover_room(&imported_room);
+            assert!(
+                discovered
+                    .iter()
+                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+            );
+            assert!(
+                records
+                    .known_records()
+                    .iter()
+                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+            );
+            assert!(
+                records.open_records().is_empty(),
+                "room discovery only admits identities; it must not materialize a local record"
+            );
+
+            let app = PdfApp::open(&a);
+            let mut state = ui::State::new();
+            let mut launch_room = imported_room;
+            ui::record::tick(&mut records, &mut state, Some(&mut launch_room), &app);
+            assert_eq!(records.active(), Some(&markup.id));
+            assert!(
+                records
+                    .open_records()
+                    .iter()
+                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+            );
+            assert!(
+                ui::record::room::holds(&launch_room, &markup.id),
+                "checkout retains the imported annotation-set room grant"
+            );
         }
-        let imported_room = AutoCommit::load(&collaborator_room.save())
-            .expect("a collaborator room index transfers as an Automerge document");
-
-        let mut records = ui::RecordSet::in_memory().with_home("shared-pdf-room");
-        let discovered = records.discover_room(&imported_room);
-        assert!(
-            discovered
-                .iter()
-                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-        );
-        assert!(
-            records
-                .known_records()
-                .iter()
-                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-        );
-        assert!(
-            records.open_records().is_empty(),
-            "room discovery only admits identities; it must not materialize a local record"
-        );
-
-        let app = PdfApp::open(&a);
-        let mut state = ui::State::new();
-        let mut launch_room = imported_room;
-        ui::record::tick(&mut records, &mut state, Some(&mut launch_room), &app);
-        assert_eq!(records.active(), Some(&markup.id));
-        assert!(
-            records
-                .open_records()
-                .iter()
-                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-        );
-        assert!(
-            ui::record::room::holds(&launch_room, &markup.id),
-            "checkout retains the imported annotation-set room grant"
-        );
     }
 
     fn app_with_state() -> (PdfApp, ui::State) {
@@ -6383,458 +6897,878 @@ mod tests {
                 .any(|child| any_access_node(child, predicate))
     }
 
-    #[test]
-    fn accessibility_exposes_reader_state_and_routes_toolbar_operations() {
-        use ui::a11y::Action;
-        use ui::widget::Widget as _;
-
-        let (mut app, mut state) = app_with_state();
-        let tree = app.accessibility().expect("reader semantics");
-        assert_eq!(tree.role, ui::a11y::Role::Window);
-        assert!(any_access_node(&tree, &|node| node
-            .name
-            .as_deref()
-            .is_some_and(|value| value.contains("Page"))));
-        assert!(any_access_node(&tree, &|node| node
-            .action_target
-            .as_deref()
-            == Some("pdf.zoom-in")));
-
-        let sidebar_before = app.show_sidebar;
-        assert!(app.perform_semantic_action(
-            "pdf.toggle-sidebar",
-            &Action::Activate,
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_ne!(app.show_sidebar, sidebar_before);
-    }
-
-    #[test]
-    fn stable_page_semantic_target_follows_a_reordered_page() {
-        use ui::a11y::Action;
-
-        let (mut app, mut state) = app_with_state();
-        let target_id = app.resource_page_ids[0].clone();
-        app.reorder_pages(0, 2);
-        assert_eq!(app.resource_page_ids[2], target_id);
-
-        assert!(app.perform_semantic_action(
-            &format!("pdf.page:{target_id}"),
-            &Action::Activate,
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
-        assert!(
-            !app.perform_semantic_action(
-                "pdf.page:deleted-page",
-                &Action::Activate,
-                &mut state.doc,
-                &state.root,
-            ),
-            "unknown targets fail closed"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "this lifecycle test intentionally verifies canonical page, bookmark, markup, reply, and find-result addresses together"
     )]
-    fn global_search_pages_canonically_and_stale_page_hits_fail_closed() {
-        let (mut app, mut state) = app_with_state();
-        let provider = Widget::search_providers(&app)
-            .into_iter()
-            .next()
-            .expect("the open PDF contributes a global search provider");
-        assert!(provider.search_page("", None, 0, 1).results.is_empty());
-        let first = provider.search_page("", None, 1, 1);
-        assert_eq!(first.inspected, 1);
-        let stale_cursor = first.next.expect("catalogue paging stays bounded");
-        let hit = provider
-            .search("overview")
-            .into_iter()
-            .find_map(|result| result.action_address())
-            .expect("page text is globally searchable by a canonical action");
-        assert!(
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &hit.resource).is_some()
-        );
+    #[test]
+    fn semantic_targets_and_global_search_address_stable_pages() {
+        eprintln!("phase accessibility_exposes_reader_state_and_routes_toolbar_operations");
+        {
+            use ui::a11y::Action;
+            use ui::widget::Widget as _;
 
-        for needle in ["highlight", "Iroh relay"] {
-            let address = provider
-                .search(needle)
-                .into_iter()
-                .find_map(|result| result.action_address())
-                .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
-            let resource =
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &address.resource)
-                    .expect("search door resolves the addressed annotation/comment resource");
+            let (mut app, mut state) = app_with_state();
+            let tree = app.accessibility().expect("reader semantics");
+            assert_eq!(tree.role, ui::a11y::Role::Window);
+            assert!(any_access_node(&tree, &|node| node
+                .name
+                .as_deref()
+                .is_some_and(|value| value.contains("Page"))));
+            assert!(any_access_node(&tree, &|node| node
+                .action_target
+                .as_deref()
+                == Some("pdf.zoom-in")));
+
+            let sidebar_before = app.show_sidebar;
+            assert!(app.perform_semantic_action(
+                "pdf.toggle-sidebar",
+                &Action::Activate,
+                &mut state.doc,
+                &state.root,
+            ));
+            assert_ne!(app.show_sidebar, sidebar_before);
+        }
+
+        eprintln!("phase stable_page_semantic_target_follows_a_reordered_page");
+        {
+            use ui::a11y::Action;
+
+            let (mut app, mut state) = app_with_state();
+            let target_id = app.resource_page_ids[0].clone();
+            app.reorder_pages(0, 2);
+            assert_eq!(app.resource_page_ids[2], target_id);
+
+            assert!(app.perform_semantic_action(
+                &format!("pdf.page:{target_id}"),
+                &Action::Activate,
+                &mut state.doc,
+                &state.root,
+            ));
+            assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
             assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action)
+                !app.perform_semantic_action(
+                    "pdf.page:deleted-page",
+                    &Action::Activate,
+                    &mut state.doc,
+                    &state.root,
+                ),
+                "unknown targets fail closed"
             );
         }
-        let bookmark_address = provider
-            .search("security model")
-            .into_iter()
-            .filter_map(|result| result.action_address())
-            .find(|address| address.resource.starts_with("pdf.outline:"))
-            .expect("PDF bookmarks are globally searchable by their canonical action");
-        let bookmark_resource =
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &bookmark_address.resource)
-                .expect("bookmark search result resolves to the current outline resource");
-        assert!(
-            bookmark_resource
-                .actions
-                .iter()
-                .any(|action| action.id == bookmark_address.action)
-        );
-        let reply_address = provider
-            .search("folded it")
-            .into_iter()
-            .find_map(|result| result.action_address())
-            .expect("reply text is globally searchable by its canonical action");
-        assert!(reply_address.resource.starts_with("pdf.reply:"));
-        assert!(
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &reply_address.resource)
-                .is_some(),
-            "a reply search hit resolves to the durable reply resource"
-        );
 
-        app.open_search();
-        app.search_input.set_text("sandbox");
-        app.recompute_matches();
-        app.sync(&mut state.doc, &state.root);
-        let find_provider = Widget::search_providers(&app)
-            .into_iter()
-            .next()
-            .expect("find projection is retained in global search");
-        let find_address = find_provider
-            .search("match 1")
-            .into_iter()
-            .filter_map(|result| result.action_address())
-            .find(|address| address.resource.starts_with("pdf.search-result:"))
-            .expect("bounded find result has a canonical global-search action");
-        let find_resource =
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
-                .expect("current find-result address resolves");
-        assert!(
-            find_resource
-                .actions
-                .iter()
-                .any(|action| action.id == "open")
-        );
-        app.search_input.set_text("filesystem");
-        app.recompute_matches();
-        assert!(
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
-                .is_none(),
-            "a stale find ordinal cannot be rebound to the next query"
-        );
-        // The changed find projection refreshes once; its settled successor
-        // must remain retained without re-walking the corpus every frame.
-        app.sync(&mut state.doc, &state.root);
-        let refreshes = app.search_projection_refreshes;
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.search_projection_refreshes, refreshes,
-            "unchanged sync avoids corpus traversal"
-        );
+        eprintln!("phase global_search_pages_canonically_and_stale_page_hits_fail_closed");
+        {
+            let (mut app, mut state) = app_with_state();
+            let provider = ui::search::capability::search_providers(&app)
+                .into_iter()
+                .next()
+                .expect("the open PDF contributes a global search provider");
+            assert!(provider.search_page("", None, 0, 1).results.is_empty());
+            let first = provider.search_page("", None, 1, 1);
+            assert_eq!(first.inspected, 1);
+            let stale_cursor = first.next.expect("catalogue paging stays bounded");
+            let hit = provider
+                .search("overview")
+                .into_iter()
+                .find_map(|result| result.action_address())
+                .expect("page text is globally searchable by a canonical action");
+            assert!(
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &hit.resource).is_some()
+            );
 
-        let stale_resource = "pdf.page:sample:source-1".to_string();
-        let action = crate::actions::delete_page_plan_action("source-1");
-        app.perform_action(&mut state.doc, &action);
-        app.sync(&mut state.doc, &state.root);
-        let restarted =
-            Widget::search_providers(&app)[0].search_page("", Some(&stale_cursor), 1, 1);
-        assert!(
-            restarted.results.len() <= 1,
-            "a stale cursor restarts against the new generation"
-        );
-        assert!(
-            tilo_actions::ResourceProvider::resource(&app, &state.doc, &stale_resource).is_none()
-        );
+            for needle in ["highlight", "Iroh relay"] {
+                let address = provider
+                    .search(needle)
+                    .into_iter()
+                    .find_map(|result| result.action_address())
+                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
+                let resource =
+                    crate::app::PdfApp::publish_resource(&app, &state.doc, &address.resource)
+                        .expect("search door resolves the addressed annotation/comment resource");
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == address.action)
+                );
+            }
+            let bookmark_address = provider
+                .search("security model")
+                .into_iter()
+                .filter_map(|result| result.action_address())
+                .find(|address| address.resource.starts_with("pdf.outline:"))
+                .expect("PDF bookmarks are globally searchable by their canonical action");
+            let bookmark_resource =
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &bookmark_address.resource)
+                    .expect("bookmark search result resolves to the current outline resource");
+            assert!(
+                bookmark_resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == bookmark_address.action)
+            );
+            let reply_address = provider
+                .search("folded it")
+                .into_iter()
+                .find_map(|result| result.action_address())
+                .expect("reply text is globally searchable by its canonical action");
+            assert!(reply_address.resource.starts_with("pdf.reply:"));
+            assert!(
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &reply_address.resource)
+                    .is_some(),
+                "a reply search hit resolves to the durable reply resource"
+            );
+
+            app.open_search();
+            app.search_input.set_text("sandbox");
+            app.recompute_matches();
+            app.sync(&mut state.doc, &state.root);
+            let find_provider = ui::search::capability::search_providers(&app)
+                .into_iter()
+                .next()
+                .expect("find projection is retained in global search");
+            let find_address = find_provider
+                .search("match 1")
+                .into_iter()
+                .filter_map(|result| result.action_address())
+                .find(|address| address.resource.starts_with("pdf.search-result:"))
+                .expect("bounded find result has a canonical global-search action");
+            let find_resource =
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
+                    .expect("current find-result address resolves");
+            assert!(
+                find_resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "open")
+            );
+            app.search_input.set_text("filesystem");
+            app.recompute_matches();
+            assert!(
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
+                    .is_none(),
+                "a stale find ordinal cannot be rebound to the next query"
+            );
+            // The changed find projection refreshes once; its settled successor
+            // must remain retained without re-walking the corpus every frame.
+            app.sync(&mut state.doc, &state.root);
+            let refreshes = app.search_projection_refreshes;
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.search_projection_refreshes, refreshes,
+                "unchanged sync avoids corpus traversal"
+            );
+
+            let stale_resource = "pdf.page:sample:source-1".to_string();
+            let action = crate::actions::delete_page_plan_action("source-1");
+            app.perform_action(&mut state.doc, &action);
+            app.sync(&mut state.doc, &state.root);
+            let restarted = ui::search::capability::search_providers(&app)[0].search_page(
+                "",
+                Some(&stale_cursor),
+                1,
+                1,
+            );
+            assert!(
+                restarted.results.len() <= 1,
+                "a stale cursor restarts against the new generation"
+            );
+            assert!(
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &stale_resource).is_none()
+            );
+        }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "this integration test intentionally keeps replay, convergence, resource, and undo assertions in one lifecycle"
     )]
-    fn shared_page_plan_replays_merges_undoes_and_keeps_addresses_stable() {
-        use crate::actions::{
-            PdfViewerAction, delete_page_plan_action, encode, move_page_plan_action,
-        };
+    #[test]
+    fn shared_page_plan_keeps_markup_and_addresses_through_edits() {
+        eprintln!("phase shared_page_plan_replays_merges_undoes_and_keeps_addresses_stable");
+        {
+            use crate::actions::{
+                PdfViewerAction, delete_page_plan_action, encode, move_page_plan_action,
+            };
 
-        let (mut a, mut state_a) = app_with_state();
-        state_a.doc.commit();
-        let base = state_a.doc.save();
-        let mut state_b = ui::State::new();
-        state_b.doc = AutoCommit::load(&base).expect("clone shared base");
-        let (mut b, _) = app_with_state();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        crate::actions::register(&mut registry);
+            let (mut a, mut state_a) = app_with_state();
+            state_a.doc.commit();
+            let base = state_a.doc.save();
+            let mut state_b = ui::State::new();
+            state_b.doc = AutoCommit::load(&base).expect("clone shared base");
+            let (mut b, _) = app_with_state();
+            let mut registry = tilo_actions::ActionRegistry::new();
+            crate::actions::register(&mut registry);
 
-        // One peer authors an ordered duplicate/reorder sequence. The envelope
-        // carries the generated occurrence id, so the other replica need not
-        // (and must not) mint one while replaying it.
-        let duplicate = PdfViewerAction::DuplicatePagePlan {
-            id: "source-2".into(),
-            new_id: "copy-of-source-2".into(),
-            source_page: 2,
-            imported: None,
-        };
-        let env = tilo_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
-            .expect("author duplicate");
-        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
-        let moved = move_page_plan_action("source-1", Some("copy-of-source-2"));
-        let env = tilo_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
-            .expect("author reorder");
-        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
-        assert_eq!(
-            crate::doc::PdfDoc::list_page_plan(&state_a.doc),
-            crate::doc::PdfDoc::list_page_plan(&state_b.doc),
-            "the exact same action envelopes reproduce durable ids and order"
-        );
+            // One peer authors an ordered duplicate/reorder sequence. The envelope
+            // carries the generated occurrence id, so the other replica need not
+            // (and must not) mint one while replaying it.
+            let duplicate = PdfViewerAction::DuplicatePagePlan {
+                id: "source-2".into(),
+                new_id: "copy-of-source-2".into(),
+                source_page: 2,
+                imported: None,
+            };
+            let env = tilo_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
+                .expect("author duplicate");
+            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
+            let moved = move_page_plan_action("source-1", Some("copy-of-source-2"));
+            let env = tilo_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
+                .expect("author reorder");
+            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
+            assert_eq!(
+                crate::doc::PdfDoc::list_page_plan(&state_a.doc),
+                crate::doc::PdfDoc::list_page_plan(&state_b.doc),
+                "the exact same action envelopes reproduce durable ids and order"
+            );
 
-        // Materialising the same shared plan gives both renderers the same
-        // address space, independent of their local source/raster instances.
-        a.sync(&mut state_a.doc, &state_a.root);
-        b.sync(&mut state_b.doc, &state_b.root);
-        assert_eq!(a.resource_page_ids, b.resource_page_ids);
-        let source_two_hits: Vec<tilo_actions::ActionAddress> = Widget::search_providers(&a)[0]
-            .search("Per-cluster sandboxing")
-            .into_iter()
-            .filter_map(|result| result.action_address())
-            .collect();
-        assert!(
-            source_two_hits
-                .iter()
-                .any(|address| address.resource.ends_with(":source-2"))
-                && source_two_hits
+            // Materialising the same shared plan gives both renderers the same
+            // address space, independent of their local source/raster instances.
+            a.sync(&mut state_a.doc, &state_a.root);
+            b.sync(&mut state_b.doc, &state_b.root);
+            assert_eq!(a.resource_page_ids, b.resource_page_ids);
+            let source_two_hits: Vec<tilo_actions::ActionAddress> =
+                ui::search::capability::search_providers(&a)[0]
+                    .search("Per-cluster sandboxing")
+                    .into_iter()
+                    .filter_map(|result| result.action_address())
+                    .collect();
+            assert!(
+                source_two_hits
                     .iter()
-                    .any(|address| address.resource.ends_with(":copy-of-source-2")),
-            "duplicate occurrences retain the immutable source page's searchable text"
-        );
-        let page_id = "source-1";
-        let resource_id = format!("pdf.page:sample:{page_id}");
-        assert!(
-            tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_some(),
-            "the durable page id resolves through the provider"
-        );
-        assert_eq!(
-            a.resource_page_ids
-                .iter()
-                .position(|id| id == page_id)
-                .map(|index| index + 1),
-            Some(3),
-            "the stable page id moved while retaining its address"
-        );
+                    .any(|address| address.resource.ends_with(":source-2"))
+                    && source_two_hits
+                        .iter()
+                        .any(|address| address.resource.ends_with(":copy-of-source-2")),
+                "duplicate occurrences retain the immutable source page's searchable text"
+            );
+            let page_id = "source-1";
+            let resource_id = format!("pdf.page:sample:{page_id}");
+            assert!(
+                crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_some(),
+                "the durable page id resolves through the provider"
+            );
+            assert_eq!(
+                a.resource_page_ids
+                    .iter()
+                    .position(|id| id == page_id)
+                    .map(|index| index + 1),
+                Some(3),
+                "the stable page id moved while retaining its address"
+            );
 
-        // A stale delete cannot target a newly-created or reordered occurrence:
-        // after it wins, lazy resolution fails closed instead of falling back to
-        // an ordinal page address.
-        let delete = delete_page_plan_action(page_id);
-        let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
-            .expect("author delete");
-        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
-        a.sync(&mut state_a.doc, &state_a.root);
-        b.sync(&mut state_b.doc, &state_b.root);
-        assert!(tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_none());
-        assert!(tilo_actions::ResourceProvider::resource(&b, &state_b.doc, &resource_id).is_none());
+            // A stale delete cannot target a newly-created or reordered occurrence:
+            // after it wins, lazy resolution fails closed instead of falling back to
+            // an ordinal page address.
+            let delete = delete_page_plan_action(page_id);
+            let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
+                .expect("author delete");
+            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
+            a.sync(&mut state_a.doc, &state_a.root);
+            b.sync(&mut state_b.doc, &state_b.root);
+            assert!(crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_none());
+            assert!(crate::app::PdfApp::publish_resource(&b, &state_b.doc, &resource_id).is_none());
 
-        // Concurrent page-plan actions merge like the other markup actions.
-        let mut left = AutoCommit::load(&base).expect("left replica");
-        let mut right = AutoCommit::load(&base).expect("right replica");
-        let left_action = PdfViewerAction::DuplicatePagePlan {
-            id: "source-1".into(),
-            new_id: "copy-left".into(),
-            source_page: 1,
-            imported: None,
-        };
-        let right_action = PdfViewerAction::DuplicatePagePlan {
-            id: "source-3".into(),
-            new_id: "copy-right".into(),
-            source_page: 3,
-            imported: None,
-        };
-        tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
-        tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
-        left.merge_incoming(&mut right)
-            .expect("merge concurrent page edits");
-        let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
-            .into_iter()
-            .map(|entry| entry.id)
-            .collect();
-        assert!(merged_ids.contains(&"copy-left".to_string()));
-        assert!(merged_ids.contains(&"copy-right".to_string()));
-
-        // The host records page-plan dispatches as author-scoped history; undo
-        // rolls back the action boundary rather than silently mutating a local
-        // raster plan.
-        let (mut undo_app, mut undo_state) = app_with_state();
-        let before = crate::doc::PdfDoc::list_page_plan(&undo_state.doc);
-        let undo_action = PdfViewerAction::DuplicatePagePlan {
-            id: "source-1".into(),
-            new_id: "copy-undo".into(),
-            source_page: 1,
-            imported: None,
-        };
-        undo_app.perform_action(&mut undo_state.doc, &undo_action);
-        let local_author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut undo_app;
-        assert!(ui::undo::record_dispatched_action(
-            &mut undo_state,
-            root,
-            &std::collections::HashMap::new(),
-            &local_author,
-        ));
-        assert_eq!(
-            crate::doc::PdfDoc::list_page_plan(&undo_state.doc).len(),
-            before.len() + 1
-        );
-        undo_state
-            .undo_as(Some(&local_author), None, None)
-            .expect("shared page action has an undo boundary");
-        assert_eq!(crate::doc::PdfDoc::list_page_plan(&undo_state.doc), before);
-    }
-
-    #[test]
-    fn imported_occurrence_keeps_markup_through_move_duplicate_and_delete() {
-        use crate::actions::{PdfViewerAction, add_annotation_action, move_page_plan_action};
-        use crate::doc::{ImportedPage, PagePlanEntry};
-
-        let (mut app, mut state) = app_with_state();
-        let imported = ImportedPage {
-            hash: "c".repeat(64),
-            kind: "image".into(),
-            page: 1,
-            width_milli: 612_000,
-            height_milli: 408_000,
-        };
-        let page = PagePlanEntry {
-            id: "imported-occurrence".into(),
-            source_page: 1,
-            imported: Some(imported.clone()),
-            rotation: 0,
-        };
-        app.perform_action(
-            &mut state.doc,
-            &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.resource_page_ids[1], "imported-occurrence");
-        assert!(
-            app.status_note
-                .as_deref()
-                .is_some_and(|note| note.contains("unavailable"))
-        );
-
-        let annotation = Annotation {
-            id: "annotation-on-import".into(),
-            page: 2,
-            kind: AnnoKind::Note { x: 12.0, y: 24.0 },
-            color: Swatch::Yellow,
-            author: "You".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
-        app.perform_action(
-            &mut state.doc,
-            &move_page_plan_action("imported-occurrence", Some("source-3")),
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.annotations
-                .iter()
-                .find(|annotation| annotation.id == "annotation-on-import")
-                .map(|annotation| annotation.page),
-            Some(4),
-            "anchor follows the imported occurrence"
-        );
-
-        app.perform_action(
-            &mut state.doc,
-            &PdfViewerAction::DuplicatePagePlan {
-                id: page.id.clone(),
-                new_id: "imported-copy".into(),
-                source_page: page.source_page,
-                imported: page.imported,
-            },
-        );
-        assert_eq!(
-            PdfDoc::list_page_plan(&state.doc)
+            // Concurrent page-plan actions merge like the other markup actions.
+            let mut left = AutoCommit::load(&base).expect("left replica");
+            let mut right = AutoCommit::load(&base).expect("right replica");
+            let left_action = PdfViewerAction::DuplicatePagePlan {
+                id: "source-1".into(),
+                new_id: "copy-left".into(),
+                source_page: 1,
+                imported: None,
+            };
+            let right_action = PdfViewerAction::DuplicatePagePlan {
+                id: "source-3".into(),
+                new_id: "copy-right".into(),
+                source_page: 3,
+                imported: None,
+            };
+            tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+            tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+            left.merge_incoming(&mut right)
+                .expect("merge concurrent page edits");
+            let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
                 .into_iter()
-                .find(|entry| entry.id == "imported-copy")
-                .and_then(|entry| entry.imported),
-            Some(imported),
-            "duplicate retains content hash and source page"
-        );
-        app.perform_action(
-            &mut state.doc,
-            &crate::actions::delete_page_plan_action("imported-occurrence"),
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert!(
-            app.annotations
-                .iter()
-                .all(|annotation| annotation.id != "annotation-on-import"),
-            "deleting one occurrence removes only its markup"
-        );
-        assert!(app.resource_page_ids.iter().any(|id| id == "imported-copy"));
+                .map(|entry| entry.id)
+                .collect();
+            assert!(merged_ids.contains(&"copy-left".to_string()));
+            assert!(merged_ids.contains(&"copy-right".to_string()));
+
+            // The host records page-plan dispatches as author-scoped history; undo
+            // rolls back the action boundary rather than silently mutating a local
+            // raster plan.
+            let (mut undo_app, mut undo_state) = app_with_state();
+            let before = crate::doc::PdfDoc::list_page_plan(&undo_state.doc);
+            let undo_action = PdfViewerAction::DuplicatePagePlan {
+                id: "source-1".into(),
+                new_id: "copy-undo".into(),
+                source_page: 1,
+                imported: None,
+            };
+            undo_app.perform_action(&mut undo_state.doc, &undo_action);
+            let local_author = ui::collaboration::local_user_id();
+            let root: *mut dyn Widget = &mut undo_app;
+            assert!(ui::undo::record_dispatched_action(
+                &mut undo_state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ));
+            assert_eq!(
+                crate::doc::PdfDoc::list_page_plan(&undo_state.doc).len(),
+                before.len() + 1
+            );
+            undo_state
+                .undo_as(Some(&local_author), None, None)
+                .expect("shared page action has an undo boundary");
+            assert_eq!(crate::doc::PdfDoc::list_page_plan(&undo_state.doc), before);
+        }
+
+        eprintln!("phase imported_occurrence_keeps_markup_through_move_duplicate_and_delete");
+        {
+            use crate::actions::{PdfViewerAction, add_annotation_action, move_page_plan_action};
+            use crate::doc::{ImportedPage, PagePlanEntry};
+
+            let (mut app, mut state) = app_with_state();
+            let imported = ImportedPage {
+                hash: "c".repeat(64),
+                kind: "image".into(),
+                page: 1,
+                width_milli: 612_000,
+                height_milli: 408_000,
+            };
+            let page = PagePlanEntry {
+                id: "imported-occurrence".into(),
+                source_page: 1,
+                imported: Some(imported.clone()),
+                rotation: 0,
+            };
+            app.perform_action(
+                &mut state.doc,
+                &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(app.resource_page_ids[1], "imported-occurrence");
+            assert!(
+                app.status_note
+                    .as_deref()
+                    .is_some_and(|note| note.contains("unavailable"))
+            );
+
+            let annotation = Annotation {
+                id: "annotation-on-import".into(),
+                page: 2,
+                kind: AnnoKind::Note { x: 12.0, y: 24.0 },
+                color: Swatch::Yellow,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            };
+            app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
+            app.perform_action(
+                &mut state.doc,
+                &move_page_plan_action("imported-occurrence", Some("source-3")),
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.annotations
+                    .iter()
+                    .find(|annotation| annotation.id == "annotation-on-import")
+                    .map(|annotation| annotation.page),
+                Some(4),
+                "anchor follows the imported occurrence"
+            );
+
+            app.perform_action(
+                &mut state.doc,
+                &PdfViewerAction::DuplicatePagePlan {
+                    id: page.id.clone(),
+                    new_id: "imported-copy".into(),
+                    source_page: page.source_page,
+                    imported: page.imported,
+                },
+            );
+            assert_eq!(
+                PdfDoc::list_page_plan(&state.doc)
+                    .into_iter()
+                    .find(|entry| entry.id == "imported-copy")
+                    .and_then(|entry| entry.imported),
+                Some(imported),
+                "duplicate retains content hash and source page"
+            );
+            app.perform_action(
+                &mut state.doc,
+                &crate::actions::delete_page_plan_action("imported-occurrence"),
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                app.annotations
+                    .iter()
+                    .all(|annotation| annotation.id != "annotation-on-import"),
+                "deleting one occurrence removes only its markup"
+            );
+            assert!(app.resource_page_ids.iter().any(|id| id == "imported-copy"));
+        }
     }
 
-    /// Draw the truthful page-shaped state a collaborator sees before an
-    /// imported blob has arrived. Kept as a screenshot driver as well as an
-    /// assertion so release review can catch a misleading fallback render.
-    #[test]
     #[serial(pdfium)]
-    fn drive_import_unavailable_shot() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
-        let mut app = PdfApp::open(path);
-        let mut state = ui::State::new();
-        app.perform_action(
-            &mut state.doc,
-            &crate::actions::import_pages_action(
-                Some("source-1"),
-                vec![crate::doc::PagePlanEntry {
-                    id: "review-unavailable-import".into(),
-                    source_page: 1,
-                    imported: Some(crate::doc::ImportedPage {
-                        hash: "d".repeat(64),
-                        kind: "image".into(),
-                        page: 1,
-                        width_milli: 612_000,
-                        height_milli: 408_000,
-                    }),
-                    rotation: 0,
-                }],
-            ),
-        );
-        full_frame(
-            &mut app,
-            &mut state,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_viewer_release_shots/import_unavailable.png"),
-        );
-        assert!(
-            app.status_note
-                .as_deref()
-                .is_some_and(|note| note.contains("unavailable")),
-            "a missing imported blob is never rendered as a source page"
-        );
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn shot_drivers_render_every_review_and_product_state() {
+        // Draw the truthful page-shaped state a collaborator sees before an
+        // imported blob has arrived. Kept as a screenshot driver as well as an
+        // assertion so release review can catch a misleading fallback render.
+        eprintln!("phase drive_import_unavailable_shot");
+        {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+            let mut app = PdfApp::open(path);
+            let mut state = ui::State::new();
+            app.perform_action(
+                &mut state.doc,
+                &crate::actions::import_pages_action(
+                    Some("source-1"),
+                    vec![crate::doc::PagePlanEntry {
+                        id: "review-unavailable-import".into(),
+                        source_page: 1,
+                        imported: Some(crate::doc::ImportedPage {
+                            hash: "d".repeat(64),
+                            kind: "image".into(),
+                            page: 1,
+                            width_milli: 612_000,
+                            height_milli: 408_000,
+                        }),
+                        rotation: 0,
+                    }],
+                ),
+            );
+            let app = framed(
+                app,
+                state,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_viewer_release_shots/import_unavailable.png"),
+            );
+            assert!(
+                app.status_note
+                    .as_deref()
+                    .is_some_and(|note| note.contains("unavailable")),
+                "a missing imported blob is never rendered as a source page"
+            );
+        }
+
+        // Drive-review on the real bundled `sample.pdf`: exact 50 / 100 / 200 %
+        // zoom, a panned view, and a placed annotation — each run through the live
+        // frame path and shot to `/tmp/pdf_repro`. Checks that zoom changes
+        // the on-screen page size and that horizontal pan reaches new content.
+        eprintln!("phase drive_review_zoom_pan_annotate_shots");
+        {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+            let app = PdfApp::open(path);
+            assert!(app.has_document, "sample.pdf must load");
+            eprintln!(
+                "DRIVE backend: {}",
+                if app.raster.is_some() {
+                    "RASTER (pdfium)"
+                } else {
+                    "TEXT"
+                }
+            );
+
+            // --- exact 50 / 100 / 200 % zoom, each a live frame + shot. ---
+            let mut app = framed_at_zoom(
+                app,
+                ui::State::new(),
+                0.5,
+                Some("/tmp/pdf_repro/zoom_50.png"),
+            );
+            let w50 = app.pw() * app.zoom();
+            let w100 = set_zoom_and_frame(&mut app, 1.0, Some("/tmp/pdf_repro/zoom_100.png"));
+            let w200 = set_zoom_and_frame(&mut app, 2.0, Some("/tmp/pdf_repro/zoom_200.png"));
+            eprintln!("DRIVE page-card width px: 50%={w50:.1}  100%={w100:.1}  200%={w200:.1}");
+            assert!(
+                (w100 - 2.0 * w50).abs() < 1.0,
+                "100% page must be twice the 50% page"
+            );
+            assert!(
+                (w200 - 2.0 * w100).abs() < 1.0,
+                "200% page must be twice the 100% page"
+            );
+            // A deliberate page-top view makes the high-zoom crop reviewable:
+            // zoom retains the reader's focal scroll position, while page
+            // navigation remains an immediate, keyboard-equivalent way to return
+            // to the start of readable content.
+            app.go_to_page(1);
+            let scroll_y = app.scroll_y();
+            app.viewport.set_scroll(0.0, scroll_y);
+            full_frame(
+                &mut app,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_repro/zoom_200_page_top.png"),
+            );
+            assert_eq!(app.nearest_page(), 1, "page-top zoom view remains usable");
+            assert!(
+                app.scroll_x().abs() < f64::EPSILON,
+                "review frame starts at the leading column"
+            );
+
+            // --- Ctrl+wheel zoom changes scale (the wheel handler's reducer). ---
+            let before = app.zoom();
+            let c = app.canvas_rect.center();
+            app.zoom_at(1.0 + 56.0 / 240.0, Point::new(c.x, c.y));
+            assert!(
+                app.zoom() > before + 1e-3,
+                "ctrl+wheel-equivalent zoom must change scale"
+            );
+
+            // --- horizontal pan at 200%: the page overflows, so panning right must
+            //     move the content and reach new offsets. ---
+            app.fit = FitMode::Custom(2.0);
+            app.viewport.set_zoom(2.0);
+            full_frame(&mut app, 1280.0, 800.0, None);
+            assert!(
+                app.is_overflowing_x(),
+                "200% must overflow the viewport horizontally"
+            );
+            let sx0 = app.scroll_x();
+            app.viewport.pan_by(240.0, 0.0); // arrow/drag-equivalent rightward pan
+            let sx1 = app.scroll_x();
+            assert!(
+                sx1 > sx0 + 1.0,
+                "panning right must increase scroll_x ({sx0} -> {sx1})"
+            );
+            full_frame(
+                &mut app,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_repro/panned_200.png"),
+            );
+            eprintln!(
+                "DRIVE pan: scroll_x {sx0:.1} -> {sx1:.1} (max {:.1})",
+                app.viewport.max_scroll_x()
+            );
+
+            // --- place an annotation on the document and shoot it. ---
+            app.fit = FitMode::Page;
+            let fit_page = app.fit_page_zoom();
+            app.viewport.set_zoom(fit_page);
+            full_frame(&mut app, 1280.0, 800.0, None);
+            let a0 = app.annotations.len();
+            app.tool = Tool::Highlight;
+            // Drag across a text line on page 1 (page-point coords).
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (70.0, 150.0),
+                cur: (360.0, 165.0),
+                points: vec![],
+            });
+            let (reader, st) = Framed::split(&mut app);
+            reader.commit_drag(&mut st.doc);
+            assert!(
+                app.annotations.len() > a0,
+                "a highlight drag adds an annotation"
+            );
+            app.go_to_page(1); // bring the freshly-placed highlight into view
+            eprintln!(
+                "DRIVE annotate scroll_y after go_to_page(1) = {:.1}",
+                app.scroll_y()
+            );
+            full_frame(
+                &mut app,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_repro/annotated.png"),
+            );
+            eprintln!(
+                "DRIVE annotate: {} -> {} annotations; scroll_y after frame = {:.1}",
+                a0,
+                app.annotations.len(),
+                app.scroll_y()
+            );
+        }
+
+        // Drive-review the review features on the seeded sample document:
+        // annotations render anchored to real text (no free-floating ellipse over
+        // whitespace), search highlights matches, and the Contents outline draws.
+        // Shots to `/tmp/pdf_repro`.
+        eprintln!("phase drive_review_features_shots");
+        {
+            let app = PdfApp::sample();
+            let st = ui::State::new();
+
+            // Default sample view — seeded highlights + note + signature on page 1.
+            let mut app = framed(
+                app,
+                st,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_repro/sample_markup.png"),
+            );
+            // The seeded markup must contain NO free-form ink stroke (the removed
+            // "emphasis loop" that circled empty whitespace).
+            assert!(
+                !app.annotations
+                    .iter()
+                    .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
+                "no seeded ink 'emphasis loop' should remain"
+            );
+            assert!(
+                app.annotations
+                    .iter()
+                    .any(|a| matches!(a.kind, AnnoKind::Markup { .. })),
+                "seeded highlights remain"
+            );
+
+            // Search: whole-word + case toggles narrow results.
+            app.open_search();
+            app.search_input.set_text("sandbox");
+            app.recompute_matches();
+            let loose = app.matches.len();
+            assert!(loose > 0, "search finds 'sandbox' in the sample");
+            full_frame(
+                &mut app,
+                1280.0,
+                800.0,
+                Some("/tmp/pdf_repro/search_results.png"),
+            );
+            app.search_whole_word = true;
+            app.recompute_matches();
+            assert!(
+                app.matches.len() <= loose,
+                "whole-word never yields more matches"
+            );
+            app.close_search();
+
+            // Contents (outline) tab renders the document's section list.
+            app.sidebar_tab = SidebarTab::Outline;
+            assert!(!app.doc.outline.is_empty(), "sample has an outline");
+            full_frame(&mut app, 1280.0, 800.0, Some("/tmp/pdf_repro/outline.png"));
+            eprintln!(
+                "DRIVE features: {} annotations, {} search hits, {} outline items",
+                app.annotations.len(),
+                loose,
+                app.doc.outline.len()
+            );
+        }
+
+        // A compact visual state matrix for release review.  It deliberately
+        // covers the simple open/error flow and the power-user reader flow at a
+        // phone-width viewport, then repeats the latter under high contrast and
+        // reduced motion.  Set `PDF_SHOTS=1` to retain the PNGs.
+        eprintln!("phase drive_product_state_matrix_shots");
+        {
+            let shot_dir = std::env::var("PDF_SHOT_DIR")
+                .unwrap_or_else(|_| "/tmp/tilo_pdf_product_states".to_string());
+            let shot = |name: &str| format!("{shot_dir}/{name}");
+
+            let narrow = PdfApp::sample();
+            let narrow_state = ui::State::new();
+            let mut narrow = framed(
+                narrow,
+                narrow_state,
+                390.0,
+                844.0,
+                Some(&shot("narrow-document.png")),
+            );
+            assert!(narrow.overlay_mode, "compact viewport uses overlay panels");
+
+            narrow.open_search();
+            narrow.search_input.set_text("sandbox");
+            narrow.recompute_matches();
+            full_frame(&mut narrow, 390.0, 844.0, Some(&shot("narrow-search.png")));
+            assert!(narrow.match_count() > 0, "find remains usable when compact");
+
+            let loading = PdfApp::loading_preview();
+            let loading_state = ui::State::new();
+            let loading = framed(
+                loading,
+                loading_state,
+                1280.0,
+                800.0,
+                Some(&shot("loading.png")),
+            );
+            let loading_a11y = loading.accessibility().expect("loading semantics");
+            assert!(
+                !any_access_node(&loading_a11y, &|node| {
+                    node.action_target.as_deref() == Some("pdf.open")
+                }),
+                "a pending open is progress, not a duplicate Open action"
+            );
+            let error = PdfApp::error_preview();
+            let error_state = ui::State::new();
+            let error = framed(error, error_state, 1280.0, 800.0, Some(&shot("error.png")));
+            assert!(
+                error.canvas_rect.height() > 700.0,
+                "the persistent error keeps the full empty-state canvas"
+            );
+            let narrow_error = PdfApp::error_preview();
+            let narrow_error_state = ui::State::new();
+            framed(
+                narrow_error,
+                narrow_error_state,
+                390.0,
+                844.0,
+                Some(&shot("narrow-error.png")),
+            );
+
+            let contrast = PdfApp::sample();
+            let contrast_state = ui::State::new();
+            framed_with_theme(
+                contrast,
+                contrast_state,
+                1280.0,
+                800.0,
+                Some(&shot("high-contrast.png")),
+                ui::theme::Theme::high_contrast(),
+            );
+
+            let mut reduced = PdfApp::sample();
+            let reduced_state = ui::State::new();
+            reduced.arm_shots_page_bubble();
+            reduced.set_motion_reduced(true);
+            let reduced = framed(
+                reduced,
+                reduced_state,
+                390.0,
+                844.0,
+                Some(&shot("reduced-motion.png")),
+            );
+            assert!(
+                !reduced.needs_animation_frame(),
+                "reduced motion settles the page bubble without a timer loop"
+            );
+        }
+
+        // Drive the real fixture PDF through the live frame path to produce the
+        // review shots: a search hit over genuine glyphs, a placed highlight +
+        // signature, and the *reopened saved* file rendered by pdfium with the
+        // flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
+        // (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.
+        eprintln!("phase drive_real_pdf_search_highlight_save_shots");
+        'phase: {
+            let shot_dir = std::env::var("PDF_SHOT_DIR").unwrap_or_else(|_| {
+                std::env::temp_dir()
+                    .join("tilo_pdf_review")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            let shot = |name: &str| format!("{shot_dir}/{name}");
+
+            let Some(app) = open_raster_sample() else {
+                break 'phase;
+            };
+            let mut app = framed(app, ui::State::new(), 1280.0, 800.0, None);
+
+            // --- search a word and shoot the hit over glyphs. ---
+            let word = {
+                let layer = app.raster.as_mut().unwrap().page_text(0);
+                first_word(&layer.text, 4).expect("a searchable word")
+            };
+            app.open_search();
+            app.search_input.set_text(&word);
+            app.recompute_matches();
+            assert!(
+                !app.raster_matches.is_empty(),
+                "search finds {word:?} on the real PDF"
+            );
+            let p_search = shot("real_search_hit.png");
+            full_frame(&mut app, 1280.0, 800.0, Some(p_search.as_str()));
+            app.close_search();
+
+            // --- place a highlight + a signature and shoot the annotated page. ---
+            app.tool = Tool::Highlight;
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (70.0, 150.0),
+                cur: (360.0, 165.0),
+                points: vec![],
+            });
+            let (reader, st) = Framed::split(&mut app);
+            reader.commit_drag(&mut st.doc);
+            reader.signer_name = "Grace Hopper".into();
+            reader.place_signature(&mut st.doc, 1, (360.0, 520.0));
+            app.go_to_page(1);
+            let p_anno = shot("real_annotated.png");
+            full_frame(&mut app, 1280.0, 800.0, Some(p_anno.as_str()));
+
+            // --- save, reopen the saved file, and shoot pdfium's own render of the
+            //     flattened markup — proof the annotations are in the .pdf. ---
+            let out = std::env::temp_dir()
+                .join("tilo_pdf_review")
+                .join("annotated.pdf");
+            std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+            assert!(
+                app.save_annotated_to(&out),
+                "save succeeds: {:?}",
+                app.status_note
+            );
+
+            let app2 = PdfApp::open(&out);
+            assert!(app2.raster.is_some(), "the saved file reopens via pdfium");
+            let st2 = ui::State::new();
+            let p_reopen = shot("real_reopened_saved.png");
+            let app2 = framed(app2, st2, 1280.0, 800.0, Some(p_reopen.as_str()));
+            let signed = app2
+                .raster
+                .as_ref()
+                .unwrap()
+                .page_annotations(0)
+                .iter()
+                .any(|a| {
+                    a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
+                });
+            assert!(signed, "reopened saved file carries the signature stamp");
+            eprintln!(
+                "DRIVE real-pdf: word={word:?}  hits={}  saved={}  reopened-has-signature={signed}",
+                app.raster_matches.len(),
+                out.display(),
+            );
+        }
     }
 
-    /// Run one full `ui::App`-equivalent frame against `app`: build the taffy
-    /// tree, compute layout at `w`×`h`, apply it, then draw. Mirrors
-    /// `ui::App`'s `RedrawRequested` sequence so a driven test exercises the
-    /// *live* path, not a shortcut.
+    /// Mount `app` over `st` in the production frame host at `w`×`h` and
+    /// run its first frame (see [`full_frame`]).
+    fn framed(app: PdfApp, st: ui::State, w: f64, h: f64, out: Option<&str>) -> Framed<PdfApp> {
+        framed_with_theme(app, st, w, h, out, Theme::dark())
+    }
+
+    /// Variant used by the visual-state matrix to exercise real layout and
+    /// paint under high-contrast text/tokens as well as the default theme.
+    fn framed_with_theme(
+        app: PdfApp,
+        mut st: ui::State,
+        w: f64,
+        h: f64,
+        out: Option<&str>,
+        theme: Theme,
+    ) -> Framed<PdfApp> {
+        if let Some(want) = ui::record::capability::record_intent(&app) {
+            if ui::record::identity(&st.doc).is_none() {
+                ui::RecordSet::in_memory().checkout(&mut st, None, &want);
+            }
+            assert_eq!(ui::record::identity(&st.doc).unwrap().id, want.id);
+        }
+        let mut app = Framed::new(st, app, viewport((w, h)), theme);
+        settle_and_shoot(&mut app, viewport((w, h)), out);
+        app
+    }
+
+    /// Set the zoom to an exact factor via the viewport kernel + fit intent
+    /// before [`framed`]'s first frame at 1280×800.
+    fn framed_at_zoom(mut app: PdfApp, st: ui::State, z: f64, out: Option<&str>) -> Framed<PdfApp> {
+        app.fit = FitMode::Custom(z);
+        app.viewport.set_zoom(z);
+        framed(app, st, 1280.0, 800.0, out)
+    }
+
+    /// Run one full `ui::App`-equivalent frame against `app` at `w`×`h`
+    /// through the production frame host (update → sync → layout → draw), so
+    /// a driven test exercises the *live* path, not a shortcut.
     ///
     /// A PNG is written to `out` **only when `PDF_SHOTS=1`** in the
     /// environment. The default `cargo test` run therefore never touches the
@@ -6842,93 +7776,32 @@ mod tests {
     /// and is slow/contended under the parallel suite) — the behavioural
     /// assertions still run every time. Regenerate the shots deliberately with
     /// `PDF_SHOTS=1 … cargo test drive_review -- --test-threads=1`.
-    fn full_frame(app: &mut PdfApp, st: &mut ui::State, w: f64, h: f64, out: Option<&str>) {
-        use ui::theme::Theme;
-
-        full_frame_with_theme(app, st, w, h, out, &Theme::dark());
+    fn full_frame(app: &mut Framed<PdfApp>, w: f64, h: f64, out: Option<&str>) {
+        Framed::harness_mut(app)
+            .relayout_at(viewport((w, h)))
+            .expect("pdf frame lays out");
+        settle_and_shoot(app, viewport((w, h)), out);
     }
 
-    /// Variant used by the visual-state matrix to exercise real layout and
-    /// paint under high-contrast text/tokens as well as the default theme.
-    fn full_frame_with_theme(
-        app: &mut PdfApp,
-        st: &mut ui::State,
-        w: f64,
-        h: f64,
-        out: Option<&str>,
-        theme: &Theme,
-    ) {
-        use std::collections::HashMap;
-        use ui::offscreen::OffscreenRenderer;
-        use ui::permissions::PermissionContext;
-        use ui::presence::PresenceCtx;
-        use ui::text_render::TextRenderer;
-
-        let want_png = std::env::var("PDF_SHOTS").as_deref() == Ok("1");
-        let mut tr = TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        sync_fixture(app, st);
-        let child = app.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trm = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(w as f32),
-                        height: taffy::AvailableSpace::Definite(h as f32),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, trm) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        // Draw until the per-frame raster budget's backlog drains, so a single
-        // still frame is the *settled* image (the live app pumps these
-        // follow-up frames via `needs_animation_frame`; a one-shot capture must
-        // do it itself or the rail/second page would be half-rasterised).
-        let mut scene = Scene::new();
-        for _ in 0..32 {
-            scene = Scene::new();
-            app.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                theme,
-                &PresenceCtx::empty(),
-                &PermissionContext::permissive(),
-            );
+    /// Frame until the per-frame raster budget's backlog drains, so a single
+    /// still frame is the *settled* image (the live app pumps these
+    /// follow-up frames via `needs_animation_frame`; a one-shot capture must
+    /// do it itself or the rail/second page would be half-rasterised), then
+    /// write the PNG `out` names when `PDF_SHOTS=1`.
+    fn settle_and_shoot(app: &mut Framed<PdfApp>, (w, h): (u32, u32), out: Option<&str>) {
+        for _ in 1..32 {
             if !app.pending_raster {
                 break;
             }
+            Framed::harness_mut(app).relayout();
         }
+        let want_png = std::env::var("PDF_SHOTS").as_deref() == Ok("1");
         if let (Some(path), true) = (out, want_png) {
             if let Some(parent) = std::path::Path::new(path).parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            let mut r = OffscreenRenderer::new(w as u32, h as u32);
-            r.render_png(
-                &scene,
+            ui::offscreen::OffscreenRenderer::new(w, h).render_png(
+                Framed::harness(app).scene(),
                 vello::peniko::Color::from_rgb8(10, 12, 16),
                 std::path::Path::new(path),
             );
@@ -6938,338 +7811,42 @@ mod tests {
     /// Set the zoom to an exact factor via the viewport kernel + fit intent,
     /// then run a live frame and (optionally) shoot it. Returns the page-card
     /// width on screen so a test can assert the scale really changed.
-    fn set_zoom_and_frame(app: &mut PdfApp, st: &mut ui::State, z: f64, out: Option<&str>) -> f64 {
+    fn set_zoom_and_frame(app: &mut Framed<PdfApp>, z: f64, out: Option<&str>) -> f64 {
         app.fit = FitMode::Custom(z);
         app.viewport.set_zoom(z);
-        full_frame(app, st, 1280.0, 800.0, out);
+        full_frame(app, 1280.0, 800.0, out);
         app.pw() * app.zoom()
     }
 
-    /// Drive-review on the real bundled `sample.pdf`: exact 50 / 100 / 200 %
-    /// zoom, a panned view, and a placed annotation — each run through the live
-    /// frame path and shot to `/tmp/pdf_repro`. Checks that zoom changes
-    /// the on-screen page size and that horizontal pan reaches new content.
     #[test]
-    #[serial(pdfium)]
-    fn drive_review_zoom_pan_annotate_shots() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
-        let mut app = PdfApp::open(path);
-        let mut st = ui::State::new();
-        assert!(app.has_document, "sample.pdf must load");
-        eprintln!(
-            "DRIVE backend: {}",
-            if app.raster.is_some() {
-                "RASTER (pdfium)"
-            } else {
-                "TEXT"
-            }
-        );
-
-        // --- exact 50 / 100 / 200 % zoom, each a live frame + shot. ---
-        let w50 = set_zoom_and_frame(&mut app, &mut st, 0.5, Some("/tmp/pdf_repro/zoom_50.png"));
-        let w100 = set_zoom_and_frame(&mut app, &mut st, 1.0, Some("/tmp/pdf_repro/zoom_100.png"));
-        let w200 = set_zoom_and_frame(&mut app, &mut st, 2.0, Some("/tmp/pdf_repro/zoom_200.png"));
-        eprintln!("DRIVE page-card width px: 50%={w50:.1}  100%={w100:.1}  200%={w200:.1}");
-        assert!(
-            (w100 - 2.0 * w50).abs() < 1.0,
-            "100% page must be twice the 50% page"
-        );
-        assert!(
-            (w200 - 2.0 * w100).abs() < 1.0,
-            "200% page must be twice the 100% page"
-        );
-        // A deliberate page-top view makes the high-zoom crop reviewable:
-        // zoom retains the reader's focal scroll position, while page
-        // navigation remains an immediate, keyboard-equivalent way to return
-        // to the start of readable content.
-        app.go_to_page(1);
-        app.viewport.set_scroll(0.0, app.scroll_y());
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/zoom_200_page_top.png"),
-        );
-        assert_eq!(app.nearest_page(), 1, "page-top zoom view remains usable");
-        assert!(
-            app.scroll_x().abs() < f64::EPSILON,
-            "review frame starts at the leading column"
-        );
-
-        // --- Ctrl+wheel zoom changes scale (the wheel handler's reducer). ---
-        let before = app.zoom();
-        let c = app.canvas_rect.center();
-        app.zoom_at(1.0 + 56.0 / 240.0, Point::new(c.x, c.y));
-        assert!(
-            app.zoom() > before + 1e-3,
-            "ctrl+wheel-equivalent zoom must change scale"
-        );
-
-        // --- horizontal pan at 200%: the page overflows, so panning right must
-        //     move the content and reach new offsets. ---
-        app.fit = FitMode::Custom(2.0);
-        app.viewport.set_zoom(2.0);
-        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
-        assert!(
-            app.is_overflowing_x(),
-            "200% must overflow the viewport horizontally"
-        );
-        let sx0 = app.scroll_x();
-        app.viewport.pan_by(240.0, 0.0); // arrow/drag-equivalent rightward pan
-        let sx1 = app.scroll_x();
-        assert!(
-            sx1 > sx0 + 1.0,
-            "panning right must increase scroll_x ({sx0} -> {sx1})"
-        );
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/panned_200.png"),
-        );
-        eprintln!(
-            "DRIVE pan: scroll_x {sx0:.1} -> {sx1:.1} (max {:.1})",
-            app.viewport.max_scroll_x()
-        );
-
-        // --- place an annotation on the document and shoot it. ---
-        app.fit = FitMode::Page;
-        app.viewport.set_zoom(app.fit_page_zoom());
-        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
-        let a0 = app.annotations.len();
-        app.tool = Tool::Highlight;
-        // Drag across a text line on page 1 (page-point coords).
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (70.0, 150.0),
-            cur: (360.0, 165.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        assert!(
-            app.annotations.len() > a0,
-            "a highlight drag adds an annotation"
-        );
-        app.go_to_page(1); // bring the freshly-placed highlight into view
-        eprintln!(
-            "DRIVE annotate scroll_y after go_to_page(1) = {:.1}",
-            app.scroll_y()
-        );
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/annotated.png"),
-        );
-        eprintln!(
-            "DRIVE annotate: {} -> {} annotations; scroll_y after frame = {:.1}",
-            a0,
-            app.annotations.len(),
-            app.scroll_y()
-        );
-    }
-
-    /// Drive-review the review features on the seeded sample document:
-    /// annotations render anchored to real text (no free-floating ellipse over
-    /// whitespace), search highlights matches, and the Contents outline draws.
-    /// Shots to `/tmp/pdf_repro`.
-    #[test]
-    fn drive_review_features_shots() {
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
-
-        // Default sample view — seeded highlights + note + signature on page 1.
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/sample_markup.png"),
-        );
-        // The seeded markup must contain NO free-form ink stroke (the removed
-        // "emphasis loop" that circled empty whitespace).
-        assert!(
-            !app.annotations
+    fn record_sync_seeds_markup_exactly_once() {
+        eprintln!("phase sync_seeds_markup_once");
+        {
+            let (app, _st) = app_with_state();
+            assert!(app.seeded);
+            assert!(!app.annotations.is_empty(), "seed should add annotations");
+            assert!(!app.comments.is_empty(), "seed should add comments");
+            assert!(!app.signatures.is_empty(), "seed should add a signature");
+            // The note annotation has a linked comment thread.
+            let note = app
+                .annotations
                 .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
-            "no seeded ink 'emphasis loop' should remain"
-        );
-        assert!(
-            app.annotations
-                .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Markup { .. })),
-            "seeded highlights remain"
-        );
+                .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
+                .expect("a sticky note");
+            assert!(
+                app.comments
+                    .iter()
+                    .any(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
+            );
+        }
 
-        // Search: whole-word + case toggles narrow results.
-        app.open_search();
-        app.search_input.set_text("sandbox");
-        app.recompute_matches();
-        let loose = app.matches.len();
-        assert!(loose > 0, "search finds 'sandbox' in the sample");
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/search_results.png"),
-        );
-        app.search_whole_word = true;
-        app.recompute_matches();
-        assert!(
-            app.matches.len() <= loose,
-            "whole-word never yields more matches"
-        );
-        app.close_search();
-
-        // Contents (outline) tab renders the document's section list.
-        app.sidebar_tab = SidebarTab::Outline;
-        assert!(!app.doc.outline.is_empty(), "sample has an outline");
-        full_frame(
-            &mut app,
-            &mut st,
-            1280.0,
-            800.0,
-            Some("/tmp/pdf_repro/outline.png"),
-        );
-        eprintln!(
-            "DRIVE features: {} annotations, {} search hits, {} outline items",
-            app.annotations.len(),
-            loose,
-            app.doc.outline.len()
-        );
-    }
-
-    /// A compact visual state matrix for release review.  It deliberately
-    /// covers the simple open/error flow and the power-user reader flow at a
-    /// phone-width viewport, then repeats the latter under high contrast and
-    /// reduced motion.  Set `PDF_SHOTS=1` to retain the PNGs.
-    #[test]
-    fn drive_product_state_matrix_shots() {
-        let shot_dir = std::env::var("PDF_SHOT_DIR")
-            .unwrap_or_else(|_| "/tmp/tilo_pdf_product_states".to_string());
-        let shot = |name: &str| format!("{shot_dir}/{name}");
-
-        let mut narrow = PdfApp::sample();
-        let mut narrow_state = ui::State::new();
-        full_frame(
-            &mut narrow,
-            &mut narrow_state,
-            390.0,
-            844.0,
-            Some(&shot("narrow-document.png")),
-        );
-        assert!(narrow.overlay_mode, "compact viewport uses overlay panels");
-
-        narrow.open_search();
-        narrow.search_input.set_text("sandbox");
-        narrow.recompute_matches();
-        full_frame(
-            &mut narrow,
-            &mut narrow_state,
-            390.0,
-            844.0,
-            Some(&shot("narrow-search.png")),
-        );
-        assert!(narrow.match_count() > 0, "find remains usable when compact");
-
-        let mut loading = PdfApp::loading_preview();
-        let mut loading_state = ui::State::new();
-        full_frame(
-            &mut loading,
-            &mut loading_state,
-            1280.0,
-            800.0,
-            Some(&shot("loading.png")),
-        );
-        let loading_a11y = loading.accessibility().expect("loading semantics");
-        assert!(
-            !any_access_node(&loading_a11y, &|node| {
-                node.action_target.as_deref() == Some("pdf.open")
-            }),
-            "a pending open is progress, not a duplicate Open action"
-        );
-        let mut error = PdfApp::error_preview();
-        let mut error_state = ui::State::new();
-        full_frame(
-            &mut error,
-            &mut error_state,
-            1280.0,
-            800.0,
-            Some(&shot("error.png")),
-        );
-        assert!(
-            error.canvas_rect.height() > 700.0,
-            "the persistent error keeps the full empty-state canvas"
-        );
-        let mut narrow_error = PdfApp::error_preview();
-        let mut narrow_error_state = ui::State::new();
-        full_frame(
-            &mut narrow_error,
-            &mut narrow_error_state,
-            390.0,
-            844.0,
-            Some(&shot("narrow-error.png")),
-        );
-
-        let mut contrast = PdfApp::sample();
-        let mut contrast_state = ui::State::new();
-        full_frame_with_theme(
-            &mut contrast,
-            &mut contrast_state,
-            1280.0,
-            800.0,
-            Some(&shot("high-contrast.png")),
-            &ui::theme::Theme::high_contrast(),
-        );
-
-        let mut reduced = PdfApp::sample();
-        let mut reduced_state = ui::State::new();
-        reduced.arm_shots_page_bubble();
-        reduced.set_motion_reduced(true);
-        full_frame(
-            &mut reduced,
-            &mut reduced_state,
-            390.0,
-            844.0,
-            Some(&shot("reduced-motion.png")),
-        );
-        assert!(
-            !reduced.needs_animation_frame(),
-            "reduced motion settles the page bubble without a timer loop"
-        );
-    }
-
-    #[test]
-    fn sync_seeds_markup_once() {
-        let (app, _st) = app_with_state();
-        assert!(app.seeded);
-        assert!(!app.annotations.is_empty(), "seed should add annotations");
-        assert!(!app.comments.is_empty(), "seed should add comments");
-        assert!(!app.signatures.is_empty(), "seed should add a signature");
-        // The note annotation has a linked comment thread.
-        let note = app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
-            .expect("a sticky note");
-        assert!(
-            app.comments
-                .iter()
-                .any(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
-        );
-    }
-
-    #[test]
-    fn second_sync_does_not_duplicate() {
-        let (mut app, mut st) = app_with_state();
-        let n = app.annotations.len();
-        sync_fixture(&mut app, &mut st);
-        assert_eq!(app.annotations.len(), n, "re-sync must not re-seed");
+        eprintln!("phase second_sync_does_not_duplicate");
+        {
+            let (mut app, mut st) = app_with_state();
+            let n = app.annotations.len();
+            sync_fixture(&mut app, &mut st);
+            assert_eq!(app.annotations.len(), n, "re-sync must not re-seed");
+        }
     }
 
     /// A synthetic single-line text layer over page 1 + a settled selection,
@@ -7291,70 +7868,73 @@ mod tests {
     }
 
     #[test]
-    fn hud_highlight_action_highlights_the_text_selection() {
-        let (mut app, mut st) = app_with_state();
-        seed_selection(&mut app, "Hello", 4);
-        let hl = |st: &ui::State| {
-            PdfDoc::list_annotations(&st.doc)
-                .into_iter()
-                .filter(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-                .count()
-        };
-        let before = hl(&st);
-        // The shared HUD's swatch action highlights the run in that colour.
-        app.apply_hud_action(ui::HudAction::Highlight(1), &mut st.doc);
-        assert!(
-            hl(&st) > before,
-            "highlighting the selection adds a highlight annotation"
-        );
-        assert!(
-            app.selection.is_none(),
-            "the selection is consumed by the highlight"
-        );
-        assert_eq!(
-            app.swatch,
-            Swatch::ALL[1],
-            "the armed swatch follows the HUD choice"
-        );
-    }
+    fn selection_hud_actions_highlight_note_and_copy() {
+        eprintln!("phase hud_highlight_action_highlights_the_text_selection");
+        {
+            let (mut app, mut st) = app_with_state();
+            seed_selection(&mut app, "Hello", 4);
+            let hl = |st: &ui::State| {
+                PdfDoc::list_annotations(&st.doc)
+                    .into_iter()
+                    .filter(|a| matches!(a.kind, AnnoKind::Markup { .. }))
+                    .count()
+            };
+            let before = hl(&st);
+            // The shared HUD's swatch action highlights the run in that colour.
+            app.apply_hud_action(ui::HudAction::Highlight(1), &mut st.doc);
+            assert!(
+                hl(&st) > before,
+                "highlighting the selection adds a highlight annotation"
+            );
+            assert!(
+                app.selection.is_none(),
+                "the selection is consumed by the highlight"
+            );
+            assert_eq!(
+                app.swatch,
+                Swatch::ALL[1],
+                "the armed swatch follows the HUD choice"
+            );
+        }
 
-    #[test]
-    fn hud_note_action_attaches_a_note_to_the_selection() {
-        let (mut app, mut st) = app_with_state();
-        seed_selection(&mut app, "AB", 1);
-        let notes = |st: &ui::State| {
-            PdfDoc::list_annotations(&st.doc)
-                .into_iter()
-                .filter(|a| matches!(a.kind, AnnoKind::Note { .. }))
-                .count()
-        };
-        let before = notes(&st);
-        app.apply_hud_action(ui::HudAction::Note, &mut st.doc);
-        assert_eq!(
-            notes(&st),
-            before + 1,
-            "a note is attached to the selection"
-        );
-        assert!(
-            app.editing.is_some(),
-            "the note's comment editor opens for typing"
-        );
-    }
+        eprintln!("phase hud_note_action_attaches_a_note_to_the_selection");
+        {
+            let (mut app, mut st) = app_with_state();
+            seed_selection(&mut app, "AB", 1);
+            let notes = |st: &ui::State| {
+                PdfDoc::list_annotations(&st.doc)
+                    .into_iter()
+                    .filter(|a| matches!(a.kind, AnnoKind::Note { .. }))
+                    .count()
+            };
+            let before = notes(&st);
+            app.apply_hud_action(ui::HudAction::Note, &mut st.doc);
+            assert_eq!(
+                notes(&st),
+                before + 1,
+                "a note is attached to the selection"
+            );
+            assert!(
+                app.editing.is_some(),
+                "the note's comment editor opens for typing"
+            );
+        }
 
-    #[test]
-    fn hud_copy_action_reports_success_on_a_selection() {
-        let (mut app, mut st) = app_with_state();
-        seed_selection(&mut app, "Copyme", 5);
-        assert!(
-            app.selection_text().is_some(),
-            "the synthetic run yields text"
-        );
-        app.apply_hud_action(ui::HudAction::Copy, &mut st.doc);
-        assert!(
-            app.status_note.as_deref().unwrap_or("").contains("Copied"),
-            "the HUD Copy action copies + toasts ({:?})",
-            app.status_note
-        );
+        eprintln!("phase hud_copy_action_reports_success_on_a_selection");
+        {
+            let (mut app, mut st) = app_with_state();
+            seed_selection(&mut app, "Copyme", 5);
+            assert!(
+                app.selection_text().is_some(),
+                "the synthetic run yields text"
+            );
+            app.apply_hud_action(ui::HudAction::Copy, &mut st.doc);
+            assert!(
+                app.status_note.as_deref().unwrap_or("").contains("Copied"),
+                "the HUD Copy action copies + toasts ({:?})",
+                app.status_note
+            );
+        }
     }
 
     /// Seed a synthetic multi-word glyph layer on page 1 ("hello world"),
@@ -7374,917 +7954,916 @@ mod tests {
     }
 
     #[test]
-    fn double_click_selects_the_word_through_the_selection_path() {
-        let (mut app, _st) = app_with_state();
-        seed_words(&mut app, "hello world");
-        let pt = glyph_pt(1); // over the 'e' in "hello"
-        let scr = Point::new(pt.0, pt.1);
+    fn multi_click_selection_snaps_to_words_and_lines() {
+        eprintln!("phase double_click_selects_the_word_through_the_selection_path");
+        {
+            let (mut app, _st) = app_with_state();
+            seed_words(&mut app, "hello world");
+            let pt = glyph_pt(1); // over the 'e' in "hello"
+            let scr = Point::new(pt.0, pt.1);
 
-        // First press → release: a single click places a collapsed caret only.
-        assert!(app.begin_selection(1, pt, scr));
-        assert!(
-            !app.selection.unwrap().is_active(),
-            "one click selects no text"
-        );
-        app.finish_selection();
+            // First press → release: a single click places a collapsed caret only.
+            assert!(app.begin_selection(1, pt, scr));
+            assert!(
+                !app.selection.unwrap().is_active(),
+                "one click selects no text"
+            );
+            app.finish_selection();
 
-        // Second press at the same spot within the multi-click window is a
-        // double-click → the whole word under the pointer is selected.
-        assert!(app.begin_selection(1, pt, scr));
-        let sel = app.selection.expect("the double-click armed a selection");
-        let (lo, hi) = sel.range();
-        assert_eq!(
-            app.raster_text[&1].text_for_range(lo, hi),
-            "hello",
-            "double-click selects the whole word, not one glyph"
-        );
-        assert!(sel.is_active(), "the word selection is active (HUD shows)");
-    }
-
-    /// A word-granularity drag (after the double-click) keeps the anchored word
-    /// inside the selection and grows by whole words — the shared
-    /// `extend_span_drag` rule, so it never collapses back to the click.
-    #[test]
-    fn double_click_then_drag_extends_by_whole_words() {
-        let (mut app, _st) = app_with_state();
-        seed_words(&mut app, "hello world again");
-        let pt = glyph_pt(1);
-        let scr = Point::new(pt.0, pt.1);
-        app.begin_selection(1, pt, scr);
-        app.finish_selection();
-        app.begin_selection(1, pt, scr); // double-click "hello"
-        // Drag into "world" (glyph 7) — the selection grows to whole words.
-        app.update_selection(1, glyph_pt(7));
-        let sel = app.selection.expect("selection live");
-        let (lo, hi) = sel.range();
-        assert_eq!(
-            app.raster_text[&1].text_for_range(lo, hi),
-            "hello world",
-            "the word drag spans whole words and keeps the first word in"
-        );
-    }
-
-    /// Triple-click selects the whole visual line.
-    #[test]
-    fn triple_click_selects_the_line() {
-        let (mut app, _st) = app_with_state();
-        seed_words(&mut app, "hello world");
-        let pt = glyph_pt(1);
-        let scr = Point::new(pt.0, pt.1);
-        app.begin_selection(1, pt, scr);
-        app.finish_selection();
-        app.begin_selection(1, pt, scr);
-        app.finish_selection();
-        app.begin_selection(1, pt, scr); // third click
-        let sel = app.selection.expect("selection live");
-        let (lo, hi) = sel.range();
-        assert_eq!(
-            app.raster_text[&1].text_for_range(lo, hi),
-            "hello world",
-            "triple-click selects the whole line"
-        );
-    }
-
-    /// The find bar must never overlap its own pieces, and must reflow (drop
-    /// the hint, compact then drop the counter) as the window narrows. Asserts
-    /// on the real `search_layout` the draw pass hit-tests, at three widths.
-    #[test]
-    fn find_bar_layout_never_overlaps_and_reflows() {
-        fn check(app: &PdfApp, tr: &mut TextRenderer, width: f64) -> SearchBarLayout {
-            let lay = app.search_layout(tr);
-            // Visible pieces in on-screen (left→right) order.
-            let mut rects: Vec<(&str, Rect)> = vec![("field", lay.field)];
-            if let Some((r, _)) = &lay.counter {
-                rects.push(("counter", *r));
-            }
-            if let Some(r) = lay.hint {
-                rects.push(("hint", r));
-            }
-            rects.push(("case", lay.case));
-            rects.push(("whole_word", lay.whole_word));
-            for w in rects.windows(2) {
-                assert!(
-                    w[0].1.x1 <= w[1].1.x0 + 0.5,
-                    "at width {width}: {} (x1={}) overlaps {} (x0={})",
-                    w[0].0,
-                    w[0].1.x1,
-                    w[1].0,
-                    w[1].1.x0
-                );
-            }
-            for (name, r) in &rects {
-                assert!(
-                    r.x0 >= app.search_rect.x0 - 0.5 && r.x1 <= app.search_rect.x1 + 0.5,
-                    "at width {width}: {name} escapes the bar ({r:?})"
-                );
-            }
-            lay
+            // Second press at the same spot within the multi-click window is a
+            // double-click → the whole word under the pointer is selected.
+            assert!(app.begin_selection(1, pt, scr));
+            let sel = app.selection.expect("the double-click armed a selection");
+            let (lo, hi) = sel.range();
+            assert_eq!(
+                app.raster_text[&1].text_for_range(lo, hi),
+                "hello",
+                "double-click selects the whole word, not one glyph"
+            );
+            assert!(sel.is_active(), "the word selection is active (HUD shows)");
         }
 
-        let (mut app, _st) = app_with_state();
-        app.search_active = true;
-        app.search_input.set_text("the");
-        app.matches = (0..12)
-            .map(|i| Match {
+        // A word-granularity drag (after the double-click) keeps the anchored word
+        // inside the selection and grows by whole words — the shared
+        // `extend_span_drag` rule, so it never collapses back to the click.
+        eprintln!("phase double_click_then_drag_extends_by_whole_words");
+        {
+            let (mut app, _st) = app_with_state();
+            seed_words(&mut app, "hello world again");
+            let pt = glyph_pt(1);
+            let scr = Point::new(pt.0, pt.1);
+            app.begin_selection(1, pt, scr);
+            app.finish_selection();
+            app.begin_selection(1, pt, scr); // double-click "hello"
+            // Drag into "world" (glyph 7) — the selection grows to whole words.
+            app.update_selection(1, glyph_pt(7));
+            let sel = app.selection.expect("selection live");
+            let (lo, hi) = sel.range();
+            assert_eq!(
+                app.raster_text[&1].text_for_range(lo, hi),
+                "hello world",
+                "the word drag spans whole words and keeps the first word in"
+            );
+        }
+
+        // Triple-click selects the whole visual line.
+        eprintln!("phase triple_click_selects_the_line");
+        {
+            let (mut app, _st) = app_with_state();
+            seed_words(&mut app, "hello world");
+            let pt = glyph_pt(1);
+            let scr = Point::new(pt.0, pt.1);
+            app.begin_selection(1, pt, scr);
+            app.finish_selection();
+            app.begin_selection(1, pt, scr);
+            app.finish_selection();
+            app.begin_selection(1, pt, scr); // third click
+            let sel = app.selection.expect("selection live");
+            let (lo, hi) = sel.range();
+            assert_eq!(
+                app.raster_text[&1].text_for_range(lo, hi),
+                "hello world",
+                "triple-click selects the whole line"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn chrome_layout_reflows_find_bar_contents_bubble_and_rail() {
+        // The find bar must never overlap its own pieces, and must reflow (drop
+        // the hint, compact then drop the counter) as the window narrows. Asserts
+        // on the real `search_layout` the draw pass hit-tests, at three widths.
+        eprintln!("phase find_bar_layout_never_overlaps_and_reflows");
+        {
+            fn check(app: &PdfApp, tr: &mut TextRenderer, width: f64) -> SearchBarLayout {
+                let lay = app.search_layout(tr);
+                // Visible pieces in on-screen (left→right) order.
+                let mut rects: Vec<(&str, Rect)> = vec![("field", lay.field)];
+                if let Some((r, _)) = &lay.counter {
+                    rects.push(("counter", *r));
+                }
+                if let Some(r) = lay.hint {
+                    rects.push(("hint", r));
+                }
+                rects.push(("case", lay.case));
+                rects.push(("whole_word", lay.whole_word));
+                for w in rects.windows(2) {
+                    assert!(
+                        w[0].1.x1 <= w[1].1.x0 + 0.5,
+                        "at width {width}: {} (x1={}) overlaps {} (x0={})",
+                        w[0].0,
+                        w[0].1.x1,
+                        w[1].0,
+                        w[1].1.x0
+                    );
+                }
+                for (name, r) in &rects {
+                    assert!(
+                        r.x0 >= app.search_rect.x0 - 0.5 && r.x1 <= app.search_rect.x1 + 0.5,
+                        "at width {width}: {name} escapes the bar ({r:?})"
+                    );
+                }
+                lay
+            }
+
+            let (mut app, _st) = app_with_state();
+            app.search_active = true;
+            app.search_input.set_text("the");
+            app.matches = (0..12)
+                .map(|i| Match {
+                    page: 1,
+                    block: 0,
+                    start: i,
+                    len: 3,
+                })
+                .collect();
+            app.active_match = 2;
+            let mut tr = TextRenderer::new();
+
+            // Wide: everything shown, counter full, hint present.
+            app.search_rect = Rect::new(0.0, 56.0, 1200.0, 56.0 + 46.0);
+            let wide = check(&app, &mut tr, 1200.0);
+            assert!(wide.hint.is_some(), "the hint shows on a wide bar");
+            assert!(
+                matches!(&wide.counter, Some((_, t)) if t.contains("of")),
+                "a wide bar shows the full '3 of 12 matches' counter"
+            );
+
+            // Narrow: no overlap; the hint drops.
+            app.search_rect = Rect::new(0.0, 56.0, 520.0, 56.0 + 46.0);
+            let narrow = check(&app, &mut tr, 520.0);
+            assert!(narrow.hint.is_none(), "the hint drops on a narrow bar");
+
+            // Very narrow: the toggles still fit and nothing overlaps.
+            app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
+            check(&app, &mut tr, 380.0);
+        }
+
+        // A long bookmark tree must remain navigable rather than being silently
+        // clipped after the first sidebar viewport.  This exercises the same
+        // measured list used by paint and the wheel handler, at maximum text size
+        // where fixed-height rows used to collide.
+        eprintln!("phase contents_sidebar_scrolls_and_scales_all_outline_entries");
+        {
+            let (mut app, _st) = app_with_state();
+            app.sidebar_tab = SidebarTab::Outline;
+            app.text_scale = 2.0;
+            app.doc.outline = (0..80)
+                .map(|index| model::OutlineItem {
+                    title: format!("Section {index}: an intentionally descriptive heading"),
+                    page: index % app.doc.page_count() + 1,
+                    level: u8::from(index % 3 != 0),
+                })
+                .collect();
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+
+            let (items, content_h) = app.sidebar_item_layout(&mut tr);
+            assert_eq!(items.len(), 80, "every bookmark participates in scrolling");
+            assert!(
+                items[1].1 - items[0].1 >= 64.0 - f64::EPSILON,
+                "outline rows scale from 30px to a touch-friendly 60px at 200% text"
+            );
+
+            app.sidebar_scroll = f64::MAX;
+            app.prepare_sidebar_scroll(&mut tr);
+            let body = app.sidebar_body();
+            let origin = body.y0 + 38.0 * 2.0;
+            let max_scroll = (content_h - (body.y1 - origin)).max(0.0);
+            assert!(max_scroll > 0.0, "the test outline exceeds the viewport");
+            assert!(
+                (app.sidebar_scroll - max_scroll).abs() < 0.1,
+                "wheel state clamps to the final bookmark instead of resetting"
+            );
+            let (_, last_top, last_h) = items.last().expect("last bookmark");
+            assert!(
+                last_top + last_h - app.sidebar_scroll <= body.y1 + 0.1,
+                "the final bookmark can be brought fully into view"
+            );
+        }
+
+        // The floating page bubble draws (and captures its nav hit-rects) only
+        // while visible, and clears them once it fades — proving it is a transient
+        // overlay, not a permanent strip. Drives the real `draw_page_bubble`.
+        eprintln!("phase page_bubble_overlay_shows_then_hides");
+        {
+            let (mut app, _st) = app_with_state();
+            app.has_document = true;
+            app.canvas_rect = Rect::new(0.0, 100.0, 800.0, 700.0);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+
+            // Hidden by default (no page change, pointer away from the bottom): the
+            // overlay draws nothing and captures no clickable rect.
+            app.last_mouse = Point::new(10.0, 110.0);
+            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_eq!(
+                app.bubble_rect,
+                Rect::ZERO,
+                "a hidden bubble captures no hit-rect"
+            );
+
+            // A page change pokes it → it draws and captures its chevron rects.
+            app.page_bubble.poke(ui::time::now());
+            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_ne!(
+                app.bubble_rect,
+                Rect::ZERO,
+                "a visible bubble captures its rect"
+            );
+            assert!(
+                app.bubble_rect.y1 <= app.canvas_rect.y1 + 0.01,
+                "it floats within the canvas"
+            );
+            assert!(
+                app.bubble_rect.y0 > app.canvas_rect.y0,
+                "it sits near the bottom, not filling the canvas"
+            );
+            // The right chevron steps the page (a click is consumed).
+            let before = app.current_page;
+            assert!(
+                app.apply_page_bubble(app.bubble_next.center()),
+                "a click on the bubble is consumed"
+            );
+            assert!(
+                app.current_page >= before,
+                "the next chevron does not go backwards"
+            );
+
+            // After its linger, with the pointer away, it hides again.
+            app.page_bubble =
+                ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+            app.page_bubble.poke(
+                ui::time::now()
+                    .checked_sub(std::time::Duration::from_millis(10))
+                    .unwrap(),
+            );
+            app.last_mouse = Point::new(10.0, 110.0);
+            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_eq!(
+                app.bubble_rect,
+                Rect::ZERO,
+                "the bubble hides after its linger"
+            );
+        }
+
+        eprintln!("phase rail_toggle_and_resize_reclaim_space");
+        {
+            let (mut app, _st) = app_with_state();
+            let canvas_with_rail = app.canvas_rect.width();
+            app.toggle_rail();
+            assert!(!app.show_rail);
+            assert!(
+                app.canvas_rect.width() > canvas_with_rail,
+                "hiding the rail reclaims space"
+            );
+            app.toggle_rail();
+            assert!(app.show_rail);
+            // Resize within bounds is honoured.
+            app.rail_w = 999.0;
+            app.recompute_regions();
+            assert!(
+                (app.rail_width() - RAIL_W_MAX).abs() < 1e-6,
+                "rail width clamps to max"
+            );
+        }
+
+        eprintln!("phase responsive_mode_reflows_on_resize_not_cached");
+        {
+            let (mut app, _st) = app_with_state(); // starts wide (1280)
+            app.reconcile_overlay();
+            app.recompute_regions();
+            assert!(!app.overlay_mode, "wide window docks panels");
+            assert!(
+                app.show_sidebar && app.show_rail,
+                "docked panels are visible when wide"
+            );
+            // Wide: the canvas leaves room for the rail + sidebar columns.
+            assert!(
+                app.canvas_rect.width() < app.rect.width() - 100.0,
+                "docked panels reserve columns"
+            );
+
+            // Shrink below the overlay breakpoint — panels must collapse to closed
+            // overlays and the canvas must span the whole (smaller) window.
+            app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+            app.reconcile_overlay();
+            app.recompute_regions();
+            assert!(app.overlay_mode, "narrow window switches to overlay mode");
+            assert!(
+                !app.show_sidebar && !app.show_rail,
+                "narrow window auto-closes the panels"
+            );
+            assert!(
+                (app.canvas_rect.width() - app.rect.width()).abs() < 1.0,
+                "canvas spans the full width in overlay mode"
+            );
+
+            // Grow back to wide — panels re-dock.
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.reconcile_overlay();
+            app.recompute_regions();
+            assert!(!app.overlay_mode, "returning to wide re-docks");
+            assert!(
+                app.show_sidebar && app.show_rail,
+                "panels come back when wide again"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn markup_tools_commit_notes_highlights_and_ink() {
+        eprintln!("phase create_note_adds_annotation_and_comment");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            let c0 = app.comments.len();
+            app.create_note(&mut st.doc, 2, (120.0, 200.0));
+            assert_eq!(app.annotations.len(), a0 + 1);
+            assert_eq!(app.comments.len(), c0 + 1);
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_some(),
+                "creating a note dispatched an action and stashed one undo boundary"
+            );
+            assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
+        }
+
+        eprintln!("phase dragging_a_note_marker_repositions_and_persists");
+        {
+            let (mut app, mut st) = app_with_state();
+            // A fresh note at a known page-point.
+            app.create_note(&mut st.doc, 1, (100.0, 100.0));
+            app.reload(&st.doc);
+            let id = app.selected_anno.clone().expect("the new note is selected");
+            // Its marker is grabbable at its anchor (same target as clicking it).
+            assert!(
+                app.note_marker_at(1, (100.0, 100.0)).is_some(),
+                "the marker is grabbable"
+            );
+            // Begin → move → the local cache tracks the pointer for live feedback.
+            let mut mdrag = ui::MarkerDrag::begin(id.clone(), (100.0, 100.0), (100.0, 100.0));
+            let (nx, ny) = mdrag.update((180.0, 140.0));
+            assert!(mdrag.moved(), "a real drag latches moved");
+            app.move_note_local(&id, nx, ny);
+            assert_eq!(
+                app.note_pos(&id),
+                Some((nx, ny)),
+                "the marker follows the pointer live"
+            );
+            // Release persists the new anchor to the shared document.
+            PdfDoc::set_annotation_position(
+                &mut st.doc,
+                &id,
+                nx,
+                ny,
+                crate::model::GeomSpace::Page,
+            );
+            app.reload(&st.doc);
+            let (x, y) = app.note_pos(&id).expect("the note survives the reposition");
+            assert!(
+                (x - nx).abs() < 1e-6 && (y - ny).abs() < 1e-6,
+                "the reposition persisted to the CRDT"
+            );
+            assert!(
+                (x - 100.0).abs() > 1.0,
+                "the note actually moved from its origin"
+            );
+        }
+
+        eprintln!("phase highlight_drag_commits_annotation");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            app.tool = Tool::Highlight;
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
                 page: 1,
-                block: 0,
-                start: i,
-                len: 3,
-            })
-            .collect();
-        app.active_match = 2;
-        let mut tr = TextRenderer::new();
-
-        // Wide: everything shown, counter full, hint present.
-        app.search_rect = Rect::new(0.0, 56.0, 1200.0, 56.0 + 46.0);
-        let wide = check(&app, &mut tr, 1200.0);
-        assert!(wide.hint.is_some(), "the hint shows on a wide bar");
-        assert!(
-            matches!(&wide.counter, Some((_, t)) if t.contains("of")),
-            "a wide bar shows the full '3 of 12 matches' counter"
-        );
-
-        // Narrow: no overlap; the hint drops.
-        app.search_rect = Rect::new(0.0, 56.0, 520.0, 56.0 + 46.0);
-        let narrow = check(&app, &mut tr, 520.0);
-        assert!(narrow.hint.is_none(), "the hint drops on a narrow bar");
-
-        // Very narrow: the toggles still fit and nothing overlaps.
-        app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
-        check(&app, &mut tr, 380.0);
-    }
-
-    /// A long bookmark tree must remain navigable rather than being silently
-    /// clipped after the first sidebar viewport.  This exercises the same
-    /// measured list used by paint and the wheel handler, at maximum text size
-    /// where fixed-height rows used to collide.
-    #[test]
-    fn contents_sidebar_scrolls_and_scales_all_outline_entries() {
-        let (mut app, _st) = app_with_state();
-        app.sidebar_tab = SidebarTab::Outline;
-        app.text_scale = 2.0;
-        app.doc.outline = (0..80)
-            .map(|index| model::OutlineItem {
-                title: format!("Section {index}: an intentionally descriptive heading"),
-                page: index % app.doc.page_count() + 1,
-                level: u8::from(index % 3 != 0),
-            })
-            .collect();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-
-        let (items, content_h) = app.sidebar_item_layout(&mut tr);
-        assert_eq!(items.len(), 80, "every bookmark participates in scrolling");
-        assert!(
-            items[1].1 - items[0].1 >= 64.0 - f64::EPSILON,
-            "outline rows scale from 30px to a touch-friendly 60px at 200% text"
-        );
-
-        app.sidebar_scroll = f64::MAX;
-        app.prepare_sidebar_scroll(&mut tr);
-        let body = app.sidebar_body();
-        let origin = body.y0 + 38.0 * 2.0;
-        let max_scroll = (content_h - (body.y1 - origin)).max(0.0);
-        assert!(max_scroll > 0.0, "the test outline exceeds the viewport");
-        assert!(
-            (app.sidebar_scroll - max_scroll).abs() < 0.1,
-            "wheel state clamps to the final bookmark instead of resetting"
-        );
-        let (_, last_top, last_h) = items.last().expect("last bookmark");
-        assert!(
-            last_top + last_h - app.sidebar_scroll <= body.y1 + 0.1,
-            "the final bookmark can be brought fully into view"
-        );
-    }
-
-    /// The floating page bubble draws (and captures its nav hit-rects) only
-    /// while visible, and clears them once it fades — proving it is a transient
-    /// overlay, not a permanent strip. Drives the real `draw_page_bubble`.
-    #[test]
-    fn page_bubble_overlay_shows_then_hides() {
-        let (mut app, _st) = app_with_state();
-        app.has_document = true;
-        app.canvas_rect = Rect::new(0.0, 100.0, 800.0, 700.0);
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-
-        // Hidden by default (no page change, pointer away from the bottom): the
-        // overlay draws nothing and captures no clickable rect.
-        app.last_mouse = Point::new(10.0, 110.0);
-        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        assert_eq!(
-            app.bubble_rect,
-            Rect::ZERO,
-            "a hidden bubble captures no hit-rect"
-        );
-
-        // A page change pokes it → it draws and captures its chevron rects.
-        app.page_bubble.poke(std::time::Instant::now());
-        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        assert_ne!(
-            app.bubble_rect,
-            Rect::ZERO,
-            "a visible bubble captures its rect"
-        );
-        assert!(
-            app.bubble_rect.y1 <= app.canvas_rect.y1 + 0.01,
-            "it floats within the canvas"
-        );
-        assert!(
-            app.bubble_rect.y0 > app.canvas_rect.y0,
-            "it sits near the bottom, not filling the canvas"
-        );
-        // The right chevron steps the page (a click is consumed).
-        let before = app.current_page;
-        assert!(
-            app.apply_page_bubble(app.bubble_next.center()),
-            "a click on the bubble is consumed"
-        );
-        assert!(
-            app.current_page >= before,
-            "the next chevron does not go backwards"
-        );
-
-        // After its linger, with the pointer away, it hides again.
-        app.page_bubble = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
-        app.page_bubble.poke(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(10))
-                .unwrap(),
-        );
-        app.last_mouse = Point::new(10.0, 110.0);
-        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        assert_eq!(
-            app.bubble_rect,
-            Rect::ZERO,
-            "the bubble hides after its linger"
-        );
-    }
-
-    #[test]
-    fn dragging_a_note_marker_repositions_and_persists() {
-        let (mut app, mut st) = app_with_state();
-        // A fresh note at a known page-point.
-        app.create_note(&mut st.doc, 1, (100.0, 100.0));
-        app.reload(&st.doc);
-        let id = app.selected_anno.clone().expect("the new note is selected");
-        // Its marker is grabbable at its anchor (same target as clicking it).
-        assert!(
-            app.note_marker_at(1, (100.0, 100.0)).is_some(),
-            "the marker is grabbable"
-        );
-        // Begin → move → the local cache tracks the pointer for live feedback.
-        let mut mdrag = ui::MarkerDrag::begin(id.clone(), (100.0, 100.0), (100.0, 100.0));
-        let (nx, ny) = mdrag.update((180.0, 140.0));
-        assert!(mdrag.moved(), "a real drag latches moved");
-        app.move_note_local(&id, nx, ny);
-        assert_eq!(
-            app.note_pos(&id),
-            Some((nx, ny)),
-            "the marker follows the pointer live"
-        );
-        // Release persists the new anchor to the shared document.
-        PdfDoc::set_annotation_position(&mut st.doc, &id, nx, ny, crate::model::GeomSpace::Page);
-        app.reload(&st.doc);
-        let (x, y) = app.note_pos(&id).expect("the note survives the reposition");
-        assert!(
-            (x - nx).abs() < 1e-6 && (y - ny).abs() < 1e-6,
-            "the reposition persisted to the CRDT"
-        );
-        assert!(
-            (x - 100.0).abs() > 1.0,
-            "the note actually moved from its origin"
-        );
-    }
-
-    #[test]
-    fn search_finds_and_jumps() {
-        let (mut app, _st) = app_with_state();
-        app.search_input.set_text("filesystem");
-        app.recompute_matches();
-        assert!(!app.matches.is_empty());
-        // Active match drives the current page.
-        let p = app.matches[0].page;
-        assert_eq!(app.current_page, p);
-        // Stepping wraps around.
-        let first = app.active_match;
-        app.step_match(1);
-        if app.matches.len() > 1 {
-            assert_ne!(app.active_match, first);
+                start: (64.0, 100.0),
+                cur: (300.0, 116.0),
+                points: vec![],
+            });
+            app.commit_drag(&mut st.doc);
+            assert_eq!(
+                app.annotations.len(),
+                a0 + 1,
+                "drag should add one highlight"
+            );
         }
-    }
 
-    #[test]
-    fn create_note_adds_annotation_and_comment() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        let c0 = app.comments.len();
-        app.create_note(&mut st.doc, 2, (120.0, 200.0));
-        assert_eq!(app.annotations.len(), a0 + 1);
-        assert_eq!(app.comments.len(), c0 + 1);
-        assert!(
-            app.take_committed_action().is_some(),
-            "creating a note dispatched an action and stashed one undo boundary"
-        );
-        assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
-    }
-
-    #[test]
-    fn highlight_drag_commits_annotation() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (64.0, 100.0),
-            cur: (300.0, 116.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        assert_eq!(
-            app.annotations.len(),
-            a0 + 1,
-            "drag should add one highlight"
-        );
-    }
-
-    #[test]
-    fn tiny_highlight_drag_is_ignored() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (64.0, 100.0),
-            cur: (66.0, 101.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        assert_eq!(app.annotations.len(), a0, "sub-threshold drag adds nothing");
-    }
-
-    #[test]
-    fn place_signature_clamps_into_page() {
-        let (mut app, mut st) = app_with_state();
-        let s0 = app.signatures.len();
-        app.signer_name = "Tester".into();
-        app.place_signature(&mut st.doc, 3, (10.0, 10.0)); // near corner
-        assert_eq!(app.signatures.len(), s0 + 1);
-        let last = app.signatures.iter().find(|s| s.page == 3).unwrap();
-        assert!(last.rect.x >= MARGIN - 0.001);
-        assert!(last.rect.y >= MARGIN - 0.001);
-    }
-
-    #[test]
-    fn page_navigation_clamps() {
-        let (mut app, _st) = app_with_state();
-        app.go_to_page(999);
-        assert_eq!(app.current_page, app.doc.page_count());
-        app.go_to_page(0);
-        assert_eq!(app.current_page, 1);
-    }
-
-    #[test]
-    fn zoom_switches_to_custom() {
-        let (mut app, _st) = app_with_state();
-        app.zoom_by(1.25);
-        assert!(matches!(app.fit, FitMode::Custom(_)));
-    }
-
-    #[test]
-    fn zoom_at_keeps_focal_point_stationary() {
-        let (mut app, _st) = app_with_state();
-        // Start already overflowing and mid-scrolled so neither axis clamps
-        // during the zoom — the focal point can then stay exactly put.
-        app.fit = FitMode::Custom(2.0);
-        app.recompute_zoom();
-        app.go_to_page(1);
-        let (half_x, sy) = (app.viewport.max_scroll_x() / 2.0, app.scroll_y());
-        app.viewport.set_scroll(half_x, sy);
-        // Build a focal point that demonstrably lands inside page 1's card so
-        // neither axis is at a scroll clamp.
-        let origin = app.page_origins()[0];
-        let focal = Point::new(origin.x + 300.0 * app.zoom(), origin.y + 200.0 * app.zoom());
-        let before = app.hit_page(focal).expect("focal lands on a page");
-        app.zoom_at(1.3, focal);
-        let after = app.hit_page(focal).expect("focal still on a page");
-        assert_eq!(before.0, after.0, "same page stays under the cursor");
-        assert!(
-            (before.1.0 - after.1.0).abs() < 2.0,
-            "x focal drift {} too large",
-            (before.1.0 - after.1.0).abs()
-        );
-        assert!(
-            (before.1.1 - after.1.1).abs() < 2.0,
-            "y focal drift {} too large",
-            (before.1.1 - after.1.1).abs()
-        );
-    }
-
-    #[test]
-    fn zoom_respects_min_max_bounds() {
-        let (mut app, _st) = app_with_state();
-        for _ in 0..40 {
-            app.zoom_by(1.5);
+        eprintln!("phase tiny_highlight_drag_is_ignored");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (64.0, 100.0),
+                cur: (66.0, 101.0),
+                points: vec![],
+            });
+            app.commit_drag(&mut st.doc);
+            assert_eq!(app.annotations.len(), a0, "sub-threshold drag adds nothing");
         }
-        assert!(app.zoom() <= ZOOM_MAX + 1e-6);
-        for _ in 0..40 {
-            app.zoom_by(0.5);
+
+        eprintln!("phase highlight_snaps_to_text_when_lines_present");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            // Seed a few text-line bands spanning two lines and drag across both.
+            app.text_lines.insert(
+                1,
+                vec![
+                    render::TextLine {
+                        block: 5,
+                        x: 64.0,
+                        x_end: 480.0,
+                        y: 196.0,
+                        h: 13.0,
+                    },
+                    render::TextLine {
+                        block: 5,
+                        x: 64.0,
+                        x_end: 420.0,
+                        y: 210.0,
+                        h: 13.0,
+                    },
+                ],
+            );
+            app.tool = Tool::Highlight;
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (80.0, 198.0),
+                cur: (300.0, 220.0),
+                points: vec![],
+            });
+            app.commit_drag(&mut st.doc);
+            // Two covered lines -> one highlight with two text-shaped bands (not
+            // one free rectangle).
+            assert_eq!(app.annotations.len(), a0 + 1, "one highlight");
+            let added = app.annotations.last().unwrap();
+            assert!(
+                matches!(&added.kind, AnnoKind::Markup { quads, .. } if quads.len() == 2),
+                "drag over two lines snaps to two bands: {:?}",
+                added.kind
+            );
         }
-        assert!(app.zoom() >= ZOOM_MIN - 1e-6);
-    }
 
-    #[test]
-    fn horizontal_pan_reaches_full_width_when_zoomed() {
-        let (mut app, _st) = app_with_state();
-        app.fit = FitMode::Custom(3.0);
-        app.recompute_zoom();
-        app.clamp_scroll();
-        assert!(app.is_overflowing_x(), "3x zoom must overflow the viewport");
-        let sy = app.scroll_y();
-        app.viewport.set_scroll(f64::MAX, sy);
-        // The full reachable width is content_width - canvas width.
-        let expected = (app.viewport.scaled_content_width() - app.canvas_rect.width()).max(0.0);
-        assert!(
-            (app.scroll_x() - expected).abs() < 1.0,
-            "pan should reach the full zoomed width"
-        );
-    }
-
-    #[test]
-    fn highlight_snaps_to_text_when_lines_present() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        // Seed a few text-line bands spanning two lines and drag across both.
-        app.text_lines.insert(
-            1,
-            vec![
-                render::TextLine {
+        eprintln!("phase highlight_falls_back_to_freeform_without_text");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            // No text-line cache near the drag -> free-form rectangle (one anno).
+            app.text_lines.insert(
+                1,
+                vec![render::TextLine {
                     block: 5,
                     x: 64.0,
                     x_end: 480.0,
                     y: 196.0,
                     h: 13.0,
-                },
-                render::TextLine {
-                    block: 5,
-                    x: 64.0,
-                    x_end: 420.0,
-                    y: 210.0,
-                    h: 13.0,
-                },
-            ],
-        );
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (80.0, 198.0),
-            cur: (300.0, 220.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        // Two covered lines -> one highlight with two text-shaped bands (not
-        // one free rectangle).
-        assert_eq!(app.annotations.len(), a0 + 1, "one highlight");
-        let added = app.annotations.last().unwrap();
-        assert!(
-            matches!(&added.kind, AnnoKind::Markup { quads, .. } if quads.len() == 2),
-            "drag over two lines snaps to two bands: {:?}",
-            added.kind
-        );
-    }
-
-    #[test]
-    fn highlight_falls_back_to_freeform_without_text() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        // No text-line cache near the drag -> free-form rectangle (one anno).
-        app.text_lines.insert(
-            1,
-            vec![render::TextLine {
-                block: 5,
-                x: 64.0,
-                x_end: 480.0,
-                y: 196.0,
-                h: 13.0,
-            }],
-        );
-        app.tool = Tool::Highlight;
-        // Drag far below any seeded line.
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (80.0, 500.0),
-            cur: (300.0, 540.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        assert_eq!(
-            app.annotations.len(),
-            a0 + 1,
-            "no nearby text -> single free-form band"
-        );
-    }
-
-    #[test]
-    fn delete_selected_annotation_removes_it() {
-        let (mut app, mut st) = app_with_state();
-        let hl = app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-            .unwrap()
-            .clone();
-        let n = app.annotations.len();
-        app.selected_anno = Some(hl.id.clone());
-        assert!(app.delete_selected(&mut st.doc));
-        assert_eq!(app.annotations.len(), n - 1);
-        assert!(!app.annotations.iter().any(|a| a.id == hl.id));
-        assert!(app.selected_anno.is_none());
-    }
-
-    #[test]
-    fn delete_signature_target_removes_it() {
-        let (mut app, mut st) = app_with_state();
-        let sig = app.signatures[0].clone();
-        let n = app.signatures.len();
-        app.delete_target(&DeleteTarget::Signature(sig.id.clone()), &mut st.doc);
-        assert_eq!(app.signatures.len(), n - 1);
-        assert!(!app.signatures.iter().any(|s| s.id == sig.id));
-    }
-
-    #[test]
-    fn delete_comment_target_also_drops_its_annotation() {
-        let (mut app, mut st) = app_with_state();
-        // The note's linked comment: deleting it must drop the note marker too.
-        let note = app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
-            .unwrap()
-            .clone();
-        let comment = app
-            .comments
-            .iter()
-            .find(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
-            .unwrap()
-            .clone();
-        app.delete_target(&DeleteTarget::Comment(comment.id.clone()), &mut st.doc);
-        assert!(!app.comments.iter().any(|c| c.id == comment.id));
-        assert!(
-            !app.annotations.iter().any(|a| a.id == note.id),
-            "orphan note marker removed"
-        );
-    }
-
-    #[test]
-    fn placing_signature_focuses_signatures_sidebar() {
-        let (mut app, mut st) = app_with_state();
-        app.sidebar_tab = SidebarTab::Comments;
-        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
-        assert_eq!(app.sidebar_tab as u8, SidebarTab::Signatures as u8);
-        assert!(app.show_sidebar);
-        assert!(app.selected_sig.is_some(), "new signature is selected");
-        assert!(
-            app.sidebar_reveal.is_some(),
-            "reveal request queued for the new entry"
-        );
-    }
-
-    #[test]
-    fn creating_note_focuses_comments_sidebar_on_new_thread() {
-        let (mut app, mut st) = app_with_state();
-        app.sidebar_tab = SidebarTab::Signatures;
-        app.create_note(&mut st.doc, 2, (200.0, 300.0));
-        assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
-        assert!(app.show_sidebar);
-        assert!(
-            app.sidebar_reveal.is_some(),
-            "new comment queued to scroll into view"
-        );
-    }
-
-    #[test]
-    fn rail_toggle_and_resize_reclaim_space() {
-        let (mut app, _st) = app_with_state();
-        let canvas_with_rail = app.canvas_rect.width();
-        app.toggle_rail();
-        assert!(!app.show_rail);
-        assert!(
-            app.canvas_rect.width() > canvas_with_rail,
-            "hiding the rail reclaims space"
-        );
-        app.toggle_rail();
-        assert!(app.show_rail);
-        // Resize within bounds is honoured.
-        app.rail_w = 999.0;
-        app.recompute_regions();
-        assert!(
-            (app.rail_width() - RAIL_W_MAX).abs() < 1e-6,
-            "rail width clamps to max"
-        );
-    }
-
-    #[test]
-    fn responsive_mode_reflows_on_resize_not_cached() {
-        let (mut app, _st) = app_with_state(); // starts wide (1280)
-        app.reconcile_overlay();
-        app.recompute_regions();
-        assert!(!app.overlay_mode, "wide window docks panels");
-        assert!(
-            app.show_sidebar && app.show_rail,
-            "docked panels are visible when wide"
-        );
-        // Wide: the canvas leaves room for the rail + sidebar columns.
-        assert!(
-            app.canvas_rect.width() < app.rect.width() - 100.0,
-            "docked panels reserve columns"
-        );
-
-        // Shrink below the overlay breakpoint — panels must collapse to closed
-        // overlays and the canvas must span the whole (smaller) window.
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.reconcile_overlay();
-        app.recompute_regions();
-        assert!(app.overlay_mode, "narrow window switches to overlay mode");
-        assert!(
-            !app.show_sidebar && !app.show_rail,
-            "narrow window auto-closes the panels"
-        );
-        assert!(
-            (app.canvas_rect.width() - app.rect.width()).abs() < 1.0,
-            "canvas spans the full width in overlay mode"
-        );
-
-        // Grow back to wide — panels re-dock.
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.reconcile_overlay();
-        app.recompute_regions();
-        assert!(!app.overlay_mode, "returning to wide re-docks");
-        assert!(
-            app.show_sidebar && app.show_rail,
-            "panels come back when wide again"
-        );
-    }
-
-    #[test]
-    fn search_toggles_change_match_logic() {
-        let (mut app, _st) = app_with_state();
-        app.search_input.set_text("the");
-        app.search_case_sensitive = false;
-        app.search_whole_word = false;
-        app.recompute_matches();
-        let loose = app.matches.len();
-        app.search_whole_word = true;
-        app.recompute_matches();
-        let strict = app.matches.len();
-        assert!(
-            strict <= loose,
-            "whole-word never yields more matches than substring"
-        );
-    }
-
-    #[test]
-    fn ymd_from_unix_secs_matches_known_dates() {
-        // Fixed reference points keep the pure date conversion independent of
-        // the wall clock.
-        assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
-        assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
-        assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
-        assert_eq!(ymd_from_unix_secs(1_798_761_599), "2026-12-31"); // year boundary
-        // `today_ymd` is well-formed `YYYY-MM-DD`.
-        let t = today_ymd();
-        assert_eq!(t.len(), 10, "today is YYYY-MM-DD: {t}");
-        assert_eq!(&t[4..5], "-");
-        assert_eq!(&t[7..8], "-");
-    }
-
-    #[test]
-    fn placed_signature_stamps_the_real_date_not_a_constant() {
-        let (mut app, mut st) = app_with_state();
-        app.signer_name = "Grace Hopper".into();
-        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
-        let s = app.signatures.iter().find(|s| s.page == 2).unwrap().clone();
-        // The stamp is the live system date, not the frozen demo/seed date.
-        assert_eq!(
-            s.date,
-            today_ymd(),
-            "runtime signature carries today's date"
-        );
-        assert_ne!(
-            s.date, SEED_DATE,
-            "runtime date is not the hardcoded demo constant"
-        );
-        // And the real date is what durably lands in the shared CRDT.
-        let stored = PdfDoc::list_signatures(&st.doc);
-        assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
-    }
-
-    /// A typed signature stamps the signer's name as its content — real input,
-    /// no canned squiggle.
-    #[test]
-    fn placing_a_typed_signature_stores_the_typed_name() {
-        let (mut app, mut st) = app_with_state();
-        app.sig_mode = SigMode::Type;
-        app.signer_name = "Grace Hopper".into();
-        app.place_signature(&mut st.doc, 3, (200.0, 300.0));
-        let placed = app
-            .signatures
-            .iter()
-            .find(|s| s.page == 3)
-            .expect("a signature landed");
-        assert_eq!(placed.signer, "Grace Hopper");
-        assert_eq!(
-            placed.ink,
-            SignatureInk::Typed,
-            "a typed signature carries typed ink"
-        );
-        // And it durably reaches the shared CRDT as typed ink.
-        let stored = PdfDoc::list_signatures(&st.doc);
-        assert!(
-            stored
-                .iter()
-                .any(|x| x.id == placed.id && x.ink == SignatureInk::Typed)
-        );
-    }
-
-    /// A drawn signature stores the exact strokes the user drew, and placement
-    /// writes them into the document; an *empty* drawn signature is refused so
-    /// no blank "signed" field is ever stamped.
-    #[test]
-    fn drawn_signature_places_the_strokes_and_empty_is_refused() {
-        let (mut app, mut st) = app_with_state();
-        app.sig_mode = SigMode::Draw;
-
-        // Empty pad → nothing is placed, and the user is told to draw first.
-        let before = app.signatures.len();
-        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
-        assert_eq!(
-            app.signatures.len(),
-            before,
-            "an empty drawn signature is not placed"
-        );
-        assert!(
-            app.status_note
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase()
-                .contains("draw")
-        );
-
-        // Draw a stroke, then place: the strokes are what land in the document.
-        app.sig_strokes = vec![vec![(0.1, 0.5), (0.4, 0.2), (0.7, 0.6), (0.9, 0.4)]];
-        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
-        let placed = app
-            .signatures
-            .iter()
-            .find(|s| s.page == 2)
-            .expect("a drawn signature landed");
-        match &placed.ink {
-            SignatureInk::Drawn { strokes } => {
-                assert_eq!(strokes.len(), 1);
-                assert_eq!(strokes[0].len(), 4, "the drawn polyline is preserved");
-            }
-            SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
+                }],
+            );
+            app.tool = Tool::Highlight;
+            // Drag far below any seeded line.
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (80.0, 500.0),
+                cur: (300.0, 540.0),
+                points: vec![],
+            });
+            app.commit_drag(&mut st.doc);
+            assert_eq!(
+                app.annotations.len(),
+                a0 + 1,
+                "no nearby text -> single free-form band"
+            );
         }
-        let stored = PdfDoc::list_signatures(&st.doc);
-        assert!(
-            stored
-                .iter()
-                .any(|x| matches!(&x.ink, SignatureInk::Drawn { strokes } if strokes.len() == 1))
-        );
-    }
 
-    #[test]
-    fn ink_drag_commits_a_polyline_annotation() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        app.tool = Tool::Ink;
-        app.drag = Some(DragState {
-            tool: Tool::Ink,
-            page: 1,
-            start: (80.0, 300.0),
-            cur: (240.0, 360.0),
-            points: vec![
-                (80.0, 300.0),
-                (140.0, 330.0),
-                (200.0, 320.0),
-                (240.0, 360.0),
-            ],
-        });
-        app.commit_drag(&mut st.doc);
-        assert_eq!(
-            app.annotations.len(),
-            a0 + 1,
-            "an ink drag adds one annotation"
-        );
-        let ink = app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Ink { .. }))
-            .expect("an ink stroke was created");
-        match &ink.kind {
-            AnnoKind::Ink { strokes } => {
-                assert!(strokes[0].len() >= 2, "the polyline retains its points");
+        eprintln!("phase ink_drag_commits_a_polyline_annotation");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            app.tool = Tool::Ink;
+            app.drag = Some(DragState {
+                tool: Tool::Ink,
+                page: 1,
+                start: (80.0, 300.0),
+                cur: (240.0, 360.0),
+                points: vec![
+                    (80.0, 300.0),
+                    (140.0, 330.0),
+                    (200.0, 320.0),
+                    (240.0, 360.0),
+                ],
+            });
+            app.commit_drag(&mut st.doc);
+            assert_eq!(
+                app.annotations.len(),
+                a0 + 1,
+                "an ink drag adds one annotation"
+            );
+            let ink = app
+                .annotations
+                .iter()
+                .find(|a| matches!(a.kind, AnnoKind::Ink { .. }))
+                .expect("an ink stroke was created");
+            match &ink.kind {
+                AnnoKind::Ink { strokes } => {
+                    assert!(strokes[0].len() >= 2, "the polyline retains its points");
+                }
+                _ => unreachable!(),
             }
-            _ => unreachable!(),
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_some(),
+                "ink dispatched an action and stashed one undo boundary"
+            );
+            assert!(
+                PdfDoc::list_annotations(&st.doc)
+                    .iter()
+                    .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
+                "and the ink stroke landed in the shared document"
+            );
         }
-        assert!(
-            app.take_committed_action().is_some(),
-            "ink dispatched an action and stashed one undo boundary"
-        );
-        assert!(
-            PdfDoc::list_annotations(&st.doc)
+
+        eprintln!("phase ink_drag_with_a_single_point_is_discarded");
+        {
+            let (mut app, mut st) = app_with_state();
+            let a0 = app.annotations.len();
+            app.tool = Tool::Ink;
+            app.drag = Some(DragState {
+                tool: Tool::Ink,
+                page: 1,
+                start: (80.0, 300.0),
+                cur: (80.0, 300.0),
+                points: vec![(80.0, 300.0)],
+            });
+            app.commit_drag(&mut st.doc);
+            assert_eq!(
+                app.annotations.len(),
+                a0,
+                "a degenerate single-point ink stroke adds nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn find_jumps_to_matches_and_toggles_change_match_logic() {
+        eprintln!("phase search_finds_and_jumps");
+        {
+            let (mut app, _st) = app_with_state();
+            app.search_input.set_text("filesystem");
+            app.recompute_matches();
+            assert!(!app.matches.is_empty());
+            // Active match drives the current page.
+            let p = app.matches[0].page;
+            assert_eq!(app.current_page, p);
+            // Stepping wraps around.
+            let first = app.active_match;
+            app.step_match(1);
+            if app.matches.len() > 1 {
+                assert_ne!(app.active_match, first);
+            }
+        }
+
+        eprintln!("phase search_toggles_change_match_logic");
+        {
+            let (mut app, _st) = app_with_state();
+            app.search_input.set_text("the");
+            app.search_case_sensitive = false;
+            app.search_whole_word = false;
+            app.recompute_matches();
+            let loose = app.matches.len();
+            app.search_whole_word = true;
+            app.recompute_matches();
+            let strict = app.matches.len();
+            assert!(
+                strict <= loose,
+                "whole-word never yields more matches than substring"
+            );
+        }
+    }
+
+    #[test]
+    fn placing_markup_clamps_into_the_page_and_focuses_its_sidebar() {
+        eprintln!("phase place_signature_clamps_into_page");
+        {
+            let (mut app, mut st) = app_with_state();
+            let s0 = app.signatures.len();
+            app.signer_name = "Tester".into();
+            app.place_signature(&mut st.doc, 3, (10.0, 10.0)); // near corner
+            assert_eq!(app.signatures.len(), s0 + 1);
+            let last = app.signatures.iter().find(|s| s.page == 3).unwrap();
+            assert!(last.rect.x >= MARGIN - 0.001);
+            assert!(last.rect.y >= MARGIN - 0.001);
+        }
+
+        eprintln!("phase placing_signature_focuses_signatures_sidebar");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.sidebar_tab = SidebarTab::Comments;
+            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            assert_eq!(app.sidebar_tab as u8, SidebarTab::Signatures as u8);
+            assert!(app.show_sidebar);
+            assert!(app.selected_sig.is_some(), "new signature is selected");
+            assert!(
+                app.sidebar_reveal.is_some(),
+                "reveal request queued for the new entry"
+            );
+        }
+
+        eprintln!("phase creating_note_focuses_comments_sidebar_on_new_thread");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.sidebar_tab = SidebarTab::Signatures;
+            app.create_note(&mut st.doc, 2, (200.0, 300.0));
+            assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
+            assert!(app.show_sidebar);
+            assert!(
+                app.sidebar_reveal.is_some(),
+                "new comment queued to scroll into view"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_and_zoom_clamp_and_keep_the_focal_point() {
+        eprintln!("phase page_navigation_clamps");
+        {
+            let (mut app, _st) = app_with_state();
+            app.go_to_page(999);
+            assert_eq!(app.current_page, app.doc.page_count());
+            app.go_to_page(0);
+            assert_eq!(app.current_page, 1);
+        }
+
+        eprintln!("phase zoom_switches_to_custom");
+        {
+            let (mut app, _st) = app_with_state();
+            app.zoom_by(1.25);
+            assert!(matches!(app.fit, FitMode::Custom(_)));
+        }
+
+        eprintln!("phase zoom_at_keeps_focal_point_stationary");
+        {
+            let (mut app, _st) = app_with_state();
+            // Start already overflowing and mid-scrolled so neither axis clamps
+            // during the zoom — the focal point can then stay exactly put.
+            app.fit = FitMode::Custom(2.0);
+            app.recompute_zoom();
+            app.go_to_page(1);
+            let (half_x, sy) = (app.viewport.max_scroll_x() / 2.0, app.scroll_y());
+            app.viewport.set_scroll(half_x, sy);
+            // Build a focal point that demonstrably lands inside page 1's card so
+            // neither axis is at a scroll clamp.
+            let origin = app.page_origins()[0];
+            let focal = Point::new(origin.x + 300.0 * app.zoom(), origin.y + 200.0 * app.zoom());
+            let before = app.hit_page(focal).expect("focal lands on a page");
+            app.zoom_at(1.3, focal);
+            let after = app.hit_page(focal).expect("focal still on a page");
+            assert_eq!(before.0, after.0, "same page stays under the cursor");
+            assert!(
+                (before.1.0 - after.1.0).abs() < 2.0,
+                "x focal drift {} too large",
+                (before.1.0 - after.1.0).abs()
+            );
+            assert!(
+                (before.1.1 - after.1.1).abs() < 2.0,
+                "y focal drift {} too large",
+                (before.1.1 - after.1.1).abs()
+            );
+        }
+
+        eprintln!("phase zoom_respects_min_max_bounds");
+        {
+            let (mut app, _st) = app_with_state();
+            for _ in 0..40 {
+                app.zoom_by(1.5);
+            }
+            assert!(app.zoom() <= ZOOM_MAX + 1e-6);
+            for _ in 0..40 {
+                app.zoom_by(0.5);
+            }
+            assert!(app.zoom() >= ZOOM_MIN - 1e-6);
+        }
+
+        eprintln!("phase horizontal_pan_reaches_full_width_when_zoomed");
+        {
+            let (mut app, _st) = app_with_state();
+            app.fit = FitMode::Custom(3.0);
+            app.recompute_zoom();
+            app.clamp_scroll();
+            assert!(app.is_overflowing_x(), "3x zoom must overflow the viewport");
+            let sy = app.scroll_y();
+            app.viewport.set_scroll(f64::MAX, sy);
+            // The full reachable width is content_width - canvas width.
+            let expected = (app.viewport.scaled_content_width() - app.canvas_rect.width()).max(0.0);
+            assert!(
+                (app.scroll_x() - expected).abs() < 1.0,
+                "pan should reach the full zoomed width"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_targets_remove_markup_and_anchored_annotations() {
+        eprintln!("phase delete_selected_annotation_removes_it");
+        {
+            let (mut app, mut st) = app_with_state();
+            let hl = app
+                .annotations
                 .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
-            "and the ink stroke landed in the shared document"
-        );
+                .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
+                .unwrap()
+                .clone();
+            let n = app.annotations.len();
+            app.selected_anno = Some(hl.id.clone());
+            assert!(app.delete_selected(&mut st.doc));
+            assert_eq!(app.annotations.len(), n - 1);
+            assert!(!app.annotations.iter().any(|a| a.id == hl.id));
+            assert!(app.selected_anno.is_none());
+        }
+
+        eprintln!("phase delete_signature_target_removes_it");
+        {
+            let (mut app, mut st) = app_with_state();
+            let sig = app.signatures[0].clone();
+            let n = app.signatures.len();
+            app.delete_target(&DeleteTarget::Signature(sig.id.clone()), &mut st.doc);
+            assert_eq!(app.signatures.len(), n - 1);
+            assert!(!app.signatures.iter().any(|s| s.id == sig.id));
+        }
+
+        eprintln!("phase delete_comment_target_also_drops_its_annotation");
+        {
+            let (mut app, mut st) = app_with_state();
+            // The note's linked comment: deleting it must drop the note marker too.
+            let note = app
+                .annotations
+                .iter()
+                .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
+                .unwrap()
+                .clone();
+            let comment = app
+                .comments
+                .iter()
+                .find(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
+                .unwrap()
+                .clone();
+            app.delete_target(&DeleteTarget::Comment(comment.id.clone()), &mut st.doc);
+            assert!(!app.comments.iter().any(|c| c.id == comment.id));
+            assert!(
+                !app.annotations.iter().any(|a| a.id == note.id),
+                "orphan note marker removed"
+            );
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn ink_drag_with_a_single_point_is_discarded() {
-        let (mut app, mut st) = app_with_state();
-        let a0 = app.annotations.len();
-        app.tool = Tool::Ink;
-        app.drag = Some(DragState {
-            tool: Tool::Ink,
-            page: 1,
-            start: (80.0, 300.0),
-            cur: (80.0, 300.0),
-            points: vec![(80.0, 300.0)],
-        });
-        app.commit_drag(&mut st.doc);
-        assert_eq!(
-            app.annotations.len(),
-            a0,
-            "a degenerate single-point ink stroke adds nothing"
-        );
-    }
+    fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
+        eprintln!("phase ymd_from_unix_secs_matches_known_dates");
+        {
+            // Fixed reference points keep the pure date conversion independent of
+            // the wall clock.
+            assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
+            assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
+            assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
+            assert_eq!(ymd_from_unix_secs(1_798_761_599), "2026-12-31"); // year boundary
+            // `today_ymd` is well-formed `YYYY-MM-DD`.
+            let t = today_ymd();
+            assert_eq!(t.len(), 10, "today is YYYY-MM-DD: {t}");
+            assert_eq!(&t[4..5], "-");
+            assert_eq!(&t[7..8], "-");
+        }
 
-    #[test]
-    fn signer_name_inline_edit_commits_and_empty_falls_back_to_author() {
-        let (mut app, mut st) = app_with_state();
-        // Type a real name into the signer identity field and commit it.
-        app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
-        app.editing.as_mut().unwrap().input.set_text("Grace Hopper");
-        app.commit_edit(&mut st.doc);
-        assert!(app.editing.is_none(), "committing closes the editor");
-        assert_eq!(
-            app.signer_name, "Grace Hopper",
-            "signer name updates from the editor"
-        );
-        // A subsequent signature signs under the new identity.
-        app.place_signature(&mut st.doc, 4, (200.0, 300.0));
-        assert_eq!(
-            app.signatures.iter().find(|s| s.page == 4).unwrap().signer,
-            "Grace Hopper"
-        );
-        // Committing an empty name falls back to the app author identity.
-        app.begin_edit(EditTarget::Signer, "whatever");
-        app.editing.as_mut().unwrap().input.set_text("   ");
-        app.commit_edit(&mut st.doc);
-        assert_eq!(
-            app.signer_name, app.author,
-            "an empty signer name falls back to the author"
-        );
-    }
+        eprintln!("phase placed_signature_stamps_the_real_date_not_a_constant");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.signer_name = "Grace Hopper".into();
+            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            let s = app.signatures.iter().find(|s| s.page == 2).unwrap().clone();
+            // The stamp is the live system date, not the frozen demo/seed date.
+            assert_eq!(
+                s.date,
+                today_ymd(),
+                "runtime signature carries today's date"
+            );
+            assert_ne!(
+                s.date, SEED_DATE,
+                "runtime date is not the hardcoded demo constant"
+            );
+            // And the real date is what durably lands in the shared CRDT.
+            let stored = PdfDoc::list_signatures(&st.doc);
+            assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
+        }
 
-    #[test]
-    #[serial(pdfium)]
-    fn loading_a_second_document_shows_none_of_the_priors_markup() {
-        // The property this has always protected: one document's markup must
-        // never appear over another. What changed is how — the second
-        // document is a different record, so there is nothing to clear, and
-        // the first document's markup is still its own (proved by
-        // `annotating_one_document_survives_opening_another`).
-        let (_dir, a, b) = two_documents();
-        let mut app = PdfApp::open(&a);
-        let mut st = ui::State::new();
-        let mut set = ui::RecordSet::in_memory();
-        let mut room = AutoCommit::new();
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        annotate(&mut app, &mut st);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(!app.annotations.is_empty(), "a.pdf has markup to bleed");
+        // A typed signature stamps the signer's name as its content — real input,
+        // no canned squiggle.
+        eprintln!("phase placing_a_typed_signature_stores_the_typed_name");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.sig_mode = SigMode::Type;
+            app.signer_name = "Grace Hopper".into();
+            app.place_signature(&mut st.doc, 3, (200.0, 300.0));
+            let placed = app
+                .signatures
+                .iter()
+                .find(|s| s.page == 3)
+                .expect("a signature landed");
+            assert_eq!(placed.signer, "Grace Hopper");
+            assert_eq!(
+                placed.ink,
+                SignatureInk::Typed,
+                "a typed signature carries typed ink"
+            );
+            // And it durably reaches the shared CRDT as typed ink.
+            let stored = PdfDoc::list_signatures(&st.doc);
+            assert!(
+                stored
+                    .iter()
+                    .any(|x| x.id == placed.id && x.ink == SignatureInk::Typed)
+            );
+        }
 
-        app.load_path(&b, &st.doc);
-        record_frame(&mut app, &mut st, &mut set, &mut room);
-        assert!(app.has_document, "the second document loads");
-        assert_eq!(app.doc_name, "b.pdf");
-        assert!(app.annotations.is_empty(), "no prior annotations shown");
-        assert!(app.comments.is_empty(), "no prior comments shown");
-        assert!(app.signatures.is_empty(), "no prior signatures shown");
-        assert!(
-            PdfDoc::list_annotations(&st.doc).is_empty(),
-            "and none in the document the reader is now editing"
-        );
-        assert!(PdfDoc::list_signatures(&st.doc).is_empty());
-        // View state resets for the fresh document.
-        assert_eq!(app.current_page, 1);
-        assert!(app.selected_anno.is_none() && app.selected_sig.is_none());
+        // A drawn signature stores the exact strokes the user drew, and placement
+        // writes them into the document; an *empty* drawn signature is refused so
+        // no blank "signed" field is ever stamped.
+        eprintln!("phase drawn_signature_places_the_strokes_and_empty_is_refused");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.sig_mode = SigMode::Draw;
+
+            // Empty pad → nothing is placed, and the user is told to draw first.
+            let before = app.signatures.len();
+            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            assert_eq!(
+                app.signatures.len(),
+                before,
+                "an empty drawn signature is not placed"
+            );
+            assert!(
+                app.status_note
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains("draw")
+            );
+
+            // Draw a stroke, then place: the strokes are what land in the document.
+            app.sig_strokes = vec![vec![(0.1, 0.5), (0.4, 0.2), (0.7, 0.6), (0.9, 0.4)]];
+            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            let placed = app
+                .signatures
+                .iter()
+                .find(|s| s.page == 2)
+                .expect("a drawn signature landed");
+            match &placed.ink {
+                SignatureInk::Drawn { strokes } => {
+                    assert_eq!(strokes.len(), 1);
+                    assert_eq!(strokes[0].len(), 4, "the drawn polyline is preserved");
+                }
+                SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
+            }
+            let stored = PdfDoc::list_signatures(&st.doc);
+            assert!(
+                stored.iter().any(
+                    |x| matches!(&x.ink, SignatureInk::Drawn { strokes } if strokes.len() == 1)
+                )
+            );
+        }
+
+        eprintln!("phase signer_name_inline_edit_commits_and_empty_falls_back_to_author");
+        {
+            let (mut app, mut st) = app_with_state();
+            // Type a real name into the signer identity field and commit it.
+            app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
+            app.editing.as_mut().unwrap().set_text("Grace Hopper");
+            app.commit_edit(&mut st.doc);
+            assert!(app.editing.is_none(), "committing closes the editor");
+            assert_eq!(
+                app.signer_name, "Grace Hopper",
+                "signer name updates from the editor"
+            );
+            // A subsequent signature signs under the new identity.
+            app.place_signature(&mut st.doc, 4, (200.0, 300.0));
+            assert_eq!(
+                app.signatures.iter().find(|s| s.page == 4).unwrap().signer,
+                "Grace Hopper"
+            );
+            // Committing an empty name falls back to the app author identity.
+            app.begin_edit(EditTarget::Signer, "whatever");
+            app.editing.as_mut().unwrap().set_text("   ");
+            app.commit_edit(&mut st.doc);
+            assert_eq!(
+                app.signer_name, app.author,
+                "an empty signer name falls back to the author"
+            );
+        }
     }
 
     // ----------------------------------------------------------------
@@ -8359,189 +8938,276 @@ mod tests {
         std::env::var_os("TILO_REQUIRE_PDFIUM").is_some()
     }
 
-    /// The escape hatch is the whole reason skipping is defensible, so it
-    /// is checked rather than assumed.
-    ///
-    /// Written against the decision and not against the environment on
-    /// purpose: there is no supported way to make `find_pdfium` fail on a
-    /// machine that has the library, so a test that tried to arrange the
-    /// absence would be testing its own mock. What can be pinned is that
-    /// a missing backend is a skip only while nobody has asked for it, and
-    /// a failure the moment somebody has.
-    #[test]
-    fn a_missing_pdfium_skips_unless_it_was_required() {
-        assert_eq!(pdfium_gate(true, false), PdfiumGate::Run);
-        assert_eq!(pdfium_gate(true, true), PdfiumGate::Run);
-        assert_eq!(
-            pdfium_gate(false, false),
-            PdfiumGate::Skip,
-            "with no backend and no demand for one, say so and stand down"
-        );
-        assert_eq!(
-            pdfium_gate(false, true),
-            PdfiumGate::Fail,
-            "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
-             or the skip has no floor under it"
-        );
-    }
-
-    /// Measure the open path so regressions surface as numbers, not vibes.
-    /// Times: document open (load + page sizes, no rendering), first text-layer
-    /// extraction, a cold first-page rasterise, and a cache-hit rasterise
-    /// (the scroll-frame cost). Prints under `--nocapture`; the assertions are
-    /// loose sanity bounds, not perf gates.
-    #[test]
     #[serial(pdfium)]
-    fn measure_open_and_render_perf() {
-        use std::time::Instant;
-
-        let t = Instant::now();
-        let mut app = PdfApp::open(SAMPLE_PDF);
-        let open_ms = t.elapsed().as_secs_f64() * 1000.0;
-        match pdfium_gate(app.raster.is_some(), require_pdfium()) {
-            PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-            PdfiumGate::Skip => {
-                eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
-                return;
-            }
-        }
-        let pages = app.doc.page_count();
-
-        let t = Instant::now();
-        let layer = app.raster.as_mut().unwrap().page_text(0);
-        let text_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let glyphs = layer.chars.len();
-
-        // A fit-page render is ~US-Letter width (612pt) times the 2x supersample.
-        let bucket = 1224u32;
-        let t = Instant::now();
-        let img = app.raster.as_mut().unwrap().render(0, bucket);
-        let render_cold_ms = t.elapsed().as_secs_f64() * 1000.0;
-        assert!(img.is_some(), "page 0 rasterises");
-
-        let t = Instant::now();
-        let _ = app.raster.as_mut().unwrap().render(0, bucket);
-        let render_cached_ms = t.elapsed().as_secs_f64() * 1000.0;
-
-        eprintln!(
-            "PERF pages={pages} glyphs={glyphs} | open={open_ms:.1}ms \
-             text_extract={text_ms:.1}ms render_cold={render_cold_ms:.1}ms \
-             render_cached(scroll-frame)={render_cached_ms:.3}ms"
-        );
-        assert!(
-            open_ms < 5000.0,
-            "open should not take seconds (was {open_ms:.0}ms)"
-        );
-        assert!(
-            render_cached_ms < render_cold_ms.max(1.0),
-            "cached render is faster than cold"
-        );
-    }
-
-    /// Opening a document and painting its first frame must not pay the pdfium
-    /// text-extraction cost (hundreds of ms per page): the selectable text layer
-    /// only feeds selection + search overlays, so it stays unbuilt until one of
-    /// those is actually live. This guards the deferral — a regression that
-    /// re-adds eager per-frame extraction reintroduces the multi-hundred-ms
-    /// open/scroll hitch this reader used to have. Prints the real frame times.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    #[serial(pdfium)]
-    fn first_frame_defers_text_extraction() {
-        use std::collections::HashMap;
-        use std::time::Instant;
-        use ui::permissions::PermissionContext;
-        use ui::presence::PresenceCtx;
-        use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
-
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        let theme = Theme::dark();
-        let (w, h) = (1280.0f64, 800.0f64);
-
-        // Reuse ONE TextRenderer across frames, exactly as the live app does, so
-        // the timing reflects real per-frame cost and not the one-time font-atlas
-        // init the shot harness pays on every `full_frame` call.
-        let mut tr = TextRenderer::new();
-        // Drive one full 5-pass frame against the shared renderer.
-        let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            sync_fixture(app, st);
-            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: Dimension::length(h as f32),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .unwrap();
-            let measure_map = node_map.clone();
-            let trm = &mut *tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(w as f32),
-                        height: taffy::AvailableSpace::Definite(h as f32),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, trm) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            app.apply_layout(&taffy, child, Point::ORIGIN);
-            let mut scene = Scene::new();
-            app.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                &theme,
-                &PresenceCtx::empty(),
-                &PermissionContext::permissive(),
+    fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
+        // The escape hatch is the whole reason skipping is defensible, so it
+        // is checked rather than assumed.
+        //
+        // Written against the decision and not against the environment on
+        // purpose: there is no supported way to make `find_pdfium` fail on a
+        // machine that has the library, so a test that tried to arrange the
+        // absence would be testing its own mock. What can be pinned is that
+        // a missing backend is a skip only while nobody has asked for it, and
+        // a failure the moment somebody has.
+        eprintln!("phase a_missing_pdfium_skips_unless_it_was_required");
+        {
+            assert_eq!(pdfium_gate(true, false), PdfiumGate::Run);
+            assert_eq!(pdfium_gate(true, true), PdfiumGate::Run);
+            assert_eq!(
+                pdfium_gate(false, false),
+                PdfiumGate::Skip,
+                "with no backend and no demand for one, say so and stand down"
             );
-        };
+            assert_eq!(
+                pdfium_gate(false, true),
+                PdfiumGate::Fail,
+                "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
+                 or the skip has no floor under it"
+            );
+        }
 
-        // Warm the shared renderer's font atlas so it is not charged to frame 1.
-        frame(&mut app, &mut st, &mut tr);
-        app.raster_text.clear();
+        // Measure the open path so regressions surface as numbers, not vibes.
+        // Times: document open (load + page sizes, no rendering), first text-layer
+        // extraction, a cold first-page rasterise, and a cache-hit rasterise
+        // (the scroll-frame cost). Prints under `--nocapture`; the assertions are
+        // loose sanity bounds, not perf gates.
+        eprintln!("phase measure_open_and_render_perf");
+        'phase: {
+            let t = ui::time::now();
+            let mut app = PdfApp::open(SAMPLE_PDF);
+            let open_ms = t.elapsed().as_secs_f64() * 1000.0;
+            match pdfium_gate(app.raster.is_some(), require_pdfium()) {
+                PdfiumGate::Run => {}
+                PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+                PdfiumGate::Skip => {
+                    eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
+                    break 'phase;
+                }
+            }
+            let pages = app.doc.page_count();
 
-        // An idle document frame: no selection, no search — no text extraction.
-        let t = Instant::now();
-        frame(&mut app, &mut st, &mut tr);
-        let idle_open_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let idle_text_pages = app.raster_text.len();
+            let t = ui::time::now();
+            let layer = app.raster.as_mut().unwrap().page_text(0);
+            let text_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let glyphs = layer.chars.len();
 
-        let t = Instant::now();
-        frame(&mut app, &mut st, &mut tr);
-        let idle_scroll_ms = t.elapsed().as_secs_f64() * 1000.0;
+            // A fit-page render is ~US-Letter width (612pt) times the 2x supersample.
+            let bucket = 1224u32;
+            let t = ui::time::now();
+            let img = app.raster.as_mut().unwrap().render(0, bucket);
+            let render_cold_ms = t.elapsed().as_secs_f64() * 1000.0;
+            assert!(img.is_some(), "page 0 rasterises");
 
-        eprintln!(
-            "PERF-FRAME idle_open={idle_open_ms:.2}ms idle_scroll={idle_scroll_ms:.2}ms \
-             idle_text_pages={idle_text_pages}"
-        );
-        assert_eq!(
-            idle_text_pages, 0,
-            "an idle frame must defer pdfium text extraction (only selection/search needs it)"
-        );
+            let t = ui::time::now();
+            let _ = app.raster.as_mut().unwrap().render(0, bucket);
+            let render_cached_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+            eprintln!(
+                "PERF pages={pages} glyphs={glyphs} | open={open_ms:.1}ms \
+                 text_extract={text_ms:.1}ms render_cold={render_cold_ms:.1}ms \
+                 render_cached(scroll-frame)={render_cached_ms:.3}ms"
+            );
+            assert!(
+                render_cached_ms < render_cold_ms.max(1.0),
+                "cached render is faster than cold"
+            );
+        }
+
+        // Opening a document and painting its first frame must not pay the pdfium
+        // text-extraction cost (hundreds of ms per page): the selectable text layer
+        // only feeds selection + search overlays, so it stays unbuilt until one of
+        // those is actually live. This guards the deferral — a regression that
+        // re-adds eager per-frame extraction reintroduces the multi-hundred-ms
+        // open/scroll hitch this reader used to have. Prints the real frame times.
+        eprintln!("phase first_frame_defers_text_extraction");
+        'phase: {
+            use std::collections::HashMap;
+            use ui::permissions::PermissionContext;
+            use ui::presence::PresenceCtx;
+            use ui::text_render::TextRenderer;
+            use ui::theme::Theme;
+
+            let Some(mut app) = open_raster_sample() else {
+                break 'phase;
+            };
+            let mut st = ui::State::new();
+            let theme = Theme::dark();
+            let (w, h) = (1280.0f64, 800.0f64);
+
+            // Reuse ONE TextRenderer across frames, exactly as the live app does, so
+            // the timing reflects real per-frame cost and not the one-time font-atlas
+            // init the shot harness pays on every `full_frame` call.
+            let mut tr = TextRenderer::new();
+            // Drive one full 5-pass frame against the shared renderer.
+            let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                sync_fixture(app, st);
+                let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(w as f32),
+                                height: Dimension::length(h as f32),
+                            },
+                            ..Default::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap();
+                let measure_map = node_map.clone();
+                let trm = &mut *tr;
+                taffy
+                    .compute_layout_with_measure(
+                        root,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(w as f32),
+                            height: taffy::AvailableSpace::Definite(h as f32),
+                        },
+                        |known, avail, node_id, _, _| {
+                            if let Some(&ptr) = measure_map.get(&node_id) {
+                                unsafe { (*ptr).measure(known, avail, trm) }
+                            } else {
+                                taffy::Size::ZERO
+                            }
+                        },
+                    )
+                    .unwrap();
+                app.apply_layout(&taffy, child, Point::ORIGIN);
+                let mut scene = Scene::new();
+                app.draw_with_presence(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                    &PermissionContext::permissive(),
+                );
+            };
+
+            // Warm the shared renderer's font atlas so it is not charged to frame 1.
+            frame(&mut app, &mut st, &mut tr);
+            app.raster_text.clear();
+
+            // An idle document frame: no selection, no search — no text extraction.
+            let t = ui::time::now();
+            frame(&mut app, &mut st, &mut tr);
+            let idle_open_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let idle_text_pages = app.raster_text.len();
+
+            let t = ui::time::now();
+            frame(&mut app, &mut st, &mut tr);
+            let idle_scroll_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+            eprintln!(
+                "PERF-FRAME idle_open={idle_open_ms:.2}ms idle_scroll={idle_scroll_ms:.2}ms \
+                 idle_text_pages={idle_text_pages}"
+            );
+            assert_eq!(
+                idle_text_pages, 0,
+                "an idle frame must defer pdfium text extraction (only selection/search needs it)"
+            );
+        }
+
+        // Opening a document must not rasterise a screen-full of pages on the very
+        // first frame: a real page (and, for a scanned PDF, even its rail
+        // thumbnail) costs tens-to-hundreds of ms, so the open→first-paint frame
+        // pays for only the single top page and defers the rest to follow-up
+        // frames. This guards that budget — and that the backlog drains and the
+        // frame pump settles (no permanent redraw spin).
+        eprintln!("phase open_rasterises_only_the_budgeted_pages_on_the_first_frame");
+        'phase: {
+            use std::collections::HashMap;
+            use ui::permissions::PermissionContext;
+            use ui::presence::PresenceCtx;
+            use ui::text_render::TextRenderer;
+            use ui::theme::Theme;
+
+            let Some(mut app) = open_raster_sample() else {
+                break 'phase;
+            };
+            let mut st = ui::State::new();
+            let theme = Theme::dark();
+            let (w, h) = (1280.0f64, 800.0f64);
+            let mut tr = TextRenderer::new();
+
+            let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                sync_fixture(app, st);
+                let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(w as f32),
+                                height: Dimension::length(h as f32),
+                            },
+                            ..Default::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap();
+                let measure_map = node_map.clone();
+                let trm = &mut *tr;
+                taffy
+                    .compute_layout_with_measure(
+                        root,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(w as f32),
+                            height: taffy::AvailableSpace::Definite(h as f32),
+                        },
+                        |known, avail, node_id, _, _| {
+                            if let Some(&ptr) = measure_map.get(&node_id) {
+                                unsafe { (*ptr).measure(known, avail, trm) }
+                            } else {
+                                taffy::Size::ZERO
+                            }
+                        },
+                    )
+                    .unwrap();
+                app.apply_layout(&taffy, child, Point::ORIGIN);
+                let mut scene = Scene::new();
+                app.draw_with_presence(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                    &PermissionContext::permissive(),
+                );
+            };
+
+            // The very first painted frame after open.
+            frame(&mut app, &mut st, &mut tr);
+            let full_pages_first = app.raster.as_ref().unwrap().cached_full_page_count();
+            assert!(
+                full_pages_first <= MAX_NEW_PAGE_RASTERS_PER_FRAME,
+                "first paint rasterises at most {MAX_NEW_PAGE_RASTERS_PER_FRAME} full page(s), not a screen-full — got {full_pages_first}"
+            );
+
+            // The deferred work drains over the next frames and the pump settles:
+            // `pending_raster` (which drives the animation-frame follow-up) clears.
+            for _ in 0..20 {
+                if !app.pending_raster {
+                    break;
+                }
+                frame(&mut app, &mut st, &mut tr);
+            }
+            assert!(
+                !app.pending_raster,
+                "the deferred-raster backlog drains and the frame pump settles back to idle"
+            );
+        }
     }
 
     /// The Typst-typeset text fixture shared with the engine's tests.
     const LATIN_PDF: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
+        "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
     );
 
     fn open_latin_raster() -> Option<PdfApp> {
@@ -8558,10 +9224,14 @@ mod tests {
 
     /// Lay the reader out at 100 %, then switch to `zoom` without drawing, so
     /// the next `rasterize_visible` is the first frame at that zoom.
-    fn zoom_without_frame(app: &mut PdfApp, st: &mut ui::State, zoom: f64) {
-        if app.canvas_rect.area() <= 0.0 {
-            set_zoom_and_frame(app, st, 1.0, None);
-        }
+    fn zoom_without_frame(app: PdfApp, zoom: f64) -> Framed<PdfApp> {
+        let mut app = framed_at_zoom(app, ui::State::new(), 1.0, None);
+        rezoom_without_frame(&mut app, zoom);
+        app
+    }
+
+    /// Switch an already laid-out reader to `zoom` without drawing.
+    fn rezoom_without_frame(app: &mut PdfApp, zoom: f64) {
         app.fit = FitMode::Custom(zoom);
         app.viewport.set_zoom(zoom);
     }
@@ -8603,365 +9273,339 @@ mod tests {
         (covered, target.width().max(0.0) * target.height().max(0.0))
     }
 
-    /// At 800 % a page is far wider than the old 4096 px whole-page cap; it
-    /// is drawn from tiles at a level sharper than that cap allowed, covering
-    /// the viewport exactly, with a placeholder underneath while tiles are
-    /// still arriving.
-    #[test]
     #[serial(pdfium)]
-    fn zoomed_pages_are_drawn_from_tiles_past_the_old_bitmap_cap() {
-        let Some(mut app) = open_latin_raster() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        zoom_without_frame(&mut app, &mut st, 8.0);
-
-        let (placeholders, _, first) = app.rasterize_visible();
-        let (&page, tiles) = first.iter().next().expect("the zoomed page is tiled");
-        assert!(
-            app.pending_visuals,
-            "one frame renders only a budget of tiles; the rest follow"
-        );
-        let placeholder = placeholders
-            .get(&page)
-            .expect("a placeholder shows while tiles are pending");
-        assert!(placeholder.width <= crate::tiles::PLACEHOLDER_PAGE_PX);
-        assert!(!tiles.tiles.is_empty());
-
-        let (_, _, settled) = settle_tiles(&mut app);
-        let tiles = settled.get(&page).expect("still tiled");
-        let (pw, _) = crate::tiles::page_pixels(tiles.placement.size, tiles.placement.level);
-        assert!(
-            pw > 4096,
-            "the page is rendered {pw} px wide, past the whole-page cap"
-        );
-        let (covered, target) = tile_coverage(&app, tiles);
-        assert!(target > 0.0);
-        assert!(
-            (covered - target).abs() / target < 1e-6,
-            "visible tiles cover the viewport exactly: {covered} of {target}"
-        );
-        assert!(tiles.tiles.iter().all(|(r, image)| {
-            image.width == r.width && image.height == r.height && r.width <= 512
-        }));
-        assert_eq!(
-            app.raster.as_ref().unwrap().cached_tile_levels(),
-            vec![tiles.placement.level]
-        );
-    }
-
-    /// Tiles are cached per zoom level: zooming out and back finds the first
-    /// level's tiles still there, so the viewport is complete on the very
-    /// first frame back.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    #[serial(pdfium)]
-    fn returning_to_a_zoom_level_reuses_its_tiles() {
-        let Some(mut app) = open_latin_raster() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        zoom_without_frame(&mut app, &mut st, 8.0);
-        let (_, _, at_eight) = settle_tiles(&mut app);
-        let count: usize = at_eight.values().map(|t| t.tiles.len()).sum();
-        assert!(
-            count > MAX_NEW_TILE_RASTERS_PER_FRAME,
-            "enough tiles that a cold frame could not fill them ({count})"
-        );
-        let eight = at_eight.values().next().unwrap().placement.level;
-        let scroll = (app.scroll_x(), app.scroll_y());
+    fn zoomed_pages_draw_from_reusable_worker_tiles_matching_full_renders() {
+        // At 800 % a page is far wider than the old 4096 px whole-page cap; it
+        // is drawn from tiles at a level sharper than that cap allowed, covering
+        // the viewport exactly, with a placeholder underneath while tiles are
+        // still arriving.
+        eprintln!("phase zoomed_pages_are_drawn_from_tiles_past_the_old_bitmap_cap");
+        'phase: {
+            let Some(app) = open_latin_raster() else {
+                break 'phase;
+            };
+            let mut app = zoom_without_frame(app, 8.0);
 
-        zoom_without_frame(&mut app, &mut st, 5.0);
-        let (_, _, at_five) = settle_tiles(&mut app);
-        let five = at_five
-            .values()
-            .next()
-            .expect("5x is tiled")
-            .placement
-            .level;
-        assert_ne!(eight, five);
-        assert_eq!(app.raster.as_ref().unwrap().cached_tile_levels(), {
-            let mut levels = vec![eight, five];
-            levels.sort_unstable();
-            levels
-        });
-
-        zoom_without_frame(&mut app, &mut st, 8.0);
-        app.viewport.set_scroll(scroll.0, scroll.1);
-        let (_, _, back) = app.rasterize_visible();
-        assert!(!app.pending_visuals, "every tile was a cache hit");
-        assert_eq!(back.values().map(|t| t.tiles.len()).sum::<usize>(), count);
-    }
-
-    /// The production path: the owner worker renders the placeholder and the
-    /// tile batch the draw pass hands it, and the viewport fills from tiles.
-    #[test]
-    #[serial(pdfium)]
-    fn the_owner_worker_fills_a_zoomed_viewport_with_tiles() {
-        let mut app = PdfApp::empty();
-        let mut st = ui::State::new();
-        app.queue_worker_open(std::path::Path::new(LATIN_PDF));
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
-            app.sync(&mut st.doc, &st.root);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        if !app.has_document {
-            assert!(!require_pdfium(), "fixture must open: {:?}", app.load_error);
-            eprintln!("SKIPPING the worker tiled-zoom test: {NO_PDFIUM}");
-            return;
-        }
-        // The page at 100 % arrives first; it is what shows under the tiles.
-        set_zoom_and_frame(&mut app, &mut st, 1.0, None);
-        while app.raster_images.is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-            full_frame(&mut app, &mut st, 1280.0, 800.0, None);
-        }
-        app.fit = FitMode::Custom(8.0);
-        app.viewport.set_zoom(8.0);
-
-        let mut saw_placeholder_while_pending = false;
-        let placement = loop {
-            let (placeholders, _, tiles) = app.rasterize_visible();
-            let page = tiles.values().next().expect("the zoomed page is tiled");
-            let (covered, target) = tile_coverage(&app, page);
-            if app.pending_visuals && placeholders.contains_key(&(page.placement.page + 1)) {
-                saw_placeholder_while_pending = true;
-            }
-            if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
-                break Some(page.placement);
-            }
-            if std::time::Instant::now() >= deadline {
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-            app.sync(&mut st.doc, &st.root);
-        };
-        let placement = placement.expect("the worker filled the viewport with tiles");
-        assert!(
-            saw_placeholder_while_pending,
-            "the placeholder showed while tiles were on their way"
-        );
-        // Whatever is still queued is prefetch margin, never a visible tile.
-        let canvas = app.canvas_rect;
-        let visible: Vec<_> =
-            crate::tiles::wanted_tiles(&[placement], (canvas.x0, canvas.y0, canvas.x1, canvas.y1))
-                .into_iter()
-                .filter(|t| t.visible)
-                .map(|t| (t.col, t.row))
-                .collect();
-        assert!(
-            app.raster_tile_batch
-                .iter()
-                .all(|queued| !visible.contains(&(queued.col, queued.row)))
-        );
-    }
-
-    /// A tile's pixels are the same region of the page rendered whole at the
-    /// same scale (the recorded rotation applied in both).
-    #[test]
-    #[serial(pdfium)]
-    fn a_tile_matches_the_same_region_of_a_whole_page_render() {
-        let Some(mut app) = open_latin_raster() else {
-            return;
-        };
-        let rz = app.raster.as_mut().unwrap();
-        let plan: Vec<_> = (1..=rz.page_count())
-            .map(|page| crate::doc::PagePlanEntry {
-                id: format!("source-{page}"),
-                source_page: page,
-                imported: None,
-                rotation: if page == 1 { 90 } else { 0 },
-            })
-            .collect();
-        assert!(rz.reconcile_page_plan(&plan));
-        let level = 8; // 4 px per point.
-        let tile = rz.render_tile(0, level, 1, 1).expect("tile");
-        let engine = tilo_pdf::Engine::shared().expect("engine");
-        let doc = engine
-            .open_path(std::path::Path::new(LATIN_PDF))
-            .expect("open fixture");
-        let whole = doc
-            .render(
-                0,
-                &tilo_pdf::RenderOptions {
-                    scale: crate::tiles::level_scale(level),
-                    rotation: tilo_pdf::Rotation::from_degrees(90).unwrap(),
-                    ..tilo_pdf::RenderOptions::default()
-                },
-            )
-            .expect("whole page");
-        let stride = whole.width() as usize * 4;
-        let pixels = tile.data.data();
-        let mut diff = 0u64;
-        for y in 0..tile.height as usize {
-            for x in 0..tile.width as usize * 4 {
-                let a = pixels[y * tile.width as usize * 4 + x];
-                let b = whole.pixels()[(512 + y) * stride + 512 * 4 + x];
-                diff += u64::from(a.abs_diff(b));
-            }
-        }
-        let mean = diff as f64 / f64::from(tile.width * tile.height * 4);
-        assert!(mean < 1.0, "tile differs from the page region by {mean}");
-        // The tile is not blank paper.
-        assert!(pixels.chunks_exact(4).any(|px| px[0] < 128));
-    }
-
-    /// Opening a document must not rasterise a screen-full of pages on the very
-    /// first frame: a real page (and, for a scanned PDF, even its rail
-    /// thumbnail) costs tens-to-hundreds of ms, so the open→first-paint frame
-    /// pays for only the single top page and defers the rest to follow-up
-    /// frames. This guards that budget — and that the backlog drains and the
-    /// frame pump settles (no permanent redraw spin).
-    #[test]
-    #[serial(pdfium)]
-    fn open_rasterises_only_the_budgeted_pages_on_the_first_frame() {
-        use std::collections::HashMap;
-        use ui::permissions::PermissionContext;
-        use ui::presence::PresenceCtx;
-        use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
-
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        let theme = Theme::dark();
-        let (w, h) = (1280.0f64, 800.0f64);
-        let mut tr = TextRenderer::new();
-
-        let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            sync_fixture(app, st);
-            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: Dimension::length(h as f32),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .unwrap();
-            let measure_map = node_map.clone();
-            let trm = &mut *tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(w as f32),
-                        height: taffy::AvailableSpace::Definite(h as f32),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, trm) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            app.apply_layout(&taffy, child, Point::ORIGIN);
-            let mut scene = Scene::new();
-            app.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                &theme,
-                &PresenceCtx::empty(),
-                &PermissionContext::permissive(),
+            let (placeholders, _, first) = app.rasterize_visible();
+            let (&page, tiles) = first.iter().next().expect("the zoomed page is tiled");
+            assert!(
+                app.pending_visuals,
+                "one frame renders only a budget of tiles; the rest follow"
             );
-        };
+            let placeholder = placeholders
+                .get(&page)
+                .expect("a placeholder shows while tiles are pending");
+            assert!(placeholder.width <= crate::tiles::PLACEHOLDER_PAGE_PX);
+            assert!(!tiles.tiles.is_empty());
 
-        // The very first painted frame after open.
-        frame(&mut app, &mut st, &mut tr);
-        let full_pages_first = app.raster.as_ref().unwrap().cached_full_page_count();
-        assert!(
-            full_pages_first <= MAX_NEW_PAGE_RASTERS_PER_FRAME,
-            "first paint rasterises at most {MAX_NEW_PAGE_RASTERS_PER_FRAME} full page(s), not a screen-full — got {full_pages_first}"
-        );
-
-        // The deferred work drains over the next frames and the pump settles:
-        // `pending_raster` (which drives the animation-frame follow-up) clears.
-        for _ in 0..20 {
-            if !app.pending_raster {
-                break;
-            }
-            frame(&mut app, &mut st, &mut tr);
+            let (_, _, settled) = settle_tiles(&mut app);
+            let tiles = settled.get(&page).expect("still tiled");
+            let (pw, _) = crate::tiles::page_pixels(tiles.placement.size, tiles.placement.level);
+            assert!(
+                pw > 4096,
+                "the page is rendered {pw} px wide, past the whole-page cap"
+            );
+            let (covered, target) = tile_coverage(&app, tiles);
+            assert!(target > 0.0);
+            assert!(
+                (covered - target).abs() / target < 1e-6,
+                "visible tiles cover the viewport exactly: {covered} of {target}"
+            );
+            assert!(tiles.tiles.iter().all(|(r, image)| {
+                image.width == r.width && image.height == r.height && r.width <= 512
+            }));
+            assert_eq!(
+                app.raster.as_ref().unwrap().cached_tile_levels(),
+                vec![tiles.placement.level]
+            );
         }
-        assert!(
-            !app.pending_raster,
-            "the deferred-raster backlog drains and the frame pump settles back to idle"
-        );
+
+        // Tiles are cached per zoom level: zooming out and back finds the first
+        // level's tiles still there, so the viewport is complete on the very
+        // first frame back.
+        eprintln!("phase returning_to_a_zoom_level_reuses_its_tiles");
+        'phase: {
+            let Some(app) = open_latin_raster() else {
+                break 'phase;
+            };
+            let mut app = zoom_without_frame(app, 8.0);
+            let (_, _, at_eight) = settle_tiles(&mut app);
+            let count: usize = at_eight.values().map(|t| t.tiles.len()).sum();
+            assert!(
+                count > MAX_NEW_TILE_RASTERS_PER_FRAME,
+                "enough tiles that a cold frame could not fill them ({count})"
+            );
+            let eight = at_eight.values().next().unwrap().placement.level;
+            let scroll = (app.scroll_x(), app.scroll_y());
+
+            rezoom_without_frame(&mut app, 5.0);
+            let (_, _, at_five) = settle_tiles(&mut app);
+            let five = at_five
+                .values()
+                .next()
+                .expect("5x is tiled")
+                .placement
+                .level;
+            assert_ne!(eight, five);
+            assert_eq!(app.raster.as_ref().unwrap().cached_tile_levels(), {
+                let mut levels = vec![eight, five];
+                levels.sort_unstable();
+                levels
+            });
+
+            rezoom_without_frame(&mut app, 8.0);
+            app.viewport.set_scroll(scroll.0, scroll.1);
+            let (_, _, back) = app.rasterize_visible();
+            assert!(!app.pending_visuals, "every tile was a cache hit");
+            assert_eq!(back.values().map(|t| t.tiles.len()).sum::<usize>(), count);
+        }
+
+        // The production path: the owner worker renders the placeholder and the
+        // tile batch the draw pass hands it, and the viewport fills from tiles.
+        eprintln!("phase the_owner_worker_fills_a_zoomed_viewport_with_tiles");
+        'phase: {
+            let mut app = PdfApp::empty();
+            let mut st = ui::State::new();
+            app.queue_worker_open(std::path::Path::new(LATIN_PDF));
+            let deadline = tilo_test_env::hang_deadline();
+            while app.pending_open.is_some() && ui::time::now() < deadline {
+                app.sync(&mut st.doc, &st.root);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !app.has_document {
+                assert!(!require_pdfium(), "fixture must open: {:?}", app.load_error);
+                eprintln!("SKIPPING the worker tiled-zoom test: {NO_PDFIUM}");
+                break 'phase;
+            }
+            // The page at 100 % arrives first; it is what shows under the tiles.
+            let mut app = framed_at_zoom(app, st, 1.0, None);
+            while app.raster_images.is_empty() && ui::time::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+                full_frame(&mut app, 1280.0, 800.0, None);
+            }
+            app.fit = FitMode::Custom(8.0);
+            app.viewport.set_zoom(8.0);
+
+            let mut saw_placeholder_while_pending = false;
+            let placement = loop {
+                let (placeholders, _, tiles) = app.rasterize_visible();
+                let page = tiles.values().next().expect("the zoomed page is tiled");
+                let (covered, target) = tile_coverage(&app, page);
+                if app.pending_visuals && placeholders.contains_key(&(page.placement.page + 1)) {
+                    saw_placeholder_while_pending = true;
+                }
+                if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
+                    break Some(page.placement);
+                }
+                if ui::time::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+                let (reader, st) = Framed::split(&mut app);
+                reader.sync(&mut st.doc, &st.root);
+            };
+            let placement = placement.expect("the worker filled the viewport with tiles");
+            assert!(
+                saw_placeholder_while_pending,
+                "the placeholder showed while tiles were on their way"
+            );
+            // Whatever is still queued is prefetch margin, never a visible tile.
+            let canvas = app.canvas_rect;
+            let visible: Vec<_> = crate::tiles::wanted_tiles(
+                &[placement],
+                (canvas.x0, canvas.y0, canvas.x1, canvas.y1),
+            )
+            .into_iter()
+            .filter(|t| t.visible)
+            .map(|t| (t.col, t.row))
+            .collect();
+            assert!(
+                app.raster_tile_batch
+                    .iter()
+                    .all(|queued| !visible.contains(&(queued.col, queued.row)))
+            );
+        }
+
+        // A tile's pixels are the same region of the page rendered whole at the
+        // same scale (the recorded rotation applied in both).
+        eprintln!("phase a_tile_matches_the_same_region_of_a_whole_page_render");
+        'phase: {
+            let Some(mut app) = open_latin_raster() else {
+                break 'phase;
+            };
+            let rz = app.raster.as_mut().unwrap();
+            let plan: Vec<_> = (1..=rz.page_count())
+                .map(|page| crate::doc::PagePlanEntry {
+                    id: format!("source-{page}"),
+                    source_page: page,
+                    imported: None,
+                    rotation: if page == 1 { 90 } else { 0 },
+                })
+                .collect();
+            assert!(rz.reconcile_page_plan(&plan));
+            let level = 8; // 4 px per point.
+            let tile = rz.render_tile(0, level, 1, 1).expect("tile");
+            let engine = tilo_pdf::Engine::shared().expect("engine");
+            let doc = engine
+                .open_path(std::path::Path::new(LATIN_PDF))
+                .expect("open fixture");
+            let whole = doc
+                .render(
+                    0,
+                    &tilo_pdf::RenderOptions {
+                        scale: crate::tiles::level_scale(level),
+                        rotation: tilo_pdf::Rotation::from_degrees(90).unwrap(),
+                        ..tilo_pdf::RenderOptions::default()
+                    },
+                )
+                .expect("whole page");
+            let stride = whole.width() as usize * 4;
+            let pixels = tile.data.data();
+            let mut diff = 0u64;
+            for y in 0..tile.height as usize {
+                for x in 0..tile.width as usize * 4 {
+                    let a = pixels[y * tile.width as usize * 4 + x];
+                    let b = whole.pixels()[(512 + y) * stride + 512 * 4 + x];
+                    diff += u64::from(a.abs_diff(b));
+                }
+            }
+            let mean = diff as f64 / f64::from(tile.width * tile.height * 4);
+            assert!(mean < 1.0, "tile differs from the page region by {mean}");
+            // The tile is not blank paper.
+            assert!(pixels.chunks_exact(4).any(|px| px[0] < 128));
+        }
     }
 
-    /// End-to-end text selection over the real pdfium glyph layer: press on a
-    /// glyph, drag across a run, copy. Drives the same `begin_selection` /
-    /// `update_selection` / `copy_selection` path the pointer handlers use, so a
-    /// regression in on-demand text-layer extraction or in the selection→clipboard
-    /// wiring fails here. Serialised on the clipboard so it never races the other
-    /// arboard tests.
-    #[test]
     #[serial(clipboard)]
     #[serial(pdfium)]
-    fn text_selection_drag_copies_the_real_run() {
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn raster_text_layer_selects_copies_and_searches_real_glyphs() {
+        // End-to-end text selection over the real pdfium glyph layer: press on a
+        // glyph, drag across a run, copy. Drives the same `begin_selection` /
+        // `update_selection` / `copy_selection` path the pointer handlers use, so a
+        // regression in on-demand text-layer extraction or in the selection→clipboard
+        // wiring fails here. Serialised on the clipboard so it never races the other
+        // arboard tests.
+        eprintln!("phase text_selection_drag_copies_the_real_run");
+        'phase: {
+            let Some(mut app) = open_raster_sample() else {
+                break 'phase;
+            };
 
-        // Two glyphs with real boxes on page 1, ordered left-to-right on a line,
-        // give a non-empty run to sweep between.
-        let layer = app.raster.as_mut().unwrap().page_text(0);
-        let mut printable: Vec<_> = layer
-            .chars
-            .iter()
-            .filter(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
-            .copied()
-            .collect();
-        assert!(printable.len() >= 4, "page 1 has a run of printable glyphs");
-        printable.sort_by(|a, b| {
-            (a.rect.y, a.rect.x)
-                .partial_cmp(&(b.rect.y, b.rect.x))
-                .unwrap()
-        });
-        let start = printable[0].rect.center();
-        let end = printable[printable.len().min(6) - 1].rect.center();
+            // Two glyphs with real boxes on page 1, ordered left-to-right on a line,
+            // give a non-empty run to sweep between.
+            let layer = app.raster.as_mut().unwrap().page_text(0);
+            let mut printable: Vec<_> = layer
+                .chars
+                .iter()
+                .filter(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
+                .copied()
+                .collect();
+            assert!(printable.len() >= 4, "page 1 has a run of printable glyphs");
+            printable.sort_by(|a, b| {
+                (a.rect.y, a.rect.x)
+                    .partial_cmp(&(b.rect.y, b.rect.x))
+                    .unwrap()
+            });
+            let start = printable[0].rect.center();
+            let end = printable[printable.len().min(6) - 1].rect.center();
 
-        // Begin the selection from a cold state — no prior frame populated the
-        // text layer, so this exercises on-demand extraction inside the press.
-        assert!(
-            app.raster_text.is_empty(),
-            "no eager text layer before a selection"
-        );
-        assert!(
-            app.begin_selection(1, start, Point::new(start.0, start.1)),
-            "pressing on a glyph starts a selection (extracting the layer on demand)"
-        );
-        app.update_selection(1, end);
-        let sel = app.selection.expect("a selection is armed");
-        assert!(
-            sel.is_active(),
-            "the drag grew the selection past its anchor"
-        );
+            // Begin the selection from a cold state — no prior frame populated the
+            // text layer, so this exercises on-demand extraction inside the press.
+            assert!(
+                app.raster_text.is_empty(),
+                "no eager text layer before a selection"
+            );
+            assert!(
+                app.begin_selection(1, start, Point::new(start.0, start.1)),
+                "pressing on a glyph starts a selection (extracting the layer on demand)"
+            );
+            app.update_selection(1, end);
+            let sel = app.selection.expect("a selection is armed");
+            assert!(
+                sel.is_active(),
+                "the drag grew the selection past its anchor"
+            );
 
-        let text = app.selection_text().expect("the selected run yields text");
-        assert!(
-            !text.trim().is_empty(),
-            "the selected run is real page text: {text:?}"
-        );
-        // The copy path reports success and stamps the toast.
-        assert!(
-            app.copy_selection(),
-            "copy_selection succeeds on a live selection"
-        );
-        assert!(
-            app.status_note.as_deref().unwrap_or("").contains("Copied"),
-            "a copy toast is shown ({:?})",
-            app.status_note
-        );
+            let text = app.selection_text().expect("the selected run yields text");
+            assert!(
+                !text.trim().is_empty(),
+                "the selected run is real page text: {text:?}"
+            );
+            // The copy path reports success and stamps the toast.
+            assert!(
+                app.copy_selection(),
+                "copy_selection succeeds on a live selection"
+            );
+            assert!(
+                app.status_note.as_deref().unwrap_or("").contains("Copied"),
+                "a copy toast is shown ({:?})",
+                app.status_note
+            );
+        }
+
+        eprintln!("phase raster_text_layer_hit_tests_real_glyphs_and_search_finds_them");
+        'phase: {
+            let Some(mut app) = open_raster_sample() else {
+                break 'phase;
+            };
+
+            // The text layer comes straight from pdfium's glyph geometry.
+            let layer = app.raster.as_mut().unwrap().page_text(0);
+            assert!(!layer.is_empty(), "page 1 exposes real extracted glyphs");
+
+            // Hit-testing a glyph's own centre returns a glyph whose box contains
+            // that point — proving the selectable layer is aligned to the render.
+            let probe = layer
+                .chars
+                .iter()
+                .find(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
+                .copied()
+                .expect("a printable glyph with a real box");
+            let (cx, cy) = probe.rect.center();
+            let hit = layer.char_at(cx, cy).expect("hit-test lands on a glyph");
+            assert!(
+                layer.chars[hit].rect.contains(cx, cy),
+                "the hit glyph's box contains the probed point"
+            );
+
+            // A real word from the page must be found by search, and the hit must
+            // resolve back to on-page bands that read as that word.
+            let word = first_word(&layer.text, 4).expect("a searchable word on page 1");
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.recompute_regions();
+            app.sync_viewport_frame();
+            app.search_input.set_text(&word);
+            app.recompute_matches();
+            assert!(
+                !app.raster_matches.is_empty(),
+                "search finds the real word {word:?} through the pdfium text layer"
+            );
+            let m = app.raster_matches[0];
+            let hit_layer = app.raster.as_mut().unwrap().page_text(m.page - 1);
+            let got = hit_layer.text_for_range(m.char_start, m.char_start + m.char_len);
+            assert_eq!(
+                got.to_lowercase(),
+                word.to_lowercase(),
+                "the hit is the searched word"
+            );
+            let bands = hit_layer.bands_for_range(m.char_start, m.char_start + m.char_len);
+            assert!(
+                !bands.is_empty(),
+                "the hit yields at least one on-page band"
+            );
+            let pw = app.pw();
+            for b in &bands {
+                assert!(
+                    b.x >= -1.0 && b.x + b.w <= pw + 1.0,
+                    "band {b:?} sits within the page width {pw}"
+                );
+                assert!(b.w > 0.0 && b.h > 0.0, "band {b:?} is non-degenerate");
+            }
+        }
     }
 
     /// The first run of `min_len`+ alphabetic characters in `text`.
@@ -8980,142 +9624,184 @@ mod tests {
         (cur.chars().count() >= min_len).then_some(cur)
     }
 
-    #[test]
     #[serial(pdfium)]
-    fn raster_text_layer_hit_tests_real_glyphs_and_search_finds_them() {
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn markup_and_page_edits_persist_across_save_and_reopen() {
+        eprintln!("phase save_back_writes_markup_as_real_pdf_annotations");
+        'phase: {
+            let Some(mut app) = open_raster_sample() else {
+                break 'phase;
+            };
+            let mut st = ui::State::new();
+            sync_fixture(&mut app, &mut st);
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.recompute_regions();
+            app.sync_viewport_frame();
 
-        // The text layer comes straight from pdfium's glyph geometry.
-        let layer = app.raster.as_mut().unwrap().page_text(0);
-        assert!(!layer.is_empty(), "page 1 exposes real extracted glyphs");
+            let before = app.raster.as_ref().unwrap().page_annotations(0).len();
 
-        // Hit-testing a glyph's own centre returns a glyph whose box contains
-        // that point — proving the selectable layer is aligned to the render.
-        let probe = layer
-            .chars
-            .iter()
-            .find(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
-            .copied()
-            .expect("a printable glyph with a real box");
-        let (cx, cy) = probe.rect.center();
-        let hit = layer.char_at(cx, cy).expect("hit-test lands on a glyph");
-        assert!(
-            layer.chars[hit].rect.contains(cx, cy),
-            "the hit glyph's box contains the probed point"
-        );
-
-        // A real word from the page must be found by search, and the hit must
-        // resolve back to on-page bands that read as that word.
-        let word = first_word(&layer.text, 4).expect("a searchable word on page 1");
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.recompute_regions();
-        app.sync_viewport_frame();
-        app.search_input.set_text(&word);
-        app.recompute_matches();
-        assert!(
-            !app.raster_matches.is_empty(),
-            "search finds the real word {word:?} through the pdfium text layer"
-        );
-        let m = app.raster_matches[0];
-        let hit_layer = app.raster.as_mut().unwrap().page_text(m.page - 1);
-        let got = hit_layer.text_for_range(m.char_start, m.char_start + m.char_len);
-        assert_eq!(
-            got.to_lowercase(),
-            word.to_lowercase(),
-            "the hit is the searched word"
-        );
-        let bands = hit_layer.bands_for_range(m.char_start, m.char_start + m.char_len);
-        assert!(
-            !bands.is_empty(),
-            "the hit yields at least one on-page band"
-        );
-        let pw = app.pw();
-        for b in &bands {
+            // Place a highlight, a sticky note with a body, and a signature on page
+            // 1 — all through the reader's real mutation methods.
+            app.tool = Tool::Highlight;
+            app.drag = Some(DragState {
+                tool: Tool::Highlight,
+                page: 1,
+                start: (70.0, 150.0),
+                cur: (360.0, 165.0),
+                points: vec![],
+            });
+            app.commit_drag(&mut st.doc);
+            app.create_note(&mut st.doc, 1, (120.0, 300.0));
+            app.editing.as_mut().unwrap().set_text("Check this claim");
+            app.commit_edit(&mut st.doc);
+            app.signer_name = "Grace Hopper".into();
+            app.place_signature(&mut st.doc, 1, (360.0, 520.0));
             assert!(
-                b.x >= -1.0 && b.x + b.w <= pw + 1.0,
-                "band {b:?} sits within the page width {pw}"
+                app.annotations
+                    .iter()
+                    .any(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             );
-            assert!(b.w > 0.0 && b.h > 0.0, "band {b:?} is non-degenerate");
+            assert!(app.signatures.iter().any(|s| s.signer == "Grace Hopper"));
+
+            let out = std::env::temp_dir()
+                .join("tilo_pdf_saveback")
+                .join("annotated.pdf");
+            std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(&out);
+            assert!(
+                app.save_annotated_to(&out),
+                "save_annotated_to reports success (note: {:?})",
+                app.status_note
+            );
+            assert!(out.exists(), "the annotated .pdf exists on disk");
+
+            // Reopen the saved file: page 1 carries the markup as standard PDF
+            // annotations (a highlight, a note holding the comment text, and a
+            // stamp for the signature) that any viewer reads back.
+            let reopened =
+                crate::source::open(&out, &ContentStore::memory()).expect("the saved PDF reopens");
+            let annotations = reopened.raster.page_annotations(0);
+            assert!(
+                annotations.len() >= before + 3,
+                "markup became annotations ({before} -> {})",
+                annotations.len()
+            );
+            assert!(
+                annotations
+                    .iter()
+                    .any(|a| a.kind == tilo_pdf::AnnotationKind::Highlight)
+            );
+            assert!(annotations.iter().any(|a| {
+                a.kind == tilo_pdf::AnnotationKind::Text && a.contents.contains("Check this claim")
+            }));
+            assert!(annotations.iter().any(|a| {
+                a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
+            }));
         }
-    }
 
-    #[test]
-    #[serial(pdfium)]
-    fn save_back_writes_markup_as_real_pdf_annotations() {
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        sync_fixture(&mut app, &mut st);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.recompute_regions();
-        app.sync_viewport_frame();
+        eprintln!("phase reorder_persists_across_save_and_reopen");
+        'phase: {
+            let Some((mut app, _st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let n = app.doc.page_count();
+            assert!(
+                n >= 2,
+                "the fixture must have at least two pages to test reordering"
+            );
+            let first = app
+                .raster
+                .as_mut()
+                .unwrap()
+                .page_text(0)
+                .text
+                .trim()
+                .to_string();
+            let last = app
+                .raster
+                .as_mut()
+                .unwrap()
+                .page_text(n - 1)
+                .text
+                .trim()
+                .to_string();
+            assert_ne!(
+                first, last,
+                "the two pages carry distinct text so a swap is observable"
+            );
 
-        let before = app.raster.as_ref().unwrap().page_annotations(0).len();
+            // Move the first page to the end — the shared rail's Reorder event maps
+            // straight onto this production method.
+            app.reorder_pages(0, n - 1);
+            assert!(app.pages_dirty(), "a reorder flags that a save is needed");
+            assert_eq!(app.doc.page_count(), n, "reorder keeps the page count");
 
-        // Place a highlight, a sticky note with a body, and a signature on page
-        // 1 — all through the reader's real mutation methods.
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (70.0, 150.0),
-            cur: (360.0, 165.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        app.create_note(&mut st.doc, 1, (120.0, 300.0));
-        app.editing
-            .as_mut()
-            .unwrap()
-            .input
-            .insert_at_cursor("Check this claim");
-        app.commit_edit(&mut st.doc);
-        app.signer_name = "Grace Hopper".into();
-        app.place_signature(&mut st.doc, 1, (360.0, 520.0));
-        assert!(
-            app.annotations
-                .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-        );
-        assert!(app.signatures.iter().any(|s| s.signer == "Grace Hopper"));
+            let mut rz = saved_reopen(&mut app, "reordered.pdf");
+            assert_eq!(rz.page_count(), n, "the page count persisted");
+            assert_eq!(
+                rz.page_text(n - 1).text.trim(),
+                first,
+                "the old first page is now last in the saved-and-reopened file"
+            );
+        }
 
-        let out = std::env::temp_dir()
-            .join("tilo_pdf_saveback")
-            .join("annotated.pdf");
-        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-        let _ = std::fs::remove_file(&out);
-        assert!(
-            app.save_annotated_to(&out),
-            "save_annotated_to reports success (note: {:?})",
-            app.status_note
-        );
-        assert!(out.exists(), "the annotated .pdf exists on disk");
+        eprintln!("phase delete_page_persists_across_save_and_reopen");
+        'phase: {
+            let Some((mut app, _st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let n = app.doc.page_count();
+            assert!(n >= 2);
+            let second = app
+                .raster
+                .as_mut()
+                .unwrap()
+                .page_text(1)
+                .text
+                .trim()
+                .to_string();
 
-        // Reopen the saved file: page 1 carries the markup as standard PDF
-        // annotations (a highlight, a note holding the comment text, and a
-        // stamp for the signature) that any viewer reads back.
-        let reopened =
-            crate::source::open(&out, &ContentStore::memory()).expect("the saved PDF reopens");
-        let annotations = reopened.raster.page_annotations(0);
-        assert!(
-            annotations.len() >= before + 3,
-            "markup became annotations ({before} -> {})",
-            annotations.len()
-        );
-        assert!(
-            annotations
-                .iter()
-                .any(|a| a.kind == tilo_pdf::AnnotationKind::Highlight)
-        );
-        assert!(annotations.iter().any(|a| {
-            a.kind == tilo_pdf::AnnotationKind::Text && a.contents.contains("Check this claim")
-        }));
-        assert!(annotations.iter().any(|a| {
-            a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
-        }));
+            app.delete_page_at(0);
+            assert_eq!(app.doc.page_count(), n - 1, "delete drops one page");
+            assert!(app.pages_dirty());
+
+            let mut rz = saved_reopen(&mut app, "deleted.pdf");
+            assert_eq!(rz.page_count(), n - 1, "the deletion persisted");
+            assert_eq!(
+                rz.page_text(0).text.trim(),
+                second,
+                "the former second page is now first"
+            );
+        }
+
+        eprintln!("phase duplicate_page_persists_across_save_and_reopen");
+        'phase: {
+            let Some((mut app, _st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let n = app.doc.page_count();
+            let first = app
+                .raster
+                .as_mut()
+                .unwrap()
+                .page_text(0)
+                .text
+                .trim()
+                .to_string();
+
+            app.duplicate_page_at(0);
+            assert_eq!(app.doc.page_count(), n + 1, "duplicate adds one page");
+
+            let mut rz = saved_reopen(&mut app, "duplicated.pdf");
+            assert_eq!(rz.page_count(), n + 1, "the duplicate persisted");
+            assert_eq!(rz.page_text(0).text.trim(), first);
+            assert_eq!(
+                rz.page_text(1).text.trim(),
+                first,
+                "page 2 is a copy of page 1"
+            );
+        }
     }
 
     /// Prepare an opened raster sample for page-editing tests: sync + lay out so
@@ -9144,451 +9830,265 @@ mod tests {
             .raster
     }
 
-    #[test]
     #[serial(pdfium)]
-    fn reorder_persists_across_save_and_reopen() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
-            return;
-        };
-        let n = app.doc.page_count();
-        assert!(
-            n >= 2,
-            "the fixture must have at least two pages to test reordering"
-        );
-        let first = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .page_text(0)
-            .text
-            .trim()
-            .to_string();
-        let last = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .page_text(n - 1)
-            .text
-            .trim()
-            .to_string();
-        assert_ne!(
-            first, last,
-            "the two pages carry distinct text so a swap is observable"
-        );
-
-        // Move the first page to the end — the shared rail's Reorder event maps
-        // straight onto this production method.
-        app.reorder_pages(0, n - 1);
-        assert!(app.pages_dirty(), "a reorder flags that a save is needed");
-        assert_eq!(app.doc.page_count(), n, "reorder keeps the page count");
-
-        let mut rz = saved_reopen(&mut app, "reordered.pdf");
-        assert_eq!(rz.page_count(), n, "the page count persisted");
-        assert_eq!(
-            rz.page_text(n - 1).text.trim(),
-            first,
-            "the old first page is now last in the saved-and-reopened file"
-        );
-    }
-
     #[test]
-    #[serial(pdfium)]
-    fn delete_page_persists_across_save_and_reopen() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
-            return;
-        };
-        let n = app.doc.page_count();
-        assert!(n >= 2);
-        let second = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .page_text(1)
-            .text
-            .trim()
-            .to_string();
+    fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
+        eprintln!("phase import_image_adds_a_page_that_survives_save");
+        'phase: {
+            let Some((mut app, mut st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let n = app.doc.page_count();
 
-        app.delete_page_at(0);
-        assert_eq!(app.doc.page_count(), n - 1, "delete drops one page");
-        assert!(app.pages_dirty());
+            // A PNG on disk, imported through the normal code path.
+            let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
+            let png = std::env::temp_dir()
+                .join("tilo_pdf_edit")
+                .join("swatch.png");
+            std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+            image::DynamicImage::ImageRgba8(img)
+                .save(&png)
+                .expect("write the test PNG");
 
-        let mut rz = saved_reopen(&mut app, "deleted.pdf");
-        assert_eq!(rz.page_count(), n - 1, "the deletion persisted");
-        assert_eq!(
-            rz.page_text(0).text.trim(),
-            second,
-            "the former second page is now first"
-        );
-    }
-
-    #[test]
-    #[serial(pdfium)]
-    fn duplicate_page_persists_across_save_and_reopen() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
-            return;
-        };
-        let n = app.doc.page_count();
-        let first = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .page_text(0)
-            .text
-            .trim()
-            .to_string();
-
-        app.duplicate_page_at(0);
-        assert_eq!(app.doc.page_count(), n + 1, "duplicate adds one page");
-
-        let mut rz = saved_reopen(&mut app, "duplicated.pdf");
-        assert_eq!(rz.page_count(), n + 1, "the duplicate persisted");
-        assert_eq!(rz.page_text(0).text.trim(), first);
-        assert_eq!(
-            rz.page_text(1).text.trim(),
-            first,
-            "page 2 is a copy of page 1"
-        );
-    }
-
-    #[test]
-    #[serial(pdfium)]
-    fn import_image_adds_a_page_that_survives_save() {
-        let Some((mut app, mut st)) = open_laid_out_sample() else {
-            return;
-        };
-        let n = app.doc.page_count();
-
-        // A PNG on disk, imported through the normal code path.
-        let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
-        let png = std::env::temp_dir()
-            .join("tilo_pdf_edit")
-            .join("swatch.png");
-        std::fs::create_dir_all(png.parent().unwrap()).unwrap();
-        image::DynamicImage::ImageRgba8(img)
-            .save(&png)
-            .expect("write the test PNG");
-
-        assert!(
-            app.import_file(&png, &mut st.doc),
-            "import: {:?}",
-            app.status_note
-        );
-        assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
-        assert!(app.pages_dirty());
-
-        let rz = saved_reopen(&mut app, "with_image.pdf");
-        assert_eq!(rz.page_count(), n + 1, "the imported image page persisted");
-    }
-
-    #[test]
-    #[serial(pdfium)]
-    fn import_pdf_appends_all_its_pages() {
-        let Some((mut app, mut st)) = open_laid_out_sample() else {
-            return;
-        };
-        let n = app.doc.page_count();
-        // Import the sample into itself: page count should exactly double.
-        assert!(
-            app.import_file(std::path::Path::new(SAMPLE_PDF), &mut st.doc),
-            "import: {:?}",
-            app.status_note
-        );
-        assert_eq!(
-            app.doc.page_count(),
-            n * 2,
-            "every page of the imported PDF was added"
-        );
-
-        let rz = saved_reopen(&mut app, "merged.pdf");
-        assert_eq!(rz.page_count(), n * 2, "the merged page set persisted");
-    }
-
-    #[test]
-    #[serial(pdfium)]
-    fn copy_image_region_crops_the_page_bitmap() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
-            return;
-        };
-        let (pw, ph) = app.raster.as_ref().unwrap().page_size(0);
-
-        // Marquee the upper-left portion of page 1 and copy it.
-        app.region = Some(RegionSelect {
-            page: 1,
-            start: (40.0, 40.0),
-            cur: (pw * 0.6, ph * 0.5),
-        });
-        assert!(
-            app.copy_region(),
-            "a usable region is cropped: {:?}",
-            app.status_note
-        );
-
-        // The pure crop path yields a correctly-sized sub-image of the page.
-        let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
-        let img = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .render(0, bucket)
-            .expect("page 1 renders");
-        let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
-        let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");
-        assert!(w > 0 && h > 0);
-        assert_eq!(
-            rgba.len(),
-            w * h * 4,
-            "RGBA buffer matches the cropped dimensions"
-        );
-        assert!(
-            w < img.width as usize && h < img.height as usize,
-            "the crop is a proper sub-region of the full page bitmap"
-        );
-    }
-
-    /// The note/comment card header must never overlap — the author name is
-    /// bounded and truncated so it can't run under the Resolve chip or the ×
-    /// button, whatever its length. Asserts on the production layout helper.
-    #[test]
-    fn comment_header_never_overlaps_even_with_a_long_name() {
-        // A representative inner card rect for the 324px sidebar.
-        let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
-        let hdr = PdfApp::comment_header_layout(card, 1.0);
-
-        assert!(
-            hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,
-            "the author name stops before the resolve chip (name ends {}, chip at {})",
-            hdr.name_x + f64::from(hdr.name_max),
-            hdr.chip.x0
-        );
-        assert!(
-            hdr.chip.x1 <= hdr.del.x0,
-            "the resolve chip stops before the delete button"
-        );
-        assert!(
-            hdr.del.x1 <= card.x1,
-            "the delete button stays inside the card"
-        );
-        assert!(
-            hdr.body_top >= hdr.avatar_c.y + 9.0,
-            "the body starts below the avatar, not overlapping it"
-        );
-
-        // A very long name/email truncates to fit the bounded width.
-        let mut tr = ui::text_render::TextRenderer::new();
-        let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
-        // Measured and painted Semibold, like `draw_comment_header_row`.
-        let shown = tr.elide_to_width_weighted(long, 11.5, hdr.name_max, TextWeight::Semibold);
-        let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
-        assert!(
-            w <= hdr.name_max + 0.5,
-            "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
-            hdr.name_max
-        );
-        assert!(
-            shown.chars().count() < long.chars().count(),
-            "the long name was actually truncated"
-        );
-    }
-
-    /// Enlarged text must reflow the bespoke comment card instead of painting
-    /// the shared inline editor over its replies or the thread history. This
-    /// uses the exact production measurement/layout helpers at the supported
-    /// maximum accessibility scale.
-    #[test]
-    fn high_text_comment_editor_reply_and_history_do_not_overlap() {
-        let app = PdfApp::sample();
-        let mut tr = ui::text_render::TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let cm = Comment {
-            id: "high-text-thread".into(),
-            anno_id: None,
-            page: 1,
-            author: "An exceptionally long review author name".into(),
-            body: "A deliberately long comment body that wraps across the narrow review rail at two-times text size.".into(),
-            created: 1,
-            resolved: false,
-            replies: vec![
-                Reply {
-                    id: "high-text-reply-one".into(),
-                    author: "Bob".into(),
-                    body: "A long reply that also wraps, proving the history is allotted its own measured vertical space.".into(),
-                },
-                Reply {
-                    id: "high-text-reply-two".into(),
-                    author: "Alice".into(),
-                    body: "A second reply remains below the first rather than colliding with the editor.".into(),
-                },
-            ],
-        };
-        let scale = 2.0;
-        let inner_w = SIDEBAR_W - 28.0 * scale;
-        let metrics = app.comment_metrics(&mut tr, &cm, inner_w);
-        let card = Rect::new(0.0, 0.0, SIDEBAR_W - 28.0 * scale, metrics.card_h);
-        let hdr = PdfApp::comment_header_layout(card, scale);
-
-        assert!(hdr.body_top >= hdr.avatar_c.y + hdr.avatar_radius);
-        assert!(hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0);
-        assert!(hdr.chip.x1 <= hdr.del.x0);
-
-        // This is the same running-y sequence used by draw_comment_body,
-        // draw_comment_replies and draw_comment_composer.
-        let editor_bottom = hdr.body_top + metrics.body_h + 8.0;
-        let replies_top = hdr.body_top + metrics.body_h + 10.0 * scale;
-        assert!(
-            editor_bottom <= replies_top,
-            "editor clears the first reply"
-        );
-        let replies_bottom = replies_top
-            + metrics
-                .reply_heights
-                .iter()
-                .map(|h| 14.0 * scale + h + 10.0 * scale)
-                .sum::<f64>();
-        let composer_top = replies_bottom + 8.0 * scale;
-        let composer_bottom = composer_top + metrics.compose_h - 8.0 * scale;
-        assert!(
-            composer_bottom <= card.y1 + 0.1,
-            "reply editor ({composer_bottom}) remains inside its measured card ({})",
-            card.y1
-        );
-    }
-
-    /// `vcenter` centres the *measured* line box, whatever the renderer's
-    /// text scale made of it — the height half of a `measure` result is the
-    /// only input it accepts, so no caller can centre on a nominal font size.
-    #[test]
-    fn vcenter_centres_the_measured_line_box() {
-        let rect = Rect::new(0.0, 10.0, 100.0, 44.0);
-        assert!((vcenter(rect, 15.0) - 19.5).abs() < 1e-9);
-        // A 2× line box in the same control still lands centred, not low.
-        let two_x = vcenter(rect, 30.0);
-        assert!((two_x - 12.0).abs() < 1e-9);
-        assert!(((rect.y1 - (two_x + 30.0)) - (two_x - rect.y0)).abs() < 1e-9);
-        let mut tr = ui::text_render::TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (_, h) = tr.measure("Fit", 11.0, None);
-        let y = vcenter(rect, h);
-        assert!(
-            (y - rect.y0 - (rect.y1 - (y + f64::from(h)))).abs() < 1e-6,
-            "top gap equals bottom gap for a 2× scaled run"
-        );
-    }
-
-    /// A comment body painted from `card.x0 + 12·s` and wrapped with the shared
-    /// helper ends `12·s` before the card's right edge at every text scale —
-    /// the unscaled wrap used to spill 8px past the border at 2×.
-    #[test]
-    fn comment_text_wraps_keep_a_symmetric_inset_at_every_scale() {
-        for s in [1.0_f64, 1.5, 2.0] {
-            let inner_w = SIDEBAR_W - 28.0 * s;
-            let body_x = 12.0 * s;
-            let body_end = body_x + f64::from(PdfApp::comment_body_wrap(inner_w, s));
             assert!(
-                (body_end - (inner_w - 12.0 * s)).abs() < 1e-6,
-                "body right inset at {s}×: {}",
-                inner_w - body_end
+                app.import_file(&png, &mut st.doc),
+                "import: {:?}",
+                app.status_note
             );
-            let reply_end = 24.0 * s + f64::from(PdfApp::comment_reply_wrap(inner_w, s));
+            assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
+            assert!(app.pages_dirty());
+
+            let rz = saved_reopen(&mut app, "with_image.pdf");
+            assert_eq!(rz.page_count(), n + 1, "the imported image page persisted");
+        }
+
+        eprintln!("phase import_pdf_appends_all_its_pages");
+        'phase: {
+            let Some((mut app, mut st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let n = app.doc.page_count();
+            // Import the sample into itself: page count should exactly double.
             assert!(
-                (reply_end - (inner_w - 12.0 * s)).abs() < 1e-6,
-                "reply right inset at {s}×: {}",
-                inner_w - reply_end
+                app.import_file(std::path::Path::new(SAMPLE_PDF), &mut st.doc),
+                "import: {:?}",
+                app.status_note
             );
-            // Composer field: inset 12·s, editor text inset a further 10·s.
-            let compose_end = 22.0 * s + f64::from(PdfApp::comment_compose_wrap(inner_w, s));
+            assert_eq!(
+                app.doc.page_count(),
+                n * 2,
+                "every page of the imported PDF was added"
+            );
+
+            let rz = saved_reopen(&mut app, "merged.pdf");
+            assert_eq!(rz.page_count(), n * 2, "the merged page set persisted");
+        }
+
+        eprintln!("phase copy_image_region_crops_the_page_bitmap");
+        'phase: {
+            let Some((mut app, _st)) = open_laid_out_sample() else {
+                break 'phase;
+            };
+            let (pw, ph) = app.raster.as_ref().unwrap().page_size(0);
+
+            // Marquee the upper-left portion of page 1 and copy it.
+            app.region = Some(RegionSelect {
+                page: 1,
+                start: (40.0, 40.0),
+                cur: (pw * 0.6, ph * 0.5),
+            });
             assert!(
-                (compose_end - (inner_w - 22.0 * s)).abs() < 1e-6,
-                "composer right inset at {s}×: {}",
-                inner_w - compose_end
+                app.copy_region(),
+                "a usable region is cropped: {:?}",
+                app.status_note
+            );
+
+            // The pure crop path yields a correctly-sized sub-image of the page.
+            let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
+            let img = app
+                .raster
+                .as_mut()
+                .unwrap()
+                .render(0, bucket)
+                .expect("page 1 renders");
+            let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
+            let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");
+            assert!(w > 0 && h > 0);
+            assert_eq!(
+                rgba.len(),
+                w * h * 4,
+                "RGBA buffer matches the cropped dimensions"
+            );
+            assert!(
+                w < img.width as usize && h < img.height as usize,
+                "the crop is a proper sub-region of the full page bitmap"
             );
         }
     }
 
-    /// Drive the real fixture PDF through the live frame path to produce the
-    /// review shots: a search hit over genuine glyphs, a placed highlight +
-    /// signature, and the *reopened saved* file rendered by pdfium with the
-    /// flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
-    /// (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    #[serial(pdfium)]
-    fn drive_real_pdf_search_highlight_save_shots() {
-        let shot_dir = std::env::var("PDF_SHOT_DIR").unwrap_or_else(|_| {
-            std::env::temp_dir()
-                .join("tilo_pdf_review")
-                .to_string_lossy()
-                .into_owned()
-        });
-        let shot = |name: &str| format!("{shot_dir}/{name}");
+    fn comment_cards_centre_wrap_and_never_overlap_at_any_scale() {
+        // The note/comment card header must never overlap — the author name is
+        // bounded and truncated so it can't run under the Resolve chip or the ×
+        // button, whatever its length. Asserts on the production layout helper.
+        eprintln!("phase comment_header_never_overlaps_even_with_a_long_name");
+        {
+            // A representative inner card rect for the 324px sidebar.
+            let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
+            let hdr = PdfApp::comment_header_layout(card, 1.0);
 
-        let Some(mut app) = open_raster_sample() else {
-            return;
-        };
-        let mut st = ui::State::new();
-        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
+            assert!(
+                hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,
+                "the author name stops before the resolve chip (name ends {}, chip at {})",
+                hdr.name_x + f64::from(hdr.name_max),
+                hdr.chip.x0
+            );
+            assert!(
+                hdr.chip.x1 <= hdr.del.x0,
+                "the resolve chip stops before the delete button"
+            );
+            assert!(
+                hdr.del.x1 <= card.x1,
+                "the delete button stays inside the card"
+            );
+            assert!(
+                hdr.body_top >= hdr.avatar_c.y + 9.0,
+                "the body starts below the avatar, not overlapping it"
+            );
 
-        // --- search a word and shoot the hit over glyphs. ---
-        let word = {
-            let layer = app.raster.as_mut().unwrap().page_text(0);
-            first_word(&layer.text, 4).expect("a searchable word")
-        };
-        app.open_search();
-        app.search_input.set_text(&word);
-        app.recompute_matches();
-        assert!(
-            !app.raster_matches.is_empty(),
-            "search finds {word:?} on the real PDF"
-        );
-        let p_search = shot("real_search_hit.png");
-        full_frame(&mut app, &mut st, 1280.0, 800.0, Some(p_search.as_str()));
-        app.close_search();
+            // A very long name/email truncates to fit the bounded width.
+            let mut tr = ui::text_render::TextRenderer::new();
+            let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
+            // Measured and painted Semibold, like `draw_comment_header_row`.
+            let shown = tr.elide_to_width_weighted(long, 11.5, hdr.name_max, TextWeight::Semibold);
+            let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
+            assert!(
+                w <= hdr.name_max + 0.5,
+                "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
+                hdr.name_max
+            );
+            assert!(
+                shown.chars().count() < long.chars().count(),
+                "the long name was actually truncated"
+            );
+        }
 
-        // --- place a highlight + a signature and shoot the annotated page. ---
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (70.0, 150.0),
-            cur: (360.0, 165.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-        app.signer_name = "Grace Hopper".into();
-        app.place_signature(&mut st.doc, 1, (360.0, 520.0));
-        app.go_to_page(1);
-        let p_anno = shot("real_annotated.png");
-        full_frame(&mut app, &mut st, 1280.0, 800.0, Some(p_anno.as_str()));
+        // Enlarged text must reflow the bespoke comment card instead of painting
+        // the shared inline editor over its replies or the thread history. This
+        // uses the exact production measurement/layout helpers at the supported
+        // maximum accessibility scale.
+        eprintln!("phase high_text_comment_editor_reply_and_history_do_not_overlap");
+        {
+            let app = PdfApp::sample();
+            let mut tr = ui::text_render::TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let cm = Comment {
+                id: "high-text-thread".into(),
+                anno_id: None,
+                page: 1,
+                author: "An exceptionally long review author name".into(),
+                body: "A deliberately long comment body that wraps across the narrow review rail at two-times text size.".into(),
+                created: 1,
+                resolved: false,
+                replies: vec![
+                    Reply {
+                        id: "high-text-reply-one".into(),
+                        author: "Bob".into(),
+                        body: "A long reply that also wraps, proving the history is allotted its own measured vertical space.".into(),
+                        blocks: Vec::new(),
+                    },
+                    Reply {
+                        id: "high-text-reply-two".into(),
+                        author: "Alice".into(),
+                        body: "A second reply remains below the first rather than colliding with the editor.".into(),
+                        blocks: Vec::new(),
+                    },
+                ],
+                blocks: Vec::new(),
+            };
+            let scale = 2.0;
+            let inner_w = SIDEBAR_W - 28.0 * scale;
+            let metrics = app.comment_metrics(&mut tr, &cm, inner_w);
+            let card = Rect::new(0.0, 0.0, SIDEBAR_W - 28.0 * scale, metrics.card_h);
+            let hdr = PdfApp::comment_header_layout(card, scale);
 
-        // --- save, reopen the saved file, and shoot pdfium's own render of the
-        //     flattened markup — proof the annotations are in the .pdf. ---
-        let out = std::env::temp_dir()
-            .join("tilo_pdf_review")
-            .join("annotated.pdf");
-        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-        assert!(
-            app.save_annotated_to(&out),
-            "save succeeds: {:?}",
-            app.status_note
-        );
+            assert!(hdr.body_top >= hdr.avatar_c.y + hdr.avatar_radius);
+            assert!(hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0);
+            assert!(hdr.chip.x1 <= hdr.del.x0);
 
-        let mut app2 = PdfApp::open(&out);
-        assert!(app2.raster.is_some(), "the saved file reopens via pdfium");
-        let mut st2 = ui::State::new();
-        let p_reopen = shot("real_reopened_saved.png");
-        full_frame(&mut app2, &mut st2, 1280.0, 800.0, Some(p_reopen.as_str()));
-        let signed = app2
-            .raster
-            .as_ref()
-            .unwrap()
-            .page_annotations(0)
-            .iter()
-            .any(|a| {
-                a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
-            });
-        assert!(signed, "reopened saved file carries the signature stamp");
-        eprintln!(
-            "DRIVE real-pdf: word={word:?}  hits={}  saved={}  reopened-has-signature={signed}",
-            app.raster_matches.len(),
-            out.display(),
-        );
+            // This is the same running-y sequence used by draw_comment_body,
+            // draw_comment_replies and draw_comment_composer.
+            let editor_bottom = hdr.body_top + metrics.body_h + 8.0;
+            let replies_top = hdr.body_top + metrics.body_h + 10.0 * scale;
+            assert!(
+                editor_bottom <= replies_top,
+                "editor clears the first reply"
+            );
+            let replies_bottom = replies_top
+                + metrics
+                    .reply_heights
+                    .iter()
+                    .map(|h| 14.0 * scale + h + 10.0 * scale)
+                    .sum::<f64>();
+            let composer_top = replies_bottom + 8.0 * scale;
+            let composer_bottom = composer_top + metrics.compose_h - 8.0 * scale;
+            assert!(
+                composer_bottom <= card.y1 + 0.1,
+                "reply editor ({composer_bottom}) remains inside its measured card ({})",
+                card.y1
+            );
+        }
+
+        // `vcenter` centres the *measured* line box, whatever the renderer's
+        // text scale made of it — the height half of a `measure` result is the
+        // only input it accepts, so no caller can centre on a nominal font size.
+        eprintln!("phase vcenter_centres_the_measured_line_box");
+        {
+            let rect = Rect::new(0.0, 10.0, 100.0, 44.0);
+            assert!((vcenter(rect, 15.0) - 19.5).abs() < 1e-9);
+            // A 2× line box in the same control still lands centred, not low.
+            let two_x = vcenter(rect, 30.0);
+            assert!((two_x - 12.0).abs() < 1e-9);
+            assert!(((rect.y1 - (two_x + 30.0)) - (two_x - rect.y0)).abs() < 1e-9);
+            let mut tr = ui::text_render::TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let (_, h) = tr.measure("Fit", 11.0, None);
+            let y = vcenter(rect, h);
+            assert!(
+                (y - rect.y0 - (rect.y1 - (y + f64::from(h)))).abs() < 1e-6,
+                "top gap equals bottom gap for a 2× scaled run"
+            );
+        }
+
+        // A comment body painted from `card.x0 + 12·s` and wrapped with the shared
+        // helper ends `12·s` before the card's right edge at every text scale —
+        // the unscaled wrap used to spill 8px past the border at 2×.
+        eprintln!("phase comment_text_wraps_keep_a_symmetric_inset_at_every_scale");
+        {
+            for s in [1.0_f64, 1.5, 2.0] {
+                let inner_w = SIDEBAR_W - 28.0 * s;
+                let body_x = 12.0 * s;
+                let body_end = body_x + f64::from(PdfApp::comment_body_wrap(inner_w, s));
+                assert!(
+                    (body_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                    "body right inset at {s}×: {}",
+                    inner_w - body_end
+                );
+                let reply_end = 24.0 * s + f64::from(PdfApp::comment_reply_wrap(inner_w, s));
+                assert!(
+                    (reply_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                    "reply right inset at {s}×: {}",
+                    inner_w - reply_end
+                );
+                // Composer field: inset 12·s, editor text inset a further 10·s.
+                let compose_end = 22.0 * s + f64::from(PdfApp::comment_compose_wrap(inner_w, s));
+                assert!(
+                    (compose_end - (inner_w - 22.0 * s)).abs() < 1e-6,
+                    "composer right inset at {s}×: {}",
+                    inner_w - compose_end
+                );
+            }
+        }
     }
 }

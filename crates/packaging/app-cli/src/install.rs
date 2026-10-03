@@ -381,7 +381,16 @@ pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, false)
+    install_or_update_app_reporting(app, on_progress, Change::Install)
+}
+
+/// What [`install_or_update_app_reporting`] does with the verified package.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Install,
+    Update,
+    /// Replace the installed version with an older one.
+    Rollback,
 }
 
 fn run_installer_with_progress(
@@ -414,7 +423,7 @@ fn run_installer_with_progress(
 fn install_or_update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
-    update: bool,
+    change: Change,
 ) -> Result<(), InstallError> {
     validate_offer_metadata(app)?;
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
@@ -463,7 +472,14 @@ fn install_or_update_app_reporting(
 
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
-    if update {
+    if change == Change::Install {
+        command.args(install_argv(
+            &dest,
+            &app.publisher_pubkey_hex,
+            &app.tapp_root_hash_hex,
+            payload_from.as_deref(),
+        ));
+    } else {
         command.args([
             "update".to_string(),
             app.package_id.clone(),
@@ -477,13 +493,9 @@ fn install_or_update_app_reporting(
         if let Some(url) = &payload_from {
             command.args(["--payload-from", url.as_str()]);
         }
-    } else {
-        command.args(install_argv(
-            &dest,
-            &app.publisher_pubkey_hex,
-            &app.tapp_root_hash_hex,
-            payload_from.as_deref(),
-        ));
+        if change == Change::Rollback {
+            command.arg("--allow-downgrade");
+        }
     }
     on_progress(DownloadProgress {
         received: downloaded,
@@ -525,7 +537,20 @@ pub fn update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, true)
+    install_or_update_app_reporting(app, on_progress, Change::Update)
+}
+
+/// Download and atomically replace an installed app with an older version
+/// from a verified offer, keeping its saved state.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`update_app_reporting`].
+pub fn rollback_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    install_or_update_app_reporting(app, on_progress, Change::Rollback)
 }
 
 /// Resolve `package_id` against the live catalogue, then install it.
@@ -592,12 +617,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_release_build_runs_the_installer_from_path() {
-        use crate::dev_env::{INSTALL_BIN_ENV, dev_override_from};
-        let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-        assert_eq!(tilo_install_bin_from(gated), "tilo-install");
-        let honoured = dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
-        assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
+    fn the_installer_invocation_is_fixed_and_never_relaxes_signatures() {
+        // Phase `a_release_build_runs_the_installer_from_path`.
+        {
+            use crate::dev_env::{INSTALL_BIN_ENV, dev_override_from};
+            let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+            assert_eq!(tilo_install_bin_from(gated), "tilo-install");
+            let honoured =
+                dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
+            assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
+        }
+        // Phase `the_install_invocation_never_relaxes_signature_checking`.
+        // The one argv assertion that is a security property rather than
+        // a formatting detail.
+        {
+            let publisher = "ab".repeat(32);
+            let root = "cd".repeat(32);
+            let argv = install_argv(
+                Path::new("/tmp/staged.tapp"),
+                &publisher,
+                &root,
+                Some("https://registry.example"),
+            );
+            assert_eq!(argv[0], "install");
+            assert_eq!(argv[1], "/tmp/staged.tapp");
+            assert!(
+                !argv.iter().any(|a| a == "--allow-self-signed"),
+                "an install started from a search box must not opt out of \
+                 the publisher signature check: {argv:?}"
+            );
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
+                "the installer must pin the signed registry package root: {argv:?}"
+            );
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
+                "the installer must pin the signed registry publisher: {argv:?}"
+            );
+            assert!(
+                !argv.iter().any(|a| a.starts_with("--require-attestor")),
+                "attestor policy is the user's to set, not this path's: {argv:?}"
+            );
+            assert!(
+                argv.windows(2).any(
+                    |pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"
+                ),
+                "a thin package's payload comes from the offering registry: {argv:?}"
+            );
+        }
     }
 
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
@@ -624,241 +693,202 @@ mod tests {
     }
 
     #[test]
-    fn staged_download_must_match_the_signed_registry_metadata() {
-        let bytes = b"signed package bytes";
-        let app = registry_app_for(bytes);
-        verify_download_metadata(&app, bytes.len() as u64).expect("matching metadata");
+    fn package_downloads_are_explicit_bounded_and_match_signed_metadata() {
+        // Phase `staged_download_must_match_the_signed_registry_metadata`.
+        {
+            let bytes = b"signed package bytes";
+            let app = registry_app_for(bytes);
+            verify_download_metadata(&app, bytes.len() as u64).expect("matching metadata");
 
-        let mut malformed_root = app.clone();
-        malformed_root.tapp_root_hash_hex = "00".repeat(31);
-        assert!(matches!(
-            verify_download_metadata(&malformed_root, bytes.len() as u64),
-            Err(InstallError::Integrity { detail }) if detail.contains("not 32 bytes")
-        ));
-        assert!(matches!(
-            verify_download_metadata(&app, bytes.len() as u64 + 1),
-            Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
-        ));
+            let mut malformed_root = app.clone();
+            malformed_root.tapp_root_hash_hex = "00".repeat(31);
+            assert!(matches!(
+                verify_download_metadata(&malformed_root, bytes.len() as u64),
+                Err(InstallError::Integrity { detail }) if detail.contains("not 32 bytes")
+            ));
+            assert!(matches!(
+                verify_download_metadata(&app, bytes.len() as u64 + 1),
+                Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
+            ));
 
-        let mut oversized = app;
-        oversized.tapp_size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
-        assert!(matches!(
-            validate_offer_metadata(&oversized),
-            Err(InstallError::Integrity { detail }) if detail.contains("outside")
-        ));
-    }
+            let mut oversized = app;
+            oversized.tapp_size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
+            assert!(matches!(
+                validate_offer_metadata(&oversized),
+                Err(InstallError::Integrity { detail }) if detail.contains("outside")
+            ));
+        }
+        // Phase `streaming_download_stops_when_body_exceeds_the_offer_limit`.
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
 
-    #[test]
-    fn streaming_download_stops_when_body_exceeds_the_offer_limit() {
-        use std::io::{Read as _, Write as _};
-        use std::net::TcpListener;
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let address = listener.local_addr().expect("listener address");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n12345678")
+                    .expect("write response");
+            });
+            let temp = tempfile::tempdir().expect("temp dir");
+            let destination = temp.path().join("bounded.tapp");
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let address = listener.local_addr().expect("listener address");
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            let mut request = [0u8; 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n12345678")
-                .expect("write response");
-        });
-        let temp = tempfile::tempdir().expect("temp dir");
-        let destination = temp.path().join("bounded.tapp");
-
-        let error = download_reporting_limited(
-            &format!("http://{address}/app.tapp"),
-            &destination,
-            4,
-            &mut |_| {},
-        )
-        .expect_err("an undeclared oversized body must stop mid-stream");
-        server.join().expect("server thread");
-        assert!(error.contains("exceeded"), "{error}");
-        assert_eq!(
-            std::fs::metadata(destination).expect("staging file").len(),
-            0,
-            "the over-limit chunk is rejected before it reaches disk"
-        );
-    }
-
-    #[test]
-    fn package_download_origin_is_explicit_and_credential_free() {
-        assert!(safe_download_url("https://apps.tilo.so/artifacts/app.tapp?token=signed").is_ok());
-        assert!(safe_download_url("http://127.0.0.1:8080/app.tapp").is_ok());
-        for unsafe_url in [
-            "http://apps.tilo.so/artifacts/app.tapp",
-            "https://user:secret@apps.tilo.so/artifacts/app.tapp",
-            "file:///tmp/app.tapp",
-            "https://apps.tilo.so/artifacts/app.tapp#alternate",
-        ] {
-            assert!(
-                safe_download_url(unsafe_url).is_err(),
-                "unsafe package origin was accepted: {unsafe_url}"
+            let error = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &destination,
+                4,
+                &mut |_| {},
+            )
+            .expect_err("an undeclared oversized body must stop mid-stream");
+            server.join().expect("server thread");
+            assert!(error.contains("exceeded"), "{error}");
+            assert_eq!(
+                std::fs::metadata(destination).expect("staging file").len(),
+                0,
+                "the over-limit chunk is rejected before it reaches disk"
             );
         }
-    }
-
-    #[test]
-    fn package_download_refuses_redirect_response() {
-        use std::io::{Read as _, Write as _};
-        use std::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let address = listener.local_addr().expect("listener address");
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            let mut request = [0u8; 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .expect("write redirect");
-        });
-        let temp = tempfile::tempdir().expect("temp dir");
-        let error = download_reporting_limited(
-            &format!("http://{address}/app.tapp"),
-            &temp.path().join("redirect.tapp"),
-            64,
-            &mut |_| {},
-        )
-        .expect_err("redirect must not become a second authorized origin");
-        server.join().expect("server thread");
-        assert!(error.contains("redirects are not followed"), "{error}");
-    }
-
-    /// The one argv assertion that is a security property rather than
-    /// a formatting detail.
-    #[test]
-    fn the_install_invocation_never_relaxes_signature_checking() {
-        let publisher = "ab".repeat(32);
-        let root = "cd".repeat(32);
-        let argv = install_argv(
-            Path::new("/tmp/staged.tapp"),
-            &publisher,
-            &root,
-            Some("https://registry.example"),
-        );
-        assert_eq!(argv[0], "install");
-        assert_eq!(argv[1], "/tmp/staged.tapp");
-        assert!(
-            !argv.iter().any(|a| a == "--allow-self-signed"),
-            "an install started from a search box must not opt out of \
-             the publisher signature check: {argv:?}"
-        );
-        assert!(
-            argv.windows(2)
-                .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
-            "the installer must pin the signed registry package root: {argv:?}"
-        );
-        assert!(
-            argv.windows(2)
-                .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
-            "the installer must pin the signed registry publisher: {argv:?}"
-        );
-        assert!(
-            !argv.iter().any(|a| a.starts_with("--require-attestor")),
-            "attestor policy is the user's to set, not this path's: {argv:?}"
-        );
-        assert!(
-            argv.windows(2)
-                .any(|pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"),
-            "a thin package's payload comes from the offering registry: {argv:?}"
-        );
-    }
-
-    #[test]
-    fn errors_render_something_a_person_can_act_on() {
-        let cases = [
-            InstallError::NotOffered {
-                package_id: "so.tilo.ghost".into(),
-            },
-            InstallError::NoStagingDir,
-            InstallError::Download {
-                detail: "connection refused".into(),
-            },
-            InstallError::InstallerMissing {
-                detail: "No such file or directory".into(),
-            },
-            InstallError::Refused {
-                code: 2,
-                detail: "publisher signature did not verify".into(),
-            },
-            InstallError::Integrity {
-                detail: "package root mismatch".into(),
-            },
-        ];
-        for c in &cases {
-            let msg = c.user_message();
-            assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
+        // Phase `package_download_origin_is_explicit_and_credential_free`.
+        {
             assert!(
-                msg.chars()
-                    .next()
-                    .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
-                "{c:?} → {msg:?} should read as a sentence fragment"
+                safe_download_url("https://apps.tilo.so/artifacts/app.tapp?token=signed").is_ok()
             );
-        }
-        assert!(
-            InstallError::Refused {
-                code: 2,
-                detail: "publisher signature did not verify".into()
+            assert!(safe_download_url("http://127.0.0.1:8080/app.tapp").is_ok());
+            for unsafe_url in [
+                "http://apps.tilo.so/artifacts/app.tapp",
+                "https://user:secret@apps.tilo.so/artifacts/app.tapp",
+                "file:///tmp/app.tapp",
+                "https://apps.tilo.so/artifacts/app.tapp#alternate",
+            ] {
+                assert!(
+                    safe_download_url(unsafe_url).is_err(),
+                    "unsafe package origin was accepted: {unsafe_url}"
+                );
             }
-            .user_message()
-            .contains("publisher signature"),
-            "the installer's own reason has to survive to the user"
-        );
-    }
-
-    /// An empty installer complaint must still say *something* — "tilo-install refused it" with a code beats a blank line.
-    #[test]
-    fn a_silent_refusal_still_reports_the_exit_code() {
-        let msg = InstallError::Refused {
-            code: 7,
-            detail: "   \n  ".into(),
         }
-        .user_message();
-        assert!(msg.contains('7'), "{msg:?}");
-    }
+        // Phase `package_download_refuses_redirect_response`.
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
 
-    #[test]
-    fn the_complaint_is_the_last_line_and_nothing_else() {
-        let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
-        assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
-        assert_eq!(installer_complaint(""), "");
-        assert_eq!(installer_complaint("   \n\n  "), "");
-    }
-
-    /// The rendered toast already says who refused it, so the installer's
-    /// own name prefix would stutter — caught by looking at the rendered notification.
-    #[test]
-    fn the_installers_own_name_prefix_is_stripped() {
-        let msg = InstallError::Refused {
-            code: 1,
-            detail: installer_complaint("tilo-install: tapp parse: unexpected EOF during skip"),
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let address = listener.local_addr().expect("listener address");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .expect("write redirect");
+            });
+            let temp = tempfile::tempdir().expect("temp dir");
+            let error = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &temp.path().join("redirect.tapp"),
+                64,
+                &mut |_| {},
+            )
+            .expect_err("redirect must not become a second authorized origin");
+            server.join().expect("server thread");
+            assert!(error.contains("redirects are not followed"), "{error}");
         }
-        .user_message();
-        assert_eq!(
-            msg,
-            "tilo-install refused it: tapp parse: unexpected EOF during skip"
-        );
-        assert!(
-            !msg.contains("tilo-install: "),
-            "the sentence must not name the installer twice: {msg:?}"
-        );
     }
 
-    /// The notification card is two lines tall; a longer complaint is
-    /// elided here rather than cut off mid-word by the renderer.
     #[test]
-    fn an_overlong_complaint_is_elided_rather_than_clipped() {
-        let long = "x".repeat(400);
-        let out = installer_complaint(&long);
-        assert!(
-            out.chars().count() <= DETAIL_MAX_CHARS + 1,
-            "elided to {} chars",
-            out.chars().count()
-        );
-        assert!(out.ends_with('…'));
+    fn installer_errors_render_one_actionable_line() {
+        // Phase `errors_render_something_a_person_can_act_on`.
+        {
+            let cases = [
+                InstallError::NotOffered {
+                    package_id: "so.tilo.ghost".into(),
+                },
+                InstallError::NoStagingDir,
+                InstallError::Download {
+                    detail: "connection refused".into(),
+                },
+                InstallError::InstallerMissing {
+                    detail: "No such file or directory".into(),
+                },
+                InstallError::Refused {
+                    code: 2,
+                    detail: "publisher signature did not verify".into(),
+                },
+                InstallError::Integrity {
+                    detail: "package root mismatch".into(),
+                },
+            ];
+            for c in &cases {
+                let msg = c.user_message();
+                assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
+                assert!(
+                    msg.chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
+                    "{c:?} → {msg:?} should read as a sentence fragment"
+                );
+            }
+            assert!(
+                InstallError::Refused {
+                    code: 2,
+                    detail: "publisher signature did not verify".into()
+                }
+                .user_message()
+                .contains("publisher signature"),
+                "the installer's own reason has to survive to the user"
+            );
+        }
+        // Phase `a_silent_refusal_still_reports_the_exit_code`.
+        // An empty installer complaint must still say *something* — "tilo-install refused it" with a code beats a blank line.
+        {
+            let msg = InstallError::Refused {
+                code: 7,
+                detail: "   \n  ".into(),
+            }
+            .user_message();
+            assert!(msg.contains('7'), "{msg:?}");
+        }
+        // Phase `the_complaint_is_the_last_line_and_nothing_else`.
+        {
+            let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
+            assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
+            assert_eq!(installer_complaint(""), "");
+            assert_eq!(installer_complaint("   \n\n  "), "");
+        }
+        // Phase `the_installers_own_name_prefix_is_stripped`.
+        // The rendered toast already says who refused it, so the installer's
+        // own name prefix would stutter — caught by looking at the rendered notification.
+        {
+            let msg = InstallError::Refused {
+                code: 1,
+                detail: installer_complaint("tilo-install: tapp parse: unexpected EOF during skip"),
+            }
+            .user_message();
+            assert_eq!(
+                msg,
+                "tilo-install refused it: tapp parse: unexpected EOF during skip"
+            );
+            assert!(
+                !msg.contains("tilo-install: "),
+                "the sentence must not name the installer twice: {msg:?}"
+            );
+        }
+        // Phase `an_overlong_complaint_is_elided_rather_than_clipped`.
+        // The notification card is two lines tall; a longer complaint is
+        // elided here rather than cut off mid-word by the renderer.
+        {
+            let long = "x".repeat(400);
+            let out = installer_complaint(&long);
+            assert!(
+                out.chars().count() <= DETAIL_MAX_CHARS + 1,
+                "elided to {} chars",
+                out.chars().count()
+            );
+            assert!(out.ends_with('…'));
+        }
     }
 }

@@ -25,11 +25,9 @@ impl VideoEditorApp {
             ctx.text,
             ctx.transform,
             "MEDIA BIN",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             c.text_dim,
-            r.bin.x0 + PAD * ctx.scale,
-            heading_y,
-            TextWeight::Semibold,
+            Point::new(r.bin.x0 + PAD * ctx.scale, heading_y),
         );
         let add = self.add_title_rect(r);
         let face = ui::widget::ButtonFace::new(add, "+ Title")
@@ -187,11 +185,9 @@ impl VideoEditorApp {
                 ctx.text,
                 ctx.transform,
                 &shown,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                 colors.text_primary,
-                text_x,
-                block_top,
-                TextWeight::Medium,
+                Point::new(text_x, block_top),
             );
         }
         let subtitle = VideoEditorApp::bin_subtitle(media);
@@ -432,11 +428,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 &ghost_label,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
                 on_fill(theme, ghost_fill).1,
-                gr.x0 + 10.0,
-                ghost_y,
-                TextWeight::Medium,
+                Point::new(gr.x0 + 10.0, ghost_y),
             );
         }
     }

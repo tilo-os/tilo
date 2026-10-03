@@ -601,90 +601,92 @@ mod tests {
     }
 
     #[test]
-    fn software_choice_encodes_royalty_free_codecs_without_a_gpu() {
-        for codec in [Codec::Vp9, Codec::Av1] {
-            let init = EncoderInit::sdr(codec, 64, 64, 30, 1000, 0);
-            let mut enc = build(init, EncoderChoice::Software).expect("software encoder");
-            assert_eq!(enc.kind(), EncoderKind::RoyaltyFreeSoftware);
-            assert_eq!(enc.codec(), codec);
+    fn software_encoder_encodes_royalty_free_codecs_and_refuses_bad_input() {
+        // Phase `software_choice_encodes_royalty_free_codecs_without_a_gpu`.
+        {
+            for codec in [Codec::Vp9, Codec::Av1] {
+                let init = EncoderInit::sdr(codec, 64, 64, 30, 1000, 0);
+                let mut enc = build(init, EncoderChoice::Software).expect("software encoder");
+                assert_eq!(enc.kind(), EncoderKind::RoyaltyFreeSoftware);
+                assert_eq!(enc.codec(), codec);
+                let mut out = Vec::new();
+                let stats = enc
+                    .encode(FrameInput::Rgba(&gradient(64, 64)), &mut out)
+                    .expect("encode");
+                assert!(stats.keyframe, "first frame is a keyframe");
+                assert_eq!(stats.bytes, out.len());
+                assert!(!out.is_empty());
+            }
+        }
+        // Phase `hevc_has_no_software_encoder`.
+        {
+            let outcome = probe(Codec::HevcMain10, EncoderChoice::Software);
+            assert!(
+                !outcome.available,
+                "HEVC must never be encoded in software: {}",
+                outcome.reason
+            );
+        }
+        // Phase `wrong_sized_input_is_refused`.
+        {
+            let init = EncoderInit::sdr(Codec::Vp9, 32, 32, 30, 1000, 0);
+            let mut enc = build(init, EncoderChoice::Software).expect("encoder");
             let mut out = Vec::new();
-            let stats = enc
-                .encode(FrameInput::Rgba(&gradient(64, 64)), &mut out)
-                .expect("encode");
-            assert!(stats.keyframe, "first frame is a keyframe");
-            assert_eq!(stats.bytes, out.len());
-            assert!(!out.is_empty());
+            assert!(matches!(
+                enc.encode(FrameInput::Rgba(&[0; 12]), &mut out),
+                Err(EncoderError::EncodeFailed { .. })
+            ));
         }
     }
 
     #[test]
-    fn hevc_has_no_software_encoder() {
-        let outcome = probe(Codec::HevcMain10, EncoderChoice::Software);
-        assert!(
-            !outcome.available,
-            "HEVC must never be encoded in software: {}",
-            outcome.reason
-        );
-    }
-
-    #[test]
-    fn wrong_sized_input_is_refused() {
-        let init = EncoderInit::sdr(Codec::Vp9, 32, 32, 30, 1000, 0);
-        let mut enc = build(init, EncoderChoice::Software).expect("encoder");
-        let mut out = Vec::new();
-        assert!(matches!(
-            enc.encode(FrameInput::Rgba(&[0; 12]), &mut out),
-            Err(EncoderError::EncodeFailed { .. })
-        ));
-    }
-
-    #[test]
-    fn element_families_map_to_kinds() {
-        for e in media::hw::realtime_encoders(Codec::H264) {
-            let kind = EncoderKind::of(e);
-            assert_eq!(kind.is_hardware(), e.is_hardware(), "{}", e.element);
+    fn encoder_kinds_colorimetry_and_legacy_config_keep_their_meaning() {
+        // Phase `element_families_map_to_kinds`.
+        {
+            for e in media::hw::realtime_encoders(Codec::H264) {
+                let kind = EncoderKind::of(e);
+                assert_eq!(kind.is_hardware(), e.is_hardware(), "{}", e.element);
+            }
+            let cisco = media::hw::realtime_encoders(Codec::H264)
+                .iter()
+                .find(|e| e.element == "openh264enc")
+                .expect("listed");
+            assert_eq!(EncoderKind::of(cisco), EncoderKind::CiscoOpenH264);
         }
-        let cisco = media::hw::realtime_encoders(Codec::H264)
-            .iter()
-            .find(|e| e.element == "openh264enc")
-            .expect("listed");
-        assert_eq!(EncoderKind::of(cisco), EncoderKind::CiscoOpenH264);
-    }
-
-    #[test]
-    fn init_constructors_pair_codec_with_colorimetry() {
-        let sdr = EncoderInit::sdr_h264(1280, 720, 30, 6000, 2);
-        assert_eq!(sdr.codec, Codec::H264);
-        assert_eq!(sdr.bit_depth(), 8);
-        let hdr = EncoderInit::hdr10(
-            Codec::Av1,
-            1920,
-            1080,
-            30,
-            15_000,
-            2,
-            HdrConfig::pq_reference(),
-        );
-        assert!(hdr.colorimetry.is_hdr());
-        assert_eq!(hdr.bit_depth(), 10);
-        let config = media_config(&hdr, EncoderChoice::Auto);
-        assert!(config.color.is_hdr());
-        assert!(config.hdr.is_some());
-    }
-
-    #[test]
-    fn legacy_config_values_keep_their_meaning() {
-        assert_eq!(
-            EncoderChoice::Software.policy(),
-            RealtimePolicy::SoftwareOnly
-        );
-        assert_eq!(
-            EncoderChoice::Vaapi.policy(),
-            RealtimePolicy::Prefer(CodecFamily::Va)
-        );
-        assert_eq!(
-            EncoderChoice::Nvenc.policy(),
-            RealtimePolicy::Prefer(CodecFamily::NvCodec)
-        );
+        // Phase `init_constructors_pair_codec_with_colorimetry`.
+        {
+            let sdr = EncoderInit::sdr_h264(1280, 720, 30, 6000, 2);
+            assert_eq!(sdr.codec, Codec::H264);
+            assert_eq!(sdr.bit_depth(), 8);
+            let hdr = EncoderInit::hdr10(
+                Codec::Av1,
+                1920,
+                1080,
+                30,
+                15_000,
+                2,
+                HdrConfig::pq_reference(),
+            );
+            assert!(hdr.colorimetry.is_hdr());
+            assert_eq!(hdr.bit_depth(), 10);
+            let config = media_config(&hdr, EncoderChoice::Auto);
+            assert!(config.color.is_hdr());
+            assert!(config.hdr.is_some());
+        }
+        // Phase `legacy_config_values_keep_their_meaning`.
+        {
+            assert_eq!(
+                EncoderChoice::Software.policy(),
+                RealtimePolicy::SoftwareOnly
+            );
+            assert_eq!(
+                EncoderChoice::Vaapi.policy(),
+                RealtimePolicy::Prefer(CodecFamily::Va)
+            );
+            assert_eq!(
+                EncoderChoice::Nvenc.policy(),
+                RealtimePolicy::Prefer(CodecFamily::NvCodec)
+            );
+        }
     }
 }

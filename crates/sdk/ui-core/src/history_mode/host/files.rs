@@ -4,6 +4,7 @@ use super::{
     PreviewView, Row, Text, review,
 };
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
+use crate::i18n::I18nManager;
 use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
 
 impl HistoryHost {
@@ -35,7 +36,7 @@ impl HistoryHost {
         self.observed_file_binding = binding;
         self.file_target_resolved = false;
         self.timeline.set_entries(vec![]);
-        self.unavailable = Text::new("Select a file with versioned history");
+        self.unavailable = Text::new("history-files-select-file");
         if self.open
             && let Some(target) = target
         {
@@ -74,7 +75,7 @@ impl HistoryHost {
                     }
                 }
             } else if self.files.is_none() {
-                self.unavailable = Text::new("Select a file with versioned history");
+                self.unavailable = Text::new("history-files-select-file");
             }
         }
         for old in &mut self.retired_files {
@@ -187,9 +188,9 @@ impl HistoryHost {
                             .as_ref()
                             .is_some_and(|s| s.version.parents.len() > 1)
                         {
-                            "Choose an actual parent revision for Before".into()
+                            I18nManager::lookup_plain("history-files-choose-parent")
                         } else {
-                            "No earlier version".into()
+                            I18nManager::lookup_plain("history-files-no-earlier")
                         },
                     )
                 },
@@ -285,9 +286,9 @@ impl HistoryHost {
             }
         };
         files.request_review(operation);
-        let message = format!(
-            "File: {}\n\nChecking a fresh compensation review",
-            files.target.label
+        let message = I18nManager::format(
+            "history-files-checking-compensation",
+            &[("file", files.target.label.as_str().into())],
         );
         self.show_review(None, message);
     }
@@ -300,19 +301,19 @@ impl HistoryHost {
         }
         let mut actions = Row::new().push(Box::new(self.command_button(
             "history-files-refresh",
-            "Refresh activity",
+            "history-files-refresh-activity",
             Command::FileRefresh,
         )));
         if files.restore.request.is_some() {
             actions = actions
                 .push(Box::new(self.command_button(
                     "history-files-result",
-                    "Check restore result",
+                    "history-files-check-restore",
                     Command::FileCheck,
                 )))
                 .push(Box::new(self.command_button(
                     "history-files-retry",
-                    "Retry same restore",
+                    "history-files-retry-restore",
                     Command::FileRetry,
                 )));
         }
@@ -325,9 +326,9 @@ impl HistoryHost {
                     "history-files-undo"
                 },
                 if redo {
-                    "Redo file restore…"
+                    "history-files-redo-restore"
                 } else {
-                    "Undo file restore…"
+                    "history-files-undo-restore"
                 },
                 if redo {
                     Command::FileRedo
@@ -340,13 +341,16 @@ impl HistoryHost {
             Text::new(&files.message).with_live(crate::a11y::Politeness::Polite),
         ));
         toolbar = toolbar.push(Box::new(Text::new(&files.current_revision.map_or_else(
-            || "Current file revision pointer unavailable".into(),
-            |revision| format!("Current file revision: {}", revision.version_id.0),
+            || I18nManager::lookup_plain("history-files-current-unavailable"),
+            |revision| {
+                I18nManager::format(
+                    "history-files-current-revision",
+                    &[("revision", revision.version_id.0.to_string().into())],
+                )
+            },
         ))));
         if files.live_updates {
-            toolbar = toolbar.push(Box::new(Text::new(
-                "Live file has updates; selected immutable version remains pinned",
-            )));
+            toolbar = toolbar.push(Box::new(Text::new("history-files-live-updates")));
         }
         if let Some(snapshot) = &files.after {
             if snapshot.version.parents.len() > 1 {
@@ -354,32 +358,35 @@ impl HistoryHost {
                 for id in &snapshot.version.parents {
                     parents = parents.push(Box::new(self.command_button(
                         &format!("history-parent-{}", id.0),
-                        &format!("Before parent {}", id.0),
+                        &I18nManager::format(
+                            "history-files-before-parent",
+                            &[("revision", id.0.to_string().into())],
+                        ),
                         Command::FileParent(*id),
                     )));
                 }
                 toolbar = toolbar.push(Box::new(parents));
             }
             if let Some(before) = &files.before {
-                toolbar = toolbar.push(Box::new(Text::new(&format!(
-                    "Before parent: {}",
-                    before.version.id.0
+                toolbar = toolbar.push(Box::new(Text::new(&I18nManager::format(
+                    "history-files-showing-parent",
+                    &[("revision", before.version.id.0.to_string().into())],
                 ))));
             }
         }
         toolbar
     }
 }
-fn version_label(provenance: &collab_types::FileProvenance) -> &'static str {
-    match provenance {
-        collab_types::FileProvenance::Create => "Created",
-        collab_types::FileProvenance::Edit => "Edited",
-        collab_types::FileProvenance::Rename => "Renamed",
-        collab_types::FileProvenance::Move => "Moved",
-        collab_types::FileProvenance::Delete => "Deleted",
-        collab_types::FileProvenance::Restore { .. } => "Restored",
-        collab_types::FileProvenance::ConflictResolution => "Conflict resolved",
-    }
+fn version_label(provenance: &collab_types::FileProvenance) -> String {
+    I18nManager::lookup_plain(match provenance {
+        collab_types::FileProvenance::Create => "history-files-created",
+        collab_types::FileProvenance::Edit => "history-files-edited",
+        collab_types::FileProvenance::Rename => "history-files-renamed",
+        collab_types::FileProvenance::Move => "history-files-moved",
+        collab_types::FileProvenance::Delete => "history-files-deleted",
+        collab_types::FileProvenance::Restore { .. } => "history-files-restored",
+        collab_types::FileProvenance::ConflictResolution => "history-files-conflict-resolved",
+    })
 }
 
 fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
@@ -390,16 +397,19 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
             let person = version.actor.person.as_bytes();
             let identity = hex::encode(person.get(..6).unwrap_or(person));
             let author = if person.iter().all(|b| *b == 0) {
-                "Unknown author".to_owned()
+                I18nManager::lookup_plain("history-files-unknown-author")
             } else {
-                format!("Author {identity}")
+                I18nManager::format(
+                    "history-files-author",
+                    &[("identity", identity.as_str().into())],
+                )
             };
             crate::HistoryEntry {
                 id: crate::HistoryEntryId(*version.id.0.as_bytes()),
-                author: crate::HistoryAuthor::new(
+                author: crate::history_source::author_coloured(
                     author,
-                    crate::history_source::stable_hue(&identity),
-                    identity,
+                    identity.clone(),
+                    crate::presence::user_color(&identity),
                 ),
                 op_class: collab_types::OpClass::Compaction,
                 artifact_kind: collab_types::ArtifactKind::File,
@@ -423,8 +433,10 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use crate::history_mode::HistoryRegistration;
     use automerge::AutoCommit;
+
     fn test_host() -> HistoryHost {
         fn preview(
             _: FilePreviewInput,
@@ -452,148 +464,76 @@ mod tests {
         HistoryHost::new(registration, &AutoCommit::new()).unwrap()
     }
     #[test]
-    fn files_range_selection_is_one_immutable_version() {
-        let mut host = test_host();
-        host.timeline.set_entries(
-            (1..=2)
-                .map(|id| crate::HistoryEntry {
-                    id: crate::HistoryEntryId(*uuid::Uuid::from_u128(id).as_bytes()),
-                    author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
-                    op_class: collab_types::OpClass::Compaction,
-                    artifact_kind: collab_types::ArtifactKind::File,
-                    timestamp: crate::time::UNIX_EPOCH,
-                    summary: "File revision".into(),
-                    text_delta: None,
-                    diff_payload: None,
-                    redaction: None,
-                    context: None,
-                })
-                .collect(),
-        );
-        host.timeline.set_selection(Some((0, 1)));
-        host.refresh_files(false);
-        assert_eq!(
-            host.timeline.selection(),
-            Some((0, 0)),
-            "shared range interaction must never advertise a grouped file snapshot"
-        );
-    }
-    #[test]
-    fn files_confirmation_queued_after_same_frame_cancel_cannot_submit() {
-        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
-        use collab_types::files::*;
-        struct Transport;
-        impl FileHistoryTransport for Transport {
-            fn read(
-                &self,
-                _: FileHistoryReadQueryV1,
-            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn preview(
-                &self,
-                _: FileHistoryReadScopeV1,
-                _: FileVersionId,
-            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-                Err(CheckedHistoryOutcomeV1::Unavailable)
-            }
-            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-                panic!("cancelled confirmation must never submit")
-            }
-            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-                CheckedHistoryOutcomeV1::Unavailable
-            }
-        }
-        let mut host = test_host();
-        let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
-        let mut files = FileController::new(FileHistoryTarget {
-            binding: uuid::Uuid::new_v4(),
-            record,
-            label: "file".into(),
-            transport: std::sync::Arc::new(Transport),
-        });
-        files.suspend();
-        files.review = Some((
-            FileRestoreReviewV1 {
-                schema_version: 1,
-                workspace_id: uuid::Uuid::from_u128(1),
-                mount_lifetime: uuid::Uuid::from_u128(2),
-                record_id: record,
-                frontier: [4; 32],
-            },
-            Operation::Undo {
-                restore_intent: uuid::Uuid::from_u128(5),
-            },
-        ));
-        let token = files.confirmation_token();
-        host.files = Some(files);
-        host.commands
-            .borrow_mut()
-            .push_back(Command::Review(review::ReviewCommand::Cancel));
-        host.commands
-            .borrow_mut()
-            .push_back(Command::Review(review::ReviewCommand::FileConfirm(token)));
-        host.refresh(&AutoCommit::new());
-        if let Some(command) = host.review_request.take() {
-            host.service_file_review(command);
-        }
-        assert!(host.files.as_ref().unwrap().restore.request.is_none());
-        assert!(host.files.as_ref().unwrap().review.is_none());
-        assert!(
-            host.review.is_none(),
-            "a stale confirmation cannot reopen the cancelled dialog"
-        );
-    }
-    #[test]
-    fn round1_root_target_replacement_or_removal_invalidates_queued_confirmation() {
-        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
-        use collab_types::files::*;
-        struct Transport;
-        impl FileHistoryTransport for Transport {
-            fn read(
-                &self,
-                _: FileHistoryReadQueryV1,
-            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn preview(
-                &self,
-                _: FileHistoryReadScopeV1,
-                _: FileVersionId,
-            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-                Err(CheckedHistoryOutcomeV1::Unavailable)
-            }
-            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-                CheckedHistoryOutcomeV1::Unavailable
-            }
-            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-                CheckedHistoryOutcomeV1::Unavailable
-            }
-        }
-        for (remove, late) in [(false, false), (true, false), (false, true), (true, true)] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn files_selection_and_queued_confirmation_follow_the_current_target() {
+        // phase: files_range_selection_is_one_immutable_version
+        {
             let mut host = test_host();
-            let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
-                panic!()
-            };
-            let source = source.clone();
+            host.timeline.set_entries(
+                (1..=2)
+                    .map(|id| crate::HistoryEntry {
+                        id: crate::HistoryEntryId(*uuid::Uuid::from_u128(id).as_bytes()),
+                        author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
+                        op_class: collab_types::OpClass::Compaction,
+                        artifact_kind: collab_types::ArtifactKind::File,
+                        timestamp: crate::time::UNIX_EPOCH,
+                        summary: "File revision".into(),
+                        text_delta: None,
+                        diff_payload: None,
+                        redaction: None,
+                        context: None,
+                    })
+                    .collect(),
+            );
+            host.timeline.set_selection(Some((0, 1)));
+            host.refresh_files(false);
+            assert_eq!(
+                host.timeline.selection(),
+                Some((0, 0)),
+                "shared range interaction must never advertise a grouped file snapshot"
+            );
+        }
+        // phase: files_confirmation_queued_after_same_frame_cancel_cannot_submit
+        {
+            use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+            use collab_types::files::*;
+            struct Transport;
+            impl FileHistoryTransport for Transport {
+                fn read(
+                    &self,
+                    _: FileHistoryReadQueryV1,
+                ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                    Err(FileHistoryReadErrorV1::Unavailable)
+                }
+                fn preview(
+                    &self,
+                    _: FileHistoryReadScopeV1,
+                    _: FileVersionId,
+                ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                    Err(FileHistoryReadErrorV1::Unavailable)
+                }
+                fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                    Err(CheckedHistoryOutcomeV1::Unavailable)
+                }
+                fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                    panic!("cancelled confirmation must never submit")
+                }
+                fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                    CheckedHistoryOutcomeV1::Unavailable
+                }
+            }
+            let mut host = test_host();
             let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
-            let target = FileHistoryTarget {
+            let mut files = FileController::new(FileHistoryTarget {
                 binding: uuid::Uuid::new_v4(),
                 record,
-                label: "A".into(),
+                label: "file".into(),
                 transport: std::sync::Arc::new(Transport),
-            };
-            source.set_target(Some(target.clone()));
-            host.open = true;
-            host.refresh(&AutoCommit::new());
-            host.file_target_resolved = true;
-            let files = host.files.as_mut().unwrap();
+            });
+            files.suspend();
             files.review = Some((
                 FileRestoreReviewV1 {
                     schema_version: 1,
@@ -602,52 +542,131 @@ mod tests {
                     record_id: record,
                     frontier: [4; 32],
                 },
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                Operation::Undo {
+                    restore_intent: uuid::Uuid::from_u128(5),
                 },
             ));
-            let nonce = files.confirmation_token();
-            host.selected = vec![crate::HistoryEntryId(*uuid::Uuid::from_u128(8).as_bytes())];
-            let replacement = if remove {
-                None
-            } else {
-                Some(FileHistoryTarget {
-                    binding: uuid::Uuid::new_v4(),
-                    label: "B".into(),
-                    ..target.clone()
-                })
-            };
-            if !late {
-                source.set_target(replacement.clone());
-            }
+            let token = files.confirmation_token();
+            host.files = Some(files);
             host.commands
                 .borrow_mut()
-                .push_back(Command::Review(review::ReviewCommand::FileConfirm(nonce)));
+                .push_back(Command::Review(review::ReviewCommand::Cancel));
+            host.commands
+                .borrow_mut()
+                .push_back(Command::Review(review::ReviewCommand::FileConfirm(token)));
             host.refresh(&AutoCommit::new());
-            if late {
-                source.set_target(replacement);
-            }
             if let Some(command) = host.review_request.take() {
                 host.service_file_review(command);
             }
+            assert!(host.files.as_ref().unwrap().restore.request.is_none());
+            assert!(host.files.as_ref().unwrap().review.is_none());
             assert!(
-                host.selected.is_empty(),
-                "resource replacement/removal must clear the pinned presentation"
+                host.review.is_none(),
+                "a stale confirmation cannot reopen the cancelled dialog"
             );
-            assert!(host.review.is_none());
-            assert!(
-                host.files
-                    .as_ref()
-                    .is_none_or(|files| files.restore.request.is_none())
-            );
-            let old = host
-                .retired_files
-                .iter()
-                .find(|files| files.target.binding == target.binding)
-                .unwrap();
-            assert!(old.restore.request.is_none());
-            assert!(old.review.is_none());
-            assert_ne!(old.confirmation_token(), nonce);
+        }
+        // phase: round1_root_target_replacement_or_removal_invalidates_queued_confirmation
+        {
+            use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+            use collab_types::files::*;
+            struct Transport;
+            impl FileHistoryTransport for Transport {
+                fn read(
+                    &self,
+                    _: FileHistoryReadQueryV1,
+                ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                    Err(FileHistoryReadErrorV1::Unavailable)
+                }
+                fn preview(
+                    &self,
+                    _: FileHistoryReadScopeV1,
+                    _: FileVersionId,
+                ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                    Err(FileHistoryReadErrorV1::Unavailable)
+                }
+                fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                    Err(CheckedHistoryOutcomeV1::Unavailable)
+                }
+                fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                    CheckedHistoryOutcomeV1::Unavailable
+                }
+                fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                    CheckedHistoryOutcomeV1::Unavailable
+                }
+            }
+            for (remove, late) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut host = test_host();
+                let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
+                    panic!()
+                };
+                let source = source.clone();
+                let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
+                let target = FileHistoryTarget {
+                    binding: uuid::Uuid::new_v4(),
+                    record,
+                    label: "A".into(),
+                    transport: std::sync::Arc::new(Transport),
+                };
+                source.set_target(Some(target.clone()));
+                host.open = true;
+                host.refresh(&AutoCommit::new());
+                host.file_target_resolved = true;
+                let files = host.files.as_mut().unwrap();
+                files.review = Some((
+                    FileRestoreReviewV1 {
+                        schema_version: 1,
+                        workspace_id: uuid::Uuid::from_u128(1),
+                        mount_lifetime: uuid::Uuid::from_u128(2),
+                        record_id: record,
+                        frontier: [4; 32],
+                    },
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                    },
+                ));
+                let nonce = files.confirmation_token();
+                host.selected = vec![crate::HistoryEntryId(*uuid::Uuid::from_u128(8).as_bytes())];
+                let replacement = if remove {
+                    None
+                } else {
+                    Some(FileHistoryTarget {
+                        binding: uuid::Uuid::new_v4(),
+                        label: "B".into(),
+                        ..target.clone()
+                    })
+                };
+                if !late {
+                    source.set_target(replacement.clone());
+                }
+                host.commands
+                    .borrow_mut()
+                    .push_back(Command::Review(review::ReviewCommand::FileConfirm(nonce)));
+                host.refresh(&AutoCommit::new());
+                if late {
+                    source.set_target(replacement);
+                }
+                if let Some(command) = host.review_request.take() {
+                    host.service_file_review(command);
+                }
+                assert!(
+                    host.selected.is_empty(),
+                    "resource replacement/removal must clear the pinned presentation"
+                );
+                assert!(host.review.is_none());
+                assert!(
+                    host.files
+                        .as_ref()
+                        .is_none_or(|files| files.restore.request.is_none())
+                );
+                let old = host
+                    .retired_files
+                    .iter()
+                    .find(|files| files.target.binding == target.binding)
+                    .unwrap();
+                assert!(old.restore.request.is_none());
+                assert!(old.review.is_none());
+                assert_ne!(old.confirmation_token(), nonce);
+            }
         }
     }
 
@@ -698,7 +717,7 @@ mod tests {
             }
         }
         fn settle(host: &mut HistoryHost) {
-            let end = crate::time::now() + crate::time::Duration::from_secs(2);
+            let end = crate::time::now() + HANG_BOUND;
             while !host.file_target_resolved && crate::time::now() < end {
                 host.refresh(&AutoCommit::new());
                 std::thread::sleep(crate::time::Duration::from_millis(1));
@@ -795,7 +814,7 @@ mod tests {
         assert_eq!(files.restore.request, Some(request));
         assert!(files.restore.prepare(review, request.operation).is_err());
         files.check_result();
-        let end = crate::time::now() + crate::time::Duration::from_secs(2);
+        let end = crate::time::now() + HANG_BOUND;
         while original.results.load(Ordering::SeqCst) == 0 && crate::time::now() < end {
             std::thread::sleep(crate::time::Duration::from_millis(1));
         }

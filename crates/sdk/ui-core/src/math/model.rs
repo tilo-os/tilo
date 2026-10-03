@@ -580,86 +580,84 @@ mod tests {
     }
 
     #[test]
-    fn char_run_round_trips() {
-        assert_eq!(lin("x+1"), "x+1");
-        assert_eq!(lin("2*x-3"), "2*x-3");
-    }
-
-    #[test]
-    fn power_builds_sup() {
-        let e = parse("x^2");
-        assert_eq!(
-            e.root,
-            vec![
-                Node::Char('x'),
-                Node::Sup {
-                    exp: vec![Node::Char('2')]
+    fn linear_math_parses_into_structured_nodes_and_back() {
+        // phase: char_run_round_trips
+        {
+            assert_eq!(lin("x+1"), "x+1");
+            assert_eq!(lin("2*x-3"), "2*x-3");
+        }
+        // phase: power_builds_sup
+        {
+            let e = parse("x^2");
+            assert_eq!(
+                e.root,
+                vec![
+                    Node::Char('x'),
+                    Node::Sup {
+                        exp: vec![Node::Char('2')]
+                    }
+                ]
+            );
+            assert_eq!(to_linear(&e), "x^(2)");
+        }
+        // phase: fraction_builds_frac
+        {
+            let e = parse("(x+1)/(x-3)");
+            match &e.root[0] {
+                Node::Frac { num, den } => {
+                    assert_eq!(to_linear(&MathExpr { root: num.clone() }), "x+1");
+                    assert_eq!(to_linear(&MathExpr { root: den.clone() }), "x-3");
                 }
-            ]
-        );
-        assert_eq!(to_linear(&e), "x^(2)");
-    }
-
-    #[test]
-    fn fraction_builds_frac() {
-        let e = parse("(x+1)/(x-3)");
-        match &e.root[0] {
-            Node::Frac { num, den } => {
-                assert_eq!(to_linear(&MathExpr { root: num.clone() }), "x+1");
-                assert_eq!(to_linear(&MathExpr { root: den.clone() }), "x-3");
+                other => panic!("expected frac, got {other:?}"),
             }
-            other => panic!("expected frac, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn sqrt_builds_radical() {
-        let e = parse("sqrt(x+1)");
-        match &e.root[0] {
-            Node::Sqrt {
-                index: None,
-                radicand,
-            } => {
-                assert_eq!(
-                    to_linear(&MathExpr {
-                        root: radicand.clone()
-                    }),
-                    "x+1"
-                );
+        // phase: sqrt_builds_radical
+        {
+            let e = parse("sqrt(x+1)");
+            match &e.root[0] {
+                Node::Sqrt {
+                    index: None,
+                    radicand,
+                } => {
+                    assert_eq!(
+                        to_linear(&MathExpr {
+                            root: radicand.clone()
+                        }),
+                        "x+1"
+                    );
+                }
+                other => panic!("expected sqrt, got {other:?}"),
             }
-            other => panic!("expected sqrt, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn function_call_builds_func() {
-        let e = parse("sin(x)");
-        match &e.root[0] {
-            Node::Func { name, arg } => {
-                assert_eq!(name, "sin");
-                assert_eq!(to_linear(&MathExpr { root: arg.clone() }), "x");
+        // phase: function_call_builds_func
+        {
+            let e = parse("sin(x)");
+            match &e.root[0] {
+                Node::Func { name, arg } => {
+                    assert_eq!(name, "sin");
+                    assert_eq!(to_linear(&MathExpr { root: arg.clone() }), "x");
+                }
+                other => panic!("expected func, got {other:?}"),
             }
-            other => panic!("expected func, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn nested_root_index() {
-        let e = parse("root(3,x)");
-        match &e.root[0] {
-            Node::Sqrt {
-                index: Some(i),
-                radicand,
-            } => {
-                assert_eq!(to_linear(&MathExpr { root: i.clone() }), "3");
-                assert_eq!(
-                    to_linear(&MathExpr {
-                        root: radicand.clone()
-                    }),
-                    "x"
-                );
+        // phase: nested_root_index
+        {
+            let e = parse("root(3,x)");
+            match &e.root[0] {
+                Node::Sqrt {
+                    index: Some(i),
+                    radicand,
+                } => {
+                    assert_eq!(to_linear(&MathExpr { root: i.clone() }), "3");
+                    assert_eq!(
+                        to_linear(&MathExpr {
+                            root: radicand.clone()
+                        }),
+                        "x"
+                    );
+                }
+                other => panic!("expected indexed sqrt, got {other:?}"),
             }
-            other => panic!("expected indexed sqrt, got {other:?}"),
         }
     }
 }

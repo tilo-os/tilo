@@ -3,12 +3,11 @@
 //! right showing the full message, author, parents, refs and the changed
 //! files of the selected commit.
 
-use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
+use vello::kurbo::{BezPath, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::draw;
@@ -138,39 +137,37 @@ impl HistoryView {
     /// Draw the commit list with graph. Returns the row rects so the app
     /// can hit-test selection. `selected` is the index of the highlighted
     /// commit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Commit graph painting needs render context, viewport, repository and graph data, selection, and scroll offset."
-    )]
     pub fn draw_list(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &RepoModel,
         layout: &GraphLayout,
         selected: usize,
         scroll: f64,
     ) -> ListDraw {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, area, c.surfaces.base);
-        let m = Metrics::measure(tr, theme);
+        let c = &ctx.theme.tokens.colors;
+        ctx.fill_rect(area, c.surfaces.base);
+        let m = Metrics::measure(ctx.text, ctx.theme);
 
-        scene.push_layer(
+        ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            t,
+            ctx.transform,
             &area,
         );
 
-        Self::draw_graph_edges(scene, t, theme, area, layout, scroll, &m);
-
         let graph_total_w = GRAPH_PAD + (layout.lanes.max(1) as f64) * LANE_W + 8.0;
-        let text_x = area.x0 + graph_total_w + 6.0;
-        let mut rows: Vec<Rect> = Vec::new();
+        let pass = ListPass {
+            area,
+            layout,
+            selected,
+            text_x: area.x0 + graph_total_w + 6.0,
+            m,
+        };
+        pass.draw_graph_edges(ctx, scroll);
 
+        let mut rows: Vec<Rect> = Vec::new();
         for (row, commit) in model.commits.iter().enumerate() {
             let y = area.y0 - scroll + row as f64 * m.pitch();
             let rrect = Rect::new(area.x0, y, area.x1, y + m.row_h);
@@ -178,32 +175,201 @@ impl HistoryView {
             if y + m.row_h < area.y0 || y > area.y1 {
                 continue;
             }
-            Self::draw_commit_row(
-                scene, tr, t, theme, area, layout, commit, row, y, rrect, selected, text_x, &m,
-            );
+            pass.draw_commit_row(ctx, row, commit, rrect);
         }
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         ListDraw { rows, metrics: m }
     }
 
-    /// The branch/merge lane edges, drawn before the dots so dots paint on
-    /// top (part of [`Self::draw_list`]).
-    fn draw_graph_edges(
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        scroll: f64,
-        m: &Metrics,
+    /// Draw the detail panel for `commit` on the right.
+    pub fn draw_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll: f64) {
+        let c = &ctx.theme.tokens.colors;
+        ctx.fill_rect(area, c.surfaces.raised);
+        draw::vline(
+            ctx,
+            area.x0,
+            area.y0,
+            area.y1,
+            draw::edge(c.surfaces.raised),
+        );
+
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &area,
+        );
+
+        let pad = 20.0;
+        let x = area.x0 + pad;
+        let width = (area.width() - pad * 2.0) as f32;
+        let at = |y: f64| Point::new(x, y);
+
+        let mut y = area.y0 + pad - scroll;
+        y = Self::draw_detail_summary(ctx, commit, at(y), width);
+        y = Self::draw_detail_author(ctx, commit, at(y));
+        y = Self::draw_detail_meta_grid(ctx, commit, at(y));
+
+        y += 8.0;
+        draw::hline(ctx, y, x, area.x1 - pad, draw::edge(c.surfaces.raised));
+        y += 14.0;
+
+        y = Self::draw_detail_body(ctx, commit, at(y), width);
+        Self::draw_detail_files(ctx, commit, at(y), width, area.x1 - pad);
+
+        ctx.scene.pop_layer();
+    }
+
+    /// The commit summary line at `origin`, wrapped at `width` (part of
+    /// [`Self::draw_detail`]). Returns the `y` for the next section.
+    fn draw_detail_summary(
+        ctx: &mut PaintCtx<'_>,
+        commit: &Commit,
+        origin: Point,
+        width: f32,
+    ) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let style = TextStyle::new(16.0).with_weight(TextWeight::Semibold);
+        ctx.text(&commit.summary, &style, c.text_primary, origin, Some(width));
+        let (_, summary_h) = ctx.text.measure_style(&commit.summary, Some(width), &style);
+        origin.y + f64::from(summary_h) + 14.0
+    }
+
+    /// The author block with avatar at `origin` (part of
+    /// [`Self::draw_detail`]). Returns the `y` for the next section.
+    fn draw_detail_author(ctx: &mut PaintCtx<'_>, commit: &Commit, origin: Point) -> f64 {
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let acolor = draw::author_color(theme, &commit.author_email);
+        draw::avatar(ctx, origin, 32.0, &commit.author_name, acolor);
+        let text_x = origin.x + 42.0;
+        ctx.text(
+            &commit.author_name,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
+            c.text_primary,
+            Point::new(text_x, origin.y),
+            None,
+        );
+        ctx.text(
+            &commit.author_email,
+            &TextStyle::new(12.0),
+            c.text_dim,
+            Point::new(text_x, origin.y + 17.0),
+            None,
+        );
+        origin.y + 44.0
+    }
+
+    /// The commit / date / parents / refs metadata grid at `origin` (part of
+    /// [`Self::draw_detail`]). Returns the `y` for the next section.
+    fn draw_detail_meta_grid(ctx: &mut PaintCtx<'_>, commit: &Commit, origin: Point) -> f64 {
+        let x = origin.x;
+        let short: String = commit.id.chars().take(12).collect();
+        let mut y = meta_row(ctx, origin, "commit", &short, true);
+        y = meta_row(ctx, Point::new(x, y), "date", &commit.when, false);
+        if !commit.parents.is_empty() {
+            let parents: Vec<String> = commit
+                .parents
+                .iter()
+                .map(|p| p.chars().take(7).collect())
+                .collect();
+            y = meta_row(ctx, Point::new(x, y), "parents", &parents.join(", "), true);
+        }
+        if !commit.refs.is_empty() {
+            let refs: Vec<String> = commit.refs.iter().map(|r| r.name.clone()).collect();
+            y = meta_row(ctx, Point::new(x, y), "refs", &refs.join(", "), false);
+        }
+        y
+    }
+
+    /// The full commit body message at `origin`, wrapped at `width`, if any
+    /// (part of [`Self::draw_detail`]). Returns the `y` for the next section
+    /// (unchanged when there is no body).
+    fn draw_detail_body(ctx: &mut PaintCtx<'_>, commit: &Commit, origin: Point, width: f32) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        if commit.body.is_empty() {
+            return origin.y;
+        }
+        let style = TextStyle::new(13.0);
+        ctx.text(&commit.body, &style, c.neutral[7], origin, Some(width));
+        let (_, body_h) = ctx.text.measure_style(&commit.body, Some(width), &style);
+        origin.y + f64::from(body_h) + 18.0
+    }
+
+    /// The changed-files list at `origin`, if any (part of
+    /// [`Self::draw_detail`]). Paths wrap inside `width`; the +/- counts are
+    /// right-aligned to `right_x`.
+    fn draw_detail_files(
+        ctx: &mut PaintCtx<'_>,
+        commit: &Commit,
+        origin: Point,
+        width: f32,
+        right_x: f64,
     ) {
-        let row_h = m.row_h;
-        let pitch = m.pitch();
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        if commit.files.is_empty() {
+            return;
+        }
+        let x = origin.x;
+        let mut y = origin.y;
+        ctx.text(
+            "Changed files",
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
+            c.text_dim,
+            origin,
+            None,
+        );
+        y += 24.0;
+        for file in &commit.files {
+            let badge = file.kind.badge();
+            let badge_color = draw::kind_color(theme, file.kind);
+            draw::mono(ctx, badge, 12.0, badge_color, Point::new(x, y));
+            ctx.text(
+                &file.path,
+                &TextStyle::new(12.0),
+                c.text_primary,
+                Point::new(x + 18.0, y),
+                Some(width - 80.0),
+            );
+            let counts = format!("+{} -{}", file.additions, file.deletions);
+            let counts_w = f64::from(draw::mono_width(ctx.text, &counts, 11.5));
+            draw::mono(
+                ctx,
+                &counts,
+                11.5,
+                c.text_dim,
+                Point::new(right_x - counts_w, y + 1.0),
+            );
+            y += 24.0;
+        }
+    }
+}
+
+/// One paint pass over the commit list: its viewport, the graph it draws
+/// lanes from, the highlighted row, where row text starts, and the measured
+/// row metrics.
+struct ListPass<'a> {
+    area: Rect,
+    layout: &'a GraphLayout,
+    selected: usize,
+    text_x: f64,
+    m: Metrics,
+}
+
+impl ListPass<'_> {
+    /// The branch/merge lane edges, drawn before the dots so dots paint on
+    /// top (part of [`HistoryView::draw_list`]).
+    fn draw_graph_edges(&self, ctx: &mut PaintCtx<'_>, scroll: f64) {
+        let area = self.area;
+        let row_h = self.m.row_h;
+        let pitch = self.m.pitch();
         let graph_x = area.x0 + GRAPH_PAD;
         let lane_x = |lane: usize| graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
         let row_center_y = |row: usize| area.y0 - scroll + row as f64 * pitch + row_h / 2.0;
-        for edge in &layout.edges {
+        for edge in &self.layout.edges {
             let y0 = row_center_y(edge.from_row);
             let y1 = row_center_y(edge.to_row);
             // Cull if both endpoints are far off-screen.
@@ -212,7 +378,7 @@ impl HistoryView {
             }
             let x0 = lane_x(edge.from_lane);
             let x1 = lane_x(edge.to_lane);
-            let color = draw::lane_color(theme, edge.to_lane.max(edge.from_lane));
+            let color = draw::lane_color(ctx.theme, edge.to_lane.max(edge.from_lane));
             let mut path = BezPath::new();
             path.move_to(Point::new(x0, y0));
             if (x0 - x1).abs() < 0.5 {
@@ -222,159 +388,96 @@ impl HistoryView {
                 let my = f64::midpoint(y0, y1);
                 path.curve_to(Point::new(x0, my), Point::new(x1, my), Point::new(x1, y1));
             }
-            scene.stroke(&Stroke::new(2.0), t, color, None, &path);
+            ctx.scene
+                .stroke(&Stroke::new(2.0), ctx.transform, color, None, &path);
         }
     }
 
-    /// The graph dot for a commit row — filled lane-coloured circle, hollow
-    /// centre for a merge (part of [`Self::draw_commit_row`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "see the comment above draw_commit_row"
-    )]
-    fn draw_commit_dot(
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        commit: &Commit,
-        row: usize,
-        y: f64,
-        row_h: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let graph_x = area.x0 + GRAPH_PAD;
-        let lane = layout.lane_of.get(row).copied().unwrap_or(0);
+    /// One commit row in `rrect`: selection tint, graph dot, ref pills,
+    /// summary, author/time/hash meta line, and the row separator (part of
+    /// [`HistoryView::draw_list`]). Split into [`Self::draw_commit_dot`] and
+    /// [`Self::draw_commit_row_text`] to keep each half under the
+    /// line-count lint.
+    fn draw_commit_row(&self, ctx: &mut PaintCtx<'_>, row: usize, commit: &Commit, rrect: Rect) {
+        let theme = ctx.theme;
+        if row == self.selected {
+            // Keep the selected commit legible and calm. The accent rail is
+            // enough to identify selection while preserving graph lane
+            // colours for topology rather than state.
+            ctx.fill_rect(rrect, theme.tokens.colors.lift(0.72));
+            ctx.fill_rect(
+                Rect::new(rrect.x0, rrect.y0, rrect.x0 + 3.0, rrect.y1),
+                theme.accent_primary,
+            );
+        }
+        self.draw_commit_dot(ctx, row, commit, rrect.y0);
+        self.draw_commit_row_text(ctx, commit, rrect.y0);
+    }
+
+    /// The graph dot for the commit row at `y` — filled lane-coloured
+    /// circle, hollow centre for a merge (part of [`Self::draw_commit_row`]).
+    fn draw_commit_dot(&self, ctx: &mut PaintCtx<'_>, row: usize, commit: &Commit, y: f64) {
+        let theme = ctx.theme;
+        let graph_x = self.area.x0 + GRAPH_PAD;
+        let lane = self.layout.lane_of.get(row).copied().unwrap_or(0);
         let cx = graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
-        let cy = y + row_h / 2.0;
+        let cy = y + self.m.row_h / 2.0;
         let dot_color = draw::lane_color(theme, lane);
         let is_merge = commit.parents.len() > 1;
         let dr = if is_merge { DOT_R + 1.5 } else { DOT_R };
-        draw::fill_round(
-            scene,
-            t,
-            Rect::new(cx - dr, cy - dr, cx + dr, cy + dr),
-            dr,
-            dot_color,
-        );
+        ctx.fill_round(Rect::new(cx - dr, cy - dr, cx + dr, cy + dr), dr, dot_color);
         if is_merge {
             // Hollow center to mark a merge.
-            draw::fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 Rect::new(cx - 2.0, cy - 2.0, cx + 2.0, cy + 2.0),
                 2.0,
-                c.surfaces.base,
+                theme.tokens.colors.surfaces.base,
             );
         }
-    }
-
-    /// Ref pills from `origin`, painted while they fit left of `limit_x`.
-    /// The first pill always paints — elided to the room left — so a commit
-    /// with a long branch name still shows that it carries a ref instead of
-    /// an empty first line; later pills that do not fit are dropped. Returns
-    /// whether any pill was painted.
-    fn draw_ref_pills(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        refs: &[RefLabel],
-        origin: (f64, f64),
-        limit_x: f64,
-    ) -> bool {
-        let (mut px, pill_y) = origin;
-        let mut painted_any = false;
-        for r in refs {
-            let (fg, bg) = ref_colors(theme, r.kind);
-            let room = limit_x - px;
-            let name = if draw::pill_width(tr, &r.name, 12.0) <= room {
-                r.name.clone()
-            } else if painted_any {
-                break;
-            } else {
-                let label_room = (room - draw::pill_width(tr, "", 12.0)).max(0.0) as f32;
-                tr.elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
-            };
-            px += draw::pill(
-                scene,
-                tr,
-                t,
-                px,
-                pill_y,
-                12.0,
-                &name,
-                fg,
-                bg,
-                draw::PillEdge::Bare,
-            );
-            painted_any = true;
-        }
-        painted_any
     }
 
     /// Ref pills, summary, author/time/hash meta line, and the row
-    /// separator (part of [`Self::draw_commit_row`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "see the comment above draw_commit_row"
-    )]
-    fn draw_commit_row_text(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        commit: &Commit,
-        y: f64,
-        text_x: f64,
-        m: &Metrics,
-    ) {
+    /// separator for the commit row at `y` (part of [`Self::draw_commit_row`]).
+    fn draw_commit_row_text(&self, ctx: &mut PaintCtx<'_>, commit: &Commit, y: f64) {
+        let area = self.area;
+        let m = &self.m;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let gap = f64::from(theme.tokens.spacing.s2);
         // Short hash, right-aligned on the first text line; the ref pills and
         // summary stop before it.
         let short: String = commit.id.chars().take(7).collect();
-        let hw = f64::from(draw::mono_width(tr, &short, 12.0));
+        let hw = f64::from(draw::mono_width(ctx.text, &short, 12.0));
         let hash_x = area.x1 - hw - 14.0;
 
-        let painted_any = Self::draw_ref_pills(
-            scene,
-            tr,
-            t,
-            theme,
+        let painted_any = draw_ref_pills(
+            ctx,
             &commit.refs,
-            (text_x, y + m.pad_top),
+            Point::new(self.text_x, y + m.pad_top),
             hash_x - gap,
         );
 
         // Summary. If ref pills were painted, draw it on the second line;
         // else the first.
-        let sx = text_x;
+        let sx = self.text_x;
         let sy = m.summary_top(y, painted_any);
         let avail = if painted_any {
             area.x1 - 14.0 - sx
         } else {
             hash_x - gap - sx
         };
-        let summary = tr.elide_to_width_weighted(
+        let summary = ctx.text.elide_to_width_weighted(
             &commit.summary,
             13.0,
             avail.max(12.0) as f32,
             TextWeight::Medium,
         );
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &summary,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             c.text_primary,
-            sx,
-            sy,
+            Point::new(sx, sy),
             None,
-            TextWeight::Medium,
         );
 
         // Author + time + short hash on the meta line. Author identity is
@@ -382,446 +485,129 @@ impl HistoryView {
         // that the author's hue is a status/severity colour like graph lanes
         // and file badges.
         let meta_y = sy + m.summary_h + m.meta_gap;
-        draw::text(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &commit.author_name,
-            12.0,
+            &TextStyle::new(12.0),
             c.text_primary,
-            sx,
-            meta_y,
+            Point::new(sx, meta_y),
             None,
         );
-        let aw = f64::from(tr.measure(&commit.author_name, 12.0, None).0);
+        let aw = f64::from(ctx.text.measure(&commit.author_name, 12.0, None).0);
         let meta = format!("·  {}", commit.when);
         let meta_x = sx + aw + gap;
-        let meta = tr.elide_to_width(
+        let meta = ctx.text.elide_to_width(
             &meta,
             META_DIM_FONT,
             (area.x1 - 14.0 - meta_x).max(12.0) as f32,
         );
         // The dimmer, smaller time shares the author's centre line.
-        let (_, mh) = tr.measure(&meta, META_DIM_FONT, None);
-        draw::text(
-            scene,
-            tr,
-            t,
+        let (_, mh) = ctx.text.measure(&meta, META_DIM_FONT, None);
+        ctx.text(
             &meta,
-            META_DIM_FONT,
+            &TextStyle::new(META_DIM_FONT),
             c.text_dim,
-            meta_x,
-            meta_y + (m.meta_h - f64::from(mh)) / 2.0,
+            Point::new(meta_x, meta_y + (m.meta_h - f64::from(mh)) / 2.0),
             None,
         );
 
         draw::mono(
-            scene,
-            tr,
-            t,
+            ctx,
             &short,
             12.0,
             c.text_dim,
-            hash_x,
-            y + m.no_refs_top,
+            Point::new(hash_x, y + m.no_refs_top),
         );
 
         // The row rule sits in the middle of the inter-row gap.
         draw::hline(
-            scene,
-            t,
+            ctx,
             y + m.row_h + m.row_gap / 2.0,
             area.x0 + 8.0,
             area.x1 - 8.0,
             c.lift(0.35),
         );
     }
-
-    /// One commit row: selection tint, graph dot, ref pills, summary,
-    /// author/time/hash meta line, and the row separator (part of
-    /// [`Self::draw_list`]). Split into [`Self::draw_commit_dot`] and
-    /// [`Self::draw_commit_row_text`] to keep each half under the
-    /// line-count lint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    fn draw_commit_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        commit: &Commit,
-        row: usize,
-        y: f64,
-        rrect: Rect,
-        selected: usize,
-        text_x: f64,
-        m: &Metrics,
-    ) {
-        let c = &theme.tokens.colors;
-        if row == selected {
-            // Keep the selected commit legible and calm. The accent rail is
-            // enough to identify selection while preserving graph lane
-            // colours for topology rather than state.
-            draw::fill_rect(scene, t, rrect, c.lift(0.72));
-            draw::fill_rect(
-                scene,
-                t,
-                Rect::new(rrect.x0, rrect.y0, rrect.x0 + 3.0, rrect.y1),
-                theme.accent_primary,
-            );
-        }
-        Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y, m.row_h);
-        Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x, m);
-    }
-
-    /// Draw the detail panel for `commit` on the right.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
-    )]
-    pub fn draw_detail(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        commit: &Commit,
-        scroll: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, area, c.surfaces.raised);
-        draw::vline(
-            scene,
-            t,
-            area.x0,
-            area.y0,
-            area.y1,
-            draw::edge(c.surfaces.raised),
-        );
-
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &area,
-        );
-
-        let pad = 20.0;
-        let mut y = area.y0 + pad - scroll;
-        let x = area.x0 + pad;
-        let w = (area.width() - pad * 2.0) as f32;
-
-        y = Self::draw_detail_summary(scene, tr, t, theme, commit, x, y, w);
-        y = Self::draw_detail_author(scene, tr, t, theme, commit, x, y);
-        y = Self::draw_detail_meta_grid(scene, tr, t, theme, commit, x, y, w);
-
-        y += 8.0;
-        draw::hline(scene, t, y, x, area.x1 - pad, draw::edge(c.surfaces.raised));
-        y += 14.0;
-
-        y = Self::draw_detail_body(scene, tr, t, theme, commit, x, y, w);
-        Self::draw_detail_files(scene, tr, t, theme, area, commit, x, y, w, pad);
-
-        scene.pop_layer();
-    }
-
-    /// The commit summary line (part of [`Self::draw_detail`]). Returns the
-    /// `y` for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
-    )]
-    fn draw_detail_summary(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            &commit.summary,
-            16.0,
-            c.text_primary,
-            x,
-            y,
-            Some(w),
-            TextWeight::Semibold,
-        );
-        let sh = f64::from(
-            tr.measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold)
-                .1,
-        );
-        y + sh + 14.0
-    }
-
-    /// The author block with avatar (part of [`Self::draw_detail`]).
-    /// Returns the `y` for the next section.
-    fn draw_detail_author(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let acolor = draw::author_color(theme, &commit.author_email);
-        draw::avatar(scene, tr, t, theme, x, y, 32.0, &commit.author_name, acolor);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            &commit.author_name,
-            13.0,
-            c.text_primary,
-            x + 42.0,
-            y,
-            None,
-            TextWeight::Medium,
-        );
-        draw::text(
-            scene,
-            tr,
-            t,
-            &commit.author_email,
-            12.0,
-            c.text_dim,
-            x + 42.0,
-            y + 17.0,
-            None,
-        );
-        y + 44.0
-    }
-
-    /// The commit / date / parents / refs metadata grid (part of
-    /// [`Self::draw_detail`]). Returns the `y` for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    fn draw_detail_meta_grid(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
-        let short: String = commit.id.chars().take(12).collect();
-        let mut y = meta_row(scene, tr, t, theme, x, y, w, "commit", &short, true);
-        y = meta_row(scene, tr, t, theme, x, y, w, "date", &commit.when, false);
-        if !commit.parents.is_empty() {
-            let parents: Vec<String> = commit
-                .parents
-                .iter()
-                .map(|p| p.chars().take(7).collect())
-                .collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "parents",
-                &parents.join(", "),
-                true,
-            );
-        }
-        if !commit.refs.is_empty() {
-            let refs: Vec<String> = commit.refs.iter().map(|r| r.name.clone()).collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "refs",
-                &refs.join(", "),
-                false,
-            );
-        }
-        y
-    }
-
-    /// The full commit body message, if any (part of [`Self::draw_detail`]).
-    /// Returns the `y` for the next section (unchanged when there is no
-    /// body).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
-    )]
-    fn draw_detail_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        if commit.body.is_empty() {
-            return y;
-        }
-        draw::text(
-            scene,
-            tr,
-            t,
-            &commit.body,
-            13.0,
-            c.neutral[7],
-            x,
-            y,
-            Some(w),
-        );
-        let bh = f64::from(tr.measure(&commit.body, 13.0, Some(w)).1);
-        y + bh + 18.0
-    }
-
-    /// The changed-files list, if any (part of [`Self::draw_detail`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
-    )]
-    fn draw_detail_files(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        commit: &Commit,
-        x: f64,
-        mut y: f64,
-        w: f32,
-        pad: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        if commit.files.is_empty() {
-            return;
-        }
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            "Changed files",
-            12.0,
-            c.text_dim,
-            x,
-            y,
-            None,
-            TextWeight::Semibold,
-        );
-        y += 24.0;
-        for f in &commit.files {
-            let badge = f.kind.badge();
-            draw::mono(
-                scene,
-                tr,
-                t,
-                badge,
-                12.0,
-                draw::kind_color(theme, f.kind),
-                x,
-                y,
-            );
-            draw::text(
-                scene,
-                tr,
-                t,
-                &f.path,
-                12.0,
-                c.text_primary,
-                x + 18.0,
-                y,
-                Some(w - 80.0),
-            );
-            let counts = format!("+{} -{}", f.additions, f.deletions);
-            let cw = f64::from(draw::mono_width(tr, &counts, 11.5));
-            draw::mono(
-                scene,
-                tr,
-                t,
-                &counts,
-                11.5,
-                c.text_dim,
-                area.x1 - pad - cw,
-                y + 1.0,
-            );
-            y += 24.0;
-        }
-    }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "internal draw-step split of an over-length function"
-)]
-fn meta_row(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    x: f64,
-    y: f64,
-    _w: f32,
-    label: &str,
-    value: &str,
-    mono: bool,
-) -> f64 {
-    let c = &theme.tokens.colors;
-    draw::text(scene, tr, t, label, 12.0, c.text_dim, x, y, None);
-    if mono {
-        draw::mono(scene, tr, t, value, 12.0, c.text_primary, x + 70.0, y);
-    } else {
-        draw::text(scene, tr, t, value, 12.0, c.text_primary, x + 70.0, y, None);
+/// Ref pills from `origin`, painted while they fit left of `limit_x`.
+/// The first pill always paints — elided to the room left — so a commit
+/// with a long branch name still shows that it carries a ref instead of
+/// an empty first line; later pills that do not fit are dropped. Returns
+/// whether any pill was painted.
+fn draw_ref_pills(ctx: &mut PaintCtx<'_>, refs: &[RefLabel], origin: Point, limit_x: f64) -> bool {
+    let mut px = origin.x;
+    let mut painted_any = false;
+    for r in refs {
+        let (fg, bg) = ref_colors(ctx.theme, r.kind);
+        let room = limit_x - px;
+        let name = if draw::pill_width(ctx.text, &r.name, 12.0) <= room {
+            r.name.clone()
+        } else if painted_any {
+            break;
+        } else {
+            let label_room = (room - draw::pill_width(ctx.text, "", 12.0)).max(0.0) as f32;
+            ctx.text
+                .elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
+        };
+        let style = draw::PillStyle {
+            size: 12.0,
+            fg,
+            bg,
+            edge: draw::PillEdge::Bare,
+        };
+        px += draw::pill(ctx, Point::new(px, origin.y), &name, &style);
+        painted_any = true;
     }
-    y + 22.0
+    painted_any
+}
+
+/// One `label  value` line of the detail metadata grid at `origin`; `mono`
+/// sets the value in the code face. Returns the `y` of the next line.
+fn meta_row(ctx: &mut PaintCtx<'_>, origin: Point, label: &str, value: &str, mono: bool) -> f64 {
+    let c = &ctx.theme.tokens.colors;
+    ctx.text(label, &TextStyle::new(12.0), c.text_dim, origin, None);
+    let value_origin = Point::new(origin.x + 70.0, origin.y);
+    if mono {
+        draw::mono(ctx, value, 12.0, c.text_primary, value_origin);
+    } else {
+        ctx.text(
+            value,
+            &TextStyle::new(12.0),
+            c.text_primary,
+            value_origin,
+            None,
+        );
+    }
+    origin.y + 22.0
 }
 
 fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
     let c = &theme.tokens.colors;
     match kind {
-        RefKind::Head => (Color::WHITE, theme.accent_primary),
+        RefKind::Head => (
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
+            theme.accent_primary,
+        ),
         RefKind::LocalBranch => (c.text_primary, c.accent[2]),
         RefKind::RemoteBranch => {
             let g = c.semantic.success;
-            (Color::WHITE, Color::from_rgba8(g.r(), g.g(), g.b(), 60))
+            // The pill is a 60/255 wash, so ink is measured on the composite
+            // over both the list ground and the selected-row lift.
+            let wash = 60.0_f32 / 255.0;
+            let on_row = ui::tokens::colors::over(c.surfaces.base, g, wash);
+            let on_selected = ui::tokens::colors::over(c.lift(0.72), g, wash);
+            (
+                c.ink_on_any(
+                    &[on_row, on_selected],
+                    c.text_primary,
+                    ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+                ),
+                ui::paint::with_alpha(g, 60),
+            )
         }
         RefKind::Tag => {
             let a = c.semantic.warning;
-            (c.surfaces.base, Color::from_rgba8(a.r(), a.g(), a.b(), 220))
+            (c.surfaces.base, ui::paint::with_alpha(a, 220))
         }
     }
 }
@@ -830,10 +616,17 @@ fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
 mod tests {
     use super::*;
 
+    /// History rows: the measured row reproduces 68 px at 1x and grows at 2x, and
+    /// rows keep an `s1` gap on every preset. Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn history_rows_follow_text_scale_and_keep_token_gaps() {
+        row_metrics_match_the_constant_at_1x_and_follow_the_text_scale();
+        commit_rows_keep_a_token_gap_on_every_preset();
+    }
+
     /// The measured row reproduces the historical 68 px pitch at 1× and grows
     /// with its three text lines at 2×, so ref pills, summary and meta line
     /// never share pixels.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -871,7 +664,6 @@ mod tests {
     /// HIG §7 "nothing touches": the list pitch is the row plus an `s1`
     /// gap, so the graph dot centre, the row rect and the separator all
     /// agree and neighbouring commit rows never share pixels.
-    #[test]
     fn commit_rows_keep_a_token_gap_on_every_preset() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let mut tr = TextRenderer::new();

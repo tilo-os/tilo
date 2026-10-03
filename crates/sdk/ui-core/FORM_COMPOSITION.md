@@ -47,7 +47,7 @@ Manual hosts should use `compute_widget_layout`; App and FrameHarness already do
 ## Runnable account fixture and authoring inventory
 
 ```sh
-cargo run -p ui --example form-composition-shots -- /tmp/form-composition
+cargo run -p ui-examples --example form-composition-shots -- /tmp/form-composition
 ```
 
 The registered example produces automatic, guided and equivalent primitive sources/captures: wide, narrow, 200% text, narrow 200%, scrolled end, and resized automatic narrow. The populated account form has two sections, name/email, supporting and validation copy, a labelled checkbox, and secondary/primary actions. All captures use FrameHarness.

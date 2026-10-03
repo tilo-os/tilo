@@ -350,27 +350,31 @@ mod tests {
         postcard::to_stdvec(&op).unwrap()
     }
 
+    /// A typed, signed, incremental change applies; a valid operation for another route is rejected.
     #[test]
-    fn applies_a_typed_signed_incremental_change() {
-        let mut doc = AutoCommit::new();
-        let text = apply_signed_document(
-            &mut doc,
-            "workspace-a",
-            &signed_change("workspace-a", "hello"),
-        )
-        .unwrap();
-        assert_eq!(text.as_deref(), Some("hello"));
-    }
+    fn the_probe_applies_only_signed_changes_for_its_route() {
+        // Phase: applies_a_typed_signed_incremental_change.
+        {
+            let mut doc = AutoCommit::new();
+            let text = apply_signed_document(
+                &mut doc,
+                "workspace-a",
+                &signed_change("workspace-a", "hello"),
+            )
+            .unwrap();
+            assert_eq!(text.as_deref(), Some("hello"));
+        }
 
-    #[test]
-    fn rejects_a_valid_operation_for_another_route() {
-        let mut doc = AutoCommit::new();
-        let error = apply_signed_document(
-            &mut doc,
-            "workspace-b",
-            &signed_change("workspace-a", "hello"),
-        )
-        .unwrap_err();
-        assert!(error.contains("another document route"));
+        // Phase: rejects_a_valid_operation_for_another_route.
+        {
+            let mut doc = AutoCommit::new();
+            let error = apply_signed_document(
+                &mut doc,
+                "workspace-b",
+                &signed_change("workspace-a", "hello"),
+            )
+            .unwrap_err();
+            assert!(error.contains("another document route"));
+        }
     }
 }

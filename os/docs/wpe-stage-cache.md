@@ -16,7 +16,7 @@ bit-for-bit reproducible compiler output.
 `prepare-wpe-stage.py` builds only `wpe-builder-1` with Buildah-compatible
 `--layers --cache-from --cache-to`, then validates its immutable local image ID,
 Linux OS and native architecture. The full build uses that ID to override the
-`wpe-builder` context. Source recipe, pinned buildroot and mounted frozen assets
+`wpe-builder` context. Isolated `os/Containerfile.wpe` recipe, pinned buildroot and mounted frozen assets
 remain cache inputs. The full OS retains its own source epoch, public trust,
 generation and revision. Raw and signed rootfs layers are never exported by
 this cache path. BuildKit cache manifests are not interchangeable with these

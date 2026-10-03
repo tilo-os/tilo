@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "agent"
 version = "0.1.0"
 edition = "2024"
@@ -18,6 +19,9 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
@@ -43,8 +47,9 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-content = { path = "../../crates/system/content" }
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde_json.workspace = true
@@ -53,16 +58,21 @@ anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false }
-collab-types = { path = "../../crates/collab/collab-types" }
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

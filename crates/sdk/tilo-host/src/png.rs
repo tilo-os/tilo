@@ -120,37 +120,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rgba_round_trips_losslessly() {
-        let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
-        let png = encode_rgba8(2, 1, &rgba).expect("valid RGBA image");
-        assert_eq!(
-            decode_rgba8(&png).expect("complete PNG"),
-            Rgba8 {
-                width: 2,
-                height: 1,
-                rgba: rgba.to_vec(),
-            }
-        );
-    }
+    fn png_codec_round_trips_rgba_adds_alpha_and_rejects_bad_buffers() {
+        // Case `rgba_round_trips_losslessly`.
+        {
+            let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
+            let png = encode_rgba8(2, 1, &rgba).expect("valid RGBA image");
+            assert_eq!(
+                decode_rgba8(&png).expect("complete PNG"),
+                Rgba8 {
+                    width: 2,
+                    height: 1,
+                    rgba: rgba.to_vec(),
+                }
+            );
+        }
 
-    #[test]
-    fn mismatched_buffers_and_oversized_images_are_rejected() {
-        assert!(encode_rgba8(2, 1, &[0; 4]).is_err());
-        let png = encode_rgba8(2, 2, &[0; 16]).expect("valid RGBA image");
-        assert!(decode_rgba8_within(&png, 3).is_err());
-        assert!(decode_rgba8_within(&png, 4).is_ok());
-        assert!(decode_rgba8(b"not a png").is_err());
-    }
+        // Case `mismatched_buffers_and_oversized_images_are_rejected`.
+        {
+            assert!(encode_rgba8(2, 1, &[0; 4]).is_err());
+            let png = encode_rgba8(2, 2, &[0; 16]).expect("valid RGBA image");
+            assert!(decode_rgba8_within(&png, 3).is_err());
+            assert!(decode_rgba8_within(&png, 4).is_ok());
+            assert!(decode_rgba8(b"not a png").is_err());
+        }
 
-    #[test]
-    fn rgb_sources_gain_opaque_alpha() {
-        let mut png = Vec::new();
-        PngEncoder::new(&mut png)
-            .write_image(&[12, 34, 56], 1, 1, ExtendedColorType::Rgb8)
-            .expect("valid RGB image");
-        assert_eq!(
-            decode_rgba8(&png).expect("complete PNG").rgba,
-            [12, 34, 56, 255]
-        );
+        // Case `rgb_sources_gain_opaque_alpha`.
+        {
+            let mut png = Vec::new();
+            PngEncoder::new(&mut png)
+                .write_image(&[12, 34, 56], 1, 1, ExtendedColorType::Rgb8)
+                .expect("valid RGB image");
+            assert_eq!(
+                decode_rgba8(&png).expect("complete PNG").rgba,
+                [12, 34, 56, 255]
+            );
+        }
     }
 }

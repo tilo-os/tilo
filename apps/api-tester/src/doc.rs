@@ -24,8 +24,7 @@
 //! The URL and body are first-class `Text` objects so character-level edits
 //! merge between collaborators. Collections, saved requests, environments,
 //! variables, and history use keyed records: editing one durable child never
-//! overwrites a sibling. Legacy JSON is read only as a migration input; normal
-//! writes never re-emit it. The active request uses individual keyed fields for
+//! overwrites a sibling. The active request uses individual keyed fields for
 //! its structured fields, while URL/body remain text CRDTs. "Which response
 //! I'm viewing" is intentionally not stored — it's local to each peer.
 
@@ -37,13 +36,10 @@ use crate::model::{Collection, Environment, HistoryEntry, KeyValue, Request};
 /// Stateless namespace for the workspace document helpers.
 pub struct ApiDoc;
 
-const COLLECTIONS_KEY: &str = "api_tester_collections";
 const COLLECTION_FIELDS_KEY: &str = "api_tester_collection_fields";
 const COLLECTION_TOMBSTONES_KEY: &str = "api_tester_collection_tombstones";
-const REQUESTS_KEY: &str = "api_tester_saved_requests";
 const REQUEST_TOMBSTONES_KEY: &str = "api_tester_saved_request_tombstones";
 const SAVED_REQUEST_FIELDS_KEY: &str = "api_tester_saved_request_fields";
-const ENVIRONMENTS_KEY: &str = "api_tester_environments";
 const ENVIRONMENT_FIELDS_KEY: &str = "api_tester_environment_fields";
 const ENVIRONMENT_TOMBSTONES_KEY: &str = "api_tester_environment_tombstones";
 const VARIABLES_KEY: &str = "api_tester_environment_variables";
@@ -74,9 +70,7 @@ struct ActiveKeyValueRecord {
 }
 
 impl ApiDoc {
-    /// Native per-record map used by all new collection/environment writes.
-    /// The older JSON maps are read-only migration inputs, never this writer's
-    /// target.
+    /// Native per-record map used by all collection/environment writes.
     fn native_record_map(
         doc: &mut AutoCommit,
         root: &ObjId,
@@ -307,33 +301,12 @@ impl ApiDoc {
                 }
             }
         }
-        // Legacy JSON is an import source only. Once a normal write has
-        // projected it into native records, it is never emitted again.
-        if !Self::read_text(doc, root, "collections").is_empty() {
-            let _ = doc.delete(root, "collections");
-        }
     }
 
     /// Read collections from every concurrently-created root. Any live
     /// tombstone wins over an old record from another root.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "native and compatibility projections are overlaid here so each stable record remains independently readable"
-    )]
     pub fn collections(doc: &AutoCommit, root: &ObjId) -> Vec<Collection> {
-        let mut records: Vec<Collection> =
-            Self::read_record_store(doc, root, COLLECTIONS_KEY, COLLECTION_TOMBSTONES_KEY);
-        if records.is_empty()
-            && Self::record_roots(doc, root, COLLECTIONS_KEY).is_empty()
-            && Self::record_roots(doc, root, COLLECTION_FIELDS_KEY).is_empty()
-        {
-            return Self::legacy_vec(doc, root, "collections");
-        }
-        // A peer on the legacy version can write its scalar concurrently with
-        // a newer keyed peer. Retain legacy-only UUIDs until the next writer
-        // projects them into this map, rather than silently discarding them.
-        let keyed_ids: std::collections::HashSet<_> =
-            records.iter().map(|record| record.id).collect();
+        let mut records: Vec<Collection> = Vec::new();
         for fields in Self::record_roots(doc, root, COLLECTION_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, &id) {
@@ -349,7 +322,6 @@ impl ApiDoc {
                     if !name.is_empty() {
                         record.name = name;
                     }
-                    record.expanded = true;
                 } else {
                     records.push(Collection {
                         id: uuid,
@@ -360,27 +332,14 @@ impl ApiDoc {
                 }
             }
         }
-        for legacy in Self::legacy_vec::<Collection>(doc, root, "collections") {
-            if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, &legacy.id.to_string()) {
-                continue;
-            }
-            if let Some(current) = records.iter_mut().find(|record| record.id == legacy.id) {
-                Self::prefer_stable_record(current, legacy);
-            } else {
-                records.push(legacy);
-            }
-        }
-        let mut saved = Self::read_record_store::<SavedRequestRecord>(
-            doc,
-            root,
-            REQUESTS_KEY,
-            REQUEST_TOMBSTONES_KEY,
-        );
+        let mut by_collection: std::collections::BTreeMap<String, Vec<Request>> =
+            std::collections::BTreeMap::new();
         for fields in Self::record_roots(doc, root, SAVED_REQUEST_FIELDS_KEY) {
             for id in doc.keys(&fields) {
-                if saved
-                    .iter()
-                    .any(|record| record.request.id.to_string() == id)
+                if by_collection
+                    .values()
+                    .flatten()
+                    .any(|request| request.id.to_string() == id)
                 {
                     continue;
                 }
@@ -393,44 +352,19 @@ impl ApiDoc {
                 if !collection_id.is_empty()
                     && !Self::is_tombstoned(doc, root, REQUEST_TOMBSTONES_KEY, &id)
                 {
-                    saved.push(SavedRequestRecord {
-                        collection_id,
-                        request,
-                    });
+                    by_collection
+                        .entry(collection_id)
+                        .or_default()
+                        .push(request);
                 }
             }
         }
-        let has_keyed_requests =
-            !saved.is_empty() || !Self::record_roots(doc, root, REQUESTS_KEY).is_empty();
-        let mut by_collection: std::collections::BTreeMap<String, Vec<Request>> =
-            std::collections::BTreeMap::new();
-        for record in saved {
-            let (collection_id, request) =
-                Self::saved_request_fields(doc, root, &record.collection_id, record.request);
-            by_collection
-                .entry(collection_id)
-                .or_default()
-                .push(request);
+        for collection in &mut records {
+            collection.requests = by_collection
+                .remove(&collection.id.to_string())
+                .unwrap_or_default();
         }
-        let has_native_collections =
-            !Self::record_roots(doc, root, COLLECTION_FIELDS_KEY).is_empty();
         records
-            .into_iter()
-            .map(|mut collection: Collection| {
-                // A concurrent legacy writer may add a collection after this
-                // version created the child store. Preserve that collection's
-                // embedded request list until a normal write projects it into
-                // the keyed child map.
-                if has_keyed_requests
-                    && (keyed_ids.contains(&collection.id) || has_native_collections)
-                {
-                    collection.requests = by_collection
-                        .remove(&collection.id.to_string())
-                        .unwrap_or_default();
-                }
-                collection
-            })
-            .collect()
     }
 
     pub fn set_environments(doc: &mut AutoCommit, root: &ObjId, envs: &[Environment]) {
@@ -470,26 +404,10 @@ impl ApiDoc {
                 }
             }
         }
-        if !Self::read_text(doc, root, "environments").is_empty() {
-            let _ = doc.delete(root, "environments");
-        }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "native and compatibility projections are overlaid here so each stable row remains independently readable"
-    )]
     pub fn environments(doc: &AutoCommit, root: &ObjId) -> Vec<Environment> {
-        let mut records: Vec<Environment> =
-            Self::read_record_store(doc, root, ENVIRONMENTS_KEY, ENVIRONMENT_TOMBSTONES_KEY);
-        if records.is_empty()
-            && Self::record_roots(doc, root, ENVIRONMENTS_KEY).is_empty()
-            && Self::record_roots(doc, root, ENVIRONMENT_FIELDS_KEY).is_empty()
-        {
-            return Self::legacy_vec(doc, root, "environments");
-        }
-        let keyed_ids: std::collections::HashSet<_> =
-            records.iter().map(|record| record.id).collect();
+        let mut records: Vec<Environment> = Vec::new();
         for fields in Self::record_roots(doc, root, ENVIRONMENT_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, &id) {
@@ -514,29 +432,7 @@ impl ApiDoc {
                 }
             }
         }
-        for legacy in Self::legacy_vec::<Environment>(doc, root, "environments") {
-            if Self::is_tombstoned(
-                doc,
-                root,
-                ENVIRONMENT_TOMBSTONES_KEY,
-                &legacy.id.to_string(),
-            ) {
-                continue;
-            }
-            if let Some(current) = records.iter_mut().find(|record| record.id == legacy.id) {
-                Self::prefer_stable_record(current, legacy);
-            } else {
-                records.push(legacy);
-            }
-        }
-        let mut variables = Self::read_record_store::<VariableRecord>(
-            doc,
-            root,
-            VARIABLES_KEY,
-            VARIABLE_TOMBSTONES_KEY,
-        );
-        // New writes use a map per variable address; JSON records above are a
-        // compatibility reader only.  Overlay native rows by stable id.
+        let mut variables: Vec<VariableRecord> = Vec::new();
         for fields in Self::record_roots(doc, root, VARIABLES_KEY) {
             for address in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, VARIABLE_TOMBSTONES_KEY, &address) {
@@ -575,8 +471,6 @@ impl ApiDoc {
                 }
             }
         }
-        let has_keyed_variables =
-            !variables.is_empty() || !Self::record_roots(doc, root, VARIABLES_KEY).is_empty();
         let mut by_environment: std::collections::BTreeMap<String, Vec<KeyValue>> =
             std::collections::BTreeMap::new();
         for record in variables {
@@ -585,21 +479,12 @@ impl ApiDoc {
                 .or_default()
                 .push(record.variable);
         }
-        let has_native_environments =
-            !Self::record_roots(doc, root, ENVIRONMENT_FIELDS_KEY).is_empty();
+        for environment in &mut records {
+            environment.variables = by_environment
+                .remove(&environment.id.to_string())
+                .unwrap_or_default();
+        }
         records
-            .into_iter()
-            .map(|mut environment: Environment| {
-                if has_keyed_variables
-                    && (keyed_ids.contains(&environment.id) || has_native_environments)
-                {
-                    environment.variables = by_environment
-                        .remove(&environment.id.to_string())
-                        .unwrap_or_default();
-                }
-                environment
-            })
-            .collect()
     }
 
     pub fn set_active_env(doc: &mut AutoCommit, root: &ObjId, id: Option<&str>) {
@@ -619,11 +504,8 @@ impl ApiDoc {
     /// Persist the active request as one explicit record. Its URL/body fields
     /// remain independently live `Text` objects for editor collaboration.
     pub fn set_request(doc: &mut AutoCommit, root: &ObjId, req: &Request) {
-        // Read the pre-write projection before the legacy root is removed so
-        // structured key/value children can absorb old `params`/`headers`/
-        // `form` arrays during migration.
         let before = Self::request(doc, root).unwrap_or_else(|| req.clone());
-        let map = Self::ensure_single_record_map(doc, root, REQUEST_KEY, "request");
+        let map = Self::ensure_single_record_map(doc, root, REQUEST_KEY);
         let Some(map) = map else { return };
         // URL and body remain character-granular Automerge Text objects; the
         // rest are independent keyed fields, so a concurrent header edit does
@@ -636,27 +518,14 @@ impl ApiDoc {
         Self::put_json_if_changed(doc, &map, "auth", &req.auth);
         Self::put_json_if_changed(doc, &map, "body_mode", &req.body_mode);
         Self::sync_active_key_values(doc, root, &before, req);
-        // These scalar arrays are migration fallbacks only. Keeping them after
-        // the keyed children exist would let a stale whole-array value shadow
-        // independent row edits.
-        for key in ["params", "headers", "form"] {
-            let _ = doc.delete(&map, key);
-        }
     }
 
     /// Read the active request snapshot, if present.
     pub fn request(doc: &AutoCommit, root: &ObjId) -> Option<Request> {
         let roots = Self::record_roots(doc, root, REQUEST_KEY);
-        // Prefer the legacy snapshot as the base when it coexists with a
-        // structured root: it may be an old-version peer's concurrent write;
-        // any independently stored modern fields below then override only what
-        // they actually own.
-        let mut request = Self::legacy_one(doc, root, "request")
-            .or_else(|| {
-                roots
-                    .iter()
-                    .find_map(|map| Self::record_at(doc, map, "active"))
-            })
+        let mut request = roots
+            .iter()
+            .find_map(|map| Self::record_at(doc, map, "active"))
             .or_else(|| (!roots.is_empty()).then(|| Request::new("Untitled request")))?;
         for map in &roots {
             if let Some(id) = Self::record_at(doc, map, "id") {
@@ -668,20 +537,11 @@ impl ApiDoc {
             if let Some(method) = Self::record_at(doc, map, "method") {
                 request.method = method;
             }
-            if let Some(params) = Self::record_at(doc, map, "params") {
-                request.params = params;
-            }
-            if let Some(headers) = Self::record_at(doc, map, "headers") {
-                request.headers = headers;
-            }
             if let Some(auth) = Self::record_at(doc, map, "auth") {
                 request.auth = auth;
             }
             if let Some(body_mode) = Self::record_at(doc, map, "body_mode") {
                 request.body_mode = body_mode;
-            }
-            if let Some(form) = Self::record_at(doc, map, "form") {
-                request.form = form;
             }
         }
         let values = Self::read_record_store::<ActiveKeyValueRecord>(
@@ -713,7 +573,6 @@ impl ApiDoc {
             root,
             HISTORY_KEY,
             HISTORY_TOMBSTONES_KEY,
-            "history",
             &before,
             |entry| entry.id.to_string(),
         ) else {
@@ -729,9 +588,6 @@ impl ApiDoc {
 
     pub fn history(doc: &AutoCommit, root: &ObjId) -> Vec<HistoryEntry> {
         let records = Self::read_record_store(doc, root, HISTORY_KEY, HISTORY_TOMBSTONES_KEY);
-        if records.is_empty() && Self::record_roots(doc, root, HISTORY_KEY).is_empty() {
-            return Self::legacy_vec(doc, root, "history");
-        }
         let mut by_id: std::collections::BTreeMap<_, _> = records
             .into_iter()
             .map(|entry: HistoryEntry| (entry.id.to_string(), entry))
@@ -835,35 +691,6 @@ impl ApiDoc {
         values.into_values().collect()
     }
 
-    /// Project a legacy scalar that arrives concurrently with a keyed root
-    /// using a stable whole-record winner. This is only a compatibility bridge:
-    /// the next normal write stores the resulting value in the keyed map and
-    /// removes the legacy scalar. Lexicographic JSON is deterministic across
-    /// replicas and avoids silently treating the modern root as authoritative.
-    fn prefer_stable_record<T: serde::Serialize>(current: &mut T, candidate: T) {
-        let current_json = serde_json::to_string(current).unwrap_or_default();
-        let candidate_json = serde_json::to_string(&candidate).unwrap_or_default();
-        if candidate_json > current_json {
-            *current = candidate;
-        }
-    }
-
-    fn legacy_vec<T: serde::de::DeserializeOwned>(
-        doc: &AutoCommit,
-        root: &ObjId,
-        key: &str,
-    ) -> Vec<T> {
-        serde_json::from_str(&Self::read_text(doc, root, key)).unwrap_or_default()
-    }
-
-    fn legacy_one<T: serde::de::DeserializeOwned>(
-        doc: &AutoCommit,
-        root: &ObjId,
-        key: &str,
-    ) -> Option<T> {
-        serde_json::from_str(&Self::read_text(doc, root, key)).ok()
-    }
-
     /// Ensure a single normal map root. When two first-run peers each created
     /// a root, project all live records and tombstones into one replacement map
     /// before writing. Until that observed consolidation, readers see both.
@@ -872,7 +699,6 @@ impl ApiDoc {
         root: &ObjId,
         records_key: &str,
         tombstones_key: &str,
-        legacy_key: &str,
         inherited: &[T],
         id_of: F,
     ) -> Option<(ObjId, ObjId)>
@@ -885,9 +711,6 @@ impl ApiDoc {
         if let [records] = roots.as_slice()
             && let [tombstones] = tombstone_roots.as_slice()
         {
-            if !Self::read_text(doc, root, legacy_key).is_empty() {
-                let _ = doc.delete(root, legacy_key);
-            }
             return Some((records.clone(), tombstones.clone()));
         }
 
@@ -907,9 +730,6 @@ impl ApiDoc {
         }
         for id in tombstones {
             let _ = doc.put(&tombstone_map, id, true);
-        }
-        if !Self::read_text(doc, root, legacy_key).is_empty() {
-            let _ = doc.delete(root, legacy_key);
         }
         Some((records, tombstone_map))
     }
@@ -995,8 +815,7 @@ impl ApiDoc {
         }
     }
 
-    /// Direct native write used by canonical Save/Rename actions. It never
-    /// emits the legacy saved-request JSON wrapper.
+    /// Direct native write used by canonical Save/Rename actions.
     pub fn save_request(
         doc: &mut AutoCommit,
         root: &ObjId,
@@ -1070,15 +889,11 @@ impl ApiDoc {
             ("form", &before.form, &after.form),
         ] {
             let tombstones = format!("{section}_tombstones");
-            if let Some((records, removed)) = Self::ensure_record_store(
-                doc,
-                map,
-                section,
-                &tombstones,
-                "__no_legacy_rows__",
-                old,
-                |row: &KeyValue| row.id.clone(),
-            ) {
+            if let Some((records, removed)) =
+                Self::ensure_record_store(doc, map, section, &tombstones, old, |row: &KeyValue| {
+                    row.id.clone()
+                })
+            {
                 Self::sync_record_store(doc, &records, &removed, old, new, |row| row.id.clone());
             }
         }
@@ -1135,7 +950,6 @@ impl ApiDoc {
             root,
             ACTIVE_KEY_VALUES_KEY,
             ACTIVE_KEY_VALUE_TOMBSTONES_KEY,
-            "__no_legacy_active_key_values__",
             &before,
             id_of,
         ) else {
@@ -1152,23 +966,14 @@ impl ApiDoc {
             .collect()
     }
 
-    fn ensure_single_record_map(
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        key: &str,
-        legacy_key: &str,
-    ) -> Option<ObjId> {
+    fn ensure_single_record_map(doc: &mut AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
         let roots = Self::record_roots(doc, root, key);
         if let [map] = roots.as_slice() {
-            if !Self::read_text(doc, root, legacy_key).is_empty() {
-                let _ = doc.delete(root, legacy_key);
-            }
             return Some(map.clone());
         }
         let inherited: Option<Request> = roots
             .iter()
-            .find_map(|map| Self::record_at(doc, map, "active"))
-            .or_else(|| Self::legacy_one(doc, root, legacy_key));
+            .find_map(|map| Self::record_at(doc, map, "active"));
         if !roots.is_empty() {
             let _ = doc.delete(root, key);
         }
@@ -1177,9 +982,6 @@ impl ApiDoc {
             && let Ok(json) = serde_json::to_string(&request)
         {
             let _ = doc.put(&map, "active", json);
-        }
-        if !Self::read_text(doc, root, legacy_key).is_empty() {
-            let _ = doc.delete(root, legacy_key);
         }
         Some(map)
     }
@@ -1273,7 +1075,18 @@ mod tests {
         (AutoCommit::new(), automerge::ROOT)
     }
 
+    /// Each record family written through `ApiDoc` reads back unchanged, from a
+    /// fresh document per case.
     #[test]
+    fn records_round_trip_through_the_document() {
+        collections_round_trip();
+        environments_and_active_round_trip();
+        request_snapshot_round_trips();
+        url_text_is_live_and_editable();
+        history_keeps_the_newest_first_order_while_records_stay_keyed();
+    }
+
+    /// Case of `records_round_trip_through_the_document`.
     fn collections_round_trip() {
         let (mut d, root) = doc();
         let mut c = Collection::new("Sample");
@@ -1285,7 +1098,7 @@ mod tests {
         assert_eq!(back[0].requests[0].name, "List users");
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn environments_and_active_round_trip() {
         let (mut d, root) = doc();
         let mut e = Environment::new("Production");
@@ -1297,7 +1110,7 @@ mod tests {
         assert_eq!(ApiDoc::active_env(&d, &root), Some(e.id.to_string()));
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn request_snapshot_round_trips() {
         let (mut d, root) = doc();
         let mut r = Request::new("Create user");
@@ -1309,7 +1122,7 @@ mod tests {
         assert_eq!(back.headers[0].key, "Accept");
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn url_text_is_live_and_editable() {
         let (mut d, root) = doc();
         let obj = ApiDoc::url_text(&mut d, &root);
@@ -1320,7 +1133,17 @@ mod tests {
         );
     }
 
+    /// Anti-churn: equal writes never advance the document and a one-character
+    /// edit splices one character, from a fresh document per case.
     #[test]
+    fn unchanged_writes_emit_no_ops_and_edits_are_bounded_splices() {
+        set_text_is_idempotent();
+        repeated_native_scalar_writes_are_noops();
+        appending_one_char_is_a_bounded_splice();
+        repeated_set_text_keeps_doc_bounded();
+    }
+
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn set_text_is_idempotent() {
         let (mut d, root) = doc();
         ApiDoc::set_text(&mut d, &root, "request", "{}");
@@ -1330,7 +1153,7 @@ mod tests {
         assert_eq!(heads_before, d.get_heads());
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn repeated_native_scalar_writes_are_noops() {
         let (mut d, root) = doc();
         let environment = Environment::new("Production");
@@ -1365,7 +1188,15 @@ mod tests {
         );
     }
 
+    /// Scalar and JSON `*_if_changed` writes compare against the visible
+    /// winner, not any conflicting loser.
     #[test]
+    fn if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches() {
+        scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches();
+        json_update_replaces_a_visible_conflict_winner_even_if_loser_matches();
+    }
+
+    /// Case of `if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches`.
     fn scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
         let (mut base, root) = doc();
         let map = base
@@ -1403,7 +1234,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches`.
     fn json_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
         let (mut base, root) = doc();
         let map = base
@@ -1457,7 +1288,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn appending_one_char_is_a_bounded_splice() {
         // Anti-churn: growing a long Text field by one char must splice only
         // the new char, not rewrite the whole value.
@@ -1480,7 +1311,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn repeated_set_text_keeps_doc_bounded() {
         // Idempotent store: re-writing the same text must emit no ops, so the
         // serialized document does not grow at all.
@@ -1498,7 +1329,17 @@ mod tests {
         );
     }
 
+    /// Peers that each write whole records (or a first native root) merge into
+    /// one deterministic, consolidatable projection.
     #[test]
+    fn concurrent_record_roots_merge_and_converge() {
+        two_docs_merge_collections();
+        concurrent_first_native_record_roots_keep_independent_records();
+        same_collection_record_conflict_is_stable_in_both_merge_directions();
+        concurrent_active_request_roots_are_read_then_consolidated();
+    }
+
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn two_docs_merge_collections() {
         let (mut a, root) = doc();
         ApiDoc::set_collections(&mut a, &root, &[Collection::new("A")]);
@@ -1510,67 +1351,7 @@ mod tests {
         assert_eq!(ApiDoc::environments(&a, &root)[0].name, "Env-B");
     }
 
-    #[test]
-    fn legacy_scalars_migrate_to_keyed_records_without_reemitting_blobs() {
-        let (mut d, root) = doc();
-        let collection = Collection::new("Legacy collection");
-        let environment = Environment::new("Legacy environment");
-        let request = Request::new("Legacy request");
-        let history = HistoryEntry {
-            id: uuid::Uuid::new_v4(),
-            method: HttpMethod::Get,
-            url: "https://example.test/legacy".into(),
-            status: 200,
-            duration_ms: 12,
-            when: "just now".into(),
-        };
-        ApiDoc::set_text(
-            &mut d,
-            &root,
-            "collections",
-            &serde_json::to_string(std::slice::from_ref(&collection)).unwrap(),
-        );
-        ApiDoc::set_text(
-            &mut d,
-            &root,
-            "environments",
-            &serde_json::to_string(std::slice::from_ref(&environment)).unwrap(),
-        );
-        ApiDoc::set_text(
-            &mut d,
-            &root,
-            "request",
-            &serde_json::to_string(&request).unwrap(),
-        );
-        ApiDoc::set_text(
-            &mut d,
-            &root,
-            "history",
-            &serde_json::to_string(std::slice::from_ref(&history)).unwrap(),
-        );
-
-        ApiDoc::set_collections(&mut d, &root, &[collection]);
-        ApiDoc::set_environments(&mut d, &root, &[environment]);
-        ApiDoc::set_request(&mut d, &root, &request);
-        ApiDoc::set_history(&mut d, &root, &[history]);
-
-        assert!(ApiDoc::read_text(&d, &root, "collections").is_empty());
-        assert!(ApiDoc::read_text(&d, &root, "environments").is_empty());
-        assert!(ApiDoc::read_text(&d, &root, "request").is_empty());
-        assert!(ApiDoc::read_text(&d, &root, "history").is_empty());
-        assert_eq!(
-            ApiDoc::record_roots(&d, &root, COLLECTION_FIELDS_KEY).len(),
-            1
-        );
-        assert_eq!(
-            ApiDoc::record_roots(&d, &root, ENVIRONMENT_FIELDS_KEY).len(),
-            1
-        );
-        assert_eq!(ApiDoc::record_roots(&d, &root, REQUEST_KEY).len(), 1);
-        assert_eq!(ApiDoc::record_roots(&d, &root, HISTORY_KEY).len(), 1);
-    }
-
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn concurrent_first_native_record_roots_keep_independent_records() {
         let (mut left, root) = doc();
         let (mut right, _) = doc();
@@ -1590,48 +1371,17 @@ mod tests {
         assert_eq!(consolidated.len(), 2);
     }
 
+    /// A record or row tombstone prevents a concurrent stale edit from reviving
+    /// it, for every record family.
     #[test]
-    fn concurrent_legacy_collection_write_is_projected_into_the_keyed_root() {
-        let (mut base, root) = doc();
-        let legacy = Collection::new("Base");
-        ApiDoc::set_text(
-            &mut base,
-            &root,
-            "collections",
-            &serde_json::to_string(std::slice::from_ref(&legacy)).unwrap(),
-        );
-        let mut modern = AutoCommit::load(&base.save()).unwrap();
-        modern.set_actor(automerge::ActorId::from([21; 16].as_slice()));
-        let mut old_peer = AutoCommit::load(&base.save()).unwrap();
-        old_peer.set_actor(automerge::ActorId::from([22; 16].as_slice()));
-
-        let modern_extra = Collection::new("Modern addition");
-        ApiDoc::set_collections(&mut modern, &root, &[legacy.clone(), modern_extra.clone()]);
-        let mut legacy_update = legacy;
-        legacy_update.name = "Legacy concurrent update".into();
-        // This is the old version's whole-scalar write, intentionally made
-        // after the new peer created its keyed root.
-        let _ = old_peer.put(
-            &root,
-            "collections",
-            serde_json::to_string(&[legacy_update.clone()]).unwrap(),
-        );
-
-        modern.merge_incoming(&mut old_peer).unwrap();
-        let projected = ApiDoc::collections(&modern, &root);
-        assert!(projected.iter().any(|item| item.id == modern_extra.id));
-        assert!(projected.iter().any(|item| item.id == legacy_update.id));
-        // A normal write folds the compatibility projection into the one
-        // keyed map, leaving no legacy scalar to be re-emitted.
-        ApiDoc::set_collections(&mut modern, &root, &projected);
-        assert!(ApiDoc::read_text(&modern, &root, "collections").is_empty());
-        assert_eq!(
-            ApiDoc::record_roots(&modern, &root, COLLECTION_FIELDS_KEY).len(),
-            1
-        );
+    fn deletes_win_over_concurrent_stale_edits() {
+        collection_and_environment_deletes_win_over_concurrent_stale_edits();
+        history_delete_wins_over_a_concurrent_stale_record_update();
+        saved_request_delete_wins_over_a_concurrent_stale_edit();
+        active_request_row_delete_wins_over_a_concurrent_stale_edit();
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn collection_and_environment_deletes_win_over_concurrent_stale_edits() {
         let (mut base, root) = doc();
         let collection = Collection::new("To remove");
@@ -1657,7 +1407,7 @@ mod tests {
         assert!(ApiDoc::environments(&delete, &root).is_empty());
     }
 
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn same_collection_record_conflict_is_stable_in_both_merge_directions() {
         let (mut base, root) = doc();
         let collection = Collection::new("Original");
@@ -1688,7 +1438,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn history_delete_wins_over_a_concurrent_stale_record_update() {
         let (mut base, root) = doc();
         let entry = HistoryEntry {
@@ -1713,7 +1463,7 @@ mod tests {
         assert!(ApiDoc::history(&delete, &root).is_empty());
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn history_keeps_the_newest_first_order_while_records_stay_keyed() {
         let (mut d, root) = doc();
         let older = HistoryEntry {
@@ -1741,7 +1491,7 @@ mod tests {
         assert_eq!(ApiDoc::history_order_roots(&d, &root).len(), 1);
     }
 
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn concurrent_active_request_roots_are_read_then_consolidated() {
         let (mut left, root) = doc();
         let (mut right, _) = doc();
@@ -1764,7 +1514,19 @@ mod tests {
         assert_eq!(ApiDoc::request(&left, &root), Some(projected));
     }
 
+    /// Independent edits to different fields or rows of the same record survive
+    /// a merge, each from fresh peers forked from their own base.
     #[test]
+    fn concurrent_field_and_row_edits_merge_without_clobbering() {
+        different_saved_requests_in_one_collection_merge_without_clobbering();
+        same_saved_request_independent_fields_and_rows_merge();
+        different_variables_in_one_environment_merge_without_clobbering();
+        native_variable_rows_merge_and_tombstones_win();
+        independent_active_request_fields_and_rows_merge_without_clobbering();
+        different_active_header_rows_merge_without_clobbering();
+    }
+
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_saved_requests_in_one_collection_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1798,7 +1560,7 @@ mod tests {
         assert_eq!(requests.len(), 2, "each saved request has one keyed record");
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn same_saved_request_independent_fields_and_rows_merge() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1827,7 +1589,7 @@ mod tests {
         assert!(request.headers.iter().any(|row| row.key == "Accept"));
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn saved_request_delete_wins_over_a_concurrent_stale_edit() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1852,7 +1614,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_variables_in_one_environment_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut environment = Environment::new("Shared");
@@ -1895,8 +1657,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_variable_rows_overlay_compatibility_records_and_tombstones_win() {
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
+    fn native_variable_rows_merge_and_tombstones_win() {
         let (mut base, root) = doc();
         let env = Environment::new("Production");
         ApiDoc::set_environments(&mut base, &root, std::slice::from_ref(&env));
@@ -1960,7 +1722,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn independent_active_request_fields_and_rows_merge_without_clobbering() {
         let (mut base, root) = doc();
         let request = Request::new("Shared request");
@@ -1986,7 +1748,7 @@ mod tests {
         assert_eq!(merged.headers[0].key, "Accept");
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_active_header_rows_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut request = Request::new("Shared request");
@@ -2032,7 +1794,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn active_request_row_delete_wins_over_a_concurrent_stale_edit() {
         let (mut base, root) = doc();
         let mut request = Request::new("Shared request");

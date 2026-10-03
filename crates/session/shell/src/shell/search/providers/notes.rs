@@ -37,6 +37,10 @@ impl SearchProvider for NotesProvider {
     fn name(&self) -> &'static str {
         "Notes"
     }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-notes")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Note]
     }
@@ -50,7 +54,7 @@ impl SearchProvider for NotesProvider {
     ) -> crate::shell::search::SearchProximity {
         super::text_app::proximity_of(chrome, result)
     }
-    /// An exact title scores the ranker maximum - see [`super::text_app::match_score`].
+    /// A title the query starts scores the maximum.
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE
     }
@@ -151,121 +155,128 @@ mod tests {
     }
 
     #[test]
-    fn matches_title_over_body_by_score() {
-        let handle = tree_with_note_tab(1, "Grocery list");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_note_body(&chrome_st, 1, "reminder: nothing about grocery in body");
-        let provider = NotesProvider::new();
-        let out = provider.query(SearchContext {
-            needle: "grocery",
-            wanted: &[ResourceKind::Note],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].title, "Grocery list");
-        assert_eq!(
-            out[0].score,
-            crate::shell::search::providers::text_app::MAX_SCORE
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn notes_search_matches_title_then_body_of_notes_tabs() {
+        // Phase `matches_title_over_body_by_score`.
+        {
+            let handle = tree_with_note_tab(1, "Grocery list");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_note_body(&chrome_st, 1, "reminder: nothing about grocery in body");
+            let provider = NotesProvider::new();
+            let out = provider.query(SearchContext {
+                needle: "grocery",
+                wanted: &[ResourceKind::Note],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].title, "Grocery list");
+            assert_eq!(
+                out[0].score,
+                crate::shell::search::providers::text_app::MAX_SCORE
+            );
+        }
 
-    #[test]
-    fn matches_body_when_title_misses() {
-        let handle = tree_with_note_tab(1, "Untitled");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
-        let provider = NotesProvider::new();
-        let out = provider.query(SearchContext {
-            needle: "quick brown",
-            wanted: &[ResourceKind::Note],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert_eq!(out.len(), 1);
-        assert!(
-            out[0]
-                .subtitle
-                .as_deref()
-                .unwrap_or("")
-                .contains("quick brown")
-        );
-    }
+        // Phase `matches_body_when_title_misses`.
+        {
+            let handle = tree_with_note_tab(1, "Untitled");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
+            let provider = NotesProvider::new();
+            let out = provider.query(SearchContext {
+                needle: "quick brown",
+                wanted: &[ResourceKind::Note],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert_eq!(out.len(), 1);
+            assert!(
+                out[0]
+                    .subtitle
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("quick brown")
+            );
+        }
 
-    /// `tilo` matches nothing else about the tab, isolating a body-only match.
-    #[test]
-    fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
-        let handle = tree_with_note_tab(7, "Notes");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_note_body(
-            &chrome_st,
-            7,
-            "Welcome to tilo.\n\nThese notes sync live with anyone \
-             invited to this workspace.",
-        );
-        let provider = NotesProvider::new();
-        let out = provider.query(SearchContext {
-            needle: "tilo",
-            wanted: &[ResourceKind::Note],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert_eq!(
-            out.len(),
-            1,
-            "searching a note's own body must find it; got {:?}",
-            out.iter().map(|r| (&r.title, r.score)).collect::<Vec<_>>()
-        );
-        assert!(
-            out[0].score > 0 && out[0].score < 25,
-            "a body hit ranks far below a title hit, got {}",
-            out[0].score
-        );
-        let snippet = out[0].subtitle.as_deref().unwrap_or_default();
-        assert!(
-            snippet.contains("tilo"),
-            "the row must show the matching line: {snippet:?}"
-        );
-        assert!(
-            !snippet.contains("  ") && !snippet.contains('\n'),
-            "the snippet must collapse the body's line structure: {snippet:?}"
-        );
-    }
+        // Phase `finds_a_word_that_only_appears_in_the_body_the_app_wrote`.
+        // `tilo` matches nothing else about the tab, isolating a body-only match.
+        {
+            let handle = tree_with_note_tab(7, "Notes");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_note_body(
+                &chrome_st,
+                7,
+                "Welcome to tilo.\n\nThese notes sync live with anyone \
+                 invited to this workspace.",
+            );
+            let provider = NotesProvider::new();
+            let out = provider.query(SearchContext {
+                needle: "tilo",
+                wanted: &[ResourceKind::Note],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert_eq!(
+                out.len(),
+                1,
+                "searching a note's own body must find it; got {:?}",
+                out.iter().map(|r| (&r.title, r.score)).collect::<Vec<_>>()
+            );
+            assert!(
+                out[0].score > 0 && out[0].score < 25,
+                "a body hit ranks far below a title hit, got {}",
+                out[0].score
+            );
+            let snippet = out[0].subtitle.as_deref().unwrap_or_default();
+            assert!(
+                snippet.contains("tilo"),
+                "the row must show the matching line: {snippet:?}"
+            );
+            assert!(
+                !snippet.contains("  ") && !snippet.contains('\n'),
+                "the snippet must collapse the body's line structure: {snippet:?}"
+            );
+        }
 
-    #[test]
-    fn no_hit_when_body_and_title_both_miss() {
-        let handle = tree_with_note_tab(1, "Untitled");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let doc = AutoCommit::new();
-        seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
-        let provider = NotesProvider::new();
-        let out = provider.query(SearchContext {
-            needle: "xylophone",
-            wanted: &[ResourceKind::Note],
-            chrome: &chrome_st,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert!(out.is_empty());
-    }
+        // Phase `no_hit_when_body_and_title_both_miss`.
+        {
+            let handle = tree_with_note_tab(1, "Untitled");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let doc = AutoCommit::new();
+            seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
+            let provider = NotesProvider::new();
+            let out = provider.query(SearchContext {
+                needle: "xylophone",
+                wanted: &[ResourceKind::Note],
+                chrome: &chrome_st,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert!(out.is_empty());
+        }
 
-    #[test]
-    fn owns_tab_recognises_notes_kind() {
-        let handle = tree_with_note_tab(99, "n");
-        let chrome = ChromeState::new_with_handle(handle);
-        let chrome_st = chrome.borrow();
-        let provider = NotesProvider::new();
-        assert!(provider.owns_tab(99, &chrome_st));
-        assert!(!provider.owns_tab(1234, &chrome_st));
+        // Phase `owns_tab_recognises_notes_kind`.
+        {
+            let handle = tree_with_note_tab(99, "n");
+            let chrome = ChromeState::new_with_handle(handle);
+            let chrome_st = chrome.borrow();
+            let provider = NotesProvider::new();
+            assert!(provider.owns_tab(99, &chrome_st));
+            assert!(!provider.owns_tab(1234, &chrome_st));
+        }
     }
 }

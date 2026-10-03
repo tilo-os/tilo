@@ -637,20 +637,24 @@ pub fn fmt_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    /// Model primitives: the sample model is fully populated, and the rate/uptime
+    /// formatters.
     #[test]
-    fn sample_is_fully_populated() {
-        let m = MonitorModel::sample();
-        assert!(!m.processes.is_empty());
-        assert_eq!(m.metrics.cores.len(), 8);
-        assert_eq!(m.metrics.cpu_hist.len(), HISTORY);
-        assert!(m.metrics.mem_used > 0 && m.metrics.mem_used < m.metrics.mem_total);
-    }
+    fn model_sample_and_formatters() {
+        // Phase `sample_is_fully_populated`.
+        {
+            let m = MonitorModel::sample();
+            assert!(!m.processes.is_empty());
+            assert_eq!(m.metrics.cores.len(), 8);
+            assert_eq!(m.metrics.cpu_hist.len(), HISTORY);
+            assert!(m.metrics.mem_used > 0 && m.metrics.mem_used < m.metrics.mem_total);
+        }
 
-    #[test]
-    fn fmt_helpers() {
-        assert_eq!(fmt_rate(0.0), "0 B/s");
-        assert_eq!(fmt_rate(2_400_000.0), "2.4 MB/s");
-        assert_eq!(fmt_uptime(3 * 3600 + 5 * 60 + 9), "3h 5m 9s");
+        // Phase `fmt_helpers`.
+        {
+            assert_eq!(fmt_rate(0.0), "0 B/s");
+            assert_eq!(fmt_rate(2_400_000.0), "2.4 MB/s");
+            assert_eq!(fmt_uptime(3 * 3600 + 5 * 60 + 9), "3h 5m 9s");
+        }
     }
 }

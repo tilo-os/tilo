@@ -420,71 +420,75 @@ pub fn list_remotes() -> Vec<Remote> {
 mod tests {
     use super::*;
 
+    /// Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
     #[test]
-    fn decode_bare_array_of_ids() {
-        let text = r#"["org.gnome.Calculator","org.videolan.VLC"]"#;
-        let out = decode_popular(text).unwrap();
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].app_id, "org.gnome.Calculator");
-    }
+    fn flathub_decoders_accept_published_shapes_and_remotes_stay_bounded() {
+        // Case `decode_bare_array_of_ids`.
+        {
+            let text = r#"["org.gnome.Calculator","org.videolan.VLC"]"#;
+            let out = decode_popular(text).unwrap();
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].app_id, "org.gnome.Calculator");
+        }
 
-    #[test]
-    fn decode_hits_object_of_objects() {
-        let text = r#"{
+        // Case `decode_hits_object_of_objects`.
+        {
+            let text = r#"{
             "hits": [
                 {"id": "org.gnome.Calculator", "name": "Calculator"},
                 {"id": "org.videolan.VLC", "name": "VLC"}
             ]
         }"#;
-        let out = decode_popular(text).unwrap();
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[1].app_id, "org.videolan.VLC");
-        assert_eq!(out[1].name.as_deref(), Some("VLC"));
-    }
+            let out = decode_popular(text).unwrap();
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[1].app_id, "org.videolan.VLC");
+            assert_eq!(out[1].name.as_deref(), Some("VLC"));
+        }
 
-    #[test]
-    fn decode_hits_object_of_string_ids() {
-        let text = r#"{"hits":["org.gnome.Calculator","org.videolan.VLC"]}"#;
-        let out = decode_popular(text).unwrap();
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].app_id, "org.gnome.Calculator");
-    }
+        // Case `decode_hits_object_of_string_ids`.
+        {
+            let text = r#"{"hits":["org.gnome.Calculator","org.videolan.VLC"]}"#;
+            let out = decode_popular(text).unwrap();
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].app_id, "org.gnome.Calculator");
+        }
 
-    #[test]
-    fn search_decoder_accepts_current_hit_shape() {
-        let out = decode_records(
+        // Case `search_decoder_accepts_current_hit_shape`.
+        {
+            let out = decode_records(
             r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
         )
         .unwrap();
-        assert_eq!(out[0].app_id, "org.example.App");
-        assert_eq!(out[0].categories[0].name, "Utility");
-    }
+            assert_eq!(out[0].app_id, "org.example.App");
+            assert_eq!(out[0].categories[0].name, "Utility");
+        }
 
-    #[test]
-    fn detail_decoder_accepts_path_authoritative_shape() {
-        let mut record = record_from_value(&serde_json::json!({
-            "id": "placeholder",
-            "name": "Example",
-            "description": "Long description",
-            "categories": ["Utility"],
-            "releases": [{"version": "2.0"}],
-            "screenshots": [{"url": "https://example.test/shot.png"}]
-        }))
-        .unwrap();
-        record.app_id = "org.example.App".into();
-        assert_eq!(record.current_release_version.as_deref(), Some("2.0"));
-        assert_eq!(record.screenshots.len(), 1);
-    }
+        // Case `detail_decoder_accepts_path_authoritative_shape`.
+        {
+            let mut record = record_from_value(&serde_json::json!({
+                "id": "placeholder",
+                "name": "Example",
+                "description": "Long description",
+                "categories": ["Utility"],
+                "releases": [{"version": "2.0"}],
+                "screenshots": [{"url": "https://example.test/shot.png"}]
+            }))
+            .unwrap();
+            record.app_id = "org.example.App".into();
+            assert_eq!(record.current_release_version.as_deref(), Some("2.0"));
+            assert_eq!(record.screenshots.len(), 1);
+        }
 
-    #[test]
-    fn remotes_parser_contract_is_bounded_on_missing_binary() {
-        assert!(
-            run_with_timeout(
-                "definitely-not-a-real-flatpak-binary",
-                &["--version"],
-                Duration::from_millis(100)
-            )
-            .is_none()
-        );
+        // Case `remotes_parser_contract_is_bounded_on_missing_binary`.
+        {
+            assert!(
+                run_with_timeout(
+                    "definitely-not-a-real-flatpak-binary",
+                    &["--version"],
+                    Duration::from_millis(100)
+                )
+                .is_none()
+            );
+        }
     }
 }

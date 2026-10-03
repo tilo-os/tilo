@@ -229,6 +229,20 @@ pub struct OwnedShmFrame {
     format: wl_shm::Format,
 }
 
+#[cfg(test)]
+impl OwnedShmFrame {
+    /// A tightly packed `Argb8888` frame, as a client's pool would hold it.
+    pub(crate) fn argb8888(bytes: Vec<u8>, width: usize, height: usize) -> Self {
+        Self {
+            bytes,
+            width,
+            height,
+            stride: width.saturating_mul(4),
+            format: wl_shm::Format::Argb8888,
+        }
+    }
+}
+
 /// Copy the committed contents of an SHM `buffer` out of the client's pool.
 ///
 /// # Errors
@@ -335,67 +349,68 @@ mod tests {
     }
 
     #[test]
-    fn swizzle_row_argb_to_rgba_swaps_b_and_r() {
-        let src = argb_row(4);
-        let mut out = Vec::new();
-        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 4, &mut out).expect("argb swizzle");
-        assert_eq!(out.len(), 16);
-        // Pixel 0: B=0, G=0, R=0 -> RGBA = 0,0,0,0xC0
-        assert_eq!(&out[0..4], &[0, 0, 0, 0xC0]);
-        // Pixel 1: B=3, G=5, R=7 -> RGBA = 7,5,3,0xC0
-        assert_eq!(&out[4..8], &[7, 5, 3, 0xC0]);
-        // Pixel 3: B=9, G=15, R=21 -> RGBA = 21,15,9,0xC0
-        assert_eq!(&out[12..16], &[21, 15, 9, 0xC0]);
-    }
-
-    #[test]
-    fn swizzle_row_xrgb_forces_alpha_to_ff() {
-        // Xrgb8888: wire bytes [B, G, R, X]; X may be anything from the client — we always emit alpha = 0xFF.
-        let src = vec![10, 20, 30, 0x00, 40, 50, 60, 0x7F];
-        let mut out = Vec::new();
-        swizzle_row_to_rgba(wl_shm::Format::Xrgb8888, &src, 2, &mut out).expect("xrgb swizzle");
-        assert_eq!(out, vec![30, 20, 10, 0xFF, 60, 50, 40, 0xFF]);
-    }
-
-    #[test]
-    fn swizzle_row_rejects_unsupported_format() {
-        // RGB565 isn't advertised by smithay's default ShmState, so an attached one should error cleanly rather than produce a wrong-looking frame.
-        let src = vec![0u8; 4 * 4];
-        let mut out = Vec::new();
-        let err = swizzle_row_to_rgba(wl_shm::Format::Rgb565, &src, 4, &mut out).unwrap_err();
-        match err {
-            ReadbackError::UnsupportedFormat(wl_shm::Format::Rgb565) => {}
-            other => panic!("expected UnsupportedFormat(Rgb565), got {other:?}"),
+    fn swizzle_converts_supported_formats_and_rejects_the_rest() {
+        // Phase `swizzle_to_rgba_returns_early_on_mismatched_lengths`.
+        fn swizzle_to_rgba_returns_early_on_mismatched_lengths() {
+            // src.len() == 10, but width * 4 == 8.
+            let src = [0u8; 10];
+            let mut out: Vec<u8> = Vec::new();
+            let result = swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out);
+            assert!(
+                result.is_err(),
+                "mismatched src.len() vs width*4 must produce a structured \
+                 error (D-5 regression), not a silent partial swizzle"
+            );
+            assert!(
+                out.is_empty(),
+                "early-return on length mismatch must not touch `out`; \
+                 saw {} bytes",
+                out.len()
+            );
         }
-    }
-
-    #[test]
-    fn swizzle_to_rgba_returns_early_on_mismatched_lengths() {
-        // src.len() == 10, but width * 4 == 8.
-        let src = [0u8; 10];
-        let mut out: Vec<u8> = Vec::new();
-        let result = swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out);
-        assert!(
-            result.is_err(),
-            "mismatched src.len() vs width*4 must produce a structured \
-             error (D-5 regression), not a silent partial swizzle"
-        );
-        assert!(
-            out.is_empty(),
-            "early-return on length mismatch must not touch `out`; \
-             saw {} bytes",
-            out.len()
-        );
-    }
-
-    #[test]
-    fn swizzle_appends_without_clearing() {
-        // buffer_to_rgba's caller clears `out` before the row loop, but swizzle_row itself is
-        // append-only — verify that contract so a regression clearing inside the loop breaks loudly.
-        let src = argb_row(2);
-        let mut out = vec![0xAA, 0xBB]; // pre-existing tail
-        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out).expect("argb append");
-        assert_eq!(out.len(), 2 + 8);
-        assert_eq!(&out[0..2], &[0xAA, 0xBB]);
+        // Phase `swizzle_row_argb_to_rgba_swaps_b_and_r`.
+        {
+            let src = argb_row(4);
+            let mut out = Vec::new();
+            swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 4, &mut out).expect("argb swizzle");
+            assert_eq!(out.len(), 16);
+            // Pixel 0: B=0, G=0, R=0 -> RGBA = 0,0,0,0xC0
+            assert_eq!(&out[0..4], &[0, 0, 0, 0xC0]);
+            // Pixel 1: B=3, G=5, R=7 -> RGBA = 7,5,3,0xC0
+            assert_eq!(&out[4..8], &[7, 5, 3, 0xC0]);
+            // Pixel 3: B=9, G=15, R=21 -> RGBA = 21,15,9,0xC0
+            assert_eq!(&out[12..16], &[21, 15, 9, 0xC0]);
+        }
+        // Phase `swizzle_row_xrgb_forces_alpha_to_ff`.
+        {
+            // Xrgb8888: wire bytes [B, G, R, X]; X may be anything from the client — we always emit alpha = 0xFF.
+            let src = vec![10, 20, 30, 0x00, 40, 50, 60, 0x7F];
+            let mut out = Vec::new();
+            swizzle_row_to_rgba(wl_shm::Format::Xrgb8888, &src, 2, &mut out).expect("xrgb swizzle");
+            assert_eq!(out, vec![30, 20, 10, 0xFF, 60, 50, 40, 0xFF]);
+        }
+        // Phase `swizzle_row_rejects_unsupported_format`.
+        {
+            // RGB565 isn't advertised by smithay's default ShmState, so an attached one should error cleanly rather than produce a wrong-looking frame.
+            let src = vec![0u8; 4 * 4];
+            let mut out = Vec::new();
+            let err = swizzle_row_to_rgba(wl_shm::Format::Rgb565, &src, 4, &mut out).unwrap_err();
+            match err {
+                ReadbackError::UnsupportedFormat(wl_shm::Format::Rgb565) => {}
+                other => panic!("expected UnsupportedFormat(Rgb565), got {other:?}"),
+            }
+        }
+        // Phase `swizzle_to_rgba_returns_early_on_mismatched_lengths` (defined above).
+        swizzle_to_rgba_returns_early_on_mismatched_lengths();
+        // Phase `swizzle_appends_without_clearing`.
+        {
+            // buffer_to_rgba's caller clears `out` before the row loop, but swizzle_row itself is
+            // append-only — verify that contract so a regression clearing inside the loop breaks loudly.
+            let src = argb_row(2);
+            let mut out = vec![0xAA, 0xBB]; // pre-existing tail
+            swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out).expect("argb append");
+            assert_eq!(out.len(), 2 + 8);
+            assert_eq!(&out[0..2], &[0xAA, 0xBB]);
+        }
     }
 }

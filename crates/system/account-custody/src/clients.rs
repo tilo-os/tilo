@@ -1,0 +1,285 @@
+//! Tilo's public `OAuth` client registrations, as data.
+//!
+//! The committed table `oauth-clients.toml` holds what each issuer's
+//! developer console issued: the client id, Google's installed-app client
+//! secret, the loopback ports an issuer that matches redirect URIs exactly
+//! has registered, and the scopes of each use (cloud storage, mail) of that
+//! one client. An environment variable overrides the id (and Google's
+//! secret) at runtime, then at build time.
+
+use std::sync::OnceLock;
+
+use serde::Deserialize;
+use tilo_oauth::{Provider, RedirectPorts, Registration};
+
+use crate::providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
+
+/// The committed defaults.
+const DEFAULTS: &str = include_str!("../oauth-clients.toml");
+
+/// The scopes each use of one client asks for. An empty list: this issuer
+/// is not used for that.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Scopes {
+    pub files: Vec<String>,
+    pub mail: Vec<String>,
+}
+
+impl Scopes {
+    pub fn of(&self, capability: Capability) -> &[String] {
+        match capability {
+            Capability::Files => &self.files,
+            Capability::Mail => &self.mail,
+        }
+    }
+}
+
+/// One issuer's entry.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientEntry {
+    pub client_id: String,
+    pub client_secret: String,
+    /// Empty: any free loopback port.
+    pub redirect_ports: Vec<u16>,
+    pub paste_code_fallback: bool,
+    pub scopes: Scopes,
+}
+
+/// The whole table.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientTable {
+    pub google: ClientEntry,
+    pub microsoft: ClientEntry,
+    pub dropbox: ClientEntry,
+}
+
+impl ClientTable {
+    /// Parse a table in the format of `oauth-clients.toml`.
+    ///
+    /// # Errors
+    /// The TOML error, when the text is not a valid table.
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    /// The committed table.
+    pub fn defaults() -> &'static Self {
+        static TABLE: OnceLock<ClientTable> = OnceLock::new();
+        TABLE.get_or_init(|| {
+            Self::parse(DEFAULTS).unwrap_or_else(|error| {
+                tracing::error!(%error, "oauth-clients.toml is invalid; no provider is configured");
+                Self::default()
+            })
+        })
+    }
+
+    /// The entry of `issuer`.
+    pub fn client(&self, issuer: OAuthIssuer) -> &ClientEntry {
+        match issuer {
+            OAuthIssuer::Google => &self.google,
+            OAuthIssuer::Microsoft => &self.microsoft,
+            OAuthIssuer::Dropbox => &self.dropbox,
+        }
+    }
+
+    /// The entry behind a cloud storage provider.
+    pub fn entry(&self, cloud: OAuthCloud) -> &ClientEntry {
+        self.client(cloud.issuer())
+    }
+
+    /// The scopes `oauth_use` asks for; empty when this table does not
+    /// configure that use.
+    pub fn scopes(&self, oauth_use: OAuthUse) -> &[String] {
+        self.client(oauth_use.issuer)
+            .scopes
+            .of(oauth_use.capability)
+    }
+
+    /// The issuer's descriptor with the scopes of `oauth_use`.
+    pub fn descriptor(&self, oauth_use: OAuthUse) -> Provider {
+        Provider {
+            scopes: self.scopes(oauth_use).to_vec(),
+            ..oauth_use.issuer.endpoints()
+        }
+    }
+
+    /// The registration of `issuer`: environment overrides first, then this
+    /// table. `None` when no client id is known (the "not configured"
+    /// state).
+    pub fn client_registration(&self, issuer: OAuthIssuer) -> Option<Registration> {
+        let entry = self.client(issuer);
+        let non_empty = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        };
+        let client_id = issuer
+            .client_id()
+            .resolve()
+            .or_else(|| non_empty(&entry.client_id))?;
+        let client_secret = issuer
+            .client_secret()
+            .and_then(|key| key.resolve())
+            .or_else(|| non_empty(&entry.client_secret));
+        Some(Registration {
+            client_id,
+            client_secret,
+            redirect_ports: if entry.redirect_ports.is_empty() {
+                RedirectPorts::Any
+            } else {
+                RedirectPorts::Registered(entry.redirect_ports.clone())
+            },
+            paste_code_fallback: entry.paste_code_fallback,
+        })
+    }
+
+    /// The registration for a cloud storage provider; see
+    /// [`Self::client_registration`].
+    pub fn registration(&self, cloud: OAuthCloud) -> Option<Registration> {
+        self.client_registration(cloud.issuer())
+    }
+
+    /// The descriptor and registration of `oauth_use`, `None` when the
+    /// issuer has no client id or the use has no scopes.
+    pub fn config(&self, oauth_use: OAuthUse) -> Option<(Provider, Registration)> {
+        if self.scopes(oauth_use).is_empty() {
+            return None;
+        }
+        let registration = self.client_registration(oauth_use.issuer)?;
+        Some((self.descriptor(oauth_use), registration))
+    }
+
+    /// Whether `oauth_use` can sign in with this table (and the
+    /// environment).
+    pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
+        self.config(oauth_use).is_some()
+    }
+}
+
+impl OAuthCloud {
+    /// The registration this build uses; see [`ClientTable::registration`].
+    pub fn registration(self) -> Option<Registration> {
+        ClientTable::defaults().registration(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GMAIL: OAuthUse = OAuthUse::mail(OAuthIssuer::Google);
+    const OUTLOOK: OAuthUse = OAuthUse::mail(OAuthIssuer::Microsoft);
+
+    #[test]
+    fn the_committed_table_parses_and_names_every_provider() {
+        let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
+        assert!(
+            table
+                .google
+                .client_id
+                .ends_with(".apps.googleusercontent.com")
+        );
+        assert!(!table.microsoft.client_id.is_empty());
+        assert!(!table.dropbox.client_id.is_empty());
+        // Google and Microsoft match loopback redirects without the port;
+        // Dropbox matches exactly and so needs registered ports.
+        assert!(table.google.redirect_ports.is_empty());
+        assert!(table.microsoft.redirect_ports.is_empty());
+        assert!(!table.dropbox.redirect_ports.is_empty());
+        assert!(table.dropbox.paste_code_fallback);
+    }
+
+    #[test]
+    fn the_committed_table_scopes_each_use_of_one_client() {
+        let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
+        for cloud in OAuthCloud::ALL {
+            assert!(!table.scopes(cloud.oauth_use()).is_empty(), "{cloud:?}");
+        }
+        assert_eq!(table.scopes(GMAIL), ["https://mail.google.com/"]);
+        assert_eq!(
+            table.scopes(OUTLOOK),
+            [
+                "offline_access",
+                "https://outlook.office.com/IMAP.AccessAsUser.All",
+                "https://outlook.office.com/SMTP.Send",
+            ]
+        );
+        assert_eq!(
+            table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
+            ["https://www.googleapis.com/auth/drive"]
+        );
+        // Dropbox is storage only.
+        assert!(
+            table
+                .scopes(OAuthUse::mail(OAuthIssuer::Dropbox))
+                .is_empty()
+        );
+        assert!(!table.is_configured(OAuthUse::mail(OAuthIssuer::Dropbox)));
+        // Gmail and Drive are the same Google client.
+        let (gmail, gmail_client) = table.config(GMAIL).unwrap();
+        let (drive, drive_client) = table.config(OAuthCloud::GoogleDrive.oauth_use()).unwrap();
+        assert_eq!(gmail_client, drive_client);
+        assert_eq!(gmail.token_endpoint, drive.token_endpoint);
+        assert_ne!(gmail.scopes, drive.scopes);
+    }
+
+    #[test]
+    fn an_empty_entry_is_not_configured_and_a_filled_one_is() {
+        let table = ClientTable::parse(
+            r#"
+            [google]
+            client_id = "id.apps.googleusercontent.com"
+            client_secret = "desktop-secret"
+            [google.scopes]
+            mail = ["https://mail.google.com/"]
+            [dropbox]
+            client_id = "key"
+            redirect_ports = [1, 2]
+            paste_code_fallback = true
+            "#,
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_OAUTH_GOOGLE_CLIENT_ID")
+            .remove("TILO_OAUTH_GOOGLE_CLIENT_SECRET")
+            .remove("TILO_OAUTH_MICROSOFT_CLIENT_ID")
+            .remove("TILO_OAUTH_DROPBOX_CLIENT_ID");
+        if option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID").is_none() {
+            assert_eq!(table.registration(OAuthCloud::OneDrive), None);
+            assert!(!table.is_configured(OUTLOOK));
+        }
+        if option_env!("TILO_OAUTH_GOOGLE_CLIENT_ID").is_none()
+            && option_env!("TILO_OAUTH_GOOGLE_CLIENT_SECRET").is_none()
+        {
+            let google = table.registration(OAuthCloud::GoogleDrive).unwrap();
+            assert_eq!(google.client_id, "id.apps.googleusercontent.com");
+            assert_eq!(google.secret(), Some("desktop-secret"));
+            assert_eq!(google.redirect_ports, RedirectPorts::Any);
+            // A client without storage scopes signs in to Gmail only.
+            assert!(table.is_configured(GMAIL));
+            assert!(!table.is_configured(OAuthCloud::GoogleDrive.oauth_use()));
+        }
+        if option_env!("TILO_OAUTH_DROPBOX_CLIENT_ID").is_none() {
+            let dropbox = table.registration(OAuthCloud::Dropbox).unwrap();
+            assert_eq!(
+                dropbox.redirect_ports,
+                RedirectPorts::Registered(vec![1, 2])
+            );
+            assert!(dropbox.paste_code_fallback);
+            assert_eq!(dropbox.secret(), None);
+        }
+    }
+
+    #[test]
+    fn the_environment_overrides_the_table() {
+        let table = ClientTable::parse("[google]\nclient_id = \"from-table\"\n").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_OAUTH_GOOGLE_CLIENT_ID", "from-env")
+            .set("TILO_OAUTH_GOOGLE_CLIENT_SECRET", "secret-from-env");
+        let google = table.registration(OAuthCloud::GoogleDrive).unwrap();
+        assert_eq!(google.client_id, "from-env");
+        assert_eq!(google.secret(), Some("secret-from-env"));
+    }
+}

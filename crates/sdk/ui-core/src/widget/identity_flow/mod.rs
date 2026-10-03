@@ -16,12 +16,12 @@
 //! drive it directly without ever building a `TaffyTree`.
 
 use crate::time::{Duration, SystemTime};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use collab_types::{
     Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey, Role,
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
@@ -39,6 +39,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -142,7 +143,17 @@ impl IdentityRecord {
         created_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let serialisable = SerializableIdentity::from_identity(identity)?;
-        let ts = chrono::DateTime::<chrono::Utc>::from(created_at).to_rfc3339();
+        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(
+                created_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            )
+            .unwrap_or(i64::MAX),
+            0,
+        )
+        .unwrap_or_default()
+        .to_rfc3339();
         Ok(Self {
             display_name: display_name.into(),
             avatar_color,
@@ -569,6 +580,22 @@ enum PairingBackend {
 /// postcard [`PairingBrokerRequest`] or [`PairingBrokerResponse`].
 pub const PAIRING_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(256 * 1024);
 
+/// How long either end of a pairing-broker exchange waits on its socket
+/// before it counts the peer as hung. The UI polls the broker from its
+/// frame loop, so a shipped build gives up fast on a peer that stops
+/// answering. Test builds share a loaded runner with everything else, so
+/// there it is the shared test hang bound.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn pairing_io_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+/// How long either end of a pairing-broker exchange waits on its socket
+/// before it counts the peer as hung: in test builds, the shared hang bound.
+#[cfg(any(test, feature = "test-support"))]
+pub fn pairing_io_timeout() -> Duration {
+    tilo_test_env::hang_bound()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PairingBrokerRequest {
     PutPairerRound1([u8; 16], EnrolmentRound1),
@@ -674,6 +701,7 @@ impl PairingHandshake {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remote_call(
         endpoint: &str,
         certificate: &[u8],
@@ -682,10 +710,10 @@ impl PairingHandshake {
         use std::io::Write;
         let frame = PAIRING_FRAMING.encode_value(request).ok()?;
         let tcp =
-            std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, Duration::from_secs(2))
+            std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, pairing_io_timeout())
                 .ok()?;
-        tcp.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-        tcp.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+        tcp.set_read_timeout(Some(pairing_io_timeout())).ok()?;
+        tcp.set_write_timeout(Some(pairing_io_timeout())).ok()?;
         if certificate.is_empty() || certificate.len() > 64 * 1024 {
             return None;
         }
@@ -704,6 +732,16 @@ impl PairingHandshake {
         let mut stream = rustls::StreamOwned::new(connection, tcp);
         stream.write_all(&frame).ok()?;
         PAIRING_FRAMING.read_value(&mut stream).ok()?
+    }
+
+    /// Native TLS sockets are unavailable in a browser; a host transport must be injected.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remote_call(
+        _: &str,
+        _: &[u8],
+        _: &PairingBrokerRequest,
+    ) -> Option<PairingBrokerResponse> {
+        None
     }
 
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
@@ -1135,12 +1173,14 @@ impl PairingHandshake {
 /// certificate as a root would also trust a child certificate it signs; exact
 /// comparison keeps the pin's meaning narrow while the provider still checks
 /// the handshake signature against the pinned certificate's public key.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct ExactCertificateVerifier {
     expected: Arc<[u8]>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
     fn verify_server_cert(
         &self,
@@ -1365,19 +1405,14 @@ impl InviteEnvelope {
     }
 }
 
-/// Size of a record written before invite secrets were sealed with
-/// `tilo-seal`: expiry (8) || XChaCha20-Poly1305 nonce (24) || ciphertext
-/// and tag (48), under the capability digest and expiry as associated data.
-#[cfg(unix)]
-const LEGACY_INVITE_RECORD_LEN: usize = 80;
-/// Size of a current record: expiry (8) || `tilo-seal` envelope of the
+/// Size of a record: expiry (8) || `tilo-seal` envelope of the
 /// 32-byte secret (40-byte header, 48 bytes of ciphertext and tag).
 #[cfg(unix)]
 const INVITE_RECORD_LEN: usize = 96;
 
 #[cfg(unix)]
 fn is_invite_record_len(len: u64) -> bool {
-    len == LEGACY_INVITE_RECORD_LEN as u64 || len == INVITE_RECORD_LEN as u64
+    len == INVITE_RECORD_LEN as u64
 }
 
 /// What a record's secret is bound to: the capability digest (so a record
@@ -1390,7 +1425,7 @@ fn invite_record_context(capability: &[u8; 32], expires_unix: u64) -> Vec<u8> {
     context
 }
 
-/// Open either record layout. `record` is the whole file, expiry included.
+/// Open a record. `record` is the whole file, expiry included.
 #[cfg(unix)]
 fn open_invite_record(
     key: &tilo_seal::SymmetricKey,
@@ -1402,14 +1437,6 @@ fn open_invite_record(
     let body = record
         .get(8..)
         .ok_or(tilo_seal::Error::Malformed("invite record"))?;
-    if record.len() == LEGACY_INVITE_RECORD_LEN {
-        let (nonce, ciphertext) = body
-            .split_at_checked(tilo_seal::legacy::XCHACHA_NONCE_LEN)
-            .ok_or(tilo_seal::Error::Malformed("invite record"))?;
-        let nonce = <&[u8; tilo_seal::legacy::XCHACHA_NONCE_LEN]>::try_from(nonce)
-            .map_err(|_| tilo_seal::Error::Malformed("invite record"))?;
-        return tilo_seal::legacy::open_xchacha20poly1305(key, nonce, &context, ciphertext);
-    }
     tilo_seal::envelope::open(
         key,
         tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
@@ -1422,11 +1449,24 @@ pub struct InviteRedemptionAuthority {
     root: PathBuf,
 }
 
+/// Where an invite is redeemed: the shell broker's TLS endpoint and
+/// certificate, and the private directory of its redemption authority.
 #[derive(Clone)]
-struct InviteBrokerLocator {
-    endpoint: String,
-    certificate: Vec<u8>,
-    authority_root: PathBuf,
+pub struct InviteBrokerLocator {
+    pub endpoint: String,
+    pub certificate: Vec<u8>,
+    pub authority_root: PathBuf,
+}
+
+/// What an invite offers and on whose behalf; all of it is signed into the
+/// envelope by the owner.
+pub struct InviteTerms {
+    pub channel: ChannelId,
+    pub channel_name: String,
+    pub owner_pubkey: Ed25519PublicKey,
+    pub inviter_label: String,
+    pub role: Role,
+    pub expires_at: SystemTime,
 }
 
 static INVITE_BROKER_LOCATOR: std::sync::OnceLock<InviteBrokerLocator> = std::sync::OnceLock::new();
@@ -1796,18 +1836,19 @@ pub fn mint_invite(
     role: Role,
     expires_at: SystemTime,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let channel_name = channel_name.into();
-    let inviter_label = inviter_label.into();
+    let terms = InviteTerms {
+        channel,
+        channel_name: channel_name.into(),
+        owner_pubkey,
+        inviter_label: inviter_label.into(),
+        role,
+        expires_at,
+    };
     if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
         let authority = InviteRedemptionAuthority::at(&locator.authority_root)?;
         return mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             locator.endpoint.clone(),
             locator.certificate.clone(),
             &authority,
@@ -1817,13 +1858,8 @@ pub fn mint_invite(
     {
         let authority = invite_redemption_authority()?;
         mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             String::new(),
             Vec::new(),
             &authority,
@@ -1843,23 +1879,16 @@ pub fn mint_invite(
 ///
 /// Returns an error for an invalid endpoint/certificate, unsafe authority
 /// storage, encryption/signing failure, or an exhausted authority quota.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
-)]
 pub fn mint_invite_for_broker(
-    channel: ChannelId,
-    channel_name: impl Into<String>,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: impl Into<String>,
-    role: Role,
-    expires_at: SystemTime,
-    redemption_endpoint: impl Into<String>,
-    redemption_certificate: Vec<u8>,
-    authority_root: impl Into<PathBuf>,
+    broker: InviteBrokerLocator,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let redemption_endpoint = redemption_endpoint.into();
+    let InviteBrokerLocator {
+        endpoint: redemption_endpoint,
+        certificate: redemption_certificate,
+        authority_root,
+    } = broker;
     redemption_endpoint
         .parse::<std::net::SocketAddr>()
         .map_err(|error| {
@@ -1872,35 +1901,29 @@ pub fn mint_invite_for_broker(
     }
     let authority = InviteRedemptionAuthority::at(authority_root)?;
     mint_invite_at(
-        channel,
-        channel_name.into(),
-        owner_pubkey,
+        terms,
         owner_signing_key,
-        inviter_label.into(),
-        role,
-        expires_at,
         redemption_endpoint,
         redemption_certificate,
         &authority,
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
-)]
 fn mint_invite_at(
-    channel: ChannelId,
-    channel_name: String,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: String,
-    role: Role,
-    expires_at: SystemTime,
     redemption_endpoint: String,
     redemption_certificate: Vec<u8>,
     authority: &InviteRedemptionAuthority,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
+    let InviteTerms {
+        channel,
+        channel_name,
+        owner_pubkey,
+        inviter_label,
+        role,
+        expires_at,
+    } = terms;
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut capability);
@@ -2180,10 +2203,7 @@ fn draw_done_card(
         name_row.y1,
     );
     sheet::paint_text_in(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         disc,
         &initial,
         Role::Code,
@@ -2198,10 +2218,7 @@ fn draw_done_card(
         name_row.y1,
     );
     paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         name_rect,
         &signed_in,
         Role::Value,
@@ -2210,10 +2227,7 @@ fn draw_done_card(
     );
     for (rect, label) in [(saved, SAVED), (next, NEXT)] {
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             rect,
             label,
             Role::Caption,
@@ -2418,7 +2432,7 @@ impl Widget for IdentityFlow {
         Some("identity_flow")
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.sync(state, path),
@@ -2532,97 +2546,24 @@ impl Widget for IdentityFlow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let outcome = match self.current {
-            IdentityFlowScreen::CreateIdentity => self.create_identity.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-                &*self.store,
-            ),
-            IdentityFlowScreen::RecoveryShare => self.recovery_share.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::RecoveryVerify => self.recovery_verify.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::AddDeviceHost => self.add_device_host.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
+            IdentityFlowScreen::CreateIdentity => {
+                self.create_identity
+                    .handle_event_screen(event, ctx, &*self.store)
+            }
+            IdentityFlowScreen::RecoveryShare => {
+                self.recovery_share.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::RecoveryVerify => {
+                self.recovery_verify.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::AddDeviceHost => {
+                self.add_device_host.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(event, ctx),
             IdentityFlowScreen::Done => ScreenOutcome::Stay,
         };
         self.advance(outcome);
@@ -2723,44 +2664,71 @@ pub(super) mod test_events {
 mod tests {
     use super::*;
 
-    /// Pairing-broker frames cross two devices that may run different builds:
-    /// a big-endian `u32` length, then postcard, at most 256 KiB.
     #[test]
-    fn pairing_broker_wire_bytes_are_pinned() {
-        let mut expected = vec![0, 0, 0, 17, 4];
-        expected.extend_from_slice(&[7; 16]);
-        assert_eq!(
-            PAIRING_FRAMING
-                .encode_value(&PairingBrokerRequest::TakeHostRound2([7; 16]))
-                .unwrap(),
-            expected
-        );
-        let response: PairingBrokerResponse = PAIRING_FRAMING
-            .read_value(&mut &[0_u8, 0, 0, 1, 4][..])
-            .unwrap()
-            .unwrap();
-        assert!(matches!(response, PairingBrokerResponse::Denied));
-        assert!(PAIRING_FRAMING.read(&mut &[0_u8, 4, 0, 1][..]).is_err());
-    }
+    fn pairing_code_and_mac_known_answers_and_wire_bytes() {
+        /// Pairing-broker frames cross two devices that may run different builds:
+        /// a big-endian `u32` length, then postcard, at most 256 KiB.
+        fn pairing_broker_wire_bytes_are_pinned() {
+            let mut expected = vec![0, 0, 0, 17, 4];
+            expected.extend_from_slice(&[7; 16]);
+            assert_eq!(
+                PAIRING_FRAMING
+                    .encode_value(&PairingBrokerRequest::TakeHostRound2([7; 16]))
+                    .unwrap(),
+                expected
+            );
+            let response: PairingBrokerResponse = PAIRING_FRAMING
+                .read_value(&mut &[0_u8, 0, 0, 1, 4][..])
+                .unwrap()
+                .unwrap();
+            assert!(matches!(response, PairingBrokerResponse::Denied));
+            assert!(PAIRING_FRAMING.read(&mut &[0_u8, 4, 0, 1][..]).is_err());
+        }
 
-    /// Pairing codes and MACs cross two devices that may run different
-    /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.
-    #[test]
-    fn pairing_code_and_mac_match_known_answers() {
-        let nonce = [7_u8; 16];
-        assert_eq!(derive_pairing_code(&nonce), 206_239);
-        let key = derive_pairing_mac_key(&nonce);
-        assert_eq!(
-            hex::encode(key),
-            "280a9ed0cb37e06755677de2b73ba15a51524d6264f78ef9aebd4c2e9eacad77"
-        );
-        let mac = compute_pairing_mac(&key, b"kat-payload");
-        assert_eq!(
-            hex::encode(mac),
-            "7142c6f64bb78c1e90e93269cc63d9d22cce12d1ecd39fc6bead9f36096daab8\
+        /// Pairing codes and MACs cross two devices that may run different
+        /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.
+        fn pairing_code_and_mac_match_known_answers() {
+            let nonce = [7_u8; 16];
+            assert_eq!(derive_pairing_code(&nonce), 206_239);
+            let key = derive_pairing_mac_key(&nonce);
+            assert_eq!(
+                hex::encode(key),
+                "280a9ed0cb37e06755677de2b73ba15a51524d6264f78ef9aebd4c2e9eacad77"
+            );
+            let mac = compute_pairing_mac(&key, b"kat-payload");
+            assert_eq!(
+                hex::encode(mac),
+                "7142c6f64bb78c1e90e93269cc63d9d22cce12d1ecd39fc6bead9f36096daab8\
              b316dc90d0ee6deb7acc9818ce10535dc1df7a7bb72576238836a3e38aba52bd"
-        );
-        assert!(verify_pairing_mac(&key, b"kat-payload", &mac));
+            );
+            assert!(verify_pairing_mac(&key, b"kat-payload", &mac));
+        }
+
+        fn pairing_code_derivation_is_deterministic() {
+            let nonce = [0x42u8; 16];
+            let a = derive_pairing_code(&nonce);
+            let b = derive_pairing_code(&nonce);
+            assert_eq!(a, b);
+            assert!(a < 1_000_000);
+        }
+
+        fn pairing_code_differs_per_nonce() {
+            let a = derive_pairing_code(&[1u8; 16]);
+            let b = derive_pairing_code(&[2u8; 16]);
+            assert_ne!(a, b, "different nonce should produce different code");
+        }
+
+        fn pairing_code_format_pads_to_6_digits() {
+            assert_eq!(format_pairing_code(0), "000000");
+            assert_eq!(format_pairing_code(42), "000042");
+            assert_eq!(format_pairing_code(999_999), "999999");
+        }
+
+        pairing_broker_wire_bytes_are_pinned();
+        pairing_code_and_mac_match_known_answers();
+        pairing_code_derivation_is_deterministic();
+        pairing_code_differs_per_nonce();
+        pairing_code_format_pads_to_6_digits();
     }
 
     fn fixture_mnemonic() -> String {
@@ -2774,527 +2742,506 @@ mod tests {
     }
 
     #[test]
-    fn single_device_creation_never_enters_a_fake_recovery_word_screen() {
-        let store: Arc<dyn IdentityStore> = Arc::new(MemoryIdentityStore::new());
-        let mut flow = IdentityFlow::new(store);
+    fn recovery_challenge_positions_and_answer_matching() {
+        fn single_device_creation_never_enters_a_fake_recovery_word_screen() {
+            let store: Arc<dyn IdentityStore> = Arc::new(MemoryIdentityStore::new());
+            let mut flow = IdentityFlow::new(store);
 
-        assert_eq!(flow.current_screen(), IdentityFlowScreen::CreateIdentity);
-        flow.advance(ScreenOutcome::Advance);
+            assert_eq!(flow.current_screen(), IdentityFlowScreen::CreateIdentity);
+            flow.advance(ScreenOutcome::Advance);
 
-        assert_eq!(flow.current_screen(), IdentityFlowScreen::Done);
-        assert!(flow.recovery_share.mnemonic().is_empty());
-    }
-
-    #[test]
-    fn pairing_code_derivation_is_deterministic() {
-        let nonce = [0x42u8; 16];
-        let a = derive_pairing_code(&nonce);
-        let b = derive_pairing_code(&nonce);
-        assert_eq!(a, b);
-        assert!(a < 1_000_000);
-    }
-
-    #[test]
-    fn pairing_code_differs_per_nonce() {
-        let a = derive_pairing_code(&[1u8; 16]);
-        let b = derive_pairing_code(&[2u8; 16]);
-        assert_ne!(a, b, "different nonce should produce different code");
-    }
-
-    #[test]
-    fn pairing_code_format_pads_to_6_digits() {
-        assert_eq!(format_pairing_code(0), "000000");
-        assert_eq!(format_pairing_code(42), "000042");
-        assert_eq!(format_pairing_code(999_999), "999999");
-    }
-
-    #[test]
-    fn pairing_mac_round_trip() {
-        let key = derive_pairing_mac_key(&[7u8; 16]);
-        let payload = b"some round-2 reply bytes";
-        let tag = compute_pairing_mac(&key, payload);
-        assert!(verify_pairing_mac(&key, payload, &tag));
-    }
-
-    #[test]
-    fn pairing_mac_rejects_tamper() {
-        let key = derive_pairing_mac_key(&[7u8; 16]);
-        let payload = b"some round-2 reply bytes";
-        let mut tag = compute_pairing_mac(&key, payload);
-        tag[0] ^= 1;
-        assert!(!verify_pairing_mac(&key, payload, &tag));
-    }
-
-    #[test]
-    fn pairing_payload_round_trip() {
-        let nonce = [9u8; 16];
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (_session, round1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let payload = PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
-        let bytes = payload.to_json_bytes().unwrap();
-        let back = PairingPayload::from_json_bytes(&bytes).unwrap();
-        assert_eq!(payload, back);
-        assert_eq!(back.nonce().unwrap(), nonce);
-        assert_eq!(
-            back.initiator_public_key().unwrap().as_bytes(),
-            id.group_public_key().as_bytes()
-        );
-        // Round1 packets aren't `PartialEq` — round-trip via bytes.
-        let r1 = back.initiator_round1().unwrap();
-        assert_eq!(r1.from_share_index, 1);
-        assert_eq!(r1.package_bytes, round1.package_bytes);
-    }
-
-    #[test]
-    fn invite_envelope_round_trip_via_url() {
-        let (sk, pk) = generate_keypair();
-        let env = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            pk,
-            &sk,
-            "Alice",
-            Role::Editor,
-            crate::time::wall() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        let url = env.to_url().unwrap();
-        assert!(url.starts_with("tilo://invite/"));
-        let back = InviteEnvelope::from_url(&url).unwrap();
-        assert_eq!(env, back);
-        back.verify_signature()
-            .expect("owner signature must verify");
-    }
-
-    #[test]
-    fn invite_signature_detects_tamper() {
-        let (sk, pk) = generate_keypair();
-        let mut env = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            pk,
-            &sk,
-            "Alice",
-            Role::Editor,
-            crate::time::wall() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        env.channel_name = "treasury".into();
-        assert!(
-            env.verify_signature().is_err(),
-            "renamed envelope must fail"
-        );
-
-        let mut endpoint_tampered = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            pk,
-            &sk,
-            "Alice",
-            Role::Editor,
-            crate::time::wall() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        endpoint_tampered.redemption_endpoint = "127.0.0.1:9".into();
-        assert!(endpoint_tampered.verify_signature().is_err());
-        endpoint_tampered.redemption_endpoint.clear();
-        endpoint_tampered.redemption_certificate.push(1);
-        assert!(endpoint_tampered.verify_signature().is_err());
-    }
-
-    #[test]
-    fn invite_expiry_rejected_by_attestation_builder() {
-        let (sk, pk) = generate_keypair();
-        let env = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            pk,
-            &sk,
-            "Alice",
-            Role::Editor,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1),
-        )
-        .unwrap();
-        let (_inv_sk, inv_pk) = generate_keypair();
-        let err = build_attestation_from_invite(
-            &env,
-            inv_pk,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
-        )
-        .unwrap_err();
-        assert!(matches!(err, IdentityFlowError::InviteExpired));
-    }
-
-    #[test]
-    #[allow(
-        clippy::similar_names,
-        reason = "owner_sk/owner_pk and invitee_sk/invitee_pk are the clearest names for a test exercising both sides of an invite; the sk/pk suffixes are a standard convention, not a typo risk"
-    )]
-    fn invite_accept_produces_valid_attestation() {
-        let (owner_sk, owner_pk) = generate_keypair();
-        let env = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            owner_pk,
-            &owner_sk,
-            "Alice",
-            Role::Editor,
-            crate::time::wall() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        let (_invitee_sk, invitee_pk) = generate_keypair();
-        let event = build_attestation_from_invite(&env, invitee_pk, crate::time::wall()).unwrap();
-        if let ChannelEvent::AttestationIssued(ra) = &event {
-            assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
-            assert_eq!(ra.role, Role::Editor);
-            // Inner attestation signature must verify against the
-            // delegation pubkey (which the owner signed).
-            let bytes = ra.attestation.signing_bytes().unwrap();
-            assert!(
-                verify_event(&bytes, &ra.attestation.signature, &ra.attestation.issued_by).is_ok()
-            );
-        } else {
-            panic!("expected AttestationIssued, got {event:?}");
+            assert_eq!(flow.current_screen(), IdentityFlowScreen::Done);
+            assert!(flow.recovery_share.mnemonic().is_empty());
         }
-    }
 
-    #[test]
-    fn invite_capability_is_one_use() {
-        let (owner_signing_key, owner_verifying_key) = generate_keypair();
-        let env = mint_invite(
-            ChannelId::new(),
-            "engineering",
-            owner_verifying_key,
-            &owner_signing_key,
-            "Alice",
-            Role::Editor,
-            crate::time::wall() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        let (_, first) = generate_keypair();
-        let (_, second) = generate_keypair();
-        build_attestation_from_invite(&env, first, crate::time::wall()).unwrap();
-        let error = build_attestation_from_invite(&env, second, crate::time::wall()).unwrap_err();
-        assert!(error.to_string().contains("already redeemed"));
-    }
-
-    #[test]
-    fn invite_authority_survives_restart_and_atomically_consumes() {
-        let dir = tempfile::tempdir().unwrap();
-        let capability = [9; 32];
-        let secret = [7; 32];
-        InviteRedemptionAuthority::at(dir.path())
-            .unwrap()
-            .issue(capability, secret, u64::MAX)
-            .unwrap();
-        let restarted = InviteRedemptionAuthority::at(dir.path()).unwrap();
-        assert_eq!(restarted.redeem(&capability, 1).unwrap().as_slice(), secret);
-        assert!(restarted.redeem(&capability, 1).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn invite_authority_secrets_are_private_authenticated_and_race_safe() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("authority");
-        let capability = [11; 32];
-        let authority = InviteRedemptionAuthority::at(&root).unwrap();
-        authority.issue(capability, [12; 32], u64::MAX).unwrap();
-        assert_eq!(
-            std::fs::metadata(root.join("authority-key"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(authority.path(&capability))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-
-        let barrier = Arc::new(std::sync::Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let root = root.clone();
-            let barrier = Arc::clone(&barrier);
-            workers.push(std::thread::spawn(move || {
-                let authority = InviteRedemptionAuthority::at(root).unwrap();
-                barrier.wait();
-                authority.redeem(&capability, 1).is_ok()
-            }));
-        }
-        barrier.wait();
-        let successes = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .filter(|succeeded| *succeeded)
-            .count();
-        assert_eq!(successes, 1, "only one concurrent redeemer may win");
-
-        let tampered_capability = [21; 32];
-        authority
-            .issue(tampered_capability, [22; 32], u64::MAX)
-            .unwrap();
-        let record = authority.path(&tampered_capability);
-        let mut bytes = std::fs::read(&record).unwrap();
-        *bytes.last_mut().unwrap() ^= 1;
-        std::fs::write(&record, bytes).unwrap();
-        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(authority.redeem(&tampered_capability, 1).is_err());
-        assert!(
-            authority.redeem(&tampered_capability, 1).is_err(),
-            "a failed authentication must still consume the bearer capability"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn invite_authority_refuses_a_symlink_root_or_key() {
-        use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target");
-        std::fs::create_dir(&target).unwrap();
-        let linked = dir.path().join("linked");
-        symlink(&target, &linked).unwrap();
-        assert!(InviteRedemptionAuthority::at(&linked).is_err());
-
-        let authority = InviteRedemptionAuthority::at(dir.path().join("authority")).unwrap();
-        let external = dir.path().join("external-key");
-        std::fs::write(&external, [9; 32]).unwrap();
-        symlink(&external, authority.root.join("authority-key")).unwrap();
-        assert!(authority.issue([8; 32], [7; 32], u64::MAX).is_err());
-    }
-
-    #[test]
-    fn invite_authority_consumes_expired_secret_without_releasing_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
-        authority.issue([3; 32], [4; 32], 10).unwrap();
-        assert!(matches!(
-            authority.redeem(&[3; 32], 10),
-            Err(IdentityFlowError::InviteExpired)
-        ));
-        assert!(authority.redeem(&[3; 32], 9).is_err());
-    }
-
-    /// A record and key written by the XChaCha20-Poly1305 record format
-    /// before invite secrets moved to `tilo-seal` (capability `[0x31; 32]`,
-    /// secret `[0x32; 32]`, expiry 2100-01-01).
-    #[cfg(unix)]
-    const LEGACY_AUTHORITY_KEY: &str =
-        "2823453e56138d5c5b99be184ddee401a997e01ea7023a3c9a9b363f55ce8369";
-    #[cfg(unix)]
-    const LEGACY_RECORD_NAME: &str = "8f803fd8e5cb4cec466a0ec3e38c3c65cc893fe16adae69ae01556ade3fba864a50fab86e9a2fb9e7a7c5e101234e78f12bffe3a25b3799aa874c12929b5bdb9";
-    #[cfg(unix)]
-    const LEGACY_RECORD: &str = "00000000f48657002fe7034e7352888994806b93fa07efcdeca068dc86c77eab872bb5805468118dfd6dc7a106cc5df0865c41ab2059b09a58d1f6b9b212f67d8dfbf74577940419d0d9273d1321c5ca";
-
-    #[cfg(unix)]
-    #[test]
-    fn invite_record_from_an_earlier_build_redeems_and_new_records_use_tilo_seal() {
-        let dir = tempfile::tempdir().unwrap();
-        let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
-        private_fs::create_atomic(
-            &dir.path().join("authority-key"),
-            &hex::decode(LEGACY_AUTHORITY_KEY).unwrap(),
-        )
-        .unwrap();
-        private_fs::create_atomic(
-            &dir.path().join(LEGACY_RECORD_NAME),
-            &hex::decode(LEGACY_RECORD).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            authority.path(&[0x31; 32]),
-            dir.path().join(LEGACY_RECORD_NAME)
-        );
-        assert_eq!(
-            authority.redeem(&[0x31; 32], 1).unwrap().as_slice(),
-            [0x32; 32]
-        );
-
-        authority.issue([0x41; 32], [0x42; 32], u64::MAX).unwrap();
-        let written = std::fs::read(authority.path(&[0x41; 32])).unwrap();
-        assert_eq!(written.len(), INVITE_RECORD_LEN);
-        assert!(tilo_seal::envelope::is_envelope(&written[8..]));
-        assert_eq!(
-            authority.redeem(&[0x41; 32], 1).unwrap().as_slice(),
-            [0x42; 32]
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn invite_record_is_bound_to_its_capability_and_expiry() {
-        let key = tilo_seal::SymmetricKey::generate().unwrap();
-        let context = invite_record_context(&[1; 32], 99);
-        let mut record = 99_u64.to_be_bytes().to_vec();
-        record.extend(
-            tilo_seal::envelope::seal(
-                &key,
-                tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
-                &[5; 32],
-            )
-            .unwrap(),
-        );
-        assert!(open_invite_record(&key, &[1; 32], 99, &record).is_ok());
-        assert!(open_invite_record(&key, &[2; 32], 99, &record).is_err());
-        assert!(open_invite_record(&key, &[1; 32], 100, &record).is_err());
-    }
-
-    #[test]
-    fn oversized_invite_is_rejected_before_decode() {
-        let url = format!("tilo://invite/{}", "A".repeat(16 * 1024 + 1));
-        assert!(InviteEnvelope::from_url(&url).is_err());
-    }
-
-    #[test]
-    fn invite_expiry_resolve_progression() {
-        let now = SystemTime::UNIX_EPOCH;
-        let hour = InviteExpiry::OneHour.resolve(now);
-        let day = InviteExpiry::OneDay.resolve(now);
-        let week = InviteExpiry::OneWeek.resolve(now);
-        assert!(hour < day);
-        assert!(day < week);
-    }
-
-    #[test]
-    fn recovery_challenge_distinct_positions() {
-        let m = fixture_mnemonic();
-        for _ in 0..16 {
-            let c = RecoveryChallenge::from_mnemonic(&m).unwrap();
-            assert_ne!(c.positions[0], c.positions[1]);
-            assert_ne!(c.positions[1], c.positions[2]);
-            assert_ne!(c.positions[0], c.positions[2]);
-            for p in &c.positions {
-                assert!((1..=24).contains(p));
+        fn recovery_challenge_distinct_positions() {
+            let m = fixture_mnemonic();
+            for _ in 0..16 {
+                let c = RecoveryChallenge::from_mnemonic(&m).unwrap();
+                assert_ne!(c.positions[0], c.positions[1]);
+                assert_ne!(c.positions[1], c.positions[2]);
+                assert_ne!(c.positions[0], c.positions[2]);
+                for p in &c.positions {
+                    assert!((1..=24).contains(p));
+                }
             }
         }
+
+        fn recovery_challenge_accepts_correct_words() {
+            let m = fixture_mnemonic();
+            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
+            let words: Vec<&str> = m.split_whitespace().collect();
+            assert!(c.check(&[words[0], words[11], words[23]]));
+        }
+
+        fn recovery_challenge_rejects_wrong_word() {
+            let m = fixture_mnemonic();
+            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
+            let words: Vec<&str> = m.split_whitespace().collect();
+            assert!(!c.check(&[words[0], "wrong", words[23]]));
+        }
+
+        fn recovery_challenge_case_insensitive() {
+            let m = fixture_mnemonic();
+            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
+            let words: Vec<&str> = m.split_whitespace().collect();
+            let upper0 = words[0].to_ascii_uppercase();
+            let upper11 = words[11].to_ascii_uppercase();
+            let upper23 = words[23].to_ascii_uppercase();
+            assert!(c.check(&[upper0.as_str(), upper11.as_str(), upper23.as_str()]));
+        }
+
+        single_device_creation_never_enters_a_fake_recovery_word_screen();
+        recovery_challenge_distinct_positions();
+        recovery_challenge_accepts_correct_words();
+        recovery_challenge_rejects_wrong_word();
+        recovery_challenge_case_insensitive();
     }
 
     #[test]
-    fn recovery_challenge_accepts_correct_words() {
-        let m = fixture_mnemonic();
-        let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-        let words: Vec<&str> = m.split_whitespace().collect();
-        assert!(c.check(&[words[0], words[11], words[23]]));
+    fn pairing_mac_and_payload_round_trip_and_reject_tamper() {
+        fn pairing_mac_round_trip() {
+            let key = derive_pairing_mac_key(&[7u8; 16]);
+            let payload = b"some round-2 reply bytes";
+            let tag = compute_pairing_mac(&key, payload);
+            assert!(verify_pairing_mac(&key, payload, &tag));
+        }
+
+        fn pairing_mac_rejects_tamper() {
+            let key = derive_pairing_mac_key(&[7u8; 16]);
+            let payload = b"some round-2 reply bytes";
+            let mut tag = compute_pairing_mac(&key, payload);
+            tag[0] ^= 1;
+            assert!(!verify_pairing_mac(&key, payload, &tag));
+        }
+
+        fn pairing_payload_round_trip() {
+            let nonce = [9u8; 16];
+            let mut rng = UnwrapErr(SysRng);
+            let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (_session, round1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+            let payload = PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
+            let bytes = payload.to_json_bytes().unwrap();
+            let back = PairingPayload::from_json_bytes(&bytes).unwrap();
+            assert_eq!(payload, back);
+            assert_eq!(back.nonce().unwrap(), nonce);
+            assert_eq!(
+                back.initiator_public_key().unwrap().as_bytes(),
+                id.group_public_key().as_bytes()
+            );
+            // Round1 packets aren't `PartialEq` — round-trip via bytes.
+            let r1 = back.initiator_round1().unwrap();
+            assert_eq!(r1.from_share_index, 1);
+            assert_eq!(r1.package_bytes, round1.package_bytes);
+        }
+
+        pairing_mac_round_trip();
+        pairing_mac_rejects_tamper();
+        pairing_payload_round_trip();
     }
 
     #[test]
-    fn recovery_challenge_rejects_wrong_word() {
-        let m = fixture_mnemonic();
-        let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-        let words: Vec<&str> = m.split_whitespace().collect();
-        assert!(!c.check(&[words[0], "wrong", words[23]]));
+    fn invite_envelope_signature_expiry_and_attestation() {
+        fn invite_envelope_round_trip_via_url() {
+            let (sk, pk) = generate_keypair();
+            let env = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                pk,
+                &sk,
+                "Alice",
+                Role::Editor,
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            let url = env.to_url().unwrap();
+            assert!(url.starts_with("tilo://invite/"));
+            let back = InviteEnvelope::from_url(&url).unwrap();
+            assert_eq!(env, back);
+            back.verify_signature()
+                .expect("owner signature must verify");
+        }
+
+        fn invite_signature_detects_tamper() {
+            let (sk, pk) = generate_keypair();
+            let mut env = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                pk,
+                &sk,
+                "Alice",
+                Role::Editor,
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            env.channel_name = "treasury".into();
+            assert!(
+                env.verify_signature().is_err(),
+                "renamed envelope must fail"
+            );
+
+            let mut endpoint_tampered = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                pk,
+                &sk,
+                "Alice",
+                Role::Editor,
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            endpoint_tampered.redemption_endpoint = "127.0.0.1:9".into();
+            assert!(endpoint_tampered.verify_signature().is_err());
+            endpoint_tampered.redemption_endpoint.clear();
+            endpoint_tampered.redemption_certificate.push(1);
+            assert!(endpoint_tampered.verify_signature().is_err());
+        }
+
+        fn invite_expiry_rejected_by_attestation_builder() {
+            let (sk, pk) = generate_keypair();
+            let env = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                pk,
+                &sk,
+                "Alice",
+                Role::Editor,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            )
+            .unwrap();
+            let (_inv_sk, inv_pk) = generate_keypair();
+            let err = build_attestation_from_invite(
+                &env,
+                inv_pk,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+            )
+            .unwrap_err();
+            assert!(matches!(err, IdentityFlowError::InviteExpired));
+        }
+
+        #[allow(
+            clippy::similar_names,
+            reason = "owner_sk/owner_pk and invitee_sk/invitee_pk are the clearest names for a test exercising both sides of an invite; the sk/pk suffixes are a standard convention, not a typo risk"
+        )]
+        fn invite_accept_produces_valid_attestation() {
+            let (owner_sk, owner_pk) = generate_keypair();
+            let env = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                owner_pk,
+                &owner_sk,
+                "Alice",
+                Role::Editor,
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            let (_invitee_sk, invitee_pk) = generate_keypair();
+            let event =
+                build_attestation_from_invite(&env, invitee_pk, crate::time::wall()).unwrap();
+            if let ChannelEvent::AttestationIssued(ra) = &event {
+                assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
+                assert_eq!(ra.role, Role::Editor);
+                // Inner attestation signature must verify against the
+                // delegation pubkey (which the owner signed).
+                let bytes = ra.attestation.signing_bytes().unwrap();
+                assert!(
+                    verify_event(&bytes, &ra.attestation.signature, &ra.attestation.issued_by)
+                        .is_ok()
+                );
+            } else {
+                panic!("expected AttestationIssued, got {event:?}");
+            }
+        }
+
+        fn oversized_invite_is_rejected_before_decode() {
+            let url = format!("tilo://invite/{}", "A".repeat(16 * 1024 + 1));
+            assert!(InviteEnvelope::from_url(&url).is_err());
+        }
+
+        fn invite_expiry_resolve_progression() {
+            let now = SystemTime::UNIX_EPOCH;
+            let hour = InviteExpiry::OneHour.resolve(now);
+            let day = InviteExpiry::OneDay.resolve(now);
+            let week = InviteExpiry::OneWeek.resolve(now);
+            assert!(hour < day);
+            assert!(day < week);
+        }
+
+        invite_envelope_round_trip_via_url();
+        invite_signature_detects_tamper();
+        invite_expiry_rejected_by_attestation_builder();
+        invite_accept_produces_valid_attestation();
+        oversized_invite_is_rejected_before_decode();
+        invite_expiry_resolve_progression();
     }
 
     #[test]
-    fn recovery_challenge_case_insensitive() {
-        let m = fixture_mnemonic();
-        let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-        let words: Vec<&str> = m.split_whitespace().collect();
-        let upper0 = words[0].to_ascii_uppercase();
-        let upper11 = words[11].to_ascii_uppercase();
-        let upper23 = words[23].to_ascii_uppercase();
-        assert!(c.check(&[upper0.as_str(), upper11.as_str(), upper23.as_str()]));
-    }
+    fn invite_authority_consumes_capabilities_once_and_safely() {
+        fn invite_capability_is_one_use() {
+            let (owner_signing_key, owner_verifying_key) = generate_keypair();
+            let env = mint_invite(
+                ChannelId::new(),
+                "engineering",
+                owner_verifying_key,
+                &owner_signing_key,
+                "Alice",
+                Role::Editor,
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            let (_, first) = generate_keypair();
+            let (_, second) = generate_keypair();
+            build_attestation_from_invite(&env, first, crate::time::wall()).unwrap();
+            let error =
+                build_attestation_from_invite(&env, second, crate::time::wall()).unwrap_err();
+            assert!(error.to_string().contains("already redeemed"));
+        }
 
-    #[test]
-    fn identity_record_json_round_trip() {
-        let mut rng = UnwrapErr(SysRng);
-        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(
-            &id,
-            "alice",
-            [248, 113, 113],
-            SystemTime::UNIX_EPOCH + Duration::from_secs(100),
-        )
-        .unwrap();
-        let bytes = rec.to_json_bytes().unwrap();
-        let back = IdentityRecord::from_json_bytes(&bytes).unwrap();
-        assert_eq!(rec, back);
-        assert_eq!(back.display_name, "alice");
-        assert_eq!(back.avatar_color, [248, 113, 113]);
-        assert_eq!(
-            back.public_key().as_bytes(),
-            id.group_public_key().as_bytes()
-        );
-    }
-
-    /// The property that makes a minted identity an identity: the
-    /// secret the ceremony wrote to disk must sign for the public key
-    /// written next to it. Loads the way every consumer does — expand
-    /// the stored bytes with `SigningKey::from_bytes` — asserting the
-    /// on-disk contract, rather than an in-process handle.
-    #[test]
-    fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
-        use ed25519_dalek::{Signer, Verifier, VerifyingKey};
-
-        let mut rng = UnwrapErr(SysRng);
-        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(
-            &id,
-            "alice",
-            [248, 113, 113],
-            SystemTime::UNIX_EPOCH + Duration::from_secs(100),
-        )
-        .unwrap();
-        let on_disk = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
-
-        let seed: [u8; 32] = on_disk
-            .threshold_identity
-            .secret_bytes
-            .as_slice()
-            .try_into()
-            .expect("secret_bytes must be exactly 32 bytes");
-        let sk = DalekSigningKey::from_bytes(&seed);
-
-        assert_eq!(
-            sk.verifying_key().to_bytes(),
-            on_disk.threshold_identity.group_public_key,
-            "the recorded secret must derive the recorded public key"
-        );
-
-        let msg = b"an op minted by a ceremony identity";
-        let sig = sk.sign(msg);
-        let vk = VerifyingKey::from_bytes(&on_disk.threshold_identity.group_public_key).unwrap();
-        vk.verify(msg, &sig)
-            .expect("a ceremony identity must be able to sign for itself");
-    }
-
-    /// A record read back from disk rebuilds an identity that signs
-    /// under the same public key.
-    #[test]
-    fn identity_record_round_trips_back_into_a_signing_identity() {
-        use collab_types::verify_event;
-
-        let mut rng = UnwrapErr(SysRng);
-        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec =
-            IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], crate::time::wall())
+        fn invite_authority_survives_restart_and_atomically_consumes() {
+            let dir = tempfile::tempdir().unwrap();
+            let capability = [9; 32];
+            let secret = [7; 32];
+            InviteRedemptionAuthority::at(dir.path())
+                .unwrap()
+                .issue(capability, secret, u64::MAX)
                 .unwrap();
-        let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+            let restarted = InviteRedemptionAuthority::at(dir.path()).unwrap();
+            assert_eq!(restarted.redeem(&capability, 1).unwrap().as_slice(), secret);
+            assert!(restarted.redeem(&capability, 1).is_err());
+        }
 
-        let revived = back.into_threshold_identity().unwrap();
-        assert_eq!(
-            revived.group_public_key().as_bytes(),
-            id.group_public_key().as_bytes()
-        );
+        #[cfg(unix)]
+        fn invite_authority_secrets_are_private_authenticated_and_race_safe() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("authority");
+            let capability = [11; 32];
+            let authority = InviteRedemptionAuthority::at(&root).unwrap();
+            authority.issue(capability, [12; 32], u64::MAX).unwrap();
+            assert_eq!(
+                std::fs::metadata(root.join("authority-key"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(authority.path(&capability))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
 
-        let payload: Vec<u8> = b"signed after a disk round-trip".to_vec();
-        let sig = revived.sign(&payload, &mut rng).unwrap();
-        verify_event(&payload, &sig, id.group_public_key()).expect("revived identity must sign");
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let mut workers = Vec::new();
+            for _ in 0..2 {
+                let root = root.clone();
+                let barrier = Arc::clone(&barrier);
+                workers.push(std::thread::spawn(move || {
+                    let authority = InviteRedemptionAuthority::at(root).unwrap();
+                    barrier.wait();
+                    authority.redeem(&capability, 1).is_ok()
+                }));
+            }
+            barrier.wait();
+            let successes = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .filter(|succeeded| *succeeded)
+                .count();
+            assert_eq!(successes, 1, "only one concurrent redeemer may win");
+
+            let tampered_capability = [21; 32];
+            authority
+                .issue(tampered_capability, [22; 32], u64::MAX)
+                .unwrap();
+            let record = authority.path(&tampered_capability);
+            let mut bytes = std::fs::read(&record).unwrap();
+            *bytes.last_mut().unwrap() ^= 1;
+            std::fs::write(&record, bytes).unwrap();
+            std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(authority.redeem(&tampered_capability, 1).is_err());
+            assert!(
+                authority.redeem(&tampered_capability, 1).is_err(),
+                "a failed authentication must still consume the bearer capability"
+            );
+        }
+
+        #[cfg(unix)]
+        fn invite_authority_refuses_a_symlink_root_or_key() {
+            use std::os::unix::fs::symlink;
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("target");
+            std::fs::create_dir(&target).unwrap();
+            let linked = dir.path().join("linked");
+            symlink(&target, &linked).unwrap();
+            assert!(InviteRedemptionAuthority::at(&linked).is_err());
+
+            let authority = InviteRedemptionAuthority::at(dir.path().join("authority")).unwrap();
+            let external = dir.path().join("external-key");
+            std::fs::write(&external, [9; 32]).unwrap();
+            symlink(&external, authority.root.join("authority-key")).unwrap();
+            assert!(authority.issue([8; 32], [7; 32], u64::MAX).is_err());
+        }
+
+        fn invite_authority_consumes_expired_secret_without_releasing_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
+            authority.issue([3; 32], [4; 32], 10).unwrap();
+            assert!(matches!(
+                authority.redeem(&[3; 32], 10),
+                Err(IdentityFlowError::InviteExpired)
+            ));
+            assert!(authority.redeem(&[3; 32], 9).is_err());
+        }
+
+        #[cfg(unix)]
+        fn invite_records_use_tilo_seal_under_a_stable_name() {
+            let dir = tempfile::tempdir().unwrap();
+            let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
+            assert_eq!(
+                authority.path(&[0x31; 32]),
+                dir.path().join(RECORD_NAME_0X31)
+            );
+
+            authority.issue([0x41; 32], [0x42; 32], u64::MAX).unwrap();
+            let written = std::fs::read(authority.path(&[0x41; 32])).unwrap();
+            assert_eq!(written.len(), INVITE_RECORD_LEN);
+            assert!(tilo_seal::envelope::is_envelope(&written[8..]));
+            assert_eq!(
+                authority.redeem(&[0x41; 32], 1).unwrap().as_slice(),
+                [0x42; 32]
+            );
+        }
+
+        #[cfg(unix)]
+        fn invite_record_is_bound_to_its_capability_and_expiry() {
+            let key = tilo_seal::SymmetricKey::generate().unwrap();
+            let context = invite_record_context(&[1; 32], 99);
+            let mut record = 99_u64.to_be_bytes().to_vec();
+            record.extend(
+                tilo_seal::envelope::seal(
+                    &key,
+                    tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
+                    &[5; 32],
+                )
+                .unwrap(),
+            );
+            assert!(open_invite_record(&key, &[1; 32], 99, &record).is_ok());
+            assert!(open_invite_record(&key, &[2; 32], 99, &record).is_err());
+            assert!(open_invite_record(&key, &[1; 32], 100, &record).is_err());
+        }
+
+        invite_capability_is_one_use();
+        invite_authority_survives_restart_and_atomically_consumes();
+        #[cfg(unix)]
+        invite_authority_secrets_are_private_authenticated_and_race_safe();
+        #[cfg(unix)]
+        invite_authority_refuses_a_symlink_root_or_key();
+        invite_authority_consumes_expired_secret_without_releasing_it();
+        #[cfg(unix)]
+        invite_records_use_tilo_seal_under_a_stable_name();
+        #[cfg(unix)]
+        invite_record_is_bound_to_its_capability_and_expiry();
     }
 
+    /// The record file name of capability `[0x31; 32]`.
+    #[cfg(unix)]
+    const RECORD_NAME_0X31: &str = "8f803fd8e5cb4cec466a0ec3e38c3c65cc893fe16adae69ae01556ade3fba864a50fab86e9a2fb9e7a7c5e101234e78f12bffe3a25b3799aa874c12929b5bdb9";
+
     #[test]
-    fn identity_record_rejects_unknown_schema() {
-        let body = r#"{
+    fn identity_record_serialization_and_signing_round_trips() {
+        fn identity_record_json_round_trip() {
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec = IdentityRecord::from_threshold_identity(
+                &id,
+                "alice",
+                [248, 113, 113],
+                SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+            )
+            .unwrap();
+            let bytes = rec.to_json_bytes().unwrap();
+            let back = IdentityRecord::from_json_bytes(&bytes).unwrap();
+            assert_eq!(rec, back);
+            assert_eq!(back.display_name, "alice");
+            assert_eq!(back.avatar_color, [248, 113, 113]);
+            assert_eq!(
+                back.public_key().as_bytes(),
+                id.group_public_key().as_bytes()
+            );
+        }
+
+        /// The property that makes a minted identity an identity: the
+        /// secret the ceremony wrote to disk must sign for the public key
+        /// written next to it. Loads the way every consumer does — expand
+        /// the stored bytes with `SigningKey::from_bytes` — asserting the
+        /// on-disk contract, rather than an in-process handle.
+        fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
+            use ed25519_dalek::{Signer, Verifier, VerifyingKey};
+
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec = IdentityRecord::from_threshold_identity(
+                &id,
+                "alice",
+                [248, 113, 113],
+                SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+            )
+            .unwrap();
+            let on_disk = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+
+            let seed: [u8; 32] = on_disk
+                .threshold_identity
+                .secret_bytes
+                .as_slice()
+                .try_into()
+                .expect("secret_bytes must be exactly 32 bytes");
+            let sk = DalekSigningKey::from_bytes(&seed);
+
+            assert_eq!(
+                sk.verifying_key().to_bytes(),
+                on_disk.threshold_identity.group_public_key,
+                "the recorded secret must derive the recorded public key"
+            );
+
+            let msg = b"an op minted by a ceremony identity";
+            let sig = sk.sign(msg);
+            let vk =
+                VerifyingKey::from_bytes(&on_disk.threshold_identity.group_public_key).unwrap();
+            vk.verify(msg, &sig)
+                .expect("a ceremony identity must be able to sign for itself");
+        }
+
+        /// A record read back from disk rebuilds an identity that signs
+        /// under the same public key.
+        fn identity_record_round_trips_back_into_a_signing_identity() {
+            use collab_types::verify_event;
+
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec =
+                IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], crate::time::wall())
+                    .unwrap();
+            let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+
+            let revived = back.into_threshold_identity().unwrap();
+            assert_eq!(
+                revived.group_public_key().as_bytes(),
+                id.group_public_key().as_bytes()
+            );
+
+            let payload: Vec<u8> = b"signed after a disk round-trip".to_vec();
+            let sig = revived.sign(&payload, &mut rng).unwrap();
+            verify_event(&payload, &sig, id.group_public_key())
+                .expect("revived identity must sign");
+        }
+
+        fn identity_record_rejects_unknown_schema() {
+            let body = r#"{
             "display_name": "x",
             "avatar_color": [0, 0, 0],
             "threshold_identity": {
@@ -3308,160 +3255,172 @@ mod tests {
             "created_at": "now",
             "schema_version": 99
         }"#;
-        let err = IdentityRecord::from_json_bytes(body.as_bytes()).unwrap_err();
-        assert!(matches!(err, IdentityFlowError::UnknownSchemaVersion(99)));
+            let err = IdentityRecord::from_json_bytes(body.as_bytes()).unwrap_err();
+            assert!(matches!(err, IdentityFlowError::UnknownSchemaVersion(99)));
+        }
+
+        fn memory_store_round_trip() {
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec = IdentityRecord::from_threshold_identity(
+                &id,
+                "bob",
+                [180, 200, 220],
+                crate::time::wall(),
+            )
+            .unwrap();
+            let store = MemoryIdentityStore::new();
+            assert!(store.load().unwrap().is_none());
+            store.save(&rec).unwrap();
+            let back = store.load().unwrap().unwrap();
+            assert_eq!(back.display_name, "bob");
+        }
+
+        identity_record_json_round_trip();
+        ceremony_minted_record_signs_for_its_own_recorded_public_key();
+        identity_record_round_trips_back_into_a_signing_identity();
+        identity_record_rejects_unknown_schema();
+        memory_store_round_trip();
     }
 
     #[test]
-    fn memory_store_round_trip() {
-        let mut rng = UnwrapErr(SysRng);
-        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(
-            &id,
-            "bob",
-            [180, 200, 220],
-            crate::time::wall(),
-        )
-        .unwrap();
-        let store = MemoryIdentityStore::new();
-        assert!(store.load().unwrap().is_none());
-        store.save(&rec).unwrap();
-        let back = store.load().unwrap().unwrap();
-        assert_eq!(back.display_name, "bob");
-    }
+    fn pairing_handshake_publishes_atomically_expires_durably_and_co_signs() {
+        fn pairing_handshake_round_trip() {
+            let hs = PairingHandshake::new();
+            let nonce = [0xAAu8; 16];
+            let reply = EnrolmentRound2 {
+                from_share_index: 2,
+                to_share_index: 1,
+                package_bytes: vec![1, 2, 3, 4, 5],
+            };
+            let mac = [0xCDu8; 64];
+            assert!(hs.take_pairer_reply(&nonce).is_none());
+            hs.publish_pairer_reply(&nonce, reply.clone(), mac);
+            let (back, tag) = hs.take_pairer_reply(&nonce).unwrap();
+            assert_eq!(back.from_share_index, reply.from_share_index);
+            assert_eq!(tag, mac);
+            assert!(hs.take_pairer_reply(&nonce).is_none());
+        }
 
-    #[test]
-    fn pairing_handshake_round_trip() {
-        let hs = PairingHandshake::new();
-        let nonce = [0xAAu8; 16];
-        let reply = EnrolmentRound2 {
-            from_share_index: 2,
-            to_share_index: 1,
-            package_bytes: vec![1, 2, 3, 4, 5],
-        };
-        let mac = [0xCDu8; 64];
-        assert!(hs.take_pairer_reply(&nonce).is_none());
-        hs.publish_pairer_reply(&nonce, reply.clone(), mac);
-        let (back, tag) = hs.take_pairer_reply(&nonce).unwrap();
-        assert_eq!(back.from_share_index, reply.from_share_index);
-        assert_eq!(tag, mac);
-        assert!(hs.take_pairer_reply(&nonce).is_none());
-    }
+        fn pairing_handshake_publishes_the_complete_pairer_exchange_atomically() {
+            let hs = PairingHandshake::new();
+            let nonce = [0xAB; 16];
+            let mut rng = UnwrapErr(SysRng);
+            let mut identity = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (_session, round1) = identity.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+            let round2 = EnrolmentRound2 {
+                from_share_index: 2,
+                to_share_index: 1,
+                package_bytes: vec![6, 7, 8],
+            };
+            let mac = [0xCE; 64];
 
-    #[test]
-    fn pairing_handshake_publishes_the_complete_pairer_exchange_atomically() {
-        let hs = PairingHandshake::new();
-        let nonce = [0xAB; 16];
-        let mut rng = UnwrapErr(SysRng);
-        let mut identity = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (_session, round1) = identity.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-        let round2 = EnrolmentRound2 {
-            from_share_index: 2,
-            to_share_index: 1,
-            package_bytes: vec![6, 7, 8],
-        };
-        let mac = [0xCE; 64];
+            assert!(hs.publish_pairer_exchange(&nonce, round1.clone(), round2.clone(), mac));
+            let (stored_round1, stored_round2, stored_mac) =
+                hs.take_pairer_exchange(&nonce).expect("complete exchange");
+            assert_eq!(stored_round1.from_share_index, round1.from_share_index);
+            assert_eq!(stored_round1.package_bytes, round1.package_bytes);
+            assert_eq!(stored_round2.from_share_index, round2.from_share_index);
+            assert_eq!(stored_round2.to_share_index, round2.to_share_index);
+            assert_eq!(stored_round2.package_bytes, round2.package_bytes);
+            assert_eq!(stored_mac, mac);
+            assert!(hs.take_pairer_exchange(&nonce).is_none());
+        }
 
-        assert!(hs.publish_pairer_exchange(&nonce, round1.clone(), round2.clone(), mac));
-        let (stored_round1, stored_round2, stored_mac) =
-            hs.take_pairer_exchange(&nonce).expect("complete exchange");
-        assert_eq!(stored_round1.from_share_index, round1.from_share_index);
-        assert_eq!(stored_round1.package_bytes, round1.package_bytes);
-        assert_eq!(stored_round2.from_share_index, round2.from_share_index);
-        assert_eq!(stored_round2.to_share_index, round2.to_share_index);
-        assert_eq!(stored_round2.package_bytes, round2.package_bytes);
-        assert_eq!(stored_mac, mac);
-        assert!(hs.take_pairer_exchange(&nonce).is_none());
-    }
+        fn durable_pairing_expiry_survives_restart_and_cannot_be_extended() {
+            let dir = tempfile::tempdir().unwrap();
+            let original_expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+            let first = PairingHandshake::durable(dir.path(), original_expiry).unwrap();
+            let nonce = [31; 16];
+            let reply = EnrolmentRound2 {
+                from_share_index: 2,
+                to_share_index: 1,
+                package_bytes: vec![1],
+            };
+            first.publish_pairer_reply(&nonce, reply.clone(), [2; 64]);
+            assert!(first.take_pairer_reply(&nonce).is_none());
 
-    #[test]
-    fn durable_pairing_expiry_survives_restart_and_cannot_be_extended() {
-        let dir = tempfile::tempdir().unwrap();
-        let original_expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-        let first = PairingHandshake::durable(dir.path(), original_expiry).unwrap();
-        let nonce = [31; 16];
-        let reply = EnrolmentRound2 {
-            from_share_index: 2,
-            to_share_index: 1,
-            package_bytes: vec![1],
-        };
-        first.publish_pairer_reply(&nonce, reply.clone(), [2; 64]);
-        assert!(first.take_pairer_reply(&nonce).is_none());
+            let restarted = PairingHandshake::durable(
+                dir.path(),
+                crate::time::wall() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            restarted.publish_pairer_reply(&nonce, reply, [2; 64]);
+            assert!(
+                restarted.take_pairer_reply(&nonce).is_none(),
+                "reopening a ceremony must preserve, not extend, its original expiry"
+            );
+        }
 
-        let restarted =
-            PairingHandshake::durable(dir.path(), crate::time::wall() + Duration::from_secs(3600))
+        /// Headline integration test: after the ceremony completes, the
+        /// two halves of the threshold identity can co-sign an op that
+        /// verifies via `collab_types::verify_event`. Drives the protocol
+        /// directly (no winit, no taffy).
+        fn end_to_end_ceremony_lets_both_devices_co_sign() {
+            use collab_types::{canonical_bytes, verify_event};
+            use threshold_identity::SigningRound1Commitment;
+
+            // Host and pairer each bootstrap, then begin enrolment toward a 2-of-2 group.
+            let mut rng = UnwrapErr(SysRng);
+            let mut host = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (mut host_session, host_round1) = host.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+            let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (mut pairer_session, pairer_round1) =
+                pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+            // Each processes the other's round-1, producing round-2 replies
+            // addressed to the peer.
+            let host_outgoing = host_session
+                .receive_round1(std::slice::from_ref(&pairer_round1))
                 .unwrap();
-        restarted.publish_pairer_reply(&nonce, reply, [2; 64]);
-        assert!(
-            restarted.take_pairer_reply(&nonce).is_none(),
-            "reopening a ceremony must preserve, not extend, its original expiry"
-        );
-    }
+            let pairer_outgoing = pairer_session
+                .receive_round1(std::slice::from_ref(&host_round1))
+                .unwrap();
+            let host_to_pairer = host_outgoing.into_iter().find(|(i, _)| *i == 2).unwrap().1;
+            let pairer_to_host = pairer_outgoing
+                .into_iter()
+                .find(|(i, _)| *i == 1)
+                .unwrap()
+                .1;
+            host_session.receive_round2(&[pairer_to_host]).unwrap();
+            pairer_session.receive_round2(&[host_to_pairer]).unwrap();
+            host.adopt_dkg_outcome(host_session).unwrap();
+            pairer.adopt_dkg_outcome(pairer_session).unwrap();
+            assert_eq!(
+                host.group_public_key().as_bytes(),
+                pairer.group_public_key().as_bytes(),
+                "DKG must produce a shared group public key"
+            );
+            assert!(!host.is_single_device(), "host must be in threshold mode");
+            assert!(
+                !pairer.is_single_device(),
+                "pairer must be in threshold mode"
+            );
 
-    /// Headline integration test: after the ceremony completes, the
-    /// two halves of the threshold identity can co-sign an op that
-    /// verifies via `collab_types::verify_event`. Drives the protocol
-    /// directly (no winit, no taffy).
-    #[test]
-    fn end_to_end_ceremony_lets_both_devices_co_sign() {
-        use collab_types::{canonical_bytes, verify_event};
-        use threshold_identity::SigningRound1Commitment;
+            let message = b"hello from the ceremony".to_vec();
+            let host_round1 = host.sign_round1(&mut rng).unwrap();
+            let pairer_round1 = pairer.sign_round1(&mut rng).unwrap();
+            let commitments: Vec<SigningRound1Commitment> =
+                vec![host_round1.commitment, pairer_round1.commitment];
+            let canon = canonical_bytes(&message).unwrap();
+            let host_partial = host
+                .sign_round2_raw(host_round1.nonces, &canon, &commitments)
+                .unwrap();
+            let pairer_partial = pairer
+                .sign_round2_raw(pairer_round1.nonces, &canon, &commitments)
+                .unwrap();
+            let sig = host
+                .aggregate_signature(&[host_partial, pairer_partial])
+                .unwrap();
+            // verify_event canonical_bytes()-es its argument; we signed
+            // `canon` directly, so feeding `message` back through the same
+            // encoder gives matching byte streams.
+            verify_event(&message, &sig, host.group_public_key())
+                .expect("threshold-produced signature must verify as plain Ed25519");
+        }
 
-        // Host and pairer each bootstrap, then begin enrolment toward a 2-of-2 group.
-        let mut rng = UnwrapErr(SysRng);
-        let mut host = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (mut host_session, host_round1) = host.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (mut pairer_session, pairer_round1) =
-            pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-        // Each processes the other's round-1, producing round-2 replies
-        // addressed to the peer.
-        let host_outgoing = host_session
-            .receive_round1(std::slice::from_ref(&pairer_round1))
-            .unwrap();
-        let pairer_outgoing = pairer_session
-            .receive_round1(std::slice::from_ref(&host_round1))
-            .unwrap();
-        let host_to_pairer = host_outgoing.into_iter().find(|(i, _)| *i == 2).unwrap().1;
-        let pairer_to_host = pairer_outgoing
-            .into_iter()
-            .find(|(i, _)| *i == 1)
-            .unwrap()
-            .1;
-        host_session.receive_round2(&[pairer_to_host]).unwrap();
-        pairer_session.receive_round2(&[host_to_pairer]).unwrap();
-        host.adopt_dkg_outcome(host_session).unwrap();
-        pairer.adopt_dkg_outcome(pairer_session).unwrap();
-        assert_eq!(
-            host.group_public_key().as_bytes(),
-            pairer.group_public_key().as_bytes(),
-            "DKG must produce a shared group public key"
-        );
-        assert!(!host.is_single_device(), "host must be in threshold mode");
-        assert!(
-            !pairer.is_single_device(),
-            "pairer must be in threshold mode"
-        );
-
-        let message = b"hello from the ceremony".to_vec();
-        let host_round1 = host.sign_round1(&mut rng).unwrap();
-        let pairer_round1 = pairer.sign_round1(&mut rng).unwrap();
-        let commitments: Vec<SigningRound1Commitment> =
-            vec![host_round1.commitment, pairer_round1.commitment];
-        let canon = canonical_bytes(&message).unwrap();
-        let host_partial = host
-            .sign_round2_raw(host_round1.nonces, &canon, &commitments)
-            .unwrap();
-        let pairer_partial = pairer
-            .sign_round2_raw(pairer_round1.nonces, &canon, &commitments)
-            .unwrap();
-        let sig = host
-            .aggregate_signature(&[host_partial, pairer_partial])
-            .unwrap();
-        // verify_event canonical_bytes()-es its argument; we signed
-        // `canon` directly, so feeding `message` back through the same
-        // encoder gives matching byte streams.
-        verify_event(&message, &sig, host.group_public_key())
-            .expect("threshold-produced signature must verify as plain Ed25519");
+        pairing_handshake_round_trip();
+        pairing_handshake_publishes_the_complete_pairer_exchange_atomically();
+        durable_pairing_expiry_survives_restart_and_cannot_be_extended();
+        end_to_end_ceremony_lets_both_devices_co_sign();
     }
 }

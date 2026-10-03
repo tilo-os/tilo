@@ -272,9 +272,14 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
             .push(TransferCharacteristics::AribStdB67);
     }
 
-    // Luminance descriptors. Absent bytes = 0 = unknown; we leave
-    // the defaults from `default_sdr` in place if the encoding says
-    // "not populated".
+    // Luminance descriptors. Absent bytes = 0 = unknown. An HDR sink's
+    // luminance is its own: the 100-nit SDR defaults would claim a peak it
+    // never reported, so they are cleared to "unknown" (0) first.
+    if info.supported_transfers.iter().any(|t| t.is_hdr()) {
+        info.max_luminance_cd_m2 = 0;
+        info.max_frame_average_luminance_cd_m2 = 0;
+        info.min_luminance_micro_cd_m2 = 0;
+    }
     if let Some(&raw) = body.get(2).filter(|&&b| b != 0) {
         let code = f32::from(raw);
         let max_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
@@ -572,123 +577,147 @@ mod tests {
     }
 
     #[test]
-    fn parses_bt2020_primaries() {
-        let edid = hdr_edid_blob();
-        let info = parse_hdr_display_info(&edid);
-        // Red primary ~0.708, so x_micro should be around 708_000
-        // (±3000 tolerance for the 10-bit fixed-point round-trip).
-        let (rx, ry) = info.display_primaries[0];
-        assert!(
-            (i64::from(rx) - 708_000).abs() < 3_000,
-            "red x should ≈ 708_000, got {rx}"
-        );
-        assert!(
-            (i64::from(ry) - 292_000).abs() < 3_000,
-            "red y should ≈ 292_000, got {ry}"
-        );
-        assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
-    }
-
-    #[test]
-    fn parses_peak_and_min_luminance() {
-        let edid = hdr_edid_blob();
-        let info = parse_hdr_display_info(&edid);
-        // Peak ≈ 1000 cd/m² (±30 for the rounding path).
-        assert!(
-            (i32::from(info.max_luminance_cd_m2) - 1000).abs() < 30,
-            "expected ~1000 nit peak, got {}",
-            info.max_luminance_cd_m2
-        );
-        // Frame-average ≈ 400 cd/m².
-        assert!(
-            (i32::from(info.max_frame_average_luminance_cd_m2) - 400).abs() < 20,
-            "expected ~400 nit FALL, got {}",
-            info.max_frame_average_luminance_cd_m2
-        );
-        // Min luminance in 1/10000 cd/m² units: 0.05 → 500.
-        assert!(
-            (i32::try_from(info.min_luminance_micro_cd_m2).unwrap_or(i32::MAX) - 500).abs() < 200,
-            "expected ~500 (0.05 cd/m²), got {}",
-            info.min_luminance_micro_cd_m2
-        );
-    }
-
-    #[test]
-    fn advertises_pq_and_hlg_transfers() {
-        let edid = hdr_edid_blob();
-        let info = parse_hdr_display_info(&edid);
-        assert!(
-            info.supported_transfers
-                .contains(&TransferCharacteristics::SmpteSt2084)
-        );
-        assert!(
-            info.supported_transfers
-                .contains(&TransferCharacteristics::AribStdB67)
-        );
-    }
-
-    #[test]
-    fn short_blob_returns_sdr_default() {
-        // Empty and half-block inputs must not panic — SDR fallback.
-        let info = parse_hdr_display_info(&[]);
-        assert_eq!(info.best_named_primaries, ColorPrimaries::Bt709);
-        assert_eq!(info.max_luminance_cd_m2, 100);
-
-        let info = parse_hdr_display_info(&[0u8; 64]);
-        assert_eq!(info.best_named_primaries, ColorPrimaries::Bt709);
-    }
-
-    #[test]
-    fn no_extension_block_returns_base_chromaticities_only() {
-        let mut edid = hdr_edid_blob();
-        // Wipe the extension count so the parser never enters
-        // the CTA-861 block.
-        edid[126] = 0;
-        let info = parse_hdr_display_info(&edid);
-        // Base chromaticities parsed → the parser still classifies
-        // this as BT.2020, but transfer set stays at the SDR default
-        // (only Bt709).
-        assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
-        assert_eq!(
-            info.supported_transfers,
-            vec![TransferCharacteristics::Bt709]
-        );
-    }
-
-    /// A display supplies its own EDID, so a malformed one must not take the
-    /// compositor down. Before the parser used checked access, a data-block
-    /// header claiming a payload longer than its block indexed straight past
-    /// the end.
-    #[test]
-    fn a_malformed_blob_never_panics() {
-        let good = hdr_edid_blob();
-        for n in 0..good.len() {
-            let _ = parse_hdr_display_info(&good[..n]);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn edid_parsing_reads_hdr_capabilities_and_degrades_safely() {
+        // Phase `parses_bt2020_primaries`.
+        {
+            let edid = hdr_edid_blob();
+            let info = parse_hdr_display_info(&edid);
+            // Red primary ~0.708, so x_micro should be around 708_000
+            // (±3000 tolerance for the 10-bit fixed-point round-trip).
+            let (rx, ry) = info.display_primaries[0];
+            assert!(
+                (i64::from(rx) - 708_000).abs() < 3_000,
+                "red x should ≈ 708_000, got {rx}"
+            );
+            assert!(
+                (i64::from(ry) - 292_000).abs() < 3_000,
+                "red y should ≈ 292_000, got {ry}"
+            );
+            assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
         }
 
-        for len_bits in 0..32u8 {
+        // Phase `parses_peak_and_min_luminance`.
+        {
+            let edid = hdr_edid_blob();
+            let info = parse_hdr_display_info(&edid);
+            // Peak ≈ 1000 cd/m² (±30 for the rounding path).
+            assert!(
+                (i32::from(info.max_luminance_cd_m2) - 1000).abs() < 30,
+                "expected ~1000 nit peak, got {}",
+                info.max_luminance_cd_m2
+            );
+            // Frame-average ≈ 400 cd/m².
+            assert!(
+                (i32::from(info.max_frame_average_luminance_cd_m2) - 400).abs() < 20,
+                "expected ~400 nit FALL, got {}",
+                info.max_frame_average_luminance_cd_m2
+            );
+            // Min luminance in 1/10000 cd/m² units: 0.05 → 500.
+            assert!(
+                (i32::try_from(info.min_luminance_micro_cd_m2).unwrap_or(i32::MAX) - 500).abs()
+                    < 200,
+                "expected ~500 (0.05 cd/m²), got {}",
+                info.min_luminance_micro_cd_m2
+            );
+        }
+
+        // Phase `advertises_pq_and_hlg_transfers`.
+        {
+            let edid = hdr_edid_blob();
+            let info = parse_hdr_display_info(&edid);
+            assert!(
+                info.supported_transfers
+                    .contains(&TransferCharacteristics::SmpteSt2084)
+            );
+            assert!(
+                info.supported_transfers
+                    .contains(&TransferCharacteristics::AribStdB67)
+            );
+        }
+
+        // Phase `an_hdr_block_without_luminance_bytes_reports_them_unknown`.
+        {
             let mut edid = hdr_edid_blob();
-            edid[126] = 1;
-            edid[128 + 2] = 0; // DTD offset 0: collection runs to the checksum
-            edid[128 + 4] = (7 << 5) | len_bits; // extended tag, over-long payload
-            let _ = parse_hdr_display_info(&edid);
+            edid[140] = 0;
+            edid[141] = 0;
+            edid[142] = 0;
+            let info = parse_hdr_display_info(&edid);
+            assert!(
+                info.supported_transfers
+                    .contains(&TransferCharacteristics::SmpteSt2084)
+            );
+            assert_eq!(info.max_luminance_cd_m2, 0, "not the 100-nit SDR default");
+            assert_eq!(info.max_frame_average_luminance_cd_m2, 0);
+            assert_eq!(info.min_luminance_micro_cd_m2, 0);
         }
 
-        let mut edid = hdr_edid_blob();
-        edid[126] = 255; // more extensions than the blob carries
-        let _ = parse_hdr_display_info(&edid);
+        // Phase `short_blob_returns_sdr_default`.
+        {
+            // Empty and half-block inputs must not panic — SDR fallback.
+            let info = parse_hdr_display_info(&[]);
+            assert_eq!(info.best_named_primaries, ColorPrimaries::Bt709);
+            assert_eq!(info.max_luminance_cd_m2, 100);
 
-        let mut seed = 0x2545_F491_4F6C_DD1Du64;
-        for len in [0usize, 1, 127, 128, 129, 255, 256, 383] {
-            let blob: Vec<u8> = (0..len)
-                .map(|_| {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 7;
-                    seed ^= seed << 17;
-                    ((seed >> 24) & 0xFF) as u8
-                })
-                .collect();
-            let _ = parse_hdr_display_info(&blob);
+            let info = parse_hdr_display_info(&[0u8; 64]);
+            assert_eq!(info.best_named_primaries, ColorPrimaries::Bt709);
+        }
+
+        // Phase `no_extension_block_returns_base_chromaticities_only`.
+        {
+            let mut edid = hdr_edid_blob();
+            // Wipe the extension count so the parser never enters
+            // the CTA-861 block.
+            edid[126] = 0;
+            let info = parse_hdr_display_info(&edid);
+            // Base chromaticities parsed → the parser still classifies
+            // this as BT.2020, but transfer set stays at the SDR default
+            // (only Bt709).
+            assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
+            assert_eq!(
+                info.supported_transfers,
+                vec![TransferCharacteristics::Bt709]
+            );
+        }
+
+        // Phase `a_malformed_blob_never_panics`.
+        // A display supplies its own EDID, so a malformed one must not take the
+        // compositor down. Before the parser used checked access, a data-block
+        // header claiming a payload longer than its block indexed straight past
+        // the end.
+        {
+            let good = hdr_edid_blob();
+            for n in 0..good.len() {
+                let _ = parse_hdr_display_info(&good[..n]);
+            }
+
+            for len_bits in 0..32u8 {
+                let mut edid = hdr_edid_blob();
+                edid[126] = 1;
+                edid[128 + 2] = 0; // DTD offset 0: collection runs to the checksum
+                edid[128 + 4] = (7 << 5) | len_bits; // extended tag, over-long payload
+                let _ = parse_hdr_display_info(&edid);
+            }
+
+            let mut edid = hdr_edid_blob();
+            edid[126] = 255; // more extensions than the blob carries
+            let _ = parse_hdr_display_info(&edid);
+
+            let mut seed = 0x2545_F491_4F6C_DD1Du64;
+            for len in [0usize, 1, 127, 128, 129, 255, 256, 383] {
+                let blob: Vec<u8> = (0..len)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        ((seed >> 24) & 0xFF) as u8
+                    })
+                    .collect();
+                let _ = parse_hdr_display_info(&blob);
+            }
         }
     }
 

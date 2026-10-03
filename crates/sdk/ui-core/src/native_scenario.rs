@@ -173,6 +173,7 @@ impl GateConfig {
     }
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct GateRequest {
@@ -183,6 +184,7 @@ struct GateRequest {
     challenge: String,
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GateReply {
@@ -193,6 +195,7 @@ struct GateReply {
 struct InputGate {
     #[cfg(unix)]
     stream: std::os::unix::net::UnixStream,
+    #[cfg_attr(not(unix), allow(dead_code, reason = "the gate only opens on Unix"))]
     config: GateConfig,
 }
 
@@ -477,7 +480,7 @@ mod tests {
             std::fs::write(&path, &contents).unwrap();
             let (socket, inherited) = std::os::unix::net::UnixStream::pair().unwrap();
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let non_socket = std::fs::File::open(&path).unwrap();
             let fd = if mode == "non-socket" {
@@ -538,11 +541,9 @@ mod tests {
         }
 
         fn finish(&mut self) -> String {
-            let until = crate::time::now() + Duration::from_secs(6);
-            while self.child.try_wait().unwrap().is_none() {
-                assert!(crate::time::now() < until, "child must finish boundedly");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            tilo_test_env::wait_until("the fixture child to finish", || {
+                self.child.try_wait().unwrap().is_some()
+            });
             std::fs::read_to_string(&self.output).unwrap()
         }
     }
@@ -566,16 +567,60 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn gate_releases_only_exact_current_step_approvals() {
+        // Case `exact_current_step_approvals_release_each_non_hover_once`.
+        {
+            let mut child = GateChild::start(1_000, |_| {});
+            let first = child.request();
+            assert_eq!(first["step_id"], 1);
+            assert_eq!(first["pid"], child.child.id());
+            child.reply(first.clone(), true);
+            let second = child.request();
+            assert_eq!(second["step_id"], 2);
+            assert_ne!(first["challenge"], second["challenge"]);
+            child.reply(second, true);
+            assert_eq!(delivered_ids(&child.finish()), [0, 1, 2]);
+        }
+
+        // Case `revoked_wrong_or_replayed_permits_never_release_the_pending_step`.
+        {
+            for field in [
+                "approved",
+                "run_nonce",
+                "scenario_sha256",
+                "pid",
+                "step_id",
+                "challenge",
+            ] {
+                let mut child = GateChild::start(1_000, |_| {});
+                let mut request = child.request();
+                match field {
+                    "run_nonce" => request[field] = "b".repeat(32).into(),
+                    "scenario_sha256" => request[field] = "0".repeat(64).into(),
+                    "pid" => request[field] = serde_json::json!(0),
+                    "step_id" => request[field] = serde_json::json!(2),
+                    "challenge" => request[field] = "f".repeat(32).into(),
+                    _ => {}
+                }
+                child.reply(request, field != "approved");
+                assert_eq!(delivered_ids(&child.finish()), [0], "{field}");
+            }
+            let mut child = GateChild::start(1_000, |_| {});
+            let first = child.request();
+            child.reply(first.clone(), true);
+            let _second = child.request();
+            child.reply(first, true);
+            assert_eq!(delivered_ids(&child.finish()), [0, 1]);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
         let mut child = GateChild::start(12_000_000, |_| {});
-        let startup_deadline = crate::time::now() + Duration::from_secs(5);
-        while delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty() {
-            assert!(
-                crate::time::now() < startup_deadline,
-                "fixture must deliver its initial hover"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the fixture's initial hover", || {
+            !delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty()
+        });
         // No collector reads or approval writes for longer than the original
         // 12s cadence. Removing the producer gate delivers click1 in this gap.
         std::thread::sleep(Duration::from_millis(12_250));
@@ -589,64 +634,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn exact_current_step_approvals_release_each_non_hover_once() {
-        let mut child = GateChild::start(1_000, |_| {});
-        let first = child.request();
-        assert_eq!(first["step_id"], 1);
-        assert_eq!(first["pid"], child.child.id());
-        child.reply(first.clone(), true);
-        let second = child.request();
-        assert_eq!(second["step_id"], 2);
-        assert_ne!(first["challenge"], second["challenge"]);
-        child.reply(second, true);
-        assert_eq!(delivered_ids(&child.finish()), [0, 1, 2]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn revoked_wrong_or_replayed_permits_never_release_the_pending_step() {
-        for field in [
-            "approved",
-            "run_nonce",
-            "scenario_sha256",
-            "pid",
-            "step_id",
-            "challenge",
-        ] {
-            let mut child = GateChild::start(1_000, |_| {});
-            let mut request = child.request();
-            match field {
-                "run_nonce" => request[field] = "b".repeat(32).into(),
-                "scenario_sha256" => request[field] = "0".repeat(64).into(),
-                "pid" => request[field] = serde_json::json!(0),
-                "step_id" => request[field] = serde_json::json!(2),
-                "challenge" => request[field] = "f".repeat(32).into(),
-                _ => {}
+    fn gate_fails_closed_on_invalid_configuration_and_transport() {
+        // Case `invalid_gate_configuration_and_unverified_source_hash_fail_closed`.
+        {
+            for (field, value) in [
+                ("fd", serde_json::json!(-1)),
+                ("fd", serde_json::json!(1)),
+                ("run_nonce", serde_json::json!("")),
+                ("scenario_sha256", serde_json::json!("0".repeat(64))),
+            ] {
+                let mut child = GateChild::start(1_000, |config| config[field] = value);
+                let output = child.finish();
+                assert!(output.contains("gate-test-refused"), "{output}");
+                assert!(delivered_ids(&output).is_empty());
             }
-            child.reply(request, field != "approved");
-            assert_eq!(delivered_ids(&child.finish()), [0], "{field}");
         }
-        let mut child = GateChild::start(1_000, |_| {});
-        let first = child.request();
-        child.reply(first.clone(), true);
-        let _second = child.request();
-        child.reply(first, true);
-        assert_eq!(delivered_ids(&child.finish()), [0, 1]);
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn invalid_gate_configuration_and_unverified_source_hash_fail_closed() {
-        for (field, value) in [
-            ("fd", serde_json::json!(-1)),
-            ("fd", serde_json::json!(1)),
-            ("run_nonce", serde_json::json!("")),
-            ("scenario_sha256", serde_json::json!("0".repeat(64))),
-        ] {
-            let mut child = GateChild::start(1_000, |config| config[field] = value);
-            let output = child.finish();
+        // Case `gate_rejects_non_socket_and_changed_scheduling_input`.
+        {
+            let mut malformed = GateChild::start(1_000, |config| {
+                *config = serde_json::json!("not a gate config")
+            });
+            let output = malformed.finish();
             assert!(output.contains("gate-test-refused"), "{output}");
             assert!(delivered_ids(&output).is_empty());
+            for mode in ["non-socket", "changed-scheduling-input"] {
+                let mut child = GateChild::start_mode(1_000, |_| {}, mode);
+                let output = child.finish();
+                assert!(output.contains("gate-test-refused"), "{output}");
+                assert!(delivered_ids(&output).is_empty());
+            }
         }
     }
 
@@ -674,23 +691,6 @@ mod tests {
         assert_eq!(delivered_ids(&child.finish()), [0]);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn gate_rejects_non_socket_and_changed_scheduling_input() {
-        let mut malformed = GateChild::start(1_000, |config| {
-            *config = serde_json::json!("not a gate config")
-        });
-        let output = malformed.finish();
-        assert!(output.contains("gate-test-refused"), "{output}");
-        assert!(delivered_ids(&output).is_empty());
-        for mode in ["non-socket", "changed-scheduling-input"] {
-            let mut child = GateChild::start_mode(1_000, |_| {}, mode);
-            let output = child.finish();
-            assert!(output.contains("gate-test-refused"), "{output}");
-            assert!(delivered_ids(&output).is_empty());
-        }
-    }
-
     #[test]
     fn effect_probe_reads_current_fixture_state_without_changing_it() {
         let offset = std::rc::Rc::new(std::cell::Cell::new(12_u32));
@@ -707,23 +707,6 @@ mod tests {
         assert_eq!(offset.get(), 24);
     }
 
-    #[test]
-    fn keyboard_schema_preserves_unicode_and_rejects_ambiguous_input() {
-        let scenario = parse(r#"{"name":"typing","interval_us":16667,"steps":[{"kind":"character","value":"é"},{"kind":"key","key":"backspace"}]}"#).unwrap();
-        assert_eq!(
-            serde_json::to_value(scenario.steps[0]).unwrap()["value"],
-            "é"
-        );
-        for input in [
-            r#"{"kind":"character","value":""}"#,
-            r#"{"kind":"character","value":"ab"}"#,
-            r#"{"kind":"key","key":"unknown"}"#,
-            r#"{"kind":"character","value":"x","extra":true}"#,
-        ] {
-            assert!(serde_json::from_str::<Input>(input).is_err(), "{input}");
-        }
-    }
-
     fn scenario() -> Scenario {
         Scenario {
             name: "native wheel".into(),
@@ -734,137 +717,166 @@ mod tests {
     }
 
     #[test]
-    fn delayed_delivery_does_not_shift_future_deadlines() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let output = observed.clone();
-        spawn(scenario(), move |packet| {
-            if packet.id == 0 {
-                std::thread::sleep(crate::time::Duration::from_millis(8));
-            }
-            output.lock().unwrap().push(packet);
-            true
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-        let packets = observed.lock().unwrap();
-        assert_eq!(packets.len(), 3);
-        assert!(
-            packets
-                .iter()
-                .all(|packet| packet.sent_at >= packet.scheduled_at)
-        );
-        assert!(packets[1].sent_at.duration_since(packets[0].origin) >= Duration::from_millis(8));
+    fn scheduling_keeps_deadlines_and_stops_on_a_closed_receiver() {
+        // Case `delayed_delivery_does_not_shift_future_deadlines`.
+        {
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let output = observed.clone();
+            spawn(scenario(), move |packet| {
+                if packet.id == 0 {
+                    std::thread::sleep(crate::time::Duration::from_millis(8));
+                }
+                output.lock().unwrap().push(packet);
+                true
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            let packets = observed.lock().unwrap();
+            assert_eq!(packets.len(), 3);
+            assert!(
+                packets
+                    .iter()
+                    .all(|packet| packet.sent_at >= packet.scheduled_at)
+            );
+            assert!(
+                packets[1].sent_at.duration_since(packets[0].origin) >= Duration::from_millis(8)
+            );
 
-        assert_eq!(
-            packets[1]
-                .scheduled_at
-                .duration_since(packets[0].origin)
-                .as_micros(),
-            1_000
-        );
-        assert_eq!(
-            packets[2]
-                .scheduled_at
-                .duration_since(packets[0].origin)
-                .as_micros(),
-            2_000
-        );
-        assert!(packets[0].warmup);
-        assert!(!packets[1].warmup);
-        // Every packet, including warmup and the final delivery, carries its
-        // own bounds. Delayed delivery must not reuse an origin calibration.
-        for packet in packets.iter() {
+            assert_eq!(
+                packets[1]
+                    .scheduled_at
+                    .duration_since(packets[0].origin)
+                    .as_micros(),
+                1_000
+            );
+            assert_eq!(
+                packets[2]
+                    .scheduled_at
+                    .duration_since(packets[0].origin)
+                    .as_micros(),
+                2_000
+            );
+            assert!(packets[0].warmup);
+            assert!(!packets[1].warmup);
+            // Every packet, including warmup and the final delivery, carries its
+            // own bounds. Delayed delivery must not reuse an origin calibration.
+            for packet in packets.iter() {
+                #[cfg(target_os = "macos")]
+                {
+                    let bounds = packet.sent_host.expect("per-packet host bounds");
+                    assert!(bounds.lo_s.is_finite() && bounds.lo_s > 0.0);
+                    assert!(bounds.hi_s.is_finite() && bounds.hi_s >= bounds.lo_s);
+                }
+                #[cfg(not(target_os = "macos"))]
+                assert!(packet.sent_host.is_none());
+            }
             #[cfg(target_os = "macos")]
-            {
-                let bounds = packet.sent_host.expect("per-packet host bounds");
-                assert!(bounds.lo_s.is_finite() && bounds.lo_s > 0.0);
-                assert!(bounds.hi_s.is_finite() && bounds.hi_s >= bounds.lo_s);
+            for pair in packets.windows(2) {
+                assert!(pair[0].sent_host.unwrap().hi_s <= pair[1].sent_host.unwrap().lo_s);
             }
-            #[cfg(not(target_os = "macos"))]
-            assert!(packet.sent_host.is_none());
         }
-        #[cfg(target_os = "macos")]
-        for pair in packets.windows(2) {
-            assert!(pair[0].sent_host.unwrap().hi_s <= pair[1].sent_host.unwrap().lo_s);
+
+        // Case `closed_receiver_stops_scheduling`.
+        {
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let output = observed.clone();
+            spawn(scenario(), move |packet| {
+                output.lock().unwrap().push(packet.id);
+                false
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            assert_eq!(*observed.lock().unwrap(), vec![0]);
         }
     }
 
     #[test]
-    fn closed_receiver_stops_scheduling() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let output = observed.clone();
-        spawn(scenario(), move |packet| {
-            output.lock().unwrap().push(packet.id);
-            false
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-        assert_eq!(*observed.lock().unwrap(), vec![0]);
-    }
+    fn scenario_json_loads_validated_and_rejects_ambiguous_or_overflowing_input() {
+        // Case `loads_validated_json_with_optional_warmup`.
+        {
+            let loaded = parse(
+                r#"{"name":"hover","interval_us":16667,"steps":[{"kind":"hover","x":10,"y":20}]}"#,
+            )
+            .unwrap();
+            assert_eq!(loaded.warmup_steps, 0);
+            assert!(matches!(loaded.steps[0], Input::Hover { x: 10.0, y: 20.0 }));
+            assert!(
+                parse(
+                    r#"{"name":"hover","interval_us":0,"steps":[{"kind":"hover","x":10,"y":20}]}"#
+                )
+                .is_err()
+            );
+            assert!(
+                parse(
+                    r#"{"name":"typo","interval_us":1,"steps":[{"kind":"whell","dx":0,"dy":1}]}"#
+                )
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn rejects_invalid_scenario_before_scheduling() {
-        let mut invalid = scenario();
-        invalid.name = "  ".into();
-        assert!(invalid.validate().is_err());
-        invalid = scenario();
-        invalid.interval_us = 0;
-        assert!(invalid.validate().is_err());
-        invalid = scenario();
-        invalid.steps.clear();
-        assert!(invalid.validate().is_err());
-        invalid = scenario();
-        invalid.warmup_steps = 3;
-        assert!(invalid.validate().is_err());
-        invalid = scenario();
-        invalid.steps = vec![Input::Hover { x: 0.0, y: 0.0 }; 100_001];
-        assert!(invalid.validate().is_err());
-        for input in [
-            Input::Hover {
-                x: f64::NAN,
-                y: 0.0,
-            },
-            Input::Click {
-                x: 0.0,
-                y: f64::INFINITY,
-            },
-            Input::Wheel {
-                dx: f32::NEG_INFINITY,
-                dy: 1.0,
-            },
-        ] {
+        // Case `keyboard_schema_preserves_unicode_and_rejects_ambiguous_input`.
+        {
+            let scenario = parse(r#"{"name":"typing","interval_us":16667,"steps":[{"kind":"character","value":"é"},{"kind":"key","key":"backspace"}]}"#).unwrap();
+            assert_eq!(
+                serde_json::to_value(scenario.steps[0]).unwrap()["value"],
+                "é"
+            );
+            for input in [
+                r#"{"kind":"character","value":""}"#,
+                r#"{"kind":"character","value":"ab"}"#,
+                r#"{"kind":"key","key":"unknown"}"#,
+                r#"{"kind":"character","value":"x","extra":true}"#,
+            ] {
+                assert!(serde_json::from_str::<Input>(input).is_err(), "{input}");
+            }
+        }
+
+        // Case `rejects_invalid_scenario_before_scheduling`.
+        {
+            let mut invalid = scenario();
+            invalid.name = "  ".into();
+            assert!(invalid.validate().is_err());
             invalid = scenario();
-            invalid.steps[0] = input;
+            invalid.interval_us = 0;
+            assert!(invalid.validate().is_err());
+            invalid = scenario();
+            invalid.steps.clear();
+            assert!(invalid.validate().is_err());
+            invalid = scenario();
+            invalid.warmup_steps = 3;
+            assert!(invalid.validate().is_err());
+            invalid = scenario();
+            invalid.steps = vec![Input::Hover { x: 0.0, y: 0.0 }; 100_001];
+            assert!(invalid.validate().is_err());
+            for input in [
+                Input::Hover {
+                    x: f64::NAN,
+                    y: 0.0,
+                },
+                Input::Click {
+                    x: 0.0,
+                    y: f64::INFINITY,
+                },
+                Input::Wheel {
+                    dx: f32::NEG_INFINITY,
+                    dy: 1.0,
+                },
+            ] {
+                invalid = scenario();
+                invalid.steps[0] = input;
+                assert!(invalid.validate().is_err());
+            }
+        }
+
+        // Case `checked_timeline_rejects_overflow`.
+        {
+            let origin = crate::time::now();
+            assert!(deadline(origin, u64::MAX, 2).is_err());
+            let mut invalid = scenario();
+            invalid.interval_us = u64::MAX;
             assert!(invalid.validate().is_err());
         }
-    }
-
-    #[test]
-    fn checked_timeline_rejects_overflow() {
-        let origin = crate::time::now();
-        assert!(deadline(origin, u64::MAX, 2).is_err());
-        let mut invalid = scenario();
-        invalid.interval_us = u64::MAX;
-        assert!(invalid.validate().is_err());
-    }
-
-    #[test]
-    fn loads_validated_json_with_optional_warmup() {
-        let loaded = parse(
-            r#"{"name":"hover","interval_us":16667,"steps":[{"kind":"hover","x":10,"y":20}]}"#,
-        )
-        .unwrap();
-        assert_eq!(loaded.warmup_steps, 0);
-        assert!(matches!(loaded.steps[0], Input::Hover { x: 10.0, y: 20.0 }));
-        assert!(
-            parse(r#"{"name":"hover","interval_us":0,"steps":[{"kind":"hover","x":10,"y":20}]}"#)
-                .is_err()
-        );
-        assert!(
-            parse(r#"{"name":"typo","interval_us":1,"steps":[{"kind":"whell","dx":0,"dy":1}]}"#)
-                .is_err()
-        );
     }
 }

@@ -443,7 +443,9 @@ fn engine_thread(
 }
 
 fn filter_store_dir() -> std::path::PathBuf {
-    let base = xdg_paths::xdg::cache_home().unwrap_or_else(std::env::temp_dir);
+    let base = tilo_paths::xdg::cache_home()
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     base.join("tilo-browser").join("filter-store")
 }
 
@@ -1263,6 +1265,12 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         .push(WebViewEvent::MediaElementUnavailable { request_id });
                 }
             }
+            WebViewCommand::Page { request_id, .. } => {
+                state.shared.push(WebViewEvent::PageResult {
+                    request_id,
+                    result: Err(super::PageFailure::unavailable()),
+                });
+            }
             WebViewCommand::ClearWebsiteData => {
                 let session = ffi::webkit_web_view_get_network_session(state.view);
                 if !session.is_null() {
@@ -1365,24 +1373,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mobile_ua_engages_only_below_the_breakpoint() {
-        assert!(wants_mobile(390), "phone width → mobile UA");
-        assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
-        assert!(
-            !wants_mobile(MOBILE_BREAKPOINT_PX),
-            "at the breakpoint → desktop"
-        );
-        assert!(!wants_mobile(1280), "desktop width → desktop UA");
-    }
-
-    #[test]
-    fn keysym_mapping_is_stable() {
-        assert_eq!(keysyms(&KeyInput::Character("a".into())), vec![0x61]);
-        assert_eq!(keysyms(&KeyInput::Character("é".into())), vec![0xE9]);
-        assert_eq!(
-            keysyms(&KeyInput::Character("€".into())),
-            vec![0x0100_0000 + 0x20AC]
-        );
-        assert_eq!(keysyms(&KeyInput::Named(NamedKey::Enter)), vec![0xff0d]);
+    fn wpe_input_mapping_is_stable_and_mobile_ua_engages_below_the_breakpoint() {
+        // phase: mobile_ua_engages_only_below_the_breakpoint
+        {
+            assert!(wants_mobile(390), "phone width → mobile UA");
+            assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
+            assert!(
+                !wants_mobile(MOBILE_BREAKPOINT_PX),
+                "at the breakpoint → desktop"
+            );
+            assert!(!wants_mobile(1280), "desktop width → desktop UA");
+        }
+        // phase: keysym_mapping_is_stable
+        {
+            assert_eq!(keysyms(&KeyInput::Character("a".into())), vec![0x61]);
+            assert_eq!(keysyms(&KeyInput::Character("é".into())), vec![0xE9]);
+            assert_eq!(
+                keysyms(&KeyInput::Character("€".into())),
+                vec![0x0100_0000 + 0x20AC]
+            );
+            assert_eq!(keysyms(&KeyInput::Named(NamedKey::Enter)), vec![0xff0d]);
+        }
     }
 }

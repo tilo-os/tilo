@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::tray::{Tray, TrayItem, TrayRequest};
@@ -22,11 +23,16 @@ pub const PROVIDER_ID: &str = "tray";
 
 pub struct TrayItemsProvider {
     tray: Arc<Tray>,
+    /// The rows' names, indexed while they stay the same.
+    ranker: ui::search::ListIndex,
 }
 
 impl TrayItemsProvider {
     pub fn new(tray: Arc<Tray>) -> Self {
-        Self { tray }
+        Self {
+            tray,
+            ranker: ui::search::ListIndex::default(),
+        }
     }
 
     /// The session's tray.
@@ -43,13 +49,12 @@ pub fn menu_id(key: &str, id: i32) -> String {
     format!("menu:{id}:{key}")
 }
 
-/// The shared ranker over a tray row's names, each of which names it.
-fn matches(needle: &str, haystacks: &[&str]) -> Option<i32> {
-    let fields: Vec<ui::search::RankField<'_>> = haystacks
+/// A tray row's names, each of which names it.
+fn names(names: &[&str]) -> Vec<(String, ui::search::FieldWeight)> {
+    names
         .iter()
-        .map(|text| ui::search::RankField::new(text, ui::search::FieldWeight::TITLE))
-        .collect();
-    crate::shell::search::rank_fields(needle, &fields)
+        .map(|name| ((*name).to_owned(), ui::search::FieldWeight::TITLE))
+        .collect()
 }
 
 fn row(
@@ -68,8 +73,11 @@ fn row(
         provider_id: PROVIDER_ID.into(),
         id,
         title,
-        subtitle: Some(format!("{} in the top bar", item.title)),
-        badge: Some("Tray".into()),
+        subtitle: Some(t_args(
+            "search-tray-in-top-bar",
+            &[("item", item.title.as_str().into())],
+        )),
+        badge: Some(t("search-badge-tray")),
         score,
         params: Vec::new(),
         contract: Some(tilo_actions::ActionContract {
@@ -93,6 +101,10 @@ impl SearchProvider for TrayItemsProvider {
         "Tray"
     }
 
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-tray")
+    }
+
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
@@ -101,42 +113,50 @@ impl SearchProvider for TrayItemsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle = ctx.needle.trim().to_lowercase();
         let mut out = Vec::new();
+        let mut fields = Vec::new();
         for item in self.tray.snapshot() {
             let open_id = activate_id(&item.key);
-            if !item.item_is_menu
-                && let Some(score) = matches(&needle, &[&item.title, &item.id, "open", &open_id])
-            {
+            let open_title = t_args("search-tray-open", &[("item", item.title.as_str().into())]);
+            if !item.item_is_menu {
+                fields.push(names(&[
+                    &item.title,
+                    &item.id,
+                    "open",
+                    &open_title,
+                    &open_id,
+                ]));
                 out.push(row(
                     &self.tray,
                     &item,
                     open_id,
-                    format!("Open {}", item.title),
-                    score,
+                    open_title,
+                    0,
                     TrayRequest::Activate { x: 0, y: 0 },
                 ));
             }
             for entry in item.menu.iter().filter(|entry| entry.enabled) {
                 let entry_id = menu_id(&item.key, entry.id);
-                let Some(score) = matches(&needle, &[&item.title, &entry.label, &entry_id]) else {
-                    continue;
-                };
+                fields.push(names(&[&item.title, &entry.label, &entry_id]));
+                let args: [(&str, ui::i18n::ArgValue); 2] = [
+                    ("item", item.title.as_str().into()),
+                    ("entry", entry.label.as_str().into()),
+                ];
                 let title = match entry.toggled {
-                    Some(true) => format!("{}: {} (on)", item.title, entry.label),
-                    Some(false) => format!("{}: {} (off)", item.title, entry.label),
-                    None => format!("{}: {}", item.title, entry.label),
+                    Some(true) => t_args("search-tray-entry-on", &args),
+                    Some(false) => t_args("search-tray-entry-off", &args),
+                    None => t_args("search-tray-entry", &args),
                 };
                 out.push(row(
                     &self.tray,
                     &item,
                     entry_id,
                     title,
-                    score,
+                    0,
                     TrayRequest::Menu { id: entry.id },
                 ));
             }
         }
-        out
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), out, &fields)
     }
 }

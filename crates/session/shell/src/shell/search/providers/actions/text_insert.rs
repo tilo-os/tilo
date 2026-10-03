@@ -172,6 +172,12 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,351 +268,370 @@ mod tests {
         apply(&mut chrome.borrow_mut(), a)
     }
 
-    /// Asserted through `tab_body`, the same read the shell's own search
-    /// does, so the text can't be "written" somewhere nothing reads.
     #[test]
-    fn the_insert_lands_in_the_focused_tabs_document() {
-        let (chrome, store) = chrome_focused_on("Notes");
-        let before_history = store
-            .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
-            .expect("open record history");
-        insert(
-            &chrome,
-            &args(vec![("text", ArgValue::Text("hello".into()))]),
-        )
-        .expect("inserting into a focused Notes tab must work");
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("hello"));
-        assert_eq!(
-            store
-                .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
-                .expect("open record history"),
-            before_history + 1,
-            "external text insertion must create one owned history entry"
-        );
-    }
-
-    #[test]
-    fn canonical_record_grant_uses_owned_action_provenance() {
-        let (chrome, store) = chrome_focused_on("Notes");
-        let record = RecordId::for_tab(TAB);
-        let before_generation = store
-            .action_generation(&record)
-            .expect("record action generation")
-            .expect("tracked generation");
-        let (user, app_id) = {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            let room = tree.desktop.workspaces[0].room;
-            drop(tree);
-            (
-                state.local_user_for_room(&room),
-                AppKind::Other("Notes".into()).app_id(),
-            )
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn text_insert_writes_only_the_addressed_live_text_document() {
+        // Phase `the_insert_lands_in_the_focused_tabs_document`.
+        // Asserted through `tab_body`, the same read the shell's own search
+        // does, so the text can't be "written" somewhere nothing reads.
         {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let workspace = &mut tree.desktop.workspaces[0];
-            let instance = collab_types::document_artifact_id(
-                &app_id,
-                &workspace.room.to_string(),
-                record.as_str(),
+            let (chrome, store) = chrome_focused_on("Notes");
+            let before_history = store
+                .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
+                .expect("open record history");
+            insert(
+                &chrome,
+                &args(vec![("text", ArgValue::Text("hello".into()))]),
+            )
+            .expect("inserting into a focused Notes tab must work");
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("hello"));
+            assert_eq!(
+                store
+                    .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
+                    .expect("open record history"),
+                before_history + 1,
+                "external text insertion must create one owned history entry"
             );
-            workspace.owner = None;
-            workspace.capabilities.clear();
-            workspace.grant_capability(crate::shell::state::CapOverride::grant(
-                crate::shell::state::Subject::person(user.clone()),
-                crate::shell::state::Scope::ResourceInstance(instance),
-                crate::shell::state::Verb::Write,
-            ));
-            drop(tree);
         }
 
-        insert(
-            &chrome,
-            &args(vec![("text", ArgValue::Text("owned".into()))]),
-        )
-        .expect("the canonical resource-instance grant authorizes its record");
+        // Phase `an_editor_tab_is_written_under_its_own_body_key`.
+        // Same machinery under a different body key, not Notes'.
+        {
+            let (chrome, store) = chrome_focused_on("Editor");
+            insert(
+                &chrome,
+                &args(vec![("text", ArgValue::Text("fn main".into()))]),
+            )
+            .unwrap();
+            assert_eq!(
+                tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).as_deref(),
+                Some("fn main"),
+            );
+            assert_eq!(
+                tab_body(&store, TAB, BODY_KEY),
+                None,
+                "an Editor tab must not be written under the Notes key",
+            );
+        }
 
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("owned"));
-        assert_eq!(
-            store.action_generation(&record).unwrap(),
-            Some(before_generation + 1),
-            "external dispatch crosses one record-owned action boundary"
-        );
-        store
-            .read_history(&record, |doc, history| {
-                let entry = history.peek_last_undo().expect("owned undo entry");
-                assert_eq!(
-                    entry.author.as_ref().map(|author| author.0.as_str()),
-                    Some(user.as_str())
-                );
-                assert_eq!(entry.instance_id, Some(TAB));
-                let context = entry
-                    .after
-                    .iter()
-                    .filter(|hash| !entry.before.contains(hash))
-                    .filter_map(|hash| doc.get_change_by_hash(hash))
-                    .find_map(|change| change.message().map(str::to_owned))
-                    .and_then(|message| tilo_actions::ActionContext::from_change_message(&message))
-                    .expect("semantic action provenance");
-                assert_eq!(context.action_label, "Insert text");
-                assert_eq!(
-                    context.app.as_ref().map(|app| app.id.as_str()),
-                    Some(app_id.as_str())
-                );
-                assert_eq!(
-                    context
-                        .resource
-                        .as_ref()
-                        .map(|resource| resource.id.as_str()),
-                    Some(record.as_str())
-                );
-            })
-            .expect("record history");
+        // Phase `a_tab_that_is_not_a_text_document_is_refused`.
+        // Refuses and says why, rather than writing into some other tab.
+        {
+            let (chrome, store) = chrome_focused_on("Terminal");
+            let err = insert(&chrome, &args(vec![("text", ArgValue::Text("hi".into()))]))
+                .expect_err("a terminal has no text document to write into");
+            assert!(
+                matches!(&err, ActionError::Refused(m) if m.contains("not a text document")),
+                "got {err:?}",
+            );
+            assert_eq!(
+                tab_body(&store, TAB, BODY_KEY),
+                None,
+                "a refusal must leave every document untouched",
+            );
+        }
+
+        // Phase `focus_changes_do_not_redirect_an_addressed_edit`.
+        {
+            const OTHER_TAB: u64 = 88;
+            let (chrome, store) = chrome_focused_on("Notes");
+            {
+                let state = chrome.borrow_mut();
+                let mut tree = state.tree_mut();
+                let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+                group.tabs.push(Tab {
+                    id: OTHER_TAB,
+                    title: "Other note".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                });
+                group.active_tab = OTHER_TAB;
+                drop(tree);
+            }
+            store.open_record(&crate::shell::tab_documents::scratch_tab_record(OTHER_TAB));
+
+            insert(
+                &chrome,
+                &args(vec![("text", ArgValue::Text("targeted".into()))]),
+            )
+            .expect("the original explicit target remains valid after focus moves");
+
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("targeted"));
+            assert_eq!(
+                tab_body(&store, OTHER_TAB, BODY_KEY).as_deref(),
+                None,
+                "ambient focus must not receive the external edit"
+            );
+        }
+
+        // Phase `stale_and_unavailable_targets_mutate_no_document`.
+        {
+            let (chrome, store) = chrome_focused_on("Notes");
+            let before = tab_body(&store, TAB, BODY_KEY);
+            for target in [RecordId::for_tab(999).to_string(), "file:/not/a/tab".into()] {
+                let error = insert(
+                    &chrome,
+                    &args(vec![
+                        ("resource", ArgValue::Resource(target)),
+                        ("text", ArgValue::Text("must not land".into())),
+                    ]),
+                )
+                .expect_err("invalid target must be refused");
+                assert!(matches!(error, ActionError::Refused(_)));
+            }
+            assert_eq!(tab_body(&store, TAB, BODY_KEY), before);
+        }
     }
 
     #[test]
-    fn canonical_app_grant_authorizes_but_invented_app_id_does_not() {
-        for (granted_app, should_allow) in
-            [("org.tilo.Editor", true), ("org.example.Editor", false)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn text_insert_grants_authorize_only_their_canonical_target() {
+        // Phase `canonical_record_grant_uses_owned_action_provenance`.
         {
-            let (chrome, store) = chrome_focused_on("Editor");
-            let user = {
+            let (chrome, store) = chrome_focused_on("Notes");
+            let record = RecordId::for_tab(TAB);
+            let before_generation = store
+                .action_generation(&record)
+                .expect("record action generation")
+                .expect("tracked generation");
+            let (user, app_id) = {
                 let state = chrome.borrow();
                 let tree = state.tree();
-                state.local_user_for_room(&tree.desktop.workspaces[0].room)
+                let room = tree.desktop.workspaces[0].room;
+                drop(tree);
+                (
+                    state.local_user_for_room(&room),
+                    AppKind::Other("Notes".into()).app_id(),
+                )
             };
             {
                 let state = chrome.borrow();
                 let mut tree = state.tree_mut();
                 let workspace = &mut tree.desktop.workspaces[0];
+                let instance = collab_types::document_artifact_id(
+                    &app_id,
+                    &workspace.room.to_string(),
+                    record.as_str(),
+                );
                 workspace.owner = None;
                 workspace.capabilities.clear();
                 workspace.grant_capability(crate::shell::state::CapOverride::grant(
-                    crate::shell::state::Subject::person(user),
-                    crate::shell::state::Scope::App(granted_app.into()),
+                    crate::shell::state::Subject::person(user.clone()),
+                    crate::shell::state::Scope::ResourceInstance(instance),
                     crate::shell::state::Verb::Write,
                 ));
                 drop(tree);
             }
-            let outcome = insert(
+
+            insert(
                 &chrome,
-                &args(vec![("text", ArgValue::Text("canonical".into()))]),
-            );
-            assert_eq!(outcome.is_ok(), should_allow, "grant for {granted_app}");
+                &args(vec![("text", ArgValue::Text("owned".into()))]),
+            )
+            .expect("the canonical resource-instance grant authorizes its record");
+
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("owned"));
             assert_eq!(
-                tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).is_some(),
-                should_allow
+                store.action_generation(&record).unwrap(),
+                Some(before_generation + 1),
+                "external dispatch crosses one record-owned action boundary"
             );
+            store
+                .read_history(&record, |doc, history| {
+                    let entry = history.peek_last_undo().expect("owned undo entry");
+                    assert_eq!(
+                        entry.author.as_ref().map(|author| author.0.as_str()),
+                        Some(user.as_str())
+                    );
+                    assert_eq!(entry.instance_id, Some(TAB));
+                    let context = entry
+                        .after
+                        .iter()
+                        .filter(|hash| !entry.before.contains(hash))
+                        .filter_map(|hash| doc.get_change_by_hash(hash))
+                        .find_map(|change| change.message().map(str::to_owned))
+                        .and_then(|message| {
+                            tilo_actions::ActionContext::from_change_message(&message)
+                        })
+                        .expect("semantic action provenance");
+                    assert_eq!(context.action_label, "Insert text");
+                    assert_eq!(
+                        context.app.as_ref().map(|app| app.id.as_str()),
+                        Some(app_id.as_str())
+                    );
+                    assert_eq!(
+                        context
+                            .resource
+                            .as_ref()
+                            .map(|resource| resource.id.as_str()),
+                        Some(record.as_str())
+                    );
+                })
+                .expect("record history");
         }
-    }
 
-    /// Omitting `at` appends; supplying it inserts in **characters**, not
-    /// UTF-8 bytes.
-    #[test]
-    fn the_offset_is_a_character_offset_and_defaults_to_the_end() {
-        let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, &args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
-        // β is two bytes; character 2 must land between β and c.
-        insert(
-            &chrome,
-            &args(vec![
-                ("text", ArgValue::Text("X".into())),
-                ("at", ArgValue::Integer(2)),
-            ]),
-        )
-        .unwrap();
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc"));
-
-        // No `at` appends to the end of what is there now.
-        insert(&chrome, &args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc!"));
-    }
-
-    /// Clamped rather than refused or panicking.
-    #[test]
-    fn an_out_of_range_offset_is_clamped_into_the_buffer() {
-        let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, &args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
-        insert(
-            &chrome,
-            &args(vec![
-                ("text", ArgValue::Text("Z".into())),
-                ("at", ArgValue::Integer(999)),
-            ]),
-        )
-        .unwrap();
-        insert(
-            &chrome,
-            &args(vec![
-                ("text", ArgValue::Text("A".into())),
-                ("at", ArgValue::Integer(-5)),
-            ]),
-        )
-        .unwrap();
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("AabcZ"));
-    }
-
-    /// One inserted character costs one Automerge element, not a document
-    /// rewrite — proven by counting `Text` elements, since the resulting
-    /// string is identical either way.
-    #[test]
-    fn an_insert_costs_one_element_per_character_not_a_rewrite() {
-        use automerge::{ObjType, ReadDoc, Value};
-
-        let (chrome, store) = chrome_focused_on("Notes");
-        insert(
-            &chrome,
-            &args(vec![("text", ArgValue::Text("x".repeat(64)))]),
-        )
-        .unwrap();
-
-        let record = RecordId::for_tab(TAB);
-        let before = store
-            .read(&record, |doc| {
-                let (_, id) = doc.get(&automerge::ROOT, BODY_KEY).unwrap().unwrap();
-                doc.length(&id)
-            })
-            .unwrap();
-
-        insert(&chrome, &args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
-
-        let after = store
-            .read(&record, |doc| {
-                let (val, id) = doc.get(&automerge::ROOT, BODY_KEY).unwrap().unwrap();
-                assert!(matches!(val, Value::Object(ObjType::Text)));
-                doc.length(&id)
-            })
-            .unwrap();
-        assert_eq!(
-            after,
-            before + 1,
-            "a one-character insert must add exactly one element; a \
-             whole-body rewrite would add {before}",
-        );
-    }
-
-    /// Same machinery under a different body key, not Notes'.
-    #[test]
-    fn an_editor_tab_is_written_under_its_own_body_key() {
-        let (chrome, store) = chrome_focused_on("Editor");
-        insert(
-            &chrome,
-            &args(vec![("text", ArgValue::Text("fn main".into()))]),
-        )
-        .unwrap();
-        assert_eq!(
-            tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).as_deref(),
-            Some("fn main"),
-        );
-        assert_eq!(
-            tab_body(&store, TAB, BODY_KEY),
-            None,
-            "an Editor tab must not be written under the Notes key",
-        );
-    }
-
-    /// Refuses and says why, rather than writing into some other tab.
-    #[test]
-    fn a_tab_that_is_not_a_text_document_is_refused() {
-        let (chrome, store) = chrome_focused_on("Terminal");
-        let err = insert(&chrome, &args(vec![("text", ArgValue::Text("hi".into()))]))
-            .expect_err("a terminal has no text document to write into");
-        assert!(
-            matches!(&err, ActionError::Refused(m) if m.contains("not a text document")),
-            "got {err:?}",
-        );
-        assert_eq!(
-            tab_body(&store, TAB, BODY_KEY),
-            None,
-            "a refusal must leave every document untouched",
-        );
-    }
-
-    #[test]
-    fn focus_changes_do_not_redirect_an_addressed_edit() {
-        const OTHER_TAB: u64 = 88;
-        let (chrome, store) = chrome_focused_on("Notes");
+        // Phase `canonical_app_grant_authorizes_but_invented_app_id_does_not`.
         {
-            let state = chrome.borrow_mut();
-            let mut tree = state.tree_mut();
-            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            group.tabs.push(Tab {
-                id: OTHER_TAB,
-                title: "Other note".into(),
-                tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Notes".into()),
-                    label: "Notes".into(),
-                },
-            });
-            group.active_tab = OTHER_TAB;
-            drop(tree);
+            for (granted_app, should_allow) in
+                [("org.tilo.Editor", true), ("org.example.Editor", false)]
+            {
+                let (chrome, store) = chrome_focused_on("Editor");
+                let user = {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    state.local_user_for_room(&tree.desktop.workspaces[0].room)
+                };
+                {
+                    let state = chrome.borrow();
+                    let mut tree = state.tree_mut();
+                    let workspace = &mut tree.desktop.workspaces[0];
+                    workspace.owner = None;
+                    workspace.capabilities.clear();
+                    workspace.grant_capability(crate::shell::state::CapOverride::grant(
+                        crate::shell::state::Subject::person(user),
+                        crate::shell::state::Scope::App(granted_app.into()),
+                        crate::shell::state::Verb::Write,
+                    ));
+                    drop(tree);
+                }
+                let outcome = insert(
+                    &chrome,
+                    &args(vec![("text", ArgValue::Text("canonical".into()))]),
+                );
+                assert_eq!(outcome.is_ok(), should_allow, "grant for {granted_app}");
+                assert_eq!(
+                    tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).is_some(),
+                    should_allow
+                );
+            }
         }
-        store.open_record(&crate::shell::tab_documents::scratch_tab_record(OTHER_TAB));
 
-        insert(
-            &chrome,
-            &args(vec![("text", ArgValue::Text("targeted".into()))]),
-        )
-        .expect("the original explicit target remains valid after focus moves");
+        // Phase `an_active_workspace_grant_does_not_authorize_another_workspaces_record`.
+        {
+            let (chrome, store) = chrome_focused_on("Notes");
+            {
+                let state = chrome.borrow_mut();
+                let mut tree = state.tree_mut();
+                tree.desktop.workspaces[0].set_owner("another-person");
+                let mut active = Workspace::new(WorkspaceId::new(), "Authorized elsewhere");
+                active.set_owner(FIXTURE_USER);
+                let active_id = active.id;
+                tree.desktop.workspaces.push(active);
+                tree.set_active(active_id);
+            }
 
-        assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("targeted"));
-        assert_eq!(
-            tab_body(&store, OTHER_TAB, BODY_KEY).as_deref(),
-            None,
-            "ambient focus must not receive the external edit"
-        );
-    }
-
-    #[test]
-    fn stale_and_unavailable_targets_mutate_no_document() {
-        let (chrome, store) = chrome_focused_on("Notes");
-        let before = tab_body(&store, TAB, BODY_KEY);
-        for target in [RecordId::for_tab(999).to_string(), "file:/not/a/tab".into()] {
             let error = insert(
                 &chrome,
-                &args(vec![
-                    ("resource", ArgValue::Resource(target)),
-                    ("text", ArgValue::Text("must not land".into())),
-                ]),
+                &args(vec![(
+                    "text",
+                    ArgValue::Text("must not cross rooms".into()),
+                )]),
             )
-            .expect_err("invalid target must be refused");
+            .expect_err("target workspace authority is independent of the active workspace");
             assert!(matches!(error, ActionError::Refused(_)));
+            assert_eq!(tab_body(&store, TAB, BODY_KEY), None);
+            assert_eq!(
+                store
+                    .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
+                    .expect("open record history"),
+                0,
+                "denied targeting must not create an attribution entry"
+            );
         }
-        assert_eq!(tab_body(&store, TAB, BODY_KEY), before);
     }
 
     #[test]
-    fn an_active_workspace_grant_does_not_authorize_another_workspaces_record() {
-        let (chrome, store) = chrome_focused_on("Notes");
+    fn insert_offsets_are_clamped_character_offsets_costing_one_element_each() {
+        // Phase `the_offset_is_a_character_offset_and_defaults_to_the_end`.
+        // Omitting `at` appends; supplying it inserts in **characters**, not
+        // UTF-8 bytes.
         {
-            let state = chrome.borrow_mut();
-            let mut tree = state.tree_mut();
-            tree.desktop.workspaces[0].set_owner("another-person");
-            let mut active = Workspace::new(WorkspaceId::new(), "Authorized elsewhere");
-            active.set_owner(FIXTURE_USER);
-            let active_id = active.id;
-            tree.desktop.workspaces.push(active);
-            tree.set_active(active_id);
+            let (chrome, store) = chrome_focused_on("Notes");
+            insert(&chrome, &args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
+            // β is two bytes; character 2 must land between β and c.
+            insert(
+                &chrome,
+                &args(vec![
+                    ("text", ArgValue::Text("X".into())),
+                    ("at", ArgValue::Integer(2)),
+                ]),
+            )
+            .unwrap();
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc"));
+
+            // No `at` appends to the end of what is there now.
+            insert(&chrome, &args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc!"));
         }
 
-        let error = insert(
-            &chrome,
-            &args(vec![(
-                "text",
-                ArgValue::Text("must not cross rooms".into()),
-            )]),
-        )
-        .expect_err("target workspace authority is independent of the active workspace");
-        assert!(matches!(error, ActionError::Refused(_)));
-        assert_eq!(tab_body(&store, TAB, BODY_KEY), None);
-        assert_eq!(
-            store
-                .read_history(&RecordId::for_tab(TAB), |_, history| history.revision())
-                .expect("open record history"),
-            0,
-            "denied targeting must not create an attribution entry"
-        );
+        // Phase `an_out_of_range_offset_is_clamped_into_the_buffer`.
+        // Clamped rather than refused or panicking.
+        {
+            let (chrome, store) = chrome_focused_on("Notes");
+            insert(&chrome, &args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
+            insert(
+                &chrome,
+                &args(vec![
+                    ("text", ArgValue::Text("Z".into())),
+                    ("at", ArgValue::Integer(999)),
+                ]),
+            )
+            .unwrap();
+            insert(
+                &chrome,
+                &args(vec![
+                    ("text", ArgValue::Text("A".into())),
+                    ("at", ArgValue::Integer(-5)),
+                ]),
+            )
+            .unwrap();
+            assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("AabcZ"));
+        }
+
+        // Phase `an_insert_costs_one_element_per_character_not_a_rewrite`.
+        // One inserted character costs one Automerge element, not a document
+        // rewrite — proven by counting `Text` elements, since the resulting
+        // string is identical either way.
+        {
+            use automerge::{ObjType, ReadDoc, Value};
+
+            let (chrome, store) = chrome_focused_on("Notes");
+            insert(
+                &chrome,
+                &args(vec![("text", ArgValue::Text("x".repeat(64)))]),
+            )
+            .unwrap();
+
+            let record = RecordId::for_tab(TAB);
+            let before = store
+                .read(&record, |doc| {
+                    let (_, id) = doc.get(&automerge::ROOT, BODY_KEY).unwrap().unwrap();
+                    doc.length(&id)
+                })
+                .unwrap();
+
+            insert(&chrome, &args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
+
+            let after = store
+                .read(&record, |doc| {
+                    let (val, id) = doc.get(&automerge::ROOT, BODY_KEY).unwrap().unwrap();
+                    assert!(matches!(val, Value::Object(ObjType::Text)));
+                    doc.length(&id)
+                })
+                .unwrap();
+            assert_eq!(
+                after,
+                before + 1,
+                "a one-character insert must add exactly one element; a \
+                 whole-body rewrite would add {before}",
+            );
+        }
     }
 }

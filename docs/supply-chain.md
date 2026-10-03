@@ -7,7 +7,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 
 - **Image signing and public transparency.** CI signs every promoted image by
   digest with cosign and requires the default Rekor publication path for the
-  signature and attestations. The release invariant rejects both
+  image signature and provenance/freshness attestations. The release invariant rejects both
   `--tlog-upload=false` and `--insecure-ignore-tlog`. The tracked
   `keys/cosign.pub` is the
   verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
@@ -124,9 +124,12 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   and stage in the background, then become active on the user's next ordinary
   restart. This prevents an update timer from rebooting an active game or work
   session.
-- **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
-  in-toto attestation to the image (`cosign attest`). Audit with
-  `cosign verify-attestation --key keys/cosign.pub --type spdxjson <image>`.
+- **SBOM.** CI generates a complete SPDX SBOM with Syft and attaches it to
+  the image in the OCI registry. Rekor's public service limits attestation
+  uploads to 100 KB, so the full OS inventory cannot be logged directly. The
+  CI KMS signs its SHA-256 in the Rekor-logged SLSA provenance. Audit with
+  `os/dev/verify-release-sbom.sh <image@sha256:digest>`; it verifies that
+  provenance and hashes the downloaded inventory before accepting it.
 - **Reproducible builds (release-blocking).** Every release is built twice. The
   second build bypasses the first build's layer cache, and the workflow refuses
   publication unless both OCI manifests are byte-identical.
@@ -141,37 +144,36 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
-  pushed by the `snapshot-rpms` CI job to `registry.tilo.so/tilo/rpms`), pinned in
-  `os/rpms-snapshot.env` (`RPMS_REF=…@sha256`). Every `os/Containerfile` `dnf
-  install` mounts that repo and installs from it only
+  pushed by the `build-rpms.yml` CI job to `registry.tilo.so/tilo/rpms`) and
+  addressed as `set-<fingerprint>`, where the fingerprint hashes both
+  architectures' package sets, `BASE_REF`, and the files that shape the snapshot
+  (`os/dev/rpm-snapshot-fingerprint.py`). Builds call
+  `os/dev/resolve-rpm-snapshot.sh`, which looks up that tag and verifies
+  signature, provenance and both architectures before printing the digest. Every
+  `os/Containerfile` `dnf install` mounts that repo and installs from it only
   (`--setopt=reposdir=/repo`), never live Fedora mirrors.
-  The pinned reference is an OCI index containing exactly native AMD64 and
-  ARM64 repositories. Snapshot CI builds both transactions and verifies the
-  index platforms before reporting its digest; its privileged binfmt helper is
-  itself commit- and digest-pinned. The index is signed through the
-  non-exportable release key and carries verified SLSA provenance binding its
-  exact digest, base image, architecture set, source, and canonical package-set
-  hash. CI and local image builders reject it before any package transaction
-  unless all of those claims match the current build inputs.
-  **When you add/remove/rename a package in `os/Containerfile`,** merging it
-  to `main` re-runs `snapshot-rpms` (or dispatch it by hand). Once the new
-  index is signed and verified, the workflow pushes one
-  `automation/rpm-snapshot-<digest16>` branch updating `os/rpms-snapshot.env`
-  and opens its pull request; merge that PR once its required checks pass. The
-  kernel does not build against this snapshot, so the pin never waits for a
-  kernel rebuild. The pin
-  records the commit the index was built from (`RPMS_SOURCE_REVISION`), and
-  each refresh decision compares against that commit rather than the previous
-  push, so a package change that lands while a pin is in review is still
-  picked up by the next run. Until then the build fails
-  `No match for argument: <pkg>`. The package list is auto-derived from
+  The reference is an OCI index containing exactly native AMD64 and ARM64
+  repositories. Snapshot CI builds both transactions and verifies the index
+  platforms before tagging; its privileged binfmt helper is itself commit- and
+  digest-pinned. The index is signed through the non-exportable release key and
+  carries verified SLSA provenance binding its exact digest, base image,
+  architecture set, source, and canonical package-set hash. CI and local image
+  builders reject it before any package transaction unless all of those claims
+  match the current build inputs.
+  **When you add/remove/rename a package in `os/Containerfile`,** merging it to
+  `main` re-runs `build-rpms.yml` (or image builds call it as a reusable
+  workflow). If `set-<fingerprint>` is already published the job exits early;
+  otherwise it builds, signs, attests and tags. There is no hand-kept pin file
+  and no pin pull request. The kernel does not build against this snapshot.
+  Until the matching tag exists the build fails `No match for argument: <pkg>`
+  (or resolve fails closed). The package list is auto-derived from
   `os/Containerfile`, so there is no separate list to maintain.
   Before publishing, the snapshot replays the image's erase of base packages it
   later needs again (the pkgconf family) and re-resolves the whole package set
   offline, so an incomplete snapshot fails in CI rather than in an image build.
 - **Kernel buildroots.** The kernel's build dependencies and the Fedora kernel
   SRPM come from their own snapshot, `os/Containerfile.kernel-buildroot`,
-  instead of the OS frozen RPM snapshot. `snapshot-kernel-buildroot` resolves
+  instead of the OS frozen RPM snapshot. `build-buildroots.yml` resolves
   it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
   Fedora signature, records its checksum, the base and the package manifest,
   deletes every repository file so a kernel build cannot fall back to the
@@ -218,21 +220,22 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   and garbage-collects the manifest it replaces almost immediately, so a
   `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
   a day (`manifest unknown`) and every build fails at its first `FROM` — the
-  `snapshot-rpms` job included, which made the package set unrefreshable too.
+  `build-rpms.yml` job included, which made the package set unrefreshable too.
   So the base is **mirrored into `registry.tilo.so/tilo/fedora-bootc`** and every
   Containerfile takes it as `--build-arg BASE_REF`, pinned in
   `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
   resolving. The copy uses `skopeo copy --all --preserve-digests`, so the
   multi-arch index survives and the mirrored digest is the digest Fedora
   published — the mirror adds durability, not a second artifact to trust.
-  **To refresh the base:** edit `BASE_SOURCE` if the Fedora release is
-  changing, dispatch `mirror-base`, commit the `BASE_REF` it prints, then
-  merge the RPM and kernel buildroot pin PRs that follow — both are resolved
-  against the base and have to follow it — and then the kernel pin PR that the
-  new buildroot produces. The mirror job refuses to
-  report a reference that is not a multi-arch index or whose `ostree.linux`
-  does not match the Fedora release `BASE_SOURCE` claims, so a silent major
-  bump fails the job instead of shipping.
+  **To refresh the base:** edit `BASE_SOURCE` and `BASE_REF` in
+  `os/base-snapshot.env` (one-line digest bump). Builds and `build-rpms.yml`
+  call `os/dev/ensure-base-mirror.sh`, which copies `BASE_SOURCE` into the
+  mirror when the pinned digest is missing. Changing `BASE_REF` changes the
+  RPM fingerprint, so the next snapshot publishes a new `set-<fingerprint>`
+  tag; then merge the kernel buildroot pin PR that follows and the kernel pin
+  PR that the new buildroot produces. The ensure step refuses a `BASE_SOURCE`
+  whose digest no longer matches the pin, so a silent major bump fails closed
+  instead of shipping.
 - **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.

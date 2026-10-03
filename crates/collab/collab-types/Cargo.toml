@@ -4,8 +4,11 @@ autotests = false
 name = "collab-types"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The cryptographic identifiers and wire types of Tilo Spaces."
 [lib]
 name = "collab_types"
 path = "src/lib.rs"
@@ -18,7 +21,9 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 getrandom.workspace = true
+web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 serde.workspace = true
@@ -32,7 +37,7 @@ sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 
 [dev-dependencies]
 serde_json.workspace = true

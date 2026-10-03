@@ -67,6 +67,9 @@ pub enum CallerPrincipal {
     Person(String),
     /// A delegated agent, by its agent id.
     Agent(String),
+    /// An application, by its package id, acting under its own identity
+    /// rather than borrowing the authority of the person using it.
+    App(String),
 }
 
 /// The authenticated principal behind a request.
@@ -81,6 +84,7 @@ pub struct Caller {
     user_public_key: Option<[u8; 32]>,
     device_public_key: Option<[u8; 32]>,
     room: Option<String>,
+    foreign: bool,
 }
 
 impl Caller {
@@ -93,6 +97,7 @@ impl Caller {
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
+            foreign: false,
         }
     }
 
@@ -105,6 +110,7 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            foreign: false,
         }
     }
 
@@ -116,7 +122,50 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            foreign: false,
         }
+    }
+
+    /// An application on a connection the host admitted itself, by the
+    /// package id that admission established. It holds no role of its own:
+    /// it may use only what it owns and what a workspace grants it.
+    #[must_use]
+    pub fn local_app(app_id: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::App(app_id.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+            foreign: false,
+        }
+    }
+
+    /// A remote agent device whose certificate the transport verified to
+    /// chain to `user_public_key` and whose root-signed delegation names it
+    /// agent `agent_id`. It is its own principal, never the person who
+    /// delegated it.
+    #[must_use]
+    pub fn delegated_agent(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
+            foreign: false,
+        }
+    }
+
+    /// Mark whether the caller acts from a foreign device: a Tilo runtime on
+    /// an operating system Tilo does not control, as its certificate says.
+    /// Workspaces it does not govern cap such a caller's role.
+    #[must_use]
+    pub fn from_foreign_device(mut self, foreign: bool) -> Self {
+        self.foreign = foreign;
+        self
     }
 
     /// Confine the caller to one room: the connection was admitted to that
@@ -144,6 +193,12 @@ impl Caller {
         self.user_public_key.as_ref()
     }
 
+    /// Whether the caller acts from a foreign device.
+    #[must_use]
+    pub const fn is_foreign_device(&self) -> bool {
+        self.foreign
+    }
+
     /// The remote device that sent the request.
     #[must_use]
     pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
@@ -152,14 +207,7 @@ impl Caller {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(
-        String::with_capacity(bytes.len().saturating_mul(2)),
-        |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        },
-    )
+    hex::encode(bytes)
 }
 
 /// Which published action an invocation names on the host.
@@ -248,6 +296,9 @@ pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
 
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
+
+/// Action id that closes a running application's windows in a workspace.
+pub const APPLICATION_CLOSE_ACTION: &str = "close";
 
 /// The provider token for the actions workspace `room` itself offers.
 #[must_use]
@@ -485,6 +536,80 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
+    /// Ask a device for a room record it holds, from `query.offset` on.
+    /// The same authenticated device-to-device route as an action, but
+    /// answered by the device from what its app last made durable, not by
+    /// an action host: a record is readable where it is kept whether or not
+    /// its app is running.
+    RecordRequest {
+        correlation: u64,
+        query: RecordQuery,
+    },
+    /// Answer to [`Self::RecordRequest`] with the same correlation: the next
+    /// piece of the record, or why it is not given.
+    RecordResponse {
+        correlation: u64,
+        result: Result<RecordPiece, ActionHostError>,
+    },
+}
+
+/// Largest piece of a record one answer carries, before encoding.
+pub const MAX_RECORD_PIECE_BYTES: usize = 384 * 1024;
+
+/// Largest record a device fetches from another at all.
+pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Which record to read, and from where in its stored bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordQuery {
+    /// The room the record belongs to.
+    pub room: String,
+    /// The application whose record it is.
+    pub app: String,
+    /// The record's id in that room.
+    pub record: String,
+    /// Where in the stored document this piece starts.
+    pub offset: u64,
+}
+
+/// One piece of a stored record document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordPiece {
+    /// The whole document's length.
+    pub total: u64,
+    /// Where this piece starts.
+    pub offset: u64,
+    /// The piece, hex-encoded so the frame stays self-describing text.
+    bytes: String,
+}
+
+impl RecordPiece {
+    #[must_use]
+    pub fn new(total: u64, offset: u64, bytes: &[u8]) -> Self {
+        Self {
+            total,
+            offset,
+            bytes: hex(bytes),
+        }
+    }
+
+    /// The piece's bytes; `None` when they are not well-formed.
+    #[must_use]
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        if !self.bytes.len().is_multiple_of(2) || self.bytes.len() > MAX_RECORD_PIECE_BYTES * 2 {
+            return None;
+        }
+        (0..self.bytes.len())
+            .step_by(2)
+            .map(|at| {
+                self.bytes
+                    .get(at..at.saturating_add(2))
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            })
+            .collect()
+    }
 }
 
 impl RemoteActionMessage {
@@ -498,6 +623,7 @@ impl RemoteActionMessage {
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
+                | Self::RecordRequest { .. }
         )
     }
 }
@@ -621,10 +747,21 @@ pub fn serve<H: ActionHost + ?Sized>(
                 result: host.cancel(caller, &invocation),
             })
         }
+        // A record is read by the device that keeps it, never through an
+        // action host; a host asked for one says so.
+        RemoteActionMessage::RecordRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::RecordResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "records are read from the device that keeps them".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. } => return None,
+        | RemoteActionMessage::CancelResponse { .. }
+        | RemoteActionMessage::RecordResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -659,10 +796,17 @@ pub fn refuse(
             invocation: *invocation,
             result: Err(error),
         },
+        RemoteActionMessage::RecordRequest { correlation, .. } => {
+            RemoteActionMessage::RecordResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. } => return None,
+        | RemoteActionMessage::CancelResponse { .. }
+        | RemoteActionMessage::RecordResponse { .. } => return None,
     })
 }
 
@@ -1117,6 +1261,51 @@ mod tests {
     }
 
     #[test]
+    fn a_record_piece_round_trips_and_action_hosts_never_serve_records() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let request = RemoteActionMessage::RecordRequest {
+            correlation: 4,
+            query: RecordQuery {
+                room: "room".into(),
+                app: "dev.tilo.notes".into(),
+                record: "uuid:1".into(),
+                offset: 0,
+            },
+        };
+        assert!(request.is_request());
+        let answer = RemoteActionMessage::RecordResponse {
+            correlation: 4,
+            result: Ok(RecordPiece::new(256, 0, &bytes)),
+        };
+        let wire = RemoteActionFrame::new(answer.clone()).encode().unwrap();
+        let decoded = RemoteActionFrame::decode(&wire).unwrap().message;
+        assert_eq!(decoded, answer);
+        let RemoteActionMessage::RecordResponse {
+            result: Ok(piece), ..
+        } = decoded
+        else {
+            panic!("a record piece")
+        };
+        assert_eq!(piece.bytes(), Some(bytes));
+        assert!(matches!(
+            refuse(&request, ActionHostError::NotPermitted),
+            Some(RemoteActionMessage::RecordResponse {
+                correlation: 4,
+                result: Err(ActionHostError::NotPermitted)
+            })
+        ));
+    }
+
+    /// Every message round-trips through a frame, frames from another version are refused not
+    /// misread, and the wire names versions and messages explicitly.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn the_remote_wire_is_versioned_and_explicit() {
+        every_message_round_trips_through_a_frame();
+        frames_from_another_version_are_refused_not_misread();
+        the_wire_names_versions_and_messages_explicitly();
+    }
+
     fn every_message_round_trips_through_a_frame() {
         let invocation = InvocationId(uuid::Uuid::from_u128(7));
         let messages = request_messages(invocation)
@@ -1127,7 +1316,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn frames_from_another_version_are_refused_not_misread() {
         let mut frame = serde_json::to_value(RemoteActionFrame::new(
             RemoteActionMessage::CatalogueRequest {
@@ -1156,7 +1344,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn the_wire_names_versions_and_messages_explicitly() {
         let bytes = RemoteActionFrame::new(RemoteActionMessage::Cancel {
             invocation: InvocationId(uuid::Uuid::nil()),
@@ -1169,7 +1356,19 @@ mod tests {
         );
     }
 
+    /// A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
+    /// refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
+    /// the id until the start completes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn remote_invocations_run_at_most_once_per_owned_id() {
+        a_retried_invocation_reports_the_original_and_runs_once();
+        an_invocation_id_cannot_be_reused_or_borrowed();
+        a_refused_invocation_is_not_remembered();
+        the_ledger_forgets_oldest_invocations_past_capacity();
+        a_reservation_holds_the_id_until_the_start_completes();
+    }
+
     fn a_retried_invocation_reports_the_original_and_runs_once() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1185,7 +1384,6 @@ mod tests {
         assert_eq!(host.runs.get(), 1, "a retry after completion reports it");
     }
 
-    #[test]
     fn an_invocation_id_cannot_be_reused_or_borrowed() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1210,7 +1408,6 @@ mod tests {
         assert_eq!(host.runs.get(), 1);
     }
 
-    #[test]
     fn a_refused_invocation_is_not_remembered() {
         let mut ledger = InvocationLedger::<u32>::default();
         let request = archive(InvocationId::new());
@@ -1222,7 +1419,6 @@ mod tests {
         assert_eq!((*handle, admission), (5, Admission::Started));
     }
 
-    #[test]
     fn the_ledger_forgets_oldest_invocations_past_capacity() {
         let mut ledger = InvocationLedger::<u32>::with_capacity(2);
         let requests: Vec<_> = (0..3).map(|_| archive(InvocationId::new())).collect();
@@ -1233,7 +1429,18 @@ mod tests {
         assert_eq!(ledger.get(&alice(), &requests[2].invocation), Some(&2));
     }
 
+    /// Serve answers requests and ignores responses, typed arguments use the local invocation slot,
+    /// a remote device is the person its root names, and a refusal answers every request and nothing
+    /// else.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn serving_answers_each_request_as_the_person_the_device_belongs_to() {
+        serve_answers_requests_and_ignores_responses();
+        typed_arguments_use_the_local_invocation_slot();
+        a_remote_device_is_the_person_its_root_names();
+        a_refusal_answers_every_request_and_nothing_else();
+    }
+
     fn serve_answers_requests_and_ignores_responses() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1290,7 +1497,6 @@ mod tests {
         assert!(serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)).is_none());
     }
 
-    #[test]
     fn typed_arguments_use_the_local_invocation_slot() {
         let mut object = serde_json::Map::new();
         object.insert("n".into(), serde_json::json!(2));
@@ -1305,7 +1511,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_remote_device_is_the_person_its_root_names() {
         let caller = Caller::authenticated([0xAB; 32], [1; 32]);
         assert_eq!(
@@ -1320,7 +1525,6 @@ mod tests {
         assert_eq!(agent.device_public_key(), None);
     }
 
-    #[test]
     fn a_refusal_answers_every_request_and_nothing_else() {
         let error = ActionHostError::Unavailable {
             reason: "down".into(),
@@ -1361,7 +1565,6 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    #[test]
     fn a_reservation_holds_the_id_until_the_start_completes() {
         let mut ledger = InvocationLedger::<u32>::default();
         let request = archive(InvocationId::new());

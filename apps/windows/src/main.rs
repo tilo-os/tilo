@@ -38,7 +38,29 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             windows::app_root_open(std::path::Path::new(path))
         }))
 }
+
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            // A positional installer path still uses the legacy root factory.
+            _ => return true,
+        }
+    }
+    false
+}
+
 pub fn main() {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<windows::WindowsShell>();
+        return;
+    }
+
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.windows", live_root)
             .max_positionals(1)
@@ -77,7 +99,7 @@ mod tests {
     #[test]
     fn live_launch_accepts_the_published_resource_surface() {
         let surface = windows::app_root_offline();
-        let resources = surface.resources(&automerge::AutoCommit::new());
+        let resources = ui::resources::resources(surface.as_ref(), &automerge::AutoCommit::new());
         assert!(
             !resources.is_empty(),
             "Windows publishes a resource surface"

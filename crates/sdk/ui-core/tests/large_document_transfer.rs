@@ -13,9 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::{Duration, Instant};
-
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::collaboration::{CollabRequest, CollaborationManager};
 
@@ -36,26 +33,20 @@ fn payload(len: usize, seed: u64) -> Vec<u8> {
     out
 }
 
-fn receive(
-    peer: &mut CollaborationManager,
-    deadline: Duration,
-) -> Option<collab_types::DocumentMutation> {
-    let started = Instant::now();
-    while started.elapsed() < deadline {
-        for event in peer.poll() {
-            if let Some(result) = event.document_mutation() {
-                return Some(result.expect("a delivered document event decodes"));
-            }
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    None
+/// The next document mutation `peer` receives, which `what` describes.
+fn receive(peer: &mut CollaborationManager, what: &str) -> collab_types::DocumentMutation {
+    tilo_test_env::wait_for(what, || {
+        peer.poll().into_iter().find_map(|event| {
+            event
+                .document_mutation()
+                .map(|result| result.expect("a delivered document event decodes"))
+        })
+    })
 }
 
 fn connected_pair(broker: &TypedBroker) -> (CollaborationManager, CollaborationManager) {
     let mut sender = broker.manager("alice");
     let mut receiver = broker.manager("bob");
-    thread::sleep(Duration::from_millis(150));
     let _ = sender.poll();
     let _ = receiver.poll();
     (sender, receiver)
@@ -94,7 +85,6 @@ fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
         Box::new(Container::new()),
         broker.manager("holder"),
     );
-    thread::sleep(Duration::from_millis(150));
     holder.pump_collab_presence();
 
     let mut joiner = App::with_collaboration_manager(
@@ -107,17 +97,12 @@ fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
             .unwrap()
             .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec))
     };
-    let started = Instant::now();
-    while onboarded(&mut joiner).is_none() && started.elapsed() < Duration::from_secs(60) {
+    let arrived = tilo_test_env::wait_for("the late joiner's onboarded document body", || {
         holder.pump_collab_presence();
         joiner.pump_collab_presence();
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        onboarded(&mut joiner),
-        Some(body),
-        "the late joiner holds the whole document"
-    );
+        onboarded(&mut joiner)
+    });
+    assert!(arrived == body, "the late joiner holds the whole document");
     assert_eq!(joiner.document_sync_status(), None);
 }
 
@@ -144,8 +129,8 @@ fn an_over_limit_mutation_is_refused_explicitly_and_collaboration_continues() {
         .try_send(CollabRequest::document_incremental(after.clone()))
         .expect("later changes still flow");
     assert_eq!(
-        receive(&mut receiver, Duration::from_secs(30)),
-        Some(collab_types::DocumentMutation::Incremental(after)),
+        receive(&mut receiver, "the change after the refused one"),
+        collab_types::DocumentMutation::Incremental(after),
         "the peer sees the next change and nothing of the refused one"
     );
 }
@@ -171,8 +156,10 @@ fn large_edits_and_snapshots_replicate_between_two_peers() {
                 sender.send(request),
                 "a {len}-byte mutation must be handed to the transport"
             );
-            let arrived = receive(&mut receiver, Duration::from_secs(60))
-                .unwrap_or_else(|| panic!("a {len}-byte mutation (snapshot: {snapshot}) arrives"));
+            let arrived = receive(
+                &mut receiver,
+                &format!("the {len}-byte mutation (snapshot: {snapshot})"),
+            );
             match (snapshot, arrived) {
                 (true, collab_types::DocumentMutation::Snapshot(bytes))
                 | (false, collab_types::DocumentMutation::Incremental(bytes)) => {

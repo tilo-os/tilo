@@ -91,177 +91,191 @@ class AcceptanceTests(unittest.TestCase):
         with patch.object(accept.bundle, 'fetch'), patch.object(accept.final, 'verify', side_effect=replay or (lambda *a: copy.deepcopy(self.receipt))):
             return self.callback(self.intent, copy.deepcopy(self.run))
 
-    def test_success_requires_current_log_digest_and_canonical_replay(self):
-        result = self.invoke()
-        self.assertEqual(result['receipts'], {'x86_64': self.receipt_sha})
-        self.assertEqual(result['qualifier']['task_id'], 300)
-        self.assertEqual(result['qualifier']['handle'], 'current-task-handle')
-        self.assertEqual(result['artifacts'], {'x86_64': 400})
-        self.assertEqual(self.api.job_reads, 2)
-
-    def test_payload_scratch_is_released_between_architectures(self):
-        receipts, archives, artifacts, markers = {}, {}, [], []
-        for number, architecture in enumerate(('x86_64', 'aarch64'), 400):
-            receipt = copy.deepcopy(self.receipt)
-            receipt['architecture'] = architecture
-            for app in receipt['packages']:
-                app['file'] = app['file'].replace('x86_64', architecture)
-                app['isa'] = 'v3' if architecture == 'x86_64' else 'armv8-a'
-            raw = json.dumps(receipt).encode()
-            digest = hashlib.sha256(raw).hexdigest()
-            zipped = io.BytesIO()
-            with zipfile.ZipFile(zipped, 'w') as archive:
-                archive.writestr(f'tilo-apps-{architecture}.tar.gz', self.archive)
-                archive.writestr('final-publication-receipt.json', raw)
-                archive.writestr('assembly-provenance.json', '{}')
-            receipts[architecture], archives[number] = receipt, zipped.getvalue()
-            artifacts.append(dict(self.artifact, id=number, name=f'final-app-collection-{architecture}',
-                                  size_in_bytes=len(archives[number])))
-            markers.append(f"TILO_COORDINATOR_FINAL {self.intent['id']} 2 {architecture} {digest} "
-                           f"{receipt['collection']['sha256']} {len(self.archive)}\n")
-        self.intent['desired']['architectures'] = list(receipts)
-        self.run['event_payload'] = json.dumps({'ref': self.run['commit_sha'], 'inputs': accept.dispatch_inputs(self.intent)})
-        self.log = ''.join(markers).encode()
-        call = self.api.call
-        self.api.call = lambda path: copy.deepcopy(artifacts) if '/artifacts?' in path else call(path)
-        previous = []
-
-        def download(path, output):
-            if previous:
-                self.assertFalse(previous[-1].exists(), 'previous payload retained during next download')
-            output.write_bytes(archives[int(path.split('/')[-2])])
-
-        def replay(tree, *args):
-            architecture = args[-1]
-            archive = tree / f'tilo-apps-{architecture}.tar.gz'
-            self.assertTrue(archive.samefile(tree.parent / 'payload' / archive.name))
-            previous.append(tree.parent)
-            return copy.deepcopy(receipts[architecture])
-
-        self.callback.read.get = download
-        result = self.invoke(replay)
-        self.assertEqual(set(result['receipts']), set(receipts))
-        self.assertEqual(len(previous), 2)
-        self.assertTrue(all(not path.exists() for path in previous))
-
-    def test_stale_attempt_or_log_is_rejected(self):
-        self.stale = True
-        with self.assertRaisesRegex(ValueError, 'changed during'):
-            self.invoke()
-        self.stale = False
-        self.log = self.log.replace(b' 2 x86_64 ', b' 1 x86_64 ')
-        with self.assertRaisesRegex(ValueError, 'digest markers'):
-            self.invoke()
-
-    def test_swapped_artifact_cannot_authenticate_itself_with_provenance(self):
-        self.receipt['source_sha'] = 'd' * 40
-        raw = json.dumps(self.receipt).encode()
-        swapped = io.BytesIO()
-        with zipfile.ZipFile(swapped, 'w') as archive:
-            archive.writestr('tilo-apps-x86_64.tar.gz', self.archive)
-            archive.writestr('final-publication-receipt.json', raw)
-            archive.writestr('assembly-provenance.json', json.dumps({'source_sha': 'a' * 40, 'run_id': 100}))
-        self.zip = swapped.getvalue()
-        with self.assertRaisesRegex(ValueError, 'trusted digest mismatch'):
-            self.invoke()
-
-    def test_partial_architecture_coverage_rejected(self):
-        self.intent['desired']['architectures'].append('aarch64')
-        self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
-        with self.assertRaisesRegex(ValueError, 'digest markers'):
-            self.invoke()
-
-    def test_canonical_failure_and_changed_verified_payload_rejected(self):
-        def failed(*args):
-            raise ValueError('canonical signature failed')
-        with self.assertRaisesRegex(ValueError, 'canonical signature failed'):
-            self.invoke(failed)
-        def changed(*args):
-            receipt = copy.deepcopy(self.receipt)
-            receipt['packages'][0]['sha256'] = 'f' * 64
-            return receipt
-        with self.assertRaisesRegex(ValueError, 'canonical replay differs'):
-            self.invoke(changed)
-
-    def test_final_policy_mismatch_and_rotation_cannot_advance_baseline(self):
-        self.platform_policy['final_receipt_policy_sha256'] = 'f' * 64
-        with self.assertRaisesRegex(ValueError, 'not bound'):
-            self.invoke()
-        self.platform_policy['final_receipt_policy_sha256'] = self.policy_sha
-        def rotate(*args):
-            self.platform_policy['final_receipt_policy_sha256'] = 'f' * 64
-            return copy.deepcopy(self.receipt)
-        with self.assertRaisesRegex(ValueError, 'binding changed'):
-            self.invoke(rotate)
-
-    def test_actual_product_api_wires_bounded_log_transport(self):
-        root = Path(product.__file__).resolve().parents[1]
-        trusted = {path: (root / path).read_bytes() for path in product.REQUIRED_PATHS}
-        self.platform_policy['trusted_files'] = {path: hashlib.sha256(raw).hexdigest() for path, raw in trusted.items()}
-        self.intent['desired']['policy_sha256'] = product.core.receipt_key(self.platform_policy)
-        self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
-        actual = product.ProductForgejo(self.platform_policy)
-        def request(path):
-            if path == 'repos/tilo/tilo':
-                return {'id': 23, 'full_name': 'tilo/tilo'}
-            if '/contents/' in path:
-                source = path.split('/contents/', 1)[1].split('?', 1)[0]
-                if source == '':
-                    return [{'name': '.cargo', 'type': 'dir'}]
-                if source == '.cargo':
-                    return [{'name': 'config.toml', 'type': 'file'}]
-                return {'type': 'file', 'content': base64.b64encode(trusted[source]).decode()}
-            if path.endswith('/runs/100'):
-                return copy.deepcopy(self.run)
-            return self.api.call(path)
-        self.callback.api = actual
-        with patch.object(actual, 'call', side_effect=request), patch.object(product, 'bounded_output', return_value=self.log) as network:
+    def test_acceptance_requires_current_complete_canonically_replayed_evidence(self):
+        with self.subTest(phase='success requires current log digest and canonical replay'):
+            self.doCleanups()
+            self.setUp()
             result = self.invoke()
-        self.assertEqual(result['receipts']['x86_64'], self.receipt_sha)
-        network.assert_called_once_with(['fgj', '--hostname', 'code.tilo.so', 'api',
-                                        'repos/tilo/tilo/actions/jobs/200/logs'], 8 * 1024**2)
+            self.assertEqual(result['receipts'], {'x86_64': self.receipt_sha})
+            self.assertEqual(result['qualifier']['task_id'], 300)
+            self.assertEqual(result['qualifier']['handle'], 'current-task-handle')
+            self.assertEqual(result['artifacts'], {'x86_64': 400})
+            self.assertEqual(self.api.job_reads, 2)
+        with self.subTest(phase='payload scratch is released between architectures'):
+            self.doCleanups()
+            self.setUp()
+            receipts, archives, artifacts, markers = {}, {}, [], []
+            for number, architecture in enumerate(('x86_64', 'aarch64'), 400):
+                receipt = copy.deepcopy(self.receipt)
+                receipt['architecture'] = architecture
+                for app in receipt['packages']:
+                    app['file'] = app['file'].replace('x86_64', architecture)
+                    app['isa'] = 'v3' if architecture == 'x86_64' else 'armv8-a'
+                raw = json.dumps(receipt).encode()
+                digest = hashlib.sha256(raw).hexdigest()
+                zipped = io.BytesIO()
+                with zipfile.ZipFile(zipped, 'w') as archive:
+                    archive.writestr(f'tilo-apps-{architecture}.tar.gz', self.archive)
+                    archive.writestr('final-publication-receipt.json', raw)
+                    archive.writestr('assembly-provenance.json', '{}')
+                receipts[architecture], archives[number] = receipt, zipped.getvalue()
+                artifacts.append(dict(self.artifact, id=number, name=f'final-app-collection-{architecture}',
+                                      size_in_bytes=len(archives[number])))
+                markers.append(f"TILO_COORDINATOR_FINAL {self.intent['id']} 2 {architecture} {digest} "
+                               f"{receipt['collection']['sha256']} {len(self.archive)}\n")
+            self.intent['desired']['architectures'] = list(receipts)
+            self.run['event_payload'] = json.dumps({'ref': self.run['commit_sha'], 'inputs': accept.dispatch_inputs(self.intent)})
+            self.log = ''.join(markers).encode()
+            call = self.api.call
+            self.api.call = lambda path: copy.deepcopy(artifacts) if '/artifacts?' in path else call(path)
+            previous = []
 
-    def test_qualifier_emits_marker_only_after_actual_verify_returns(self):
-        plan = self.root / 'plan.json'
-        plan.write_text('{"catalog": []}')
-        output = self.root / 'output'
-        output.mkdir()
-        args = ['assembler', '--built', str(self.root), '--plan', str(plan), '--output', str(output),
-                '--work', str(self.root / 'work'), '--pkg-binary', 'pkg', '--runtime-binary', 'runtime',
-                '--trust-policy', str(self.policy), '--source-sha', 'a' * 40,
-                '--builder-image', self.intent['desired']['builder_image'], '--collection', 'default',
-                '--architecture', 'x86_64', '--trust-policy-sha256', self.policy_sha,
-                '--coordinator-policy-sha256', self.intent['desired']['policy_sha256'],
-                '--intent', self.intent['id'], '--run-id', '100', '--source-epoch', '0',
-                '--qualifier-attempt', '2', '--selected-apps', '']
-        def success(*unused):
-            (output / 'final-publication-receipt.json').write_text(json.dumps(self.receipt))
-            return self.receipt
-        for failed in (True, False):
-            args[args.index('--work') + 1] = str(self.root / ('failure-work' if failed else 'success-work'))
-            log = io.StringIO()
-            with patch.object(sys, 'argv', args), patch.object(assembler.final, 'preflight', return_value=({}, None)), \
-                 patch.object(assembler.subprocess, 'run'), patch.object(assembler.final, 'verify',
-                    side_effect=ValueError('canonical failure') if failed else success), redirect_stdout(log):
-                if failed:
-                    with self.assertRaisesRegex(ValueError, 'canonical failure'):
+            def download(path, output):
+                if previous:
+                    self.assertFalse(previous[-1].exists(), 'previous payload retained during next download')
+                output.write_bytes(archives[int(path.split('/')[-2])])
+
+            def replay(tree, *args):
+                architecture = args[-1]
+                archive = tree / f'tilo-apps-{architecture}.tar.gz'
+                self.assertTrue(archive.samefile(tree.parent / 'payload' / archive.name))
+                previous.append(tree.parent)
+                return copy.deepcopy(receipts[architecture])
+
+            self.callback.read.get = download
+            result = self.invoke(replay)
+            self.assertEqual(set(result['receipts']), set(receipts))
+            self.assertEqual(len(previous), 2)
+            self.assertTrue(all(not path.exists() for path in previous))
+        with self.subTest(phase='stale attempt or log is rejected'):
+            self.doCleanups()
+            self.setUp()
+            self.stale = True
+            with self.assertRaisesRegex(ValueError, 'changed during'):
+                self.invoke()
+            self.stale = False
+            self.log = self.log.replace(b' 2 x86_64 ', b' 1 x86_64 ')
+            with self.assertRaisesRegex(ValueError, 'digest markers'):
+                self.invoke()
+        with self.subTest(phase='swapped artifact cannot authenticate itself with provenance'):
+            self.doCleanups()
+            self.setUp()
+            self.receipt['source_sha'] = 'd' * 40
+            raw = json.dumps(self.receipt).encode()
+            swapped = io.BytesIO()
+            with zipfile.ZipFile(swapped, 'w') as archive:
+                archive.writestr('tilo-apps-x86_64.tar.gz', self.archive)
+                archive.writestr('final-publication-receipt.json', raw)
+                archive.writestr('assembly-provenance.json', json.dumps({'source_sha': 'a' * 40, 'run_id': 100}))
+            self.zip = swapped.getvalue()
+            with self.assertRaisesRegex(ValueError, 'trusted digest mismatch'):
+                self.invoke()
+        with self.subTest(phase='partial architecture coverage rejected'):
+            self.doCleanups()
+            self.setUp()
+            self.intent['desired']['architectures'].append('aarch64')
+            self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
+            with self.assertRaisesRegex(ValueError, 'digest markers'):
+                self.invoke()
+        with self.subTest(phase='canonical failure and changed verified payload rejected'):
+            self.doCleanups()
+            self.setUp()
+            def failed(*args):
+                raise ValueError('canonical signature failed')
+            with self.assertRaisesRegex(ValueError, 'canonical signature failed'):
+                self.invoke(failed)
+            def changed(*args):
+                receipt = copy.deepcopy(self.receipt)
+                receipt['packages'][0]['sha256'] = 'f' * 64
+                return receipt
+            with self.assertRaisesRegex(ValueError, 'canonical replay differs'):
+                self.invoke(changed)
+        with self.subTest(phase='final policy mismatch and rotation cannot advance baseline'):
+            self.doCleanups()
+            self.setUp()
+            self.platform_policy['final_receipt_policy_sha256'] = 'f' * 64
+            with self.assertRaisesRegex(ValueError, 'not bound'):
+                self.invoke()
+            self.platform_policy['final_receipt_policy_sha256'] = self.policy_sha
+            def rotate(*args):
+                self.platform_policy['final_receipt_policy_sha256'] = 'f' * 64
+                return copy.deepcopy(self.receipt)
+            with self.assertRaisesRegex(ValueError, 'binding changed'):
+                self.invoke(rotate)
+        with self.subTest(phase='wrong dispatch and foreign run artifact rejected'):
+            self.doCleanups()
+            self.setUp()
+            self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': {}})
+            with self.assertRaisesRegex(ValueError, 'trusted dispatch'):
+                self.invoke()
+            self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
+            self.artifact['run_id'] = 999
+            with self.assertRaisesRegex(ValueError, 'artifact metadata'):
+                self.invoke()
+
+    def test_product_api_and_qualifier_use_bounded_logs_and_mark_only_after_verify(self):
+        with self.subTest(phase='actual product api wires bounded log transport'):
+            self.doCleanups()
+            self.setUp()
+            root = Path(product.__file__).resolve().parents[1]
+            trusted = {path: (root / path).read_bytes() for path in product.REQUIRED_PATHS}
+            self.platform_policy['trusted_files'] = {path: hashlib.sha256(raw).hexdigest() for path, raw in trusted.items()}
+            self.intent['desired']['policy_sha256'] = product.core.receipt_key(self.platform_policy)
+            self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
+            actual = product.ProductForgejo(self.platform_policy)
+            def request(path):
+                if path == 'repos/tilo/tilo':
+                    return {'id': 23, 'full_name': 'tilo/tilo'}
+                if '/contents/' in path:
+                    source = path.split('/contents/', 1)[1].split('?', 1)[0]
+                    if source == '':
+                        return [{'name': '.cargo', 'type': 'dir'}]
+                    if source == '.cargo':
+                        return [{'name': 'config.toml', 'type': 'file'}]
+                    return {'type': 'file', 'content': base64.b64encode(trusted[source]).decode()}
+                if path.endswith('/runs/100'):
+                    return copy.deepcopy(self.run)
+                return self.api.call(path)
+            self.callback.api = actual
+            with patch.object(actual, 'call', side_effect=request), patch.object(product, 'bounded_output', return_value=self.log) as network:
+                result = self.invoke()
+            self.assertEqual(result['receipts']['x86_64'], self.receipt_sha)
+            network.assert_called_once_with(['fgj', '--hostname', 'code.tilo.so', 'api',
+                                            'repos/tilo/tilo/actions/jobs/200/logs'], 8 * 1024**2)
+        with self.subTest(phase='qualifier emits marker only after actual verify returns'):
+            self.doCleanups()
+            self.setUp()
+            plan = self.root / 'plan.json'
+            plan.write_text('{"catalog": []}')
+            output = self.root / 'output'
+            output.mkdir()
+            args = ['assembler', '--built', str(self.root), '--plan', str(plan), '--output', str(output),
+                    '--work', str(self.root / 'work'), '--pkg-binary', 'pkg', '--runtime-binary', 'runtime',
+                    '--trust-policy', str(self.policy), '--source-sha', 'a' * 40,
+                    '--builder-image', self.intent['desired']['builder_image'], '--collection', 'default',
+                    '--architecture', 'x86_64', '--trust-policy-sha256', self.policy_sha,
+                    '--coordinator-policy-sha256', self.intent['desired']['policy_sha256'],
+                    '--intent', self.intent['id'], '--run-id', '100', '--source-epoch', '0',
+                    '--qualifier-attempt', '2', '--selected-apps', '']
+            def success(*unused):
+                (output / 'final-publication-receipt.json').write_text(json.dumps(self.receipt))
+                return self.receipt
+            for failed in (True, False):
+                args[args.index('--work') + 1] = str(self.root / ('failure-work' if failed else 'success-work'))
+                log = io.StringIO()
+                with patch.object(sys, 'argv', args), patch.object(assembler.final, 'preflight', return_value=({}, None)), \
+                     patch.object(assembler.subprocess, 'run'), patch.object(assembler.final, 'verify',
+                        side_effect=ValueError('canonical failure') if failed else success), redirect_stdout(log):
+                    if failed:
+                        with self.assertRaisesRegex(ValueError, 'canonical failure'):
+                            assembler.main()
+                    else:
                         assembler.main()
+                if failed:
+                    self.assertNotIn('TILO_COORDINATOR_FINAL', log.getvalue())
                 else:
-                    assembler.main()
-            if failed:
-                self.assertNotIn('TILO_COORDINATOR_FINAL', log.getvalue())
-            else:
-                bound = accept.markers(log.getvalue().encode(), self.intent['id'], 2, ['x86_64'])
-                self.assertEqual(bound['x86_64'][0], self.receipt_sha)
-
-    def test_wrong_dispatch_and_foreign_run_artifact_rejected(self):
-        self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': {}})
-        with self.assertRaisesRegex(ValueError, 'trusted dispatch'):
-            self.invoke()
-        self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
-        self.artifact['run_id'] = 999
-        with self.assertRaisesRegex(ValueError, 'artifact metadata'):
-            self.invoke()
+                    bound = accept.markers(log.getvalue().encode(), self.intent['id'], 2, ['x86_64'])
+                    self.assertEqual(bound['x86_64'][0], self.receipt_sha)
 
 
 if __name__ == '__main__':

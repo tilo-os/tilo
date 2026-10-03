@@ -140,7 +140,7 @@ impl ComputeContentStore for FileComputeContentStore {
         if path.exists() {
             return self.get(digest).map(|_| ());
         }
-        atomic_file::write(&path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())
     }
 }
 
@@ -650,152 +650,152 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_content_store_rejects_digest_substitution() {
-        let root = tempfile::tempdir().unwrap();
-        let store = FileComputeContentStore::open(root.path().join("content")).unwrap();
-        let bytes = b"bounded content";
-        let digest = *blake3::hash(bytes).as_bytes();
-        store.put(digest, bytes).unwrap();
-        assert_eq!(store.get(digest).unwrap(), Some(bytes.to_vec()));
-        fs::write(store.path_for(digest), b"substitution").unwrap();
-        assert!(store.get(digest).is_err());
-    }
-
-    #[test]
-    fn log_tail_is_bounded_to_latest_diagnostics() {
-        let bytes = (0..MAX_COMPUTE_LOG_BYTES + 9)
-            .map(|index| u8::try_from(index % 251).unwrap())
-            .collect::<Vec<_>>();
-        let expected = bytes[9..].to_vec();
-        assert_eq!(bounded_log(bytes), expected);
-    }
-
-    #[test]
-    fn readiness_is_withdrawn_when_owner_stops() {
-        let readiness = Arc::new(AtomicBool::new(true));
-        drop(ReadinessGuard(Arc::clone(&readiness)));
-        assert!(!readiness.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn health_regression_requires_withdrawal() {
-        let healthy = WorkerHealth {
-            apps: BTreeSet::from(["org.tilo.Compute".into()]),
-            power: PowerAvailability::External,
-        };
-        let constrained = WorkerHealth {
-            apps: healthy.apps.clone(),
-            power: PowerAvailability::Battery(10),
-        };
-        assert!(health_unchanged(&healthy, &healthy));
-        assert!(!health_unchanged(&healthy, &constrained));
-    }
-
-    #[test]
-    fn cancellation_requires_exact_active_route() {
-        let binding = ComputeJobBinding {
-            workspace_id: 7,
-            job_id: [8; 16],
-            requester: [9; 32],
-            worker: [10; 32],
-        };
-        let cancellation = CaptureCancellation::default();
-        let active = ActiveJobs {
-            by_job_id: HashMap::from([(
-                binding.job_id,
-                ActiveJob {
-                    binding: binding.clone(),
-                    cancellation: cancellation.clone(),
-                },
-            )]),
-        };
-        let mut forged = binding.clone();
-        forged.workspace_id = 11;
-        assert!(cancel_active(&active, &forged).is_err());
-        assert!(cancel_active(&active, &binding).unwrap());
-        assert!(cancellation.is_cancelled());
-    }
-
-    #[test]
-    fn shutdown_cancels_all_active_work_and_clears_exact_routes() {
-        let first = ComputeJobBinding {
-            workspace_id: 7,
-            job_id: [1; 16],
-            requester: [2; 32],
-            worker: [3; 32],
-        };
-        let second = ComputeJobBinding {
-            workspace_id: 8,
-            job_id: [4; 16],
-            requester: [5; 32],
-            worker: [6; 32],
-        };
-        let first_cancellation = CaptureCancellation::default();
-        let second_cancellation = CaptureCancellation::default();
-        let mut active = ActiveJobs::default();
-        active.insert(
-            first.job_id,
-            ActiveJob {
-                binding: first,
-                cancellation: first_cancellation.clone(),
-            },
-        );
-        active.insert(
-            second.job_id,
-            ActiveJob {
-                binding: second,
-                cancellation: second_cancellation.clone(),
-            },
-        );
-
-        assert_eq!(active.cancel_all(), 2);
-        assert!(active.is_empty());
-        assert!(first_cancellation.is_cancelled());
-        assert!(second_cancellation.is_cancelled());
-    }
-
-    #[test]
-    fn dropping_active_registry_revokes_running_work() {
-        let cancellation = CaptureCancellation::default();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn compute_worker_state_is_bounded_withdrawn_and_revoked_with_its_owner() {
+        // Phase `file_content_store_rejects_digest_substitution`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = FileComputeContentStore::open(root.path().join("content")).unwrap();
+            let bytes = b"bounded content";
+            let digest = *blake3::hash(bytes).as_bytes();
+            store.put(digest, bytes).unwrap();
+            assert_eq!(store.get(digest).unwrap(), Some(bytes.to_vec()));
+            fs::write(store.path_for(digest), b"substitution").unwrap();
+            assert!(store.get(digest).is_err());
+        }
+        // Phase `log_tail_is_bounded_to_latest_diagnostics`.
+        {
+            let bytes = (0..MAX_COMPUTE_LOG_BYTES + 9)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect::<Vec<_>>();
+            let expected = bytes[9..].to_vec();
+            assert_eq!(bounded_log(bytes), expected);
+        }
+        // Phase `readiness_is_withdrawn_when_owner_stops`.
+        {
+            let readiness = Arc::new(AtomicBool::new(true));
+            drop(ReadinessGuard(Arc::clone(&readiness)));
+            assert!(!readiness.load(Ordering::Acquire));
+        }
+        // Phase `health_regression_requires_withdrawal`.
+        {
+            let healthy = WorkerHealth {
+                apps: BTreeSet::from(["org.tilo.Compute".into()]),
+                power: PowerAvailability::External,
+            };
+            let constrained = WorkerHealth {
+                apps: healthy.apps.clone(),
+                power: PowerAvailability::Battery(10),
+            };
+            assert!(health_unchanged(&healthy, &healthy));
+            assert!(!health_unchanged(&healthy, &constrained));
+        }
+        // Phase `cancellation_requires_exact_active_route`.
         {
             let binding = ComputeJobBinding {
-                workspace_id: 9,
-                job_id: [10; 16],
-                requester: [11; 32],
-                worker: [12; 32],
+                workspace_id: 7,
+                job_id: [8; 16],
+                requester: [9; 32],
+                worker: [10; 32],
             };
+            let cancellation = CaptureCancellation::default();
+            let active = ActiveJobs {
+                by_job_id: HashMap::from([(
+                    binding.job_id,
+                    ActiveJob {
+                        binding: binding.clone(),
+                        cancellation: cancellation.clone(),
+                    },
+                )]),
+            };
+            let mut forged = binding.clone();
+            forged.workspace_id = 11;
+            assert!(cancel_active(&active, &forged).is_err());
+            assert!(cancel_active(&active, &binding).unwrap());
+            assert!(cancellation.is_cancelled());
+        }
+        // Phase `shutdown_cancels_all_active_work_and_clears_exact_routes`.
+        {
+            let first = ComputeJobBinding {
+                workspace_id: 7,
+                job_id: [1; 16],
+                requester: [2; 32],
+                worker: [3; 32],
+            };
+            let second = ComputeJobBinding {
+                workspace_id: 8,
+                job_id: [4; 16],
+                requester: [5; 32],
+                worker: [6; 32],
+            };
+            let first_cancellation = CaptureCancellation::default();
+            let second_cancellation = CaptureCancellation::default();
             let mut active = ActiveJobs::default();
             active.insert(
-                binding.job_id,
+                first.job_id,
                 ActiveJob {
-                    binding,
-                    cancellation: cancellation.clone(),
+                    binding: first,
+                    cancellation: first_cancellation.clone(),
                 },
             );
-        }
-        assert!(cancellation.is_cancelled());
-    }
-
-    #[test]
-    fn inaccessible_outputs_are_never_advertised_as_retrievable() {
-        let result = ComputeJobResult {
-            lifecycle: crate::compute::ComputeJobLifecycle {
-                job_id: [4; 16],
-                sequence: 2,
-                phase: ComputeJobPhase::Completed {
-                    outputs: vec![[3; 32]],
+            active.insert(
+                second.job_id,
+                ActiveJob {
+                    binding: second,
+                    cancellation: second_cancellation.clone(),
                 },
-            },
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        };
-        let (phase, log) = sanitize_result(Ok(result));
-        assert_eq!(
-            phase,
-            ComputeJobPhase::Failed {
-                code: "content_plane_unavailable".into()
+            );
+
+            assert_eq!(active.cancel_all(), 2);
+            assert!(active.is_empty());
+            assert!(first_cancellation.is_cancelled());
+            assert!(second_cancellation.is_cancelled());
+        }
+        // Phase `dropping_active_registry_revokes_running_work`.
+        {
+            let cancellation = CaptureCancellation::default();
+            {
+                let binding = ComputeJobBinding {
+                    workspace_id: 9,
+                    job_id: [10; 16],
+                    requester: [11; 32],
+                    worker: [12; 32],
+                };
+                let mut active = ActiveJobs::default();
+                active.insert(
+                    binding.job_id,
+                    ActiveJob {
+                        binding,
+                        cancellation: cancellation.clone(),
+                    },
+                );
             }
-        );
-        assert!(String::from_utf8(log).unwrap().contains("output retrieval"));
+            assert!(cancellation.is_cancelled());
+        }
+        // Phase `inaccessible_outputs_are_never_advertised_as_retrievable`.
+        {
+            let result = ComputeJobResult {
+                lifecycle: crate::compute::ComputeJobLifecycle {
+                    job_id: [4; 16],
+                    sequence: 2,
+                    phase: ComputeJobPhase::Completed {
+                        outputs: vec![[3; 32]],
+                    },
+                },
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            };
+            let (phase, log) = sanitize_result(Ok(result));
+            assert_eq!(
+                phase,
+                ComputeJobPhase::Failed {
+                    code: "content_plane_unavailable".into()
+                }
+            );
+            assert!(String::from_utf8(log).unwrap().contains("output retrieval"));
+        }
     }
 }

@@ -29,7 +29,7 @@ containerfile_copy_contract() {
   file="$1" wanted_stage="${2:-}"
   containerfile_instructions "$file" | awk -v wanted="$wanted_stage" '
     $1 == "FROM" { current = $NF; next }
-    $1 == "COPY" && (wanted == "" || current == wanted) {
+    $1 == "COPY" && (wanted == "" || current == wanted || current == wanted "-base") {
       stage = "context"; first = 2
       while (first <= NF && substr($first, 1, 2) == "--") {
         if ($first ~ /^--from=/) { stage = $first; sub(/^--from=/, "", stage) }
@@ -93,7 +93,7 @@ containerfile_expanded_rootfs_copy_contract() {
   containerfile_copy_contract "$file" rootfs |
     while IFS=$'\t' read -r stage source destination; do
       case "$stage:$source:$destination" in
-        desktop-binaries:/:/|remote-capture-files:/:/|rollback-files:/:/|recovery-files:/:/|codec-pack-files:/:/)
+        desktop-binaries:/:/|remote-capture-files:/:/|rollback-files:/:/|recovery-files:/:/|extension-files:/:/)
           containerfile_copy_contract "$file" "$stage"
           ;;
         *) printf '%s\t%s\t%s\n' "$stage" "$source" "$destination" ;;

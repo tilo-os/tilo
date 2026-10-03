@@ -37,6 +37,32 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Account type ids of the cloud storage accounts Settings connects and the
+/// storage daemon mounts. One definition, so the two sides cannot disagree.
+pub mod cloud_types {
+    /// Google Drive.
+    pub const GOOGLE_DRIVE: &str = "google-drive";
+    /// `OneDrive` (personal or work/school) and `SharePoint` libraries.
+    pub const ONEDRIVE: &str = "onedrive";
+    /// Dropbox.
+    pub const DROPBOX: &str = "dropbox";
+    /// `iCloud` Drive.
+    pub const ICLOUD_DRIVE: &str = "icloud-drive";
+    /// Nextcloud (files, calendars, contacts).
+    pub const NEXTCLOUD: &str = "nextcloud";
+    /// A plain `WebDAV` server.
+    pub const WEBDAV: &str = "webdav";
+
+    /// The key of an account's resolved mount configuration in its
+    /// non-secret `config`: the provider crate's own serde configuration.
+    pub const MOUNT_CONFIG_KEY: &str = "mount";
+}
+
+pub mod handoff;
+pub use handoff::{
+    CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
+    HandoffStore, RefreshError,
+};
 pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
@@ -231,7 +257,7 @@ impl AccountStore {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
-        atomic_file::write(&path, json.as_bytes())
+        tilo_files::native::atomic::write(&path, json.as_bytes())
     }
 
     /// Every account in the store, in insertion order.
@@ -330,18 +356,7 @@ impl AccountStore {
 /// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Like Settings, ignore empty or relative XDG paths.
 pub fn config_root() -> Option<PathBuf> {
-    config_root_from(std::env::var_os("XDG_CONFIG_HOME"), xdg_paths::home())
-}
-
-fn config_root_from(
-    xdg_config_home: Option<std::ffi::OsString>,
-    home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    let base = xdg_config_home
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
-        .or_else(|| home.map(|h| h.join(".config")))?;
-    Some(base.join("tilo"))
+    Some(xdg_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// The accounts directory under a config root (`root/accounts`).
@@ -390,86 +405,80 @@ mod tests {
     }
 
     #[test]
-    fn config_root_ignores_unusable_xdg_values() {
-        let home = temp_root();
-        for xdg in [None, Some("".into()), Some("relative-config".into())] {
+    fn store_upserts_by_id_and_tracks_the_active_account_per_type() {
+        // Phase `upsert_replaces_by_id_and_lists_by_type`.
+        {
+            let mut store = AccountStore::new();
+            store.upsert(email("a@x.example", "imap.x"));
+            store.upsert(email("b@y.example", "imap.y"));
+            let mut cal = Account::new("cal-1", "caldav");
+            cal.display_name = "Work".into();
+            store.upsert(cal);
+
+            assert_eq!(store.list(&"email".into()).len(), 2);
+            assert_eq!(store.list(&"caldav".into()).len(), 1);
+
+            // Upsert by id replaces in place, does not append.
+            store.upsert(email("a@x.example", "imap.new"));
+            assert_eq!(store.list(&"email".into()).len(), 2);
             assert_eq!(
-                config_root_from(xdg, Some(home.clone())),
-                Some(home.join(".config/tilo")),
+                store
+                    .get(&"a@x.example".into())
+                    .unwrap()
+                    .config_as::<DemoConfig>()
+                    .unwrap()
+                    .host,
+                "imap.new"
             );
         }
-        assert_eq!(config_root_from(Some("relative-config".into()), None), None);
+
+        // Phase `active_defaults_to_first_and_follows_selection_and_removal`.
+        {
+            let mut store = AccountStore::new();
+            store.upsert(email("a@x.example", "imap.x"));
+            store.upsert(email("b@y.example", "imap.y"));
+            let email_ty: AccountTypeId = "email".into();
+
+            // First account of a type is active by default.
+            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
+            // Explicit selection wins.
+            store.set_active(&email_ty, &"b@y.example".into());
+            assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());
+            // Removing the active account falls back to a remaining one.
+            assert!(store.remove(&"b@y.example".into()));
+            assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
+        }
     }
 
     #[test]
-    fn upsert_replaces_by_id_and_lists_by_type() {
-        let mut store = AccountStore::new();
-        store.upsert(email("a@x.example", "imap.x"));
-        store.upsert(email("b@y.example", "imap.y"));
-        let mut cal = Account::new("cal-1", "caldav");
-        cal.display_name = "Work".into();
-        store.upsert(cal);
+    fn store_round_trips_through_disk_without_carrying_a_secret() {
+        // Phase `store_round_trips_through_disk`.
+        {
+            let root = temp_root();
+            let mut store = AccountStore::new();
+            store.upsert(email("a@x.example", "imap.x"));
+            store.set_active(&"email".into(), &"a@x.example".into());
+            store.save_in(&root).expect("save");
 
-        assert_eq!(store.list(&"email".into()).len(), 2);
-        assert_eq!(store.list(&"caldav".into()).len(), 1);
+            let back = AccountStore::load_in(&root);
+            assert_eq!(back, store);
+            // Pretty JSON on disk.
+            let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
+            assert!(raw.contains('\n'), "the store is written as pretty JSON");
+            std::fs::remove_dir_all(&root).ok();
+        }
 
-        // Upsert by id replaces in place, does not append.
-        store.upsert(email("a@x.example", "imap.new"));
-        assert_eq!(store.list(&"email".into()).len(), 2);
-        assert_eq!(
-            store
-                .get(&"a@x.example".into())
-                .unwrap()
-                .config_as::<DemoConfig>()
-                .unwrap()
-                .host,
-            "imap.new"
-        );
-    }
-
-    #[test]
-    fn active_defaults_to_first_and_follows_selection_and_removal() {
-        let mut store = AccountStore::new();
-        store.upsert(email("a@x.example", "imap.x"));
-        store.upsert(email("b@y.example", "imap.y"));
-        let email_ty: AccountTypeId = "email".into();
-
-        // First account of a type is active by default.
-        assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-        // Explicit selection wins.
-        store.set_active(&email_ty, &"b@y.example".into());
-        assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());
-        // Removing the active account falls back to a remaining one.
-        assert!(store.remove(&"b@y.example".into()));
-        assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-    }
-
-    #[test]
-    fn store_round_trips_through_disk() {
-        let root = temp_root();
-        let mut store = AccountStore::new();
-        store.upsert(email("a@x.example", "imap.x"));
-        store.set_active(&"email".into(), &"a@x.example".into());
-        store.save_in(&root).expect("save");
-
-        let back = AccountStore::load_in(&root);
-        assert_eq!(back, store);
-        // Pretty JSON on disk.
-        let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
-        assert!(raw.contains('\n'), "the store is written as pretty JSON");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn account_config_carries_no_secret_by_construction() {
-        // The envelope has no secret field; a type's config is plain data, so persisting a store
-        // cannot leak a credential.
-        let root = temp_root();
-        let mut store = AccountStore::new();
-        store.upsert(email("a@x.example", "imap.x"));
-        store.save_in(&root).unwrap();
-        let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
-        assert!(!raw.to_lowercase().contains("password"));
-        std::fs::remove_dir_all(&root).ok();
+        // Phase `account_config_carries_no_secret_by_construction`.
+        {
+            // The envelope has no secret field; a type's config is plain data, so persisting a store
+            // cannot leak a credential.
+            let root = temp_root();
+            let mut store = AccountStore::new();
+            store.upsert(email("a@x.example", "imap.x"));
+            store.save_in(&root).unwrap();
+            let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
+            assert!(!raw.to_lowercase().contains("password"));
+            std::fs::remove_dir_all(&root).ok();
+        }
     }
 }

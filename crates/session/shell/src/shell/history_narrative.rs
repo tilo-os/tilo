@@ -277,72 +277,80 @@ mod tests {
     }
 
     #[test]
-    fn strict_json_response_preserves_grounding_ids() {
-        let raw = r#"{"text":"Ada refined the brief.","source_ids":["01010101010101010101010101010101"]}"#;
-        let parsed = parse_response(raw, "local-test").expect("valid response");
-        assert_eq!(parsed.text, "Ada refined the brief.");
-        assert_eq!(parsed.source_ids, vec![ui::widget::HistoryEntryId([1; 16])]);
-        assert_eq!(parsed.generator, "ollama:local-test");
-        assert!(parse_response(&format!("Here: {raw}"), "local-test").is_none());
+    fn history_narration_keeps_grounding_and_newest_digest() {
+        fn strict_json_response_preserves_grounding_ids() {
+            let raw = r#"{"text":"Ada refined the brief.","source_ids":["01010101010101010101010101010101"]}"#;
+            let parsed = parse_response(raw, "local-test").expect("valid response");
+            assert_eq!(parsed.text, "Ada refined the brief.");
+            assert_eq!(parsed.source_ids, vec![ui::widget::HistoryEntryId([1; 16])]);
+            assert_eq!(parsed.generator, "ollama:local-test");
+            assert!(parse_response(&format!("Here: {raw}"), "local-test").is_none());
+        }
+
+        fn a_slow_result_cannot_replace_a_newer_digest() {
+            let mut narrator = LocalHistoryNarrator::default();
+            let old = request(1, "Old work");
+            let current = request(2, "Current work");
+            let key = blake3::hash(prompt_for(&old).as_bytes())
+                .to_hex()
+                .to_string();
+            *narrator.pending.lock().unwrap() = Some((
+                key,
+                GroundedNarrative {
+                    text: "Old work".into(),
+                    source_ids: old.source_ids,
+                    generator: "test".into(),
+                },
+            ));
+
+            assert!(narrator.take_for(&current).is_none());
+        }
+
+        fn status_prompt_is_short_first_person_work_not_a_catch_up_story() {
+            let prompt = status_prompt_for(&request(1, "Prepare Q2 close"));
+            assert!(prompt.contains("12 words or fewer"));
+            assert!(prompt.contains("no name or pronoun"));
+            assert!(prompt.contains("Prepare Q2 close"));
+            assert!(!prompt.contains("catch-up sentence"));
+        }
+
+        strict_json_response_preserves_grounding_ids();
+        a_slow_result_cannot_replace_a_newer_digest();
+        status_prompt_is_short_first_person_work_not_a_catch_up_story();
     }
 
     #[test]
-    fn a_slow_result_cannot_replace_a_newer_digest() {
-        let mut narrator = LocalHistoryNarrator::default();
-        let old = request(1, "Old work");
-        let current = request(2, "Current work");
-        let key = blake3::hash(prompt_for(&old).as_bytes())
-            .to_hex()
-            .to_string();
-        *narrator.pending.lock().unwrap() = Some((
-            key,
-            GroundedNarrative {
-                text: "Old work".into(),
-                source_ids: old.source_ids,
-                generator: "test".into(),
-            },
-        ));
+    fn history_narration_uses_only_the_smallest_known_generative_model() {
+        fn chooses_the_smallest_generative_model_not_the_first_or_an_embedder() {
+            let list = "NAME ID SIZE MODIFIED\n\
+                        llama3.1:8b abc 4.7 GB yesterday\n\
+                        nomic-embed-text:latest def 274 MB yesterday\n\
+                        qwen2.5:0.5b ghi 398 MB yesterday\n\
+                        phi3:mini jkl 2.2 GB yesterday\n";
+            assert_eq!(
+                select_installed_model(list, None).as_deref(),
+                Some("qwen2.5:0.5b")
+            );
+            assert_eq!(
+                select_installed_model(list, Some("phi3:mini")).as_deref(),
+                Some("phi3:mini")
+            );
+            assert_eq!(select_installed_model(list, Some("missing")), None);
+        }
 
-        assert!(narrator.take_for(&current).is_none());
-    }
+        fn automatic_narration_refuses_unknown_or_oversized_models() {
+            let list = "NAME ID SIZE MODIFIED\n\
+                        giant:70b abc 42 GB yesterday\n\
+                        unknown-size def - yesterday\n";
+            assert_eq!(select_installed_model(list, None), None);
+            assert_eq!(
+                select_installed_model(list, Some("giant:70b")).as_deref(),
+                Some("giant:70b"),
+                "an explicit override is informed opt-in"
+            );
+        }
 
-    #[test]
-    fn chooses_the_smallest_generative_model_not_the_first_or_an_embedder() {
-        let list = "NAME ID SIZE MODIFIED\n\
-                    llama3.1:8b abc 4.7 GB yesterday\n\
-                    nomic-embed-text:latest def 274 MB yesterday\n\
-                    qwen2.5:0.5b ghi 398 MB yesterday\n\
-                    phi3:mini jkl 2.2 GB yesterday\n";
-        assert_eq!(
-            select_installed_model(list, None).as_deref(),
-            Some("qwen2.5:0.5b")
-        );
-        assert_eq!(
-            select_installed_model(list, Some("phi3:mini")).as_deref(),
-            Some("phi3:mini")
-        );
-        assert_eq!(select_installed_model(list, Some("missing")), None);
-    }
-
-    #[test]
-    fn automatic_narration_refuses_unknown_or_oversized_models() {
-        let list = "NAME ID SIZE MODIFIED\n\
-                    giant:70b abc 42 GB yesterday\n\
-                    unknown-size def - yesterday\n";
-        assert_eq!(select_installed_model(list, None), None);
-        assert_eq!(
-            select_installed_model(list, Some("giant:70b")).as_deref(),
-            Some("giant:70b"),
-            "an explicit override is informed opt-in"
-        );
-    }
-
-    #[test]
-    fn status_prompt_is_short_first_person_work_not_a_catch_up_story() {
-        let prompt = status_prompt_for(&request(1, "Prepare Q2 close"));
-        assert!(prompt.contains("12 words or fewer"));
-        assert!(prompt.contains("no name or pronoun"));
-        assert!(prompt.contains("Prepare Q2 close"));
-        assert!(!prompt.contains("catch-up sentence"));
+        chooses_the_smallest_generative_model_not_the_first_or_an_embedder();
+        automatic_narration_refuses_unknown_or_oversized_models();
     }
 }

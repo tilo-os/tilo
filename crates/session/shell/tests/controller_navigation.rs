@@ -223,8 +223,10 @@ fn guide_and_the_d_pad_walk_windows_then_strips() {
     player.hold_guide(true);
     player.d_pad(0, 1);
     player.hold_guide(false);
+    let layout = player.dump();
+    drop(player);
     assert_eq!(
-        active_strip(&player.dump(), desk.home),
+        active_strip(&layout, desk.home),
         key(&desk.strip_b),
         "Guide + down moves to the strip below"
     );
@@ -237,8 +239,10 @@ fn guide_and_a_bumper_carry_the_window_along_the_strip() {
     player.hold_guide(true);
     player.tap(GamepadButton::RightBumper);
     player.hold_guide(false);
+    let layout = player.dump();
+    drop(player);
     assert_eq!(
-        strip_groups(&player.dump(), desk.strip_a),
+        strip_groups(&layout, desk.strip_a),
         vec![G_A2, G_A1],
         "the focused window moved one place right"
     );
@@ -264,10 +268,9 @@ fn triggers_switch_workspaces() {
         axis: GamepadAxis::LeftTrigger,
         value: i16::MAX,
     });
-    assert_eq!(
-        player.dump()["active"].clone(),
-        serde_json::to_value(desk.home).unwrap()
-    );
+    let active = player.dump()["active"].clone();
+    drop(player);
+    assert_eq!(active, serde_json::to_value(desk.home).unwrap());
 }
 
 #[test]
@@ -287,7 +290,9 @@ fn start_select_and_y_open_the_guide_overview_and_search() {
 
     assert!(!player.host.palette_visible());
     player.tap(GamepadButton::North);
-    assert!(player.host.palette_visible(), "Y opens search");
+    let palette_open = player.host.palette_visible();
+    drop(player);
+    assert!(palette_open, "Y opens search");
 }
 
 #[test]
@@ -320,9 +325,10 @@ fn focus_moves_and_confirm_become_keys_for_the_focused_surface() {
         player.tap(GamepadButton::South),
         vec![ControllerDelivery::Key(ControllerKey::Back)]
     );
+    let after = player.dump();
+    drop(player);
     assert_eq!(
-        before,
-        player.dump(),
+        before, after,
         "moving focus inside an app leaves the desktop layout alone"
     );
 }

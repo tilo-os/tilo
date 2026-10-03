@@ -23,7 +23,7 @@ pub(crate) const BANNER_HEIGHT: f64 = 40.0;
 
 #[derive(Clone, Debug)]
 struct RecoveryOffer {
-    path: PathBuf,
+    slot: (tilo_files::Dir, tilo_files::VPath),
     markdown: Vec<u8>,
 }
 
@@ -75,13 +75,27 @@ impl RecoveryBanner {
         self.base_dir = Some(dir);
     }
 
+    #[cfg(test)]
     fn base_dir(&self) -> PathBuf {
         self.base_dir
             .clone()
             .unwrap_or_else(crate::recovery::base_dir)
     }
 
+    /// The recovery copy's file for `document_path`, in any override.
+    fn slot(&self, document_path: Option<&Path>) -> Option<(tilo_files::Dir, tilo_files::VPath)> {
+        let name = tilo_files::VPath::new(&crate::recovery::slot_name(document_path)).ok()?;
+        if let Some(base) = &self.base_dir {
+            let dir = tilo_files::Dir::open(tilo_files::Location::Native(base.clone())).ok()?;
+            Some((dir, name))
+        } else {
+            let (dir, prefix) = crate::recovery::store()?;
+            Some((dir, prefix.join(&name)))
+        }
+    }
+
     /// Stable recovery path for `document_path`, re-rooted under any override.
+    #[cfg(test)]
     pub(crate) fn path_for(&self, document_path: Option<&Path>) -> PathBuf {
         let default_path = crate::recovery::recovery_path_for(document_path);
         default_path
@@ -103,18 +117,16 @@ impl RecoveryBanner {
         let Some(markdown) = snapshot() else {
             return;
         };
-        let path = self.path_for(document_path);
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
+        if let Some((dir, name)) = self.slot(document_path) {
+            let _ = tilo_files::blocking::write_atomic(&dir, &name, &markdown);
         }
-        let _ = atomic_file::write(&path, &markdown);
     }
 
     /// Remove a superseded recovery copy after a successful open/save.
     pub(crate) fn clear(&mut self, document_path: Option<&Path>) {
-        let _ = std::fs::remove_file(self.path_for(document_path));
+        if let Some((dir, name)) = self.slot(document_path) {
+            let _ = tilo_files::blocking::remove(&dir, &name);
+        }
         self.edits_since_autosave = 0;
         self.offer = None;
         self.buttons.clear();
@@ -127,10 +139,12 @@ impl RecoveryBanner {
         self.offer = None;
         self.buttons.clear();
         self.edits_since_autosave = 0;
-        let path = self.path_for(document_path);
-        match std::fs::read(&path) {
+        let Some(slot) = self.slot(document_path) else {
+            return false;
+        };
+        match tilo_files::blocking::read(&slot.0, &slot.1) {
             Ok(markdown) if !markdown.is_empty() => {
-                self.offer = Some(RecoveryOffer { path, markdown });
+                self.offer = Some(RecoveryOffer { slot, markdown });
                 true
             }
             _ => false,
@@ -147,7 +161,7 @@ impl RecoveryBanner {
             .find(|(_, rect)| rect.contains(point))
             .map(|(action, _)| *action)?;
         let offer = self.offer.take()?;
-        let _ = std::fs::remove_file(offer.path);
+        let _ = tilo_files::blocking::remove(&offer.slot.0, &offer.slot.1);
         self.buttons.clear();
         Some(match action {
             RecoveryAction::Restore => RecoveryDecision::Restore(offer.markdown),
@@ -270,50 +284,55 @@ mod tests {
         ))
     }
 
+    /// The threshold persists and clear removes the recovery copy; click resolution consumes the offer and
+    /// its file.
     #[test]
-    fn threshold_persists_and_clear_removes_the_recovery_copy() {
-        let dir = temp_dir("threshold");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut banner = RecoveryBanner::default();
-        banner.set_base_dir(dir.clone());
-        let document = Path::new("draft.md");
+    fn the_recovery_banner_persists_its_threshold_and_consumes_its_offer() {
+        // Phase: threshold_persists_and_clear_removes_the_recovery_copy.
+        {
+            let dir = temp_dir("threshold");
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut banner = RecoveryBanner::default();
+            banner.set_base_dir(dir.clone());
+            let document = Path::new("draft.md");
 
-        for _ in 0..AUTOSAVE_EDIT_THRESHOLD - 1 {
-            banner.note_edit(Some(document), || Some(b"not yet".to_vec()));
+            for _ in 0..AUTOSAVE_EDIT_THRESHOLD - 1 {
+                banner.note_edit(Some(document), || Some(b"not yet".to_vec()));
+            }
+            let path = banner.path_for(Some(document));
+            assert!(!path.exists());
+            banner.note_edit(Some(document), || Some(b"latest".to_vec()));
+            assert_eq!(std::fs::read(&path).unwrap(), b"latest");
+
+            banner.clear(Some(document));
+            assert!(!path.exists());
+            let _ = std::fs::remove_dir_all(dir);
         }
-        let path = banner.path_for(Some(document));
-        assert!(!path.exists());
-        banner.note_edit(Some(document), || Some(b"latest".to_vec()));
-        assert_eq!(std::fs::read(&path).unwrap(), b"latest");
 
-        banner.clear(Some(document));
-        assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
+        // Phase: click_resolution_consumes_the_offer_and_its_file.
+        {
+            let dir = temp_dir("click");
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut banner = RecoveryBanner::default();
+            banner.set_base_dir(dir.clone());
+            let document = Path::new("draft.md");
+            let path = banner.path_for(Some(document));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"recovered").unwrap();
+            assert!(banner.check(Some(document)));
 
-    #[test]
-    fn click_resolution_consumes_the_offer_and_its_file() {
-        let dir = temp_dir("click");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut banner = RecoveryBanner::default();
-        banner.set_base_dir(dir.clone());
-        let document = Path::new("draft.md");
-        let path = banner.path_for(Some(document));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"recovered").unwrap();
-        assert!(banner.check(Some(document)));
-
-        // This focused test supplies the same hit geometry draw() owns, avoiding
-        // a font-system dependency while exercising production click routing.
-        banner
-            .buttons
-            .push((RecoveryAction::Restore, Rect::new(10.0, 10.0, 30.0, 30.0)));
-        assert_eq!(
-            banner.handle_click(Point::new(20.0, 20.0)),
-            Some(RecoveryDecision::Restore(b"recovered".to_vec()))
-        );
-        assert!(!banner.is_active());
-        assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
+            // This focused test supplies the same hit geometry draw() owns, avoiding
+            // a font-system dependency while exercising production click routing.
+            banner
+                .buttons
+                .push((RecoveryAction::Restore, Rect::new(10.0, 10.0, 30.0, 30.0)));
+            assert_eq!(
+                banner.handle_click(Point::new(20.0, 20.0)),
+                Some(RecoveryDecision::Restore(b"recovered".to_vec()))
+            );
+            assert!(!banner.is_active());
+            assert!(!path.exists());
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

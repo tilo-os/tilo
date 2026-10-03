@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::op::{
-    DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V1_PREFIX, DOCUMENT_MUTATION_V2_PREFIX,
-    DOCUMENT_SEGMENT_TAG, DOCUMENT_SNAPSHOT_TAG, DocumentMutation, DocumentMutationEncodeError,
-    DocumentMutationError, MAX_DOCUMENT_MUTATION_BYTES,
+    DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V2_PREFIX, DOCUMENT_SEGMENT_TAG,
+    DOCUMENT_SNAPSHOT_TAG, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
+    MAX_DOCUMENT_MUTATION_BYTES,
 };
 use crate::{ArtifactId, Ed25519PublicKey, SignedOp};
 
@@ -226,11 +226,8 @@ impl DocumentFrame {
         {
             return DocumentSegment::decode(segment).map(Self::Segment);
         }
-        if payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX).is_none()
-            && payload.strip_prefix(DOCUMENT_MUTATION_V2_PREFIX).is_none()
-        {
-            return Err(DocumentMutationError::MissingPrefix);
-        }
+        // Anything that is not a segment must be a whole frame; `decode`
+        // refuses anything unprefixed.
         let mutation = DocumentMutation::decode(payload)?;
         let actual = mutation.data().len();
         if actual > MAX_DOCUMENT_MUTATION_BYTES {
@@ -645,239 +642,257 @@ mod tests {
         out
     }
 
+    /// Small mutations keep the single-frame wire format; over-limit mutations are refused before
+    /// encoding; unsegmented frames above the limit and malformed segment headers are rejected.
     #[test]
-    fn small_mutations_keep_the_single_frame_wire_format() {
-        let mutation = DocumentMutation::Incremental(vec![1, 2, 3]);
-        let frames = mutation.encode_frames().unwrap();
-        assert_eq!(frames, vec![mutation.encode().unwrap()]);
-        assert_eq!(
-            DocumentFrame::decode(&frames[0]).unwrap(),
-            DocumentFrame::Whole(mutation)
-        );
+    fn document_transfer_framing_refuses_what_it_cannot_carry() {
+        // Phase: small_mutations_keep_the_single_frame_wire_format.
+        {
+            let mutation = DocumentMutation::Incremental(vec![1, 2, 3]);
+            let frames = mutation.encode_frames().unwrap();
+            assert_eq!(frames, vec![mutation.encode().unwrap()]);
+            assert_eq!(
+                DocumentFrame::decode(&frames[0]).unwrap(),
+                DocumentFrame::Whole(mutation)
+            );
+        }
+
+        // Phase: over_limit_mutations_are_refused_before_encoding.
+        {
+            let mutation = DocumentMutation::Incremental(vec![
+                0;
+                MAX_DOCUMENT_TRANSFER_BYTES
+                    .saturating_add(1)
+            ]);
+            assert_eq!(
+                mutation.encode_frames(),
+                Err(DocumentMutationEncodeError::TooLarge {
+                    actual: MAX_DOCUMENT_TRANSFER_BYTES + 1,
+                    max: MAX_DOCUMENT_TRANSFER_BYTES,
+                })
+            );
+        }
+
+        // Phase: wire_rejects_unsegmented_frames_above_the_frame_limit.
+        {
+            let mut wire = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
+            wire.push(DOCUMENT_INCREMENTAL_TAG);
+            wire.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES + 1]);
+            assert!(matches!(
+                DocumentFrame::decode(&wire),
+                Err(DocumentMutationError::TooLarge { .. })
+            ));
+            // The endpoint decode of a reassembled mutation accepts it.
+            assert!(DocumentMutation::decode(&wire).is_ok());
+        }
+
+        // Phase: malformed_segment_headers_are_rejected.
+        {
+            let mutation = DocumentMutation::Snapshot(bytes(3 * MIB, 3));
+            let frames = mutation.encode_frames().unwrap();
+            let mut truncated = frames[0].clone();
+            truncated.pop();
+            assert!(matches!(
+                DocumentFrame::decode(&truncated),
+                Err(DocumentMutationError::InvalidSegment(_))
+            ));
+
+            let mut segment = segments(&frames).remove(0);
+            segment.index = 99;
+            assert!(matches!(
+                DocumentFrame::decode(&segment.encode()),
+                Err(DocumentMutationError::InvalidSegment(_))
+            ));
+
+            let mut tiny = segments(&frames).remove(0);
+            tiny.segment_len = 16;
+            tiny.data.truncate(16);
+            assert!(
+                DocumentFrame::decode(&tiny.encode()).is_err(),
+                "a header cannot claim millions of pieces"
+            );
+
+            let mut huge = segments(&frames).remove(0);
+            huge.total_len = (MAX_DOCUMENT_TRANSFER_BYTES + 1) as u64;
+            assert!(matches!(
+                DocumentFrame::decode(&huge.encode()),
+                Err(DocumentMutationError::TooLarge { .. })
+            ));
+            assert_eq!(
+                DocumentMutation::decode(&frames[0]),
+                Err(DocumentMutationError::Segmented),
+                "a segment is never mistaken for a complete mutation"
+            );
+        }
     }
 
+    /// Large mutations round-trip through signed segments, reassemble in any order ignoring
+    /// duplicates, and are discarded when bytes are tampered or headers are inconsistent.
     #[test]
-    fn large_mutations_round_trip_through_signed_segments() {
-        for (len, snapshot) in [
-            (MIB + 1, false),
-            (7 * MIB / 2, true),
-            (8 * MIB, false),
-            (32 * MIB, true),
-        ] {
-            let data = bytes(len, len as u64);
-            let mutation = if snapshot {
-                DocumentMutation::Snapshot(data)
-            } else {
-                DocumentMutation::Incremental(data)
-            };
-            let frames = mutation.encode_frames().unwrap();
-            assert_eq!(frames.len(), len.div_ceil(DOCUMENT_SEGMENT_BYTES));
-            assert!(
-                frames
-                    .iter()
-                    .all(|frame| frame.len() <= DOCUMENT_SEGMENT_BYTES + 128),
-                "every signed frame stays small"
+    fn segmented_transfers_reassemble_only_intact_consistent_segments() {
+        // Phase: large_mutations_round_trip_through_signed_segments.
+        {
+            for (len, snapshot) in [
+                (MIB + 1, false),
+                (7 * MIB / 2, true),
+                (8 * MIB, false),
+                (32 * MIB, true),
+            ] {
+                let data = bytes(len, len as u64);
+                let mutation = if snapshot {
+                    DocumentMutation::Snapshot(data)
+                } else {
+                    DocumentMutation::Incremental(data)
+                };
+                let frames = mutation.encode_frames().unwrap();
+                assert_eq!(frames.len(), len.div_ceil(DOCUMENT_SEGMENT_BYTES));
+                assert!(
+                    frames
+                        .iter()
+                        .all(|frame| frame.len() <= DOCUMENT_SEGMENT_BYTES + 128),
+                    "every signed frame stays small"
+                );
+                let mut reassembler = DocumentReassembler::default();
+                let got = reassemble(&mut reassembler, ArtifactId::new(), &frames);
+                assert_eq!(got.as_ref(), Some(&mutation), "{len} bytes round trip");
+                assert_eq!(reassembler.buffered_bytes(), 0);
+                assert_eq!(reassembler.pending_transfers(), 0);
+            }
+        }
+
+        // Phase: segments_reassemble_in_any_order_and_ignore_duplicates.
+        {
+            let mutation = DocumentMutation::Incremental(bytes(5 * MIB + 17, 9));
+            let mut frames = mutation.encode_frames().unwrap();
+            frames.reverse();
+            let duplicate = frames[1].clone();
+            frames.insert(2, duplicate);
+            let got = reassemble(
+                &mut DocumentReassembler::default(),
+                ArtifactId::new(),
+                &frames,
             );
+            assert_eq!(got, Some(mutation));
+        }
+
+        // Phase: tampered_bytes_fail_the_transfer_digest.
+        {
+            let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 5, 4));
+            let frames = mutation.encode_frames().unwrap();
+            let mut parts = segments(&frames);
+            parts[1].data[7] ^= 0xff;
+            let artifact = ArtifactId::new();
             let mut reassembler = DocumentReassembler::default();
-            let got = reassemble(&mut reassembler, ArtifactId::new(), &frames);
-            assert_eq!(got.as_ref(), Some(&mutation), "{len} bytes round trip");
+            let now = Instant::now();
+            let mut result = Ok(None);
+            for (frame, segment) in frames.iter().zip(parts) {
+                result = reassembler.accept(&envelope(artifact, 1, frame.clone()), segment, now);
+            }
+            assert_eq!(result, Err(ReassemblyError::DigestMismatch));
             assert_eq!(reassembler.buffered_bytes(), 0);
+        }
+
+        // Phase: inconsistent_headers_discard_the_transfer.
+        {
+            let mutation = DocumentMutation::Incremental(bytes(3 * MIB, 6));
+            let frames = mutation.encode_frames().unwrap();
+            let parts = segments(&frames);
+            let artifact = ArtifactId::new();
+            let mut reassembler = DocumentReassembler::default();
+            let now = Instant::now();
+            reassembler
+                .accept(
+                    &envelope(artifact, 1, frames[0].clone()),
+                    parts[0].clone(),
+                    now,
+                )
+                .unwrap();
+            let mut liar = parts[1].clone();
+            liar.kind = DocumentMutationKind::Snapshot;
+            assert_eq!(
+                reassembler.accept(&envelope(artifact, 1, frames[1].clone()), liar, now),
+                Err(ReassemblyError::Inconsistent)
+            );
             assert_eq!(reassembler.pending_transfers(), 0);
         }
     }
 
+    /// Transfers from different authors or routes never mix, and memory stays bounded with
+    /// abandonment reported.
     #[test]
-    fn segments_reassemble_in_any_order_and_ignore_duplicates() {
-        let mutation = DocumentMutation::Incremental(bytes(5 * MIB + 17, 9));
-        let mut frames = mutation.encode_frames().unwrap();
-        frames.reverse();
-        let duplicate = frames[1].clone();
-        frames.insert(2, duplicate);
-        let got = reassemble(
-            &mut DocumentReassembler::default(),
-            ArtifactId::new(),
-            &frames,
-        );
-        assert_eq!(got, Some(mutation));
-    }
-
-    #[test]
-    fn over_limit_mutations_are_refused_before_encoding() {
-        let mutation =
-            DocumentMutation::Incremental(vec![0; MAX_DOCUMENT_TRANSFER_BYTES.saturating_add(1)]);
-        assert_eq!(
-            mutation.encode_frames(),
-            Err(DocumentMutationEncodeError::TooLarge {
-                actual: MAX_DOCUMENT_TRANSFER_BYTES + 1,
-                max: MAX_DOCUMENT_TRANSFER_BYTES,
-            })
-        );
-    }
-
-    #[test]
-    fn wire_rejects_unsegmented_frames_above_the_frame_limit() {
-        let mut wire = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
-        wire.push(DOCUMENT_INCREMENTAL_TAG);
-        wire.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES + 1]);
-        assert!(matches!(
-            DocumentFrame::decode(&wire),
-            Err(DocumentMutationError::TooLarge { .. })
-        ));
-        // The endpoint decode of a reassembled mutation accepts it.
-        assert!(DocumentMutation::decode(&wire).is_ok());
-    }
-
-    #[test]
-    fn malformed_segment_headers_are_rejected() {
-        let mutation = DocumentMutation::Snapshot(bytes(3 * MIB, 3));
-        let frames = mutation.encode_frames().unwrap();
-        let mut truncated = frames[0].clone();
-        truncated.pop();
-        assert!(matches!(
-            DocumentFrame::decode(&truncated),
-            Err(DocumentMutationError::InvalidSegment(_))
-        ));
-
-        let mut segment = segments(&frames).remove(0);
-        segment.index = 99;
-        assert!(matches!(
-            DocumentFrame::decode(&segment.encode()),
-            Err(DocumentMutationError::InvalidSegment(_))
-        ));
-
-        let mut tiny = segments(&frames).remove(0);
-        tiny.segment_len = 16;
-        tiny.data.truncate(16);
-        assert!(
-            DocumentFrame::decode(&tiny.encode()).is_err(),
-            "a header cannot claim millions of pieces"
-        );
-
-        let mut huge = segments(&frames).remove(0);
-        huge.total_len = (MAX_DOCUMENT_TRANSFER_BYTES + 1) as u64;
-        assert!(matches!(
-            DocumentFrame::decode(&huge.encode()),
-            Err(DocumentMutationError::TooLarge { .. })
-        ));
-        assert_eq!(
-            DocumentMutation::decode(&frames[0]),
-            Err(DocumentMutationError::Segmented),
-            "a segment is never mistaken for a complete mutation"
-        );
-    }
-
-    #[test]
-    fn tampered_bytes_fail_the_transfer_digest() {
-        let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 5, 4));
-        let frames = mutation.encode_frames().unwrap();
-        let mut parts = segments(&frames);
-        parts[1].data[7] ^= 0xff;
-        let artifact = ArtifactId::new();
-        let mut reassembler = DocumentReassembler::default();
-        let now = Instant::now();
-        let mut result = Ok(None);
-        for (frame, segment) in frames.iter().zip(parts) {
-            result = reassembler.accept(&envelope(artifact, 1, frame.clone()), segment, now);
-        }
-        assert_eq!(result, Err(ReassemblyError::DigestMismatch));
-        assert_eq!(reassembler.buffered_bytes(), 0);
-    }
-
-    #[test]
-    fn transfers_from_different_authors_or_routes_never_mix() {
-        let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 1, 5));
-        let frames = mutation.encode_frames().unwrap();
-        let parts = segments(&frames);
-        let artifact = ArtifactId::new();
-        let mut reassembler = DocumentReassembler::default();
-        let now = Instant::now();
-        // Author 1 sends the first segments, author 2 the last: neither is
-        // complete, because each author's transfer is tracked separately.
-        let last = parts.len() - 1;
-        for (index, segment) in parts.iter().enumerate() {
-            let author = if index == last { 2 } else { 1 };
-            let done = reassembler
+    fn transfers_stay_isolated_and_bounded() {
+        // Phase: transfers_from_different_authors_or_routes_never_mix.
+        {
+            let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 1, 5));
+            let frames = mutation.encode_frames().unwrap();
+            let parts = segments(&frames);
+            let artifact = ArtifactId::new();
+            let mut reassembler = DocumentReassembler::default();
+            let now = Instant::now();
+            // Author 1 sends the first segments, author 2 the last: neither is
+            // complete, because each author's transfer is tracked separately.
+            let last = parts.len() - 1;
+            for (index, segment) in parts.iter().enumerate() {
+                let author = if index == last { 2 } else { 1 };
+                let done = reassembler
+                    .accept(
+                        &envelope(artifact, author, frames[index].clone()),
+                        segment.clone(),
+                        now,
+                    )
+                    .unwrap();
+                assert!(done.is_none());
+            }
+            assert_eq!(reassembler.pending_transfers(), 2);
+            let other_route = reassembler
                 .accept(
-                    &envelope(artifact, author, frames[index].clone()),
-                    segment.clone(),
+                    &envelope(ArtifactId::new(), 1, frames[last].clone()),
+                    parts[last].clone(),
                     now,
                 )
                 .unwrap();
-            assert!(done.is_none());
+            assert!(other_route.is_none(), "another route cannot finish it");
         }
-        assert_eq!(reassembler.pending_transfers(), 2);
-        let other_route = reassembler
-            .accept(
-                &envelope(ArtifactId::new(), 1, frames[last].clone()),
-                parts[last].clone(),
-                now,
-            )
-            .unwrap();
-        assert!(other_route.is_none(), "another route cannot finish it");
-    }
 
-    #[test]
-    fn memory_stays_bounded_and_abandonment_is_reported() {
-        let limits = ReassemblyLimits {
-            max_buffered_bytes: 3 * MIB,
-            max_transfers: 2,
-            idle_timeout: Duration::from_secs(10),
-        };
-        let mut reassembler = DocumentReassembler::new(limits);
-        let now = Instant::now();
-        let artifact = ArtifactId::new();
-        // Four incomplete transfers, each holding one 1 MiB segment.
-        for seed in 0..4_u64 {
-            let mutation = DocumentMutation::Incremental(bytes(2 * MIB, seed + 100));
-            let frames = mutation.encode_frames().unwrap();
-            let first = segments(&frames).remove(0);
-            let at = now + Duration::from_millis(seed);
-            reassembler
-                .accept(&envelope(artifact, 1, frames[0].clone()), first, at)
-                .unwrap();
-            assert!(reassembler.buffered_bytes() <= limits.max_buffered_bytes);
-            assert!(reassembler.pending_transfers() <= limits.max_transfers);
+        // Phase: memory_stays_bounded_and_abandonment_is_reported.
+        {
+            let limits = ReassemblyLimits {
+                max_buffered_bytes: 3 * MIB,
+                max_transfers: 2,
+                idle_timeout: Duration::from_secs(10),
+            };
+            let mut reassembler = DocumentReassembler::new(limits);
+            let now = Instant::now();
+            let artifact = ArtifactId::new();
+            // Four incomplete transfers, each holding one 1 MiB segment.
+            for seed in 0..4_u64 {
+                let mutation = DocumentMutation::Incremental(bytes(2 * MIB, seed + 100));
+                let frames = mutation.encode_frames().unwrap();
+                let first = segments(&frames).remove(0);
+                let at = now + Duration::from_millis(seed);
+                reassembler
+                    .accept(&envelope(artifact, 1, frames[0].clone()), first, at)
+                    .unwrap();
+                assert!(reassembler.buffered_bytes() <= limits.max_buffered_bytes);
+                assert!(reassembler.pending_transfers() <= limits.max_transfers);
+            }
+            let abandoned = reassembler.take_abandoned();
+            assert_eq!(abandoned.len(), 2, "the two oldest transfers were evicted");
+            assert!(
+                abandoned
+                    .iter()
+                    .all(|t| t.reason == AbandonReason::Evicted && t.received_segments == 1)
+            );
+
+            reassembler.expire(now + Duration::from_secs(60));
+            assert_eq!(reassembler.pending_transfers(), 0);
+            assert_eq!(reassembler.buffered_bytes(), 0);
+            assert!(
+                reassembler
+                    .take_abandoned()
+                    .iter()
+                    .all(|t| t.reason == AbandonReason::Idle)
+            );
         }
-        let abandoned = reassembler.take_abandoned();
-        assert_eq!(abandoned.len(), 2, "the two oldest transfers were evicted");
-        assert!(
-            abandoned
-                .iter()
-                .all(|t| t.reason == AbandonReason::Evicted && t.received_segments == 1)
-        );
-
-        reassembler.expire(now + Duration::from_secs(60));
-        assert_eq!(reassembler.pending_transfers(), 0);
-        assert_eq!(reassembler.buffered_bytes(), 0);
-        assert!(
-            reassembler
-                .take_abandoned()
-                .iter()
-                .all(|t| t.reason == AbandonReason::Idle)
-        );
-    }
-
-    #[test]
-    fn inconsistent_headers_discard_the_transfer() {
-        let mutation = DocumentMutation::Incremental(bytes(3 * MIB, 6));
-        let frames = mutation.encode_frames().unwrap();
-        let parts = segments(&frames);
-        let artifact = ArtifactId::new();
-        let mut reassembler = DocumentReassembler::default();
-        let now = Instant::now();
-        reassembler
-            .accept(
-                &envelope(artifact, 1, frames[0].clone()),
-                parts[0].clone(),
-                now,
-            )
-            .unwrap();
-        let mut liar = parts[1].clone();
-        liar.kind = DocumentMutationKind::Snapshot;
-        assert_eq!(
-            reassembler.accept(&envelope(artifact, 1, frames[1].clone()), liar, now),
-            Err(ReassemblyError::Inconsistent)
-        );
-        assert_eq!(reassembler.pending_transfers(), 0);
     }
 }

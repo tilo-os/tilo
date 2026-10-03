@@ -85,39 +85,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_gate_tracks_the_build_profile_and_feature() {
-        assert_eq!(
-            DEV_ENV_OVERRIDES,
-            cfg!(any(debug_assertions, feature = "dev-overrides"))
-        );
-    }
-
-    #[test]
-    fn a_closed_gate_ignores_every_override() {
-        for name in [OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, INSTALL_BIN_ENV] {
+    fn dev_overrides_pass_only_through_an_open_gate_and_warn_once() {
+        // Phase `the_gate_tracks_the_build_profile_and_feature`.
+        {
             assert_eq!(
-                dev_override_from(false, name, Some("/attacker".into())),
-                None
-            );
-            assert_eq!(
-                dev_override_from(true, name, Some("/dev".into())),
-                Some(OsString::from("/dev"))
+                DEV_ENV_OVERRIDES,
+                cfg!(any(debug_assertions, feature = "dev-overrides"))
             );
         }
-    }
-
-    #[test]
-    fn the_warning_names_the_variable_and_how_to_enable_it() {
-        let warning = ignored_warning(INSTALL_BIN_ENV);
-        assert!(warning.contains(INSTALL_BIN_ENV));
-        assert!(warning.contains("--features dev-overrides"));
-        assert!(warning.contains("debug build"));
-    }
-
-    #[test]
-    fn each_variable_warns_only_once() {
-        const NAME: &str = "TILO_APP_CLI_WARN_ONCE_TEST";
-        assert!(first_ignore(NAME));
-        assert!(!first_ignore(NAME));
+        // Phase `a_closed_gate_ignores_every_override`.
+        {
+            for name in [OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, INSTALL_BIN_ENV] {
+                assert_eq!(
+                    dev_override_from(false, name, Some("/attacker".into())),
+                    None
+                );
+                assert_eq!(
+                    dev_override_from(true, name, Some("/dev".into())),
+                    Some(OsString::from("/dev"))
+                );
+            }
+        }
+        // Phase `the_warning_names_the_variable_and_how_to_enable_it`.
+        {
+            let warning = ignored_warning(INSTALL_BIN_ENV);
+            assert!(warning.contains(INSTALL_BIN_ENV));
+            assert!(warning.contains("--features dev-overrides"));
+            assert!(warning.contains("debug build"));
+        }
+        // Phase `each_variable_warns_only_once`.
+        {
+            const NAME: &str = "TILO_APP_CLI_WARN_ONCE_TEST";
+            assert!(first_ignore(NAME));
+            assert!(!first_ignore(NAME));
+        }
     }
 }

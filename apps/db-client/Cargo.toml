@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -38,9 +38,11 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 chrono.workspace = true
 mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

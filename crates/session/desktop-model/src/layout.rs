@@ -9,7 +9,7 @@ use crate::width::WindowWidth;
 /// What a tile holds. Persistence only carries `Stub` and a symbolic
 /// `AppPlaceholder` for native apps, whose concrete widgets are
 /// constructed at shell boot.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TileContent {
     /// Device-local workspace history. It is a normal tiled window for this
     /// compositor, but it is never projected into the room document: the

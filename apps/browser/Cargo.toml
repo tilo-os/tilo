@@ -22,27 +22,29 @@ path = "src/main.rs"
 # (PKG_CONFIG_PATH/LD_LIBRARY_PATH pointing at its prefix). Normal launches
 # use the pinned Chromium/CEF helper. Headless fixtures and unit tests use
 # the deterministic test engine.
-wpe = ["ui/webview-wpe"]
+wpe = ["ui/webview"]
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+fnv.workspace = true
+private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
 # Chromium helper applies built-in network, cosmetic and scriptlet filtering.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock", "portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
 tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
-libc.workspace = true
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+host-info = { path = "../../crates/system/host-info" }
 sha2.workspace = true
 base64.workspace = true
 url.workspace = true
@@ -56,7 +58,7 @@ serde_json.workspace = true
 serde.workspace = true
 blake3.workspace = true
 uuid.workspace = true
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 
 tracing.workspace = true
 
@@ -67,6 +69,7 @@ tilo-automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

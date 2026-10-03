@@ -47,6 +47,7 @@ pub mod compile;
 pub mod diagnostics;
 pub mod editor;
 pub mod preview;
+pub mod resource;
 pub mod samples;
 pub mod worker;
 
@@ -56,6 +57,13 @@ use ui::widget::Widget;
 /// disk and opens an empty untitled document when the library is empty.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::TypstApp::new())
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.typst-editor", app_root)
+        .history(&framework_history::HISTORY)
+        .as_definition("Typst Editor")
 }
 
 /// Build a hermetic root seeded with the bundled demo documents. Used by the
@@ -74,7 +82,9 @@ pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

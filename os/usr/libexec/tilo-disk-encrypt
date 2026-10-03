@@ -60,7 +60,9 @@ GUID_TILO_ROOT=7A2E8D75-3F01-4E5A-B2C9-51F6ED90B8AB
 # mount a discoverable /srv or /home type) ever claims it.
 GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D
 
-ESP_SIZE=${TILO_ESP_SIZE:-512M}
+# Finalization temporarily holds bootc's live UKI, the target boot bundle,
+# and a replacement UKI. A 512 MiB ESP cannot hold all three on ARM64.
+ESP_SIZE=${TILO_ESP_SIZE:-2G}
 BOOT_SIZE=${TILO_BOOT_SIZE:-1G}
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 MIN_ALONGSIDE_ESP_BYTES=2147483648
@@ -209,7 +211,7 @@ cmd_prepare_partition() {
   cryptsetup open --key-file "$key" "$part" "$mapper"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -L root "/dev/mapper/$mapper" ;;
+    ext4) mkfs.ext4 -q -F -O verity -L root "/dev/mapper/$mapper" ;;
     xfs) mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
@@ -329,7 +331,7 @@ EOF
   log "  making the $fs root filesystem"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4)  mkfs.ext4 -q -L root "/dev/mapper/$mapper" ;;
+    ext4)  mkfs.ext4 -q -O verity -L root "/dev/mapper/$mapper" ;;
     xfs)   mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   local root_fs_uuid

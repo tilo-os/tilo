@@ -206,10 +206,10 @@ pub fn build_delete_request(
     }
 }
 
-pub fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
+pub async fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
-        live::push_jobs_live(jobs)
+        live::push_jobs_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -218,10 +218,10 @@ pub fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     }
 }
 
-pub fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
+pub async fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
-        live::remove_jobs_live(jobs)
+        live::remove_jobs_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -236,12 +236,12 @@ pub fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
 /// `live` this sends an HTTP `DELETE`; without the feature it removes nothing
 /// and returns an empty list — the queue is retained until a live build drains
 /// it, exactly like [`push_all`].
-pub fn delete_all(
+pub async fn delete_all(
     jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
 ) -> Vec<crate::model::Id> {
     #[cfg(feature = "live")]
     {
-        live::delete_all_live(jobs)
+        live::delete_all_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -322,15 +322,15 @@ pub fn pull_calendar(
 /// (`REPORT` calendar-query, falling back to a plain `GET`) against each
 /// account's server and parses the returned `calendar-data` through
 /// [`ics::parse`]. Without that feature there is no transport, so it returns
-/// an empty [`SyncOutcome::Offline`] — it never invents entries. Either way
-/// this stays synchronous; the live app runs it off the UI thread.
-pub fn sync_all(
+/// an empty [`SyncOutcome::Offline`] — it never invents entries. The live app
+/// runs it on the app runtime, off the UI thread.
+pub async fn sync_all(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
 ) -> (SyncResult, SyncOutcome) {
     #[cfg(feature = "live")]
     {
-        live::sync_all_live(accounts, today)
+        live::sync_all_live(accounts, today).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -342,14 +342,14 @@ pub fn sync_all(
 /// Synchronise with durable per-collection checkpoints supplied by the caller.
 /// Keeping the checkpoint in the Automerge document (rather than a transport
 /// cache) makes restart and collaborative hand-off deterministic.
-pub fn sync_all_with_checkpoints(
+pub async fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
     checkpoints: &[(String, String)],
 ) -> (SyncResult, SyncOutcome) {
     #[cfg(feature = "live")]
     {
-        live::sync_all_live_with_checkpoints(accounts, today, checkpoints)
+        live::sync_all_live_with_checkpoints(accounts, today, checkpoints).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -367,10 +367,10 @@ pub fn sync_all_with_checkpoints(
 /// from the outbox. Without the feature (headless / demo build) there is no
 /// transport, so it uploads nothing and returns an empty list — the queue is
 /// simply retained until a live build drains it.
-pub fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
+pub async fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
     #[cfg(feature = "live")]
     {
-        live::push_all_live(jobs)
+        live::push_all_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -621,7 +621,9 @@ mod live {
     use std::time::Duration;
 
     use chrono::NaiveDate;
-    use tilo_dav::{Credentials, DavClient, Depth, Precondition, StatusCode};
+    use tilo_dav::net::{
+        Credentials, DavClient, Depth, Error as DavError, Precondition, StatusCode,
+    };
 
     use super::{RemoteCalendar, SyncOutcome, SyncResult};
     use crate::account::CalDavConfig;
@@ -629,12 +631,17 @@ mod live {
 
     const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
 
-    fn client() -> Result<DavClient, tilo_dav::Error> {
-        DavClient::new(&tilo_dav::Options {
-            user_agent: Some("Tilo-Calendar/0.1"),
-            timeout: Duration::from_secs(20),
-            ..tilo_dav::Options::default()
-        })
+    /// In a page, servers that do not allow the page's origin are reached
+    /// through the host's fetch proxy when it offers one.
+    fn client() -> Result<DavClient, DavError> {
+        DavClient::with_fetch_proxy(
+            &tilo_dav::net::Options {
+                user_agent: Some("Tilo-Calendar/0.1"),
+                timeout: Duration::from_secs(20),
+                ..tilo_dav::net::Options::default()
+            },
+            tilo_net::proxy::ProxyUse::CrossOrigin,
+        )
     }
 
     fn authenticated(client: &DavClient, config: &CalDavConfig) -> DavClient {
@@ -644,23 +651,23 @@ mod live {
         ))
     }
 
-    fn dav_error_message(error: &tilo_dav::Error) -> String {
+    fn dav_error_message(error: &DavError) -> String {
         match error {
-            tilo_dav::Error::TooLarge => "calendar response exceeds the 8 MiB safety limit".into(),
-            tilo_dav::Error::Xml(error) => super::xml_error_message(error),
-            other => other.to_string(),
+            DavError::TooLarge => "calendar response exceeds the 8 MiB safety limit".into(),
+            DavError::Xml(error) => super::xml_error_message(error),
+            DavError::Transport(error) => error.to_string(),
         }
     }
 
     /// Fetch every visible calendar across the configured accounts.
-    pub fn sync_all_live(
+    pub async fn sync_all_live(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
     ) -> (SyncResult, SyncOutcome) {
-        sync_all_live_with_checkpoints(accounts, today, &[])
+        sync_all_live_with_checkpoints(accounts, today, &[]).await
     }
 
-    pub fn sync_all_live_with_checkpoints(
+    pub async fn sync_all_live_with_checkpoints(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
         checkpoints: &[(String, String)],
@@ -684,7 +691,9 @@ mod live {
                     cal,
                     today,
                     checkpoint_map.get(cal.id.as_str()).copied(),
-                ) {
+                )
+                .await
+                {
                     Ok(mut res) => {
                         let palette = cal.palette();
                         for e in &mut res.events {
@@ -719,7 +728,7 @@ mod live {
     /// stored token, falling back to an authoritative `calendar-query` when
     /// the server refuses the token or the report. Each resource's
     /// `calendar-data` is handed to [`ics::parse`].
-    fn pull_calendar_live(
+    async fn pull_calendar_live(
         client: &DavClient,
         config: &CalDavConfig,
         cal: &RemoteCalendar,
@@ -732,6 +741,7 @@ mod live {
         let body = super::sync_collection_body(checkpoint.unwrap_or_default());
         let mut response = client
             .report(url.as_str(), Depth::One, body)
+            .await
             .map_err(|error| dav_error_message(&error))?;
 
         // RFC 6578 uses 403 with a valid-sync-token precondition (some servers
@@ -746,6 +756,7 @@ mod live {
             let query = tilo_dav::body::calendar_query_body(&super::REPORT_PROPS, None);
             response = client
                 .report(url.as_str(), Depth::One, query)
+                .await
                 .map_err(|error| dav_error_message(&error))?;
         }
         if !response.status().is_success() {
@@ -753,6 +764,7 @@ mod live {
         }
         let listing = response
             .multistatus(&super::LIMITS)
+            .await
             .map_err(|error| dav_error_message(&error))?;
         let parsed = super::interpret_multistatus(listing)?;
         let mut result = SyncResult::default();
@@ -791,7 +803,7 @@ mod live {
         let next_token = if parsed.token.is_some() {
             parsed.token
         } else if full {
-            discover_sync_token(&client, &url)?
+            discover_sync_token(&client, &url).await?
         } else {
             None
         };
@@ -808,15 +820,17 @@ mod live {
         Ok(result)
     }
 
-    fn discover_sync_token(client: &DavClient, url: &str) -> Result<Option<String>, String> {
+    async fn discover_sync_token(client: &DavClient, url: &str) -> Result<Option<String>, String> {
         let response = client
             .propfind(url, Depth::Zero, &[tilo_dav::props::SYNC_TOKEN])
+            .await
             .map_err(|error| dav_error_message(&error))?;
         if !response.status().is_success() {
             return Ok(None);
         }
         let listing = response
             .multistatus(&super::LIMITS)
+            .await
             .map_err(|error| dav_error_message(&error))?;
         Ok(listing
             .responses
@@ -834,7 +848,7 @@ mod live {
     /// and DELETE responses. Servers freely alternate between absolute and
     /// path hrefs, so retaining the wire spelling would duplicate resources.
     fn canonical_resource_url(collection_url: &str, href: &str) -> Result<String, String> {
-        let base = tilo_dav::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
+        let base = tilo_dav::net::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
             .map_err(|_| "calendar collection has an invalid URL".to_string())?;
         base.join(href)
             .map(|url| url.to_string())
@@ -844,7 +858,7 @@ mod live {
     /// PUT every queued event to its target collection, returning the ids that
     /// stored successfully. Best-effort: a failed upload leaves that event in
     /// the outbox for the next attempt and does not abort the rest.
-    pub fn push_all_live(
+    pub async fn push_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
     ) -> Vec<crate::model::Id> {
         let Ok(client) = client() else {
@@ -853,12 +867,14 @@ mod live {
         let mut pushed = Vec::new();
         for (config, cal, event) in jobs {
             let req = super::build_put_request(config, cal, event);
-            let resp = authenticated(&client, config).put(
-                req.url.as_str(),
-                req.body.into_bytes(),
-                Some(CALENDAR_CONTENT_TYPE),
-                Precondition::None,
-            );
+            let resp = authenticated(&client, config)
+                .put(
+                    req.url.as_str(),
+                    req.body.into_bytes(),
+                    Some(CALENDAR_CONTENT_TYPE),
+                    Precondition::None,
+                )
+                .await;
             if matches!(resp, Ok(r) if r.status().is_success()) {
                 pushed.push(event.id);
             }
@@ -866,7 +882,7 @@ mod live {
         pushed
     }
 
-    pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
+    pub async fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
@@ -886,12 +902,14 @@ mod live {
                 None if request.if_none_match => Precondition::IfNoneMatchAny,
                 None => Precondition::None,
             };
-            let sent = authenticated(&client, &job.config).put(
-                request.url.as_str(),
-                std::mem::take(&mut request.body).into_bytes(),
-                Some(CALENDAR_CONTENT_TYPE),
-                precondition,
-            );
+            let sent = authenticated(&client, &job.config)
+                .put(
+                    request.url.as_str(),
+                    std::mem::take(&mut request.body).into_bytes(),
+                    Some(CALENDAR_CONTENT_TYPE),
+                    precondition,
+                )
+                .await;
             match sent {
                 Ok(response) if response.status().is_success() => {
                     result.confirmed.push(job.event.id);
@@ -918,7 +936,7 @@ mod live {
     /// DELETE every queued event resource, returning the uids the server
     /// confirmed removed. Best-effort and per-resource: a failed delete leaves
     /// that uid in the outbox for the next attempt and does not abort the rest.
-    pub fn delete_all_live(
+    pub async fn delete_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
     ) -> Vec<crate::model::Id> {
         let Ok(client) = client() else {
@@ -927,7 +945,9 @@ mod live {
         let mut deleted = Vec::new();
         for (config, cal, uid) in jobs {
             let req = super::build_delete_request(config, cal, *uid);
-            let resp = authenticated(&client, config).delete(req.url.as_str(), Precondition::None);
+            let resp = authenticated(&client, config)
+                .delete(req.url.as_str(), Precondition::None)
+                .await;
             // 2xx, or a 404 (already gone), both mean the resource is absent.
             let gone = matches!(resp, Ok(r) if r.status().is_success() || r.status() == StatusCode::NOT_FOUND);
             if gone {
@@ -937,7 +957,7 @@ mod live {
         deleted
     }
 
-    pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
+    pub async fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
@@ -950,10 +970,12 @@ mod live {
             // Even when an older server omitted the revision, keep deletion
             // conditional on the resource still existing. Known revisions use
             // their exact ETag and therefore detect concurrent modification.
-            let sent = authenticated(&client, &job.config).delete(
-                url.as_str(),
-                Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
-            );
+            let sent = authenticated(&client, &job.config)
+                .delete(
+                    url.as_str(),
+                    Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
+                )
+                .await;
             match sent {
                 Ok(response)
                     if response.status().is_success()
@@ -990,6 +1012,30 @@ mod live {
         use test_http::{Reply, Responder};
 
         use super::*;
+
+        fn run<T>(future: impl Future<Output = T>) -> T {
+            ui::rt::block_on(future).expect("a test thread may block")
+        }
+
+        fn pull_calendar_live(
+            client: &DavClient,
+            config: &CalDavConfig,
+            cal: &RemoteCalendar,
+            today: NaiveDate,
+            checkpoint: Option<&str>,
+        ) -> Result<SyncResult, String> {
+            run(super::pull_calendar_live(
+                client, config, cal, today, checkpoint,
+            ))
+        }
+
+        fn push_jobs_live(jobs: &[super::super::UploadJob]) -> super::super::MutationResult {
+            run(super::push_jobs_live(jobs))
+        }
+
+        fn remove_jobs_live(jobs: &[super::super::RemoveJob]) -> super::super::MutationResult {
+            run(super::remove_jobs_live(jobs))
+        }
 
         fn config(server_url: String) -> CalDavConfig {
             CalDavConfig {
@@ -1030,200 +1076,202 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
         }
 
         #[test]
-        fn fake_server_receives_incremental_report_and_href_is_canonical() {
-            let server = Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
-            let config = config(server.url());
-            let result = pull_calendar_live(
-                &client().unwrap(),
-                &config,
-                &calendar(),
-                today(),
-                Some("token-1"),
-            )
-            .expect("incremental sync");
-            let request = server.next_request();
-            assert_eq!(request.method, "REPORT");
-            assert_eq!(request.target, "/cal/");
-            assert_eq!(request.header("depth"), Some("1"));
-            assert!(request.header("authorization").is_some());
-            assert!(
-                request
-                    .body_text()
-                    .contains("<D:sync-token>token-1</D:sync-token>")
-            );
-            assert_eq!(
-                result.resources[0].href,
-                format!("{}/cal/a.ics", server.url())
-            );
-            assert_eq!(result.checkpoints[0].token, "token-2");
-            assert!(!result.checkpoints[0].full);
+        fn fake_server_listing_reports_are_incremental_canonical_and_bounded() {
+            // Case `fake_server_receives_incremental_report_and_href_is_canonical`.
+            {
+                let server =
+                    Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
+                let config = config(server.url());
+                let result = pull_calendar_live(
+                    &client().unwrap(),
+                    &config,
+                    &calendar(),
+                    today(),
+                    Some("token-1"),
+                )
+                .expect("incremental sync");
+                let request = server.next_request();
+                assert_eq!(request.method, "REPORT");
+                assert_eq!(request.target, "/cal/");
+                assert_eq!(request.header("depth"), Some("1"));
+                assert!(request.header("authorization").is_some());
+                assert!(
+                    request
+                        .body_text()
+                        .contains("<D:sync-token>token-1</D:sync-token>")
+                );
+                assert_eq!(
+                    result.resources[0].href,
+                    format!("{}/cal/a.ics", server.url())
+                );
+                assert_eq!(result.checkpoints[0].token, "token-2");
+                assert!(!result.checkpoints[0].full);
+            }
+            // Case `fake_server_invalid_token_falls_back_to_authoritative_report`.
+            {
+                let server = Responder::start(vec![
+                    Reply::status(403),
+                    Reply::status(207).body(multistatus("replacement")),
+                ]);
+                let result = pull_calendar_live(
+                    &client().unwrap(),
+                    &config(server.url()),
+                    &calendar(),
+                    today(),
+                    Some("expired"),
+                )
+                .expect("full fallback");
+                let incremental = server.next_request();
+                let fallback = server.next_request();
+                assert!(incremental.body_text().contains("<D:sync-collection"));
+                assert!(fallback.body_text().contains("<C:calendar-query"));
+                assert!(result.checkpoints[0].full);
+                assert_eq!(result.checkpoints[0].token, "replacement");
+            }
+            // Case `full_listing_without_token_discovers_one_by_propfind`.
+            {
+                let listing = multistatus("").replace("<D:sync-token></D:sync-token>", "");
+                let discovery = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:sync-token>http://sabre.io/ns/sync/7</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+                let server = Responder::start(vec![
+                    Reply::status(207).body(listing),
+                    Reply::status(207).body(discovery),
+                ]);
+                let result = pull_calendar_live(
+                    &client().unwrap(),
+                    &config(server.url()),
+                    &calendar(),
+                    today(),
+                    None,
+                )
+                .expect("initial sync");
+                let _report = server.next_request();
+                let propfind = server.next_request();
+                assert_eq!(propfind.method, "PROPFIND");
+                assert_eq!(propfind.header("depth"), Some("0"));
+                assert!(propfind.body_text().contains("<D:sync-token/>"));
+                assert_eq!(result.checkpoints[0].token, "http://sabre.io/ns/sync/7");
+                assert!(result.checkpoints[0].full);
+            }
+            // Case `non_multistatus_success_is_not_an_empty_authoritative_listing`.
+            {
+                let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
+                let error = pull_calendar_live(
+                    &client().unwrap(),
+                    &config(server.url()),
+                    &calendar(),
+                    today(),
+                    None,
+                )
+                .expect_err("an HTML page must not read as an empty calendar");
+                assert_eq!(error, "calendar server returned malformed XML");
+            }
+            // Case `oversized_report_is_refused_without_a_content_length`.
+            {
+                let server = Responder::start(vec![
+                    Reply::status(207)
+                        .body(vec![b' '; super::super::MAX_XML_BYTES + 1])
+                        .without_content_length(),
+                ]);
+                let error = pull_calendar_live(
+                    &client().unwrap(),
+                    &config(server.url()),
+                    &calendar(),
+                    today(),
+                    Some("token"),
+                )
+                .expect_err("oversized body");
+                assert_eq!(error, "calendar response exceeds the 8 MiB safety limit");
+            }
         }
 
         #[test]
-        fn fake_server_invalid_token_falls_back_to_authoritative_report() {
-            let server = Responder::start(vec![
-                Reply::status(403),
-                Reply::status(207).body(multistatus("replacement")),
-            ]);
-            let result = pull_calendar_live(
-                &client().unwrap(),
-                &config(server.url()),
-                &calendar(),
-                today(),
-                Some("expired"),
-            )
-            .expect("full fallback");
-            let incremental = server.next_request();
-            let fallback = server.next_request();
-            assert!(incremental.body_text().contains("<D:sync-collection"));
-            assert!(fallback.body_text().contains("<C:calendar-query"));
-            assert!(result.checkpoints[0].full);
-            assert_eq!(result.checkpoints[0].token, "replacement");
-        }
-
-        #[test]
-        fn full_listing_without_token_discovers_one_by_propfind() {
-            let listing = multistatus("").replace("<D:sync-token></D:sync-token>", "");
-            let discovery = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:sync-token>http://sabre.io/ns/sync/7</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
-            let server = Responder::start(vec![
-                Reply::status(207).body(listing),
-                Reply::status(207).body(discovery),
-            ]);
-            let result = pull_calendar_live(
-                &client().unwrap(),
-                &config(server.url()),
-                &calendar(),
-                today(),
-                None,
-            )
-            .expect("initial sync");
-            let _report = server.next_request();
-            let propfind = server.next_request();
-            assert_eq!(propfind.method, "PROPFIND");
-            assert_eq!(propfind.header("depth"), Some("0"));
-            assert!(propfind.body_text().contains("<D:sync-token/>"));
-            assert_eq!(result.checkpoints[0].token, "http://sabre.io/ns/sync/7");
-            assert!(result.checkpoints[0].full);
-        }
-
-        #[test]
-        fn non_multistatus_success_is_not_an_empty_authoritative_listing() {
-            let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
-            let error = pull_calendar_live(
-                &client().unwrap(),
-                &config(server.url()),
-                &calendar(),
-                today(),
-                None,
-            )
-            .expect_err("an HTML page must not read as an empty calendar");
-            assert_eq!(error, "calendar server returned malformed XML");
-        }
-
-        #[test]
-        fn oversized_report_is_refused_without_a_content_length() {
-            let server = Responder::start(vec![
-                Reply::status(207)
-                    .body(vec![b' '; super::super::MAX_XML_BYTES + 1])
-                    .without_content_length(),
-            ]);
-            let error = pull_calendar_live(
-                &client().unwrap(),
-                &config(server.url()),
-                &calendar(),
-                today(),
-                Some("token"),
-            )
-            .expect_err("oversized body");
-            assert_eq!(error, "calendar response exceeds the 8 MiB safety limit");
-        }
-
-        #[test]
-        fn fake_server_observes_conditional_put_and_delete() {
-            let server = Responder::start(vec![
-                Reply::status(200).header("ETag", "\"v2\""),
-                Reply::status(200),
-                Reply::status(204),
-            ]);
-            let config = config(server.url());
-            let calendar = calendar();
-            let mut event = super::super::pull_calendar(&config, &calendar, today())
-                .events
-                .remove(0);
-            event.calendar_id = Some(calendar.id.clone());
-            let href = format!("{}/cal/a.ics", server.url());
-            let mut legacy_event = event.clone();
-            legacy_event.id = crate::model::Id::new_v4();
-            let upload = push_jobs_live(&[
-                super::super::UploadJob {
+        fn fake_server_writes_are_conditional_and_precondition_failures_conflict() {
+            // Case `fake_server_observes_conditional_put_and_delete`.
+            {
+                let server = Responder::start(vec![
+                    Reply::status(200).header("ETag", "\"v2\""),
+                    Reply::status(200),
+                    Reply::status(204),
+                ]);
+                let config = config(server.url());
+                let calendar = calendar();
+                let mut event = super::super::pull_calendar(&config, &calendar, today())
+                    .events
+                    .remove(0);
+                event.calendar_id = Some(calendar.id.clone());
+                let href = format!("{}/cal/a.ics", server.url());
+                let mut legacy_event = event.clone();
+                legacy_event.id = crate::model::Id::new_v4();
+                let upload = push_jobs_live(&[
+                    super::super::UploadJob {
+                        config: config.clone(),
+                        calendar: calendar.clone(),
+                        event: event.clone(),
+                        href: Some(href.clone()),
+                        etag: Some("\"v1\"".into()),
+                    },
+                    super::super::UploadJob {
+                        config: config.clone(),
+                        calendar: calendar.clone(),
+                        event: legacy_event.clone(),
+                        href: Some(format!("{}/cal/legacy.ics", server.url())),
+                        etag: None,
+                    },
+                ]);
+                assert_eq!(upload.confirmed, vec![event.id, legacy_event.id]);
+                assert_eq!(upload.revisions[0].etag.as_deref(), Some("\"v2\""));
+                let removed = remove_jobs_live(&[super::super::RemoveJob {
+                    config,
+                    calendar,
+                    id: event.id,
+                    href: Some(href),
+                    etag: Some("\"v2\"".into()),
+                }]);
+                assert_eq!(removed.confirmed, vec![event.id]);
+                let put = server.next_request();
+                let legacy_put = server.next_request();
+                let delete = server.next_request();
+                assert_eq!(
+                    (put.method.as_str(), put.target.as_str()),
+                    ("PUT", "/cal/a.ics")
+                );
+                assert_eq!(put.header("if-match"), Some("\"v1\""));
+                assert_eq!(put.header("content-type"), Some(CALENDAR_CONTENT_TYPE));
+                assert_eq!(legacy_put.target, "/cal/legacy.ics");
+                assert_eq!(legacy_put.header("if-match"), Some("*"));
+                assert_eq!(
+                    (delete.method.as_str(), delete.target.as_str()),
+                    ("DELETE", "/cal/a.ics")
+                );
+                assert_eq!(delete.header("if-match"), Some("\"v2\""));
+            }
+            // Case `precondition_failures_surface_as_conflicts`.
+            {
+                let server = Responder::start(vec![Reply::status(412), Reply::status(412)]);
+                let config = config(server.url());
+                let calendar = calendar();
+                let event = super::super::pull_calendar(&config, &calendar, today())
+                    .events
+                    .remove(0);
+                let href = format!("{}/cal/a.ics", server.url());
+                let upload = push_jobs_live(&[super::super::UploadJob {
                     config: config.clone(),
                     calendar: calendar.clone(),
                     event: event.clone(),
                     href: Some(href.clone()),
-                    etag: Some("\"v1\"".into()),
-                },
-                super::super::UploadJob {
-                    config: config.clone(),
-                    calendar: calendar.clone(),
-                    event: legacy_event.clone(),
-                    href: Some(format!("{}/cal/legacy.ics", server.url())),
-                    etag: None,
-                },
-            ]);
-            assert_eq!(upload.confirmed, vec![event.id, legacy_event.id]);
-            assert_eq!(upload.revisions[0].etag.as_deref(), Some("\"v2\""));
-            let removed = remove_jobs_live(&[super::super::RemoveJob {
-                config,
-                calendar,
-                id: event.id,
-                href: Some(href),
-                etag: Some("\"v2\"".into()),
-            }]);
-            assert_eq!(removed.confirmed, vec![event.id]);
-            let put = server.next_request();
-            let legacy_put = server.next_request();
-            let delete = server.next_request();
-            assert_eq!(
-                (put.method.as_str(), put.target.as_str()),
-                ("PUT", "/cal/a.ics")
-            );
-            assert_eq!(put.header("if-match"), Some("\"v1\""));
-            assert_eq!(put.header("content-type"), Some(CALENDAR_CONTENT_TYPE));
-            assert_eq!(legacy_put.target, "/cal/legacy.ics");
-            assert_eq!(legacy_put.header("if-match"), Some("*"));
-            assert_eq!(
-                (delete.method.as_str(), delete.target.as_str()),
-                ("DELETE", "/cal/a.ics")
-            );
-            assert_eq!(delete.header("if-match"), Some("\"v2\""));
-        }
-
-        #[test]
-        fn precondition_failures_surface_as_conflicts() {
-            let server = Responder::start(vec![Reply::status(412), Reply::status(412)]);
-            let config = config(server.url());
-            let calendar = calendar();
-            let event = super::super::pull_calendar(&config, &calendar, today())
-                .events
-                .remove(0);
-            let href = format!("{}/cal/a.ics", server.url());
-            let upload = push_jobs_live(&[super::super::UploadJob {
-                config: config.clone(),
-                calendar: calendar.clone(),
-                event: event.clone(),
-                href: Some(href.clone()),
-                etag: Some("\"stale\"".into()),
-            }]);
-            assert!(upload.confirmed.is_empty());
-            assert_eq!(upload.conflicts, vec![(event.id, href.clone())]);
-            let removed = remove_jobs_live(&[super::super::RemoveJob {
-                config,
-                calendar,
-                id: event.id,
-                href: Some(href.clone()),
-                etag: Some("\"stale\"".into()),
-            }]);
-            assert_eq!(removed.conflicts, vec![(event.id, href)]);
+                    etag: Some("\"stale\"".into()),
+                }]);
+                assert!(upload.confirmed.is_empty());
+                assert_eq!(upload.conflicts, vec![(event.id, href.clone())]);
+                let removed = remove_jobs_live(&[super::super::RemoveJob {
+                    config,
+                    calendar,
+                    id: event.id,
+                    href: Some(href.clone()),
+                    etag: Some("\"stale\"".into()),
+                }]);
+                assert_eq!(removed.conflicts, vec![(event.id, href)]);
+            }
         }
     }
 }
@@ -1233,208 +1281,246 @@ mod tests {
     use super::*;
     use crate::account::AccountStore;
 
+    fn run<T>(future: impl Future<Output = T>) -> T {
+        ui::rt::block_on(future).expect("a test thread may block")
+    }
+
+    fn sync_all(
+        accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+        today: NaiveDate,
+    ) -> (SyncResult, SyncOutcome) {
+        run(super::sync_all(accounts, today))
+    }
+
+    #[cfg(not(feature = "live"))]
+    fn delete_all(
+        jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
+    ) -> Vec<crate::model::Id> {
+        run(super::delete_all(jobs))
+    }
+
+    #[cfg(not(feature = "live"))]
+    fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
+        run(super::push_all(jobs))
+    }
+
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
     }
 
     #[test]
-    fn pull_tags_events_with_calendar_colour() {
-        let store = AccountStore::sample();
-        let (account, cal) = store
-            .all_calendars()
-            .find(|(_, c)| c.id == "work/oncall")
-            .unwrap();
-        let res = pull_calendar(&account.config, cal, today());
-        assert!(!res.events.is_empty());
-        // Every synced event carries the source calendar's palette.
-        assert!(res.events.iter().all(|e| e.color == cal.palette()));
-    }
-
-    #[test]
-    fn pull_tags_events_with_source_calendar_id() {
-        // The visibility toggle needs synced events to remember which calendar
-        // they came from; the pull path stamps every event with `cal.id`.
-        let store = AccountStore::sample();
-        let (account, cal) = store
-            .all_calendars()
-            .find(|(_, c)| c.id == "work/default")
-            .unwrap();
-        let res = pull_calendar(&account.config, cal, today());
-        assert!(!res.events.is_empty());
-        assert!(
-            res.events
+    fn pull_and_sync_tag_events_skip_hidden_and_report_offline() {
+        // Case `pull_tags_events_with_calendar_colour`.
+        {
+            let store = AccountStore::sample();
+            let (account, cal) = store
+                .all_calendars()
+                .find(|(_, c)| c.id == "work/oncall")
+                .unwrap();
+            let res = pull_calendar(&account.config, cal, today());
+            assert!(!res.events.is_empty());
+            // Every synced event carries the source calendar's palette.
+            assert!(res.events.iter().all(|e| e.color == cal.palette()));
+        }
+        // Case `pull_tags_events_with_source_calendar_id`.
+        {
+            // The visibility toggle needs synced events to remember which calendar
+            // they came from; the pull path stamps every event with `cal.id`.
+            let store = AccountStore::sample();
+            let (account, cal) = store
+                .all_calendars()
+                .find(|(_, c)| c.id == "work/default")
+                .unwrap();
+            let res = pull_calendar(&account.config, cal, today());
+            assert!(!res.events.is_empty());
+            assert!(
+                res.events
+                    .iter()
+                    .all(|e| e.calendar_id.as_deref() == Some("work/default")),
+                "every synced event is tagged with its source calendar id"
+            );
+        }
+        // Case `sync_all_skips_hidden_calendars`.
+        {
+            let store = AccountStore::sample();
+            let accounts: Vec<_> = store
+                .accounts
                 .iter()
-                .all(|e| e.calendar_id.as_deref() == Some("work/default")),
-            "every synced event is tagged with its source calendar id"
-        );
+                .map(|a| (a.config.clone(), a.calendars.clone()))
+                .collect();
+            let (res, outcome) = sample_pull_all(&accounts, today());
+            // Sample has 3 visible calendars; each yields at least one event.
+            assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
+            assert!(!res.is_empty());
+            // The hidden "Holidays" calendar's event must not appear.
+            assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
+        }
+        // Case `empty_account_set_reports_offline`.
+        {
+            let (res, outcome) = sample_pull_all(&[], today());
+            assert!(res.is_empty());
+            assert_eq!(outcome, SyncOutcome::Offline);
+        }
+        // Case `live_sync_with_no_accounts_is_offline_and_empty`.
+        {
+            // The real path never fabricates: with nothing configured it returns
+            // an empty Offline result (and, without the `live` feature, always).
+            let (res, outcome) = sync_all(&[], today());
+            assert!(res.is_empty());
+            assert_eq!(outcome, SyncOutcome::Offline);
+        }
+        // Case `synced_events_parse_through_real_ics_path`.
+        {
+            // Prove the payload travels ics::export -> ics::parse, not a struct
+            // shortcut: a recurring synced event keeps its RRULE round-trip.
+            let store = AccountStore::sample();
+            let (account, cal) = store
+                .all_calendars()
+                .find(|(_, c)| c.id == "icloud/personal")
+                .unwrap();
+            let res = pull_calendar(&account.config, cal, today());
+            let dinner = res
+                .events
+                .iter()
+                .find(|e| e.title == "Family dinner")
+                .unwrap();
+            assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
+        }
     }
 
     #[test]
-    fn sync_all_skips_hidden_calendars() {
-        let store = AccountStore::sample();
-        let accounts: Vec<_> = store
-            .accounts
-            .iter()
-            .map(|a| (a.config.clone(), a.calendars.clone()))
-            .collect();
-        let (res, outcome) = sample_pull_all(&accounts, today());
-        // Sample has 3 visible calendars; each yields at least one event.
-        assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
-        assert!(!res.is_empty());
-        // The hidden "Holidays" calendar's event must not appear.
-        assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn write_requests_target_one_resource_and_stay_inert_without_live() {
+        // Case `build_put_request_targets_collection_and_carries_event_ics`.
+        {
+            use crate::model::{Event, Palette, Recurrence};
+            use chrono::NaiveDate;
+            let store = AccountStore::sample();
+            let (account, cal) = store
+                .all_calendars()
+                .find(|(_, c)| c.id == "work/default")
+                .unwrap();
+            let start = NaiveDate::from_ymd_opt(2026, 6, 15)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap();
+            let ev = Event {
+                id: uuid::Uuid::new_v4(),
+                title: "Kickoff".into(),
+                start,
+                end: start + chrono::Duration::hours(1),
+                all_day: false,
+                location: "Room 1".into(),
+                color: Palette::Indigo,
+                recurrence: Recurrence::None,
+                recurrence_interval: 1,
+                recurrence_until: None,
+                recurrence_count: None,
+                recurrence_exdates: Vec::new(),
+                occurrence_overrides: Vec::new(),
+                timezone: "floating".into(),
+                organizer: None,
+                attendees: Vec::new(),
+                reminder_min: None,
+                calendar_id: Some(cal.id.clone()),
+                project: None,
+            };
+            let req = build_put_request(&account.config, cal, &ev);
+            // URL is the event resource under the collection.
+            assert!(
+                req.url.starts_with(&account.config.server_url),
+                "url = {}",
+                req.url
+            );
+            assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
+            // Body is a real one-event VCALENDAR carrying the title.
+            assert!(req.body.contains("BEGIN:VEVENT"));
+            assert!(req.body.contains("Kickoff"));
+        }
+        // Case `build_delete_request_targets_the_same_resource_as_the_put`.
+        {
+            let store = AccountStore::sample();
+            let (account, cal) = store
+                .all_calendars()
+                .find(|(_, c)| c.id == "work/default")
+                .unwrap();
+            let uid = uuid::Uuid::new_v4();
+            let del = build_delete_request(&account.config, cal, uid);
+            assert!(
+                del.url.starts_with(&account.config.server_url),
+                "url = {}",
+                del.url
+            );
+            assert!(del.url.ends_with(&format!("{uid}.ics")));
+        }
+        // Case `delete_all_without_live_feature_removes_nothing`.
+        {
+            // Symmetric with push: the headless build has no transport, so delete is
+            // an honest no-op that keeps the queue rather than faking a success.
+            let store = AccountStore::sample();
+            let (account, cal) = store.all_calendars().next().unwrap();
+            let jobs = vec![(account.config.clone(), cal.clone(), uuid::Uuid::new_v4())];
+            #[cfg(not(feature = "live"))]
+            assert!(delete_all(&jobs).is_empty());
+            let _ = jobs;
+        }
+        // Case `push_all_without_live_feature_uploads_nothing`.
+        {
+            // The default headless build has no transport: push is an honest no-op
+            // that keeps the queue rather than fabricating a successful upload.
+            let store = AccountStore::sample();
+            let (account, cal) = store.all_calendars().next().unwrap();
+            let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap();
+            let ev = crate::model::Event {
+                id: uuid::Uuid::new_v4(),
+                title: "x".into(),
+                start,
+                end: start,
+                all_day: false,
+                location: String::new(),
+                color: crate::model::Palette::Indigo,
+                recurrence: crate::model::Recurrence::None,
+                recurrence_interval: 1,
+                recurrence_until: None,
+                recurrence_count: None,
+                recurrence_exdates: Vec::new(),
+                occurrence_overrides: Vec::new(),
+                timezone: "floating".into(),
+                organizer: None,
+                attendees: Vec::new(),
+                reminder_min: None,
+                calendar_id: Some(cal.id.clone()),
+                project: None,
+            };
+            let jobs = vec![(account.config.clone(), cal.clone(), ev)];
+            #[cfg(not(feature = "live"))]
+            assert!(push_all(&jobs).is_empty());
+            let _ = jobs;
+        }
+        // Case `new_put_is_create_only_until_a_remote_etag_is_known`.
+        {
+            let store = AccountStore::sample();
+            let (account, cal) = store.all_calendars().next().unwrap();
+            let event = pull_calendar(&account.config, cal, today())
+                .events
+                .remove(0);
+            let request = build_put_request(&account.config, cal, &event);
+            assert!(request.if_none_match);
+            assert!(request.if_match.is_none());
+        }
     }
 
     #[test]
-    fn build_put_request_targets_collection_and_carries_event_ics() {
-        use crate::model::{Event, Palette, Recurrence};
-        use chrono::NaiveDate;
-        let store = AccountStore::sample();
-        let (account, cal) = store
-            .all_calendars()
-            .find(|(_, c)| c.id == "work/default")
-            .unwrap();
-        let start = NaiveDate::from_ymd_opt(2026, 6, 15)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
-        let ev = Event {
-            id: uuid::Uuid::new_v4(),
-            title: "Kickoff".into(),
-            start,
-            end: start + chrono::Duration::hours(1),
-            all_day: false,
-            location: "Room 1".into(),
-            color: Palette::Indigo,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            calendar_id: Some(cal.id.clone()),
-            project: None,
-        };
-        let req = build_put_request(&account.config, cal, &ev);
-        // URL is the event resource under the collection.
-        assert!(
-            req.url.starts_with(&account.config.server_url),
-            "url = {}",
-            req.url
-        );
-        assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
-        // Body is a real one-event VCALENDAR carrying the title.
-        assert!(req.body.contains("BEGIN:VEVENT"));
-        assert!(req.body.contains("Kickoff"));
-    }
-
-    #[test]
-    fn build_delete_request_targets_the_same_resource_as_the_put() {
-        let store = AccountStore::sample();
-        let (account, cal) = store
-            .all_calendars()
-            .find(|(_, c)| c.id == "work/default")
-            .unwrap();
-        let uid = uuid::Uuid::new_v4();
-        let del = build_delete_request(&account.config, cal, uid);
-        assert!(
-            del.url.starts_with(&account.config.server_url),
-            "url = {}",
-            del.url
-        );
-        assert!(del.url.ends_with(&format!("{uid}.ics")));
-    }
-
-    #[test]
-    fn delete_all_without_live_feature_removes_nothing() {
-        // Symmetric with push: the headless build has no transport, so delete is
-        // an honest no-op that keeps the queue rather than faking a success.
-        let store = AccountStore::sample();
-        let (account, cal) = store.all_calendars().next().unwrap();
-        let jobs = vec![(account.config.clone(), cal.clone(), uuid::Uuid::new_v4())];
-        #[cfg(not(feature = "live"))]
-        assert!(delete_all(&jobs).is_empty());
-        let _ = jobs;
-    }
-
-    #[test]
-    fn push_all_without_live_feature_uploads_nothing() {
-        // The default headless build has no transport: push is an honest no-op
-        // that keeps the queue rather than fabricating a successful upload.
-        let store = AccountStore::sample();
-        let (account, cal) = store.all_calendars().next().unwrap();
-        let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
-        let ev = crate::model::Event {
-            id: uuid::Uuid::new_v4(),
-            title: "x".into(),
-            start,
-            end: start,
-            all_day: false,
-            location: String::new(),
-            color: crate::model::Palette::Indigo,
-            recurrence: crate::model::Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            calendar_id: Some(cal.id.clone()),
-            project: None,
-        };
-        let jobs = vec![(account.config.clone(), cal.clone(), ev)];
-        #[cfg(not(feature = "live"))]
-        assert!(push_all(&jobs).is_empty());
-        let _ = jobs;
-    }
-
-    #[test]
-    fn empty_account_set_reports_offline() {
-        let (res, outcome) = sample_pull_all(&[], today());
-        assert!(res.is_empty());
-        assert_eq!(outcome, SyncOutcome::Offline);
-    }
-
-    #[test]
-    fn live_sync_with_no_accounts_is_offline_and_empty() {
-        // The real path never fabricates: with nothing configured it returns
-        // an empty Offline result (and, without the `live` feature, always).
-        let (res, outcome) = sync_all(&[], today());
-        assert!(res.is_empty());
-        assert_eq!(outcome, SyncOutcome::Offline);
-    }
-
-    #[test]
-    fn synced_events_parse_through_real_ics_path() {
-        // Prove the payload travels ics::export -> ics::parse, not a struct
-        // shortcut: a recurring synced event keeps its RRULE round-trip.
-        let store = AccountStore::sample();
-        let (account, cal) = store
-            .all_calendars()
-            .find(|(_, c)| c.id == "icloud/personal")
-            .unwrap();
-        let res = pull_calendar(&account.config, cal, today());
-        let dinner = res
-            .events
-            .iter()
-            .find(|e| e.title == "Family dinner")
-            .unwrap();
-        assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
-    }
-
-    #[test]
-    fn multistatus_parses_stable_identity_revision_token_and_deletion() {
-        let xml = r#"<?xml version="1.0"?>
+    fn multistatus_parses_identity_and_rejects_malformed_input() {
+        // Case `multistatus_parses_stable_identity_revision_token_and_deletion`.
+        {
+            let xml = r#"<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
  <D:sync-token>token-2</D:sync-token>
  <D:response><D:href>/cal/a.ics</D:href><D:propstat><D:prop>
@@ -1447,53 +1533,39 @@ END:VEVENT
 END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
  <D:response><D:href>/cal/gone.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>
 </D:multistatus>"#;
-        let parsed = parse_multistatus(xml).unwrap();
-        assert_eq!(parsed.token.as_deref(), Some("token-2"));
-        assert_eq!(parsed.changed[0].0, "/cal/a.ics");
-        assert_eq!(parsed.changed[0].1.as_deref(), Some("\"v2\""));
-        assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
-        assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
-    }
-
-    #[test]
-    fn malformed_and_oversized_multistatus_are_rejected_without_partial_data() {
-        assert!(parse_multistatus("<D:multistatus>").is_err());
-        let oversized = "x".repeat(MAX_XML_BYTES + 1);
-        assert!(parse_multistatus(&oversized).is_err());
-    }
-
-    #[test]
-    fn sync_token_is_xml_escaped() {
-        let body = sync_collection_body("a<&\"'>");
-        assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
-        assert!(!body.contains("a<&"));
-    }
-
-    #[test]
-    fn absolute_and_path_dav_hrefs_share_one_identity() {
-        assert!(hrefs_equal(
-            "https://calendar.example/dav/work/a.ics",
-            "/dav/work/a.ics"
-        ));
-        assert!(!hrefs_equal(
-            "https://calendar.example/dav/work/a.ics",
-            "/dav/work/b.ics"
-        ));
-        assert!(!hrefs_equal(
-            "https://calendar.example/dav/work/a.ics",
-            "https://attacker.example/dav/work/a.ics"
-        ));
-    }
-
-    #[test]
-    fn new_put_is_create_only_until_a_remote_etag_is_known() {
-        let store = AccountStore::sample();
-        let (account, cal) = store.all_calendars().next().unwrap();
-        let event = pull_calendar(&account.config, cal, today())
-            .events
-            .remove(0);
-        let request = build_put_request(&account.config, cal, &event);
-        assert!(request.if_none_match);
-        assert!(request.if_match.is_none());
+            let parsed = parse_multistatus(xml).unwrap();
+            assert_eq!(parsed.token.as_deref(), Some("token-2"));
+            assert_eq!(parsed.changed[0].0, "/cal/a.ics");
+            assert_eq!(parsed.changed[0].1.as_deref(), Some("\"v2\""));
+            assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
+            assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
+        }
+        // Case `malformed_and_oversized_multistatus_are_rejected_without_partial_data`.
+        {
+            assert!(parse_multistatus("<D:multistatus>").is_err());
+            let oversized = "x".repeat(MAX_XML_BYTES + 1);
+            assert!(parse_multistatus(&oversized).is_err());
+        }
+        // Case `sync_token_is_xml_escaped`.
+        {
+            let body = sync_collection_body("a<&\"'>");
+            assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
+            assert!(!body.contains("a<&"));
+        }
+        // Case `absolute_and_path_dav_hrefs_share_one_identity`.
+        {
+            assert!(hrefs_equal(
+                "https://calendar.example/dav/work/a.ics",
+                "/dav/work/a.ics"
+            ));
+            assert!(!hrefs_equal(
+                "https://calendar.example/dav/work/a.ics",
+                "/dav/work/b.ics"
+            ));
+            assert!(!hrefs_equal(
+                "https://calendar.example/dav/work/a.ics",
+                "https://attacker.example/dav/work/a.ics"
+            ));
+        }
     }
 }

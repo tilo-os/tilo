@@ -34,7 +34,6 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unnecessary_mut_passed,
@@ -168,13 +167,28 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Off Linux the imager ships without the desktop portal; its file
-    // choosers are the platform dialogs.
-    #[cfg(not(target_os = "linux"))]
-    ui::host::install_default(
-        ui::host::native::services(Some("so.tilo.imager"))
-            .with_files(std::sync::Arc::new(imager::setup::folders::PlatformDialogs)),
-    );
+    // Default live path: ResourceApp host. Captures, helpers and smoke probes
+    // above keep the standalone launch path.
+    if !args.iter().any(|arg| {
+        [
+            "--shots",
+            "--shots-dir",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+            "--demo",
+            "--setup",
+            "--import-folders",
+        ]
+        .iter()
+        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+    }) {
+        // The drive list comes from lsblk only when this is set. Captures
+        // and `--demo` leave it unset and stay on the seeded document.
+        enable_live_drive_probe();
+        ui::framework::run::<imager::ImagerShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.imager", live_root)
             .runtime_attachment(|_| !cfg!(target_os = "windows"))
@@ -186,6 +200,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .configure_app(|app| imager::actions::register(app.action_registry_mut())),
     )?;
     Ok(())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set once before the framework host constructs the drive probe"
+)]
+fn enable_live_drive_probe() {
+    unsafe { std::env::set_var("IMAGER_LIVE", "1") };
 }
 
 #[allow(
@@ -388,24 +410,28 @@ fn parse_text_scale(value: &str) -> Option<f32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shot_text_scale_rejects_unsafe_values() {
-        assert_eq!(parse_text_scale("1.3"), Some(1.3));
-        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
-            assert_eq!(parse_text_scale(value), None, "accepted {value}");
-        }
-    }
-
+    /// Shot text scale parsing and precedence.
     #[test]
     #[expect(
         clippy::float_cmp,
         reason = "the scales are parsed from exact decimal literals and passed through unchanged"
     )]
-    fn standalone_shot_scale_uses_environment_unless_cli_overrides_it() {
-        assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
-        assert_eq!(
-            standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
-            2.0
-        );
+    fn shot_text_scale_is_validated_and_cli_overrides_environment() {
+        // Phase `shot_text_scale_rejects_unsafe_values`.
+        {
+            assert_eq!(parse_text_scale("1.3"), Some(1.3));
+            for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+                assert_eq!(parse_text_scale(value), None, "accepted {value}");
+            }
+        }
+
+        // Phase `standalone_shot_scale_uses_environment_unless_cli_overrides_it`.
+        {
+            assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
+            assert_eq!(
+                standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
+                2.0
+            );
+        }
     }
 }

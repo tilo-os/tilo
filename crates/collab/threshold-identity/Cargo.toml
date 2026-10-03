@@ -4,8 +4,11 @@ autotests = false
 name = "threshold-identity"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "FROST threshold-shared Ed25519 identity for Tilo."
 
 [lib]
 name = "threshold_identity"
@@ -21,7 +24,7 @@ path = "src/lib.rs"
 #
 [dependencies]
 # Sibling crate — interop target for verify_event compatibility.
-collab-types = { path = "../collab-types" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
 
 # FROST-Ed25519 (RFC 9591 ciphersuite). The `serialization` feature
 # brings in `Signature::serialize`/`deserialize`, `VerifyingKey::serialize`,
@@ -77,3 +80,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

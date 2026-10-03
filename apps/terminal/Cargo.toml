@@ -21,12 +21,14 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# `portal`: OSC 8 links open through the desktop OpenURI portal.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
 portable-pty = "0.9.0"
@@ -45,6 +47,7 @@ anyhow.workspace = true
 # OSC 52 clipboard writes carry base64-encoded payloads.
 base64.workspace = true
 tilo-content = { path = "../../crates/system/content" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

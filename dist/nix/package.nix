@@ -16,6 +16,7 @@
 , libinput
 , systemd
 , libdrm
+, libgbm
 , mesa
 , pipewire
 , dbus
@@ -27,6 +28,9 @@
 , python3
 }:
 
+let
+  repoRoot = toString ../..;
+in
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
@@ -34,10 +38,24 @@ rustPlatform.buildRustPackage rec {
     src = ../..;
     filter = path: type:
       lib.cleanSourceFilter path type
-      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
+      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ])
+      # Nix and CI metadata must not change the Rust source derivation.
+      && !(builtins.elem (toString path) [
+        "${repoRoot}/flake.nix"
+        "${repoRoot}/flake.lock"
+        "${repoRoot}/dist/nix"
+        "${repoRoot}/.forgejo"
+        "${repoRoot}/.codex"
+      ]);
   };
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  # The lock file selects registry crates directly. The three pinned Git
+  # repositories can be fetched during evaluation without hand-maintained
+  # output hashes outside nixpkgs.
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    allowBuiltinFetchGit = true;
+  };
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
@@ -61,7 +79,7 @@ rustPlatform.buildRustPackage rec {
 
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
-    libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
+    libxkbcommon wayland seatd libinput systemd libdrm libgbm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
     # tilo-flight-recorder: fixup rewrites its /usr/bin/python3 shebang.
@@ -81,7 +99,7 @@ rustPlatform.buildRustPackage rec {
     runHook preInstall
     shell_bin=$(find target -type f -path '*/release/shell' -perm -0100 -print -quit)
     test -n "$shell_bin"
-    "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
+    bash "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
     p="$TMPDIR/tilo-payload"
     install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
@@ -94,6 +112,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
+    install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
     install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
     install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
@@ -131,6 +150,10 @@ rustPlatform.buildRustPackage rec {
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
+
+  # NixOS display managers require this when the module registers the package
+  # in services.displayManager.sessionPackages.
+  passthru.providedSessions = [ "tilo" ];
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";

@@ -16,6 +16,18 @@ spec.loader.exec_module(resume)
 native = resume.load_native(ROOT)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class Admission(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -60,53 +72,55 @@ class Admission(unittest.TestCase):
         resume.validate_partial(self.admission_native, receipt or self.receipt, self.expected,
                                 'builder', self.destination, self.union)
 
-    def test_verified_bytes_restored_and_identical_overlap_is_allowed(self):
-        self.admit()
-        self.admit()
-        self.assertEqual(self.union, self.receipt['inventory'])
-        self.assertEqual(native.file_record(self.destination / 'shell')[0], self.union['shell'])
+    def test_restore_admission(self):
+        with self.subTest(phase="verified_bytes_restored_and_identical_overlap_is_allowed"):
+            self.admit()
+            self.admit()
+            self.assertEqual(self.union, self.receipt['inventory'])
+            self.assertEqual(native.file_record(self.destination / 'shell')[0], self.union['shell'])
+        restart_fixture(self)
+        with self.subTest(phase="changed_bytes_and_unlisted_files_rejected_before_copy"):
+            with (self.payload / 'partial/shell').open('ab') as output:
+                output.write(b'changed')
+            with self.assertRaises(ValueError):
+                self.admit()
+            self.assertEqual(list(self.destination.iterdir()), [])
+            self.receipt = self.make_payload(b'original')
+            (self.payload / 'partial/unlisted').write_bytes(b'not admitted')
+            with self.assertRaises(ValueError):
+                self.admit()
+        restart_fixture(self)
+        with self.subTest(phase="conflicting_checkpoint_cannot_replace_restored_binary"):
+            self.admit()
+            before = (self.destination / 'shell').read_bytes()
+            conflicting = self.make_payload(b'different valid binary')
+            with self.assertRaisesRegex(ValueError, 'overlapping checkpoint'):
+                self.admit(conflicting)
+            self.assertEqual((self.destination / 'shell').read_bytes(), before)
 
-    def test_changed_bytes_and_unlisted_files_rejected_before_copy(self):
-        with (self.payload / 'partial/shell').open('ab') as output:
-            output.write(b'changed')
-        with self.assertRaises(ValueError):
-            self.admit()
-        self.assertEqual(list(self.destination.iterdir()), [])
-        self.receipt = self.make_payload(b'original')
-        (self.payload / 'partial/unlisted').write_bytes(b'not admitted')
-        with self.assertRaises(ValueError):
-            self.admit()
-
-    def test_conflicting_checkpoint_cannot_replace_restored_binary(self):
-        self.admit()
-        before = (self.destination / 'shell').read_bytes()
-        conflicting = self.make_payload(b'different valid binary')
-        with self.assertRaisesRegex(ValueError, 'overlapping checkpoint'):
-            self.admit(conflicting)
-        self.assertEqual((self.destination / 'shell').read_bytes(), before)
-
-    def test_metadata_substitution_and_complete_claim_rejected(self):
-        path = self.payload / 'partial-checkpoint.json'
-        metadata = json.loads(path.read_bytes())
-        metadata['inputs']['pins']['BASE_REF'] = 'other'
-        raw = native.tools.canonical(metadata)
-        path.write_bytes(raw)
-        self.receipt['metadata_sha256'] = native.tools.sha(raw)
-        with self.assertRaisesRegex(ValueError, 'source/toolchain inputs'):
-            self.admit()
-        self.receipt['complete_native_builder'] = True
-        with self.assertRaisesRegex(ValueError, 'honest partial'):
-            self.admit()
-
-    def test_checkpoint_metadata_cannot_claim_completion(self):
-        path = self.payload / 'partial-checkpoint.json'
-        metadata = json.loads(path.read_bytes())
-        metadata['complete_native_builder'] = True
-        raw = native.tools.canonical(metadata)
-        path.write_bytes(raw)
-        self.receipt['metadata_sha256'] = native.tools.sha(raw)
-        with self.assertRaisesRegex(ValueError, 'metadata identity'):
-            self.admit()
+    def test_metadata_claims_rejected(self):
+        with self.subTest(phase="metadata_substitution_and_complete_claim_rejected"):
+            path = self.payload / 'partial-checkpoint.json'
+            metadata = json.loads(path.read_bytes())
+            metadata['inputs']['pins']['BASE_REF'] = 'other'
+            raw = native.tools.canonical(metadata)
+            path.write_bytes(raw)
+            self.receipt['metadata_sha256'] = native.tools.sha(raw)
+            with self.assertRaisesRegex(ValueError, 'source/toolchain inputs'):
+                self.admit()
+            self.receipt['complete_native_builder'] = True
+            with self.assertRaisesRegex(ValueError, 'honest partial'):
+                self.admit()
+        restart_fixture(self)
+        with self.subTest(phase="checkpoint_metadata_cannot_claim_completion"):
+            path = self.payload / 'partial-checkpoint.json'
+            metadata = json.loads(path.read_bytes())
+            metadata['complete_native_builder'] = True
+            raw = native.tools.canonical(metadata)
+            path.write_bytes(raw)
+            self.receipt['metadata_sha256'] = native.tools.sha(raw)
+            with self.assertRaisesRegex(ValueError, 'metadata identity'):
+                self.admit()
 
 
 if __name__ == '__main__':

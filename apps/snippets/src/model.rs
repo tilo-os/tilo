@@ -441,120 +441,128 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Placeholder ordering/dedup, expansion and language slugs.
     #[test]
-    fn placeholders_are_ordered_and_deduped() {
-        let s = Snippet {
-            body: "echo ${name} then ${host} then ${name} again".into(),
-            ..Snippet::blank("")
-        };
-        assert_eq!(s.placeholders(), vec!["name", "host"]);
-    }
+    fn placeholders_expand_and_language_slugs_round_trip() {
+        // Case `placeholders_are_ordered_and_deduped`.
+        {
+            let s = Snippet {
+                body: "echo ${name} then ${host} then ${name} again".into(),
+                ..Snippet::blank("")
+            };
+            assert_eq!(s.placeholders(), vec!["name", "host"]);
+        }
 
-    #[test]
-    fn placeholders_ignore_unmatched_and_empty() {
-        assert_eq!(placeholders_in("a $ b ${} c ${ok}"), vec!["ok"]);
-        assert_eq!(placeholders_in("no braces here"), Vec::<String>::new());
-    }
+        // Case `placeholders_ignore_unmatched_and_empty`.
+        {
+            assert_eq!(placeholders_in("a $ b ${} c ${ok}"), vec!["ok"]);
+            assert_eq!(placeholders_in("no braces here"), Vec::<String>::new());
+        }
 
-    #[test]
-    fn expand_substitutes_known_keeps_unknown() {
-        let mut v = HashMap::new();
-        v.insert("name".to_string(), "world".to_string());
-        let out = expand("hi ${name}, ${missing}", &v);
-        assert_eq!(out, "hi world, ${missing}");
-    }
+        // Case `expand_substitutes_known_keeps_unknown`.
+        {
+            let mut v = HashMap::new();
+            v.insert("name".to_string(), "world".to_string());
+            let out = expand("hi ${name}, ${missing}", &v);
+            assert_eq!(out, "hi world, ${missing}");
+        }
 
-    #[test]
-    fn language_slug_round_trips() {
-        for l in Language::ALL {
-            assert_eq!(Language::from_slug(l.slug()), l);
+        // Case `language_slug_round_trips`.
+        {
+            for l in Language::ALL {
+                assert_eq!(Language::from_slug(l.slug()), l);
+            }
         }
     }
 
+    /// Language/term queries, favourite ordering, smart favourites and folder filters.
     #[test]
-    fn query_filters_by_language_token() {
-        let mut lib = Library::new();
-        lib.insert(Snippet {
-            title: "rust thing".into(),
-            language: Language::Rust,
-            ..Snippet::blank("")
-        });
-        lib.insert(Snippet {
-            title: "shell thing".into(),
-            language: Language::Shell,
-            ..Snippet::blank("")
-        });
-        let ids = lib.query(&Selection::default(), "language:rust");
-        assert_eq!(ids.len(), 1);
-        assert_eq!(lib.get(ids[0]).unwrap().language, Language::Rust);
-    }
+    fn library_queries_filter_and_sort() {
+        // Case `query_filters_by_language_token`.
+        {
+            let mut lib = Library::new();
+            lib.insert(Snippet {
+                title: "rust thing".into(),
+                language: Language::Rust,
+                ..Snippet::blank("")
+            });
+            lib.insert(Snippet {
+                title: "shell thing".into(),
+                language: Language::Shell,
+                ..Snippet::blank("")
+            });
+            let ids = lib.query(&Selection::default(), "language:rust");
+            assert_eq!(ids.len(), 1);
+            assert_eq!(lib.get(ids[0]).unwrap().language, Language::Rust);
+        }
 
-    #[test]
-    fn query_filters_by_plain_term_over_body() {
-        let mut lib = Library::new();
-        lib.insert(Snippet {
-            title: "deploy".into(),
-            body: "kubectl rollout restart".into(),
-            ..Snippet::blank("")
-        });
-        lib.insert(Snippet {
-            title: "hello".into(),
-            body: "echo hi".into(),
-            ..Snippet::blank("")
-        });
-        let ids = lib.query(&Selection::default(), "kubectl");
-        assert_eq!(ids.len(), 1);
-        assert_eq!(lib.get(ids[0]).unwrap().title, "deploy");
-    }
+        // Case `query_filters_by_plain_term_over_body`.
+        {
+            let mut lib = Library::new();
+            lib.insert(Snippet {
+                title: "deploy".into(),
+                body: "kubectl rollout restart".into(),
+                ..Snippet::blank("")
+            });
+            lib.insert(Snippet {
+                title: "hello".into(),
+                body: "echo hi".into(),
+                ..Snippet::blank("")
+            });
+            let ids = lib.query(&Selection::default(), "kubectl");
+            assert_eq!(ids.len(), 1);
+            assert_eq!(lib.get(ids[0]).unwrap().title, "deploy");
+        }
 
-    #[test]
-    fn favorites_sort_before_others() {
-        let mut lib = Library::new();
-        lib.insert(Snippet {
-            title: "zebra".into(),
-            favorite: true,
-            ..Snippet::blank("")
-        });
-        lib.insert(Snippet {
-            title: "apple".into(),
-            favorite: false,
-            ..Snippet::blank("")
-        });
-        let ids = lib.query(&Selection::default(), "");
-        assert_eq!(lib.get(ids[0]).unwrap().title, "zebra");
-    }
+        // Case `favorites_sort_before_others`.
+        {
+            let mut lib = Library::new();
+            lib.insert(Snippet {
+                title: "zebra".into(),
+                favorite: true,
+                ..Snippet::blank("")
+            });
+            lib.insert(Snippet {
+                title: "apple".into(),
+                favorite: false,
+                ..Snippet::blank("")
+            });
+            let ids = lib.query(&Selection::default(), "");
+            assert_eq!(lib.get(ids[0]).unwrap().title, "zebra");
+        }
 
-    #[test]
-    fn smart_favorites_only_includes_starred() {
-        let mut lib = Library::new();
-        lib.insert(Snippet {
-            title: "a".into(),
-            favorite: true,
-            ..Snippet::blank("")
-        });
-        lib.insert(Snippet {
-            title: "b".into(),
-            favorite: false,
-            ..Snippet::blank("")
-        });
-        let ids = lib.query(&Selection::Smart(SmartFolder::Favorites), "");
-        assert_eq!(ids.len(), 1);
-        assert!(lib.get(ids[0]).unwrap().favorite);
-    }
+        // Case `smart_favorites_only_includes_starred`.
+        {
+            let mut lib = Library::new();
+            lib.insert(Snippet {
+                title: "a".into(),
+                favorite: true,
+                ..Snippet::blank("")
+            });
+            lib.insert(Snippet {
+                title: "b".into(),
+                favorite: false,
+                ..Snippet::blank("")
+            });
+            let ids = lib.query(&Selection::Smart(SmartFolder::Favorites), "");
+            assert_eq!(ids.len(), 1);
+            assert!(lib.get(ids[0]).unwrap().favorite);
+        }
 
-    #[test]
-    fn folder_selection_filters_by_folder() {
-        let mut lib = Library::new();
-        lib.insert(Snippet {
-            title: "a".into(),
-            ..Snippet::blank("Deploy")
-        });
-        lib.insert(Snippet {
-            title: "b".into(),
-            ..Snippet::blank("Git")
-        });
-        let ids = lib.query(&Selection::Folder("Deploy".into()), "");
-        assert_eq!(ids.len(), 1);
-        assert_eq!(lib.get(ids[0]).unwrap().folder, "Deploy");
+        // Case `folder_selection_filters_by_folder`.
+        {
+            let mut lib = Library::new();
+            lib.insert(Snippet {
+                title: "a".into(),
+                ..Snippet::blank("Deploy")
+            });
+            lib.insert(Snippet {
+                title: "b".into(),
+                ..Snippet::blank("Git")
+            });
+            let ids = lib.query(&Selection::Folder("Deploy".into()), "");
+            assert_eq!(ids.len(), 1);
+            assert_eq!(lib.get(ids[0]).unwrap().folder, "Deploy");
+        }
     }
 }

@@ -624,80 +624,85 @@ const BASIC_PERFORM_FIELDS: &[&str] = &["target", "semantic_target", "action"];
 mod tests {
     use super::*;
 
+    /// Complete payloads and standalone actions share one grammar, invocations address actions and
+    /// parse strictly, and malformed or unknown operations are rejected strictly.
     #[test]
-    fn complete_payload_and_standalone_actions_share_one_grammar() {
-        let actions = r#"[{"perform":{"target":"name","action":"set_value","value":"Ada"}},{"wait_for_named":{"target":"result","timeout_ms":750}},{"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},{"tap_at":[4,5]}]"#;
-        let standalone = parse_actions(actions).unwrap();
-        let complete = parse_spec(&format!(
-            r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json"}}"#
-        ))
-        .unwrap();
-        assert_eq!(complete.actions, standalone);
-        assert_eq!(complete.viewport, Some((800, 600)));
-        assert!(complete.audit);
-        assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
-    }
-
-    #[test]
-    fn invocations_address_actions_and_parse_strictly() {
-        let actions = parse_actions(
-            r#"[{"invoke":{"resource":"installer.review","action":"begin","confirmation_phrase":"/dev/vdb"}},
-                {"invoke":{"resource":"installer.account","action":"set-passphrase","args":{"passphrase":"s3cret-words-here","confirmation":"s3cret-words-here"}}},
-                {"invoke":{"resource":"installer","action":"next","expect_error":"action_unavailable"}}]"#,
-        )
-        .unwrap();
-        let Action::Invoke(begin) = &actions[0] else {
-            panic!("not an invocation");
-        };
-        assert_eq!(begin.resource, "installer.review");
-        assert_eq!(begin.confirmation_phrase.as_deref(), Some("/dev/vdb"));
-        assert!(!begin.confirm);
-        let Action::Invoke(secret) = &actions[1] else {
-            panic!("not an invocation");
-        };
-        assert!(
-            !format!("{secret:?}").contains("s3cret"),
-            "debug output must not print argument values"
-        );
-        let Action::Invoke(refused) = &actions[2] else {
-            panic!("not an invocation");
-        };
-        assert_eq!(refused.expect_error.as_deref(), Some("action_unavailable"));
-        for source in [
-            r#"[{"invoke":{"action":"next"}}]"#,
-            r#"[{"invoke":{"resource":"r","action":""}}]"#,
-            r#"[{"invoke":{"resource":"r","action":"a","args":[]}}]"#,
-            r#"[{"invoke":{"resource":"r","action":"a","confirm":"yes"}}]"#,
-            r#"[{"invoke":{"resource":"r","action":"a","expect_error":"nope"}}]"#,
-            r#"[{"invoke":{"resource":"r","action":"a","extra":1}}]"#,
-        ] {
-            assert!(parse_actions(source).is_err(), "accepted {source}");
+    fn the_headless_grammar_is_shared_and_strict() {
+        // Phase: complete_payload_and_standalone_actions_share_one_grammar.
+        {
+            let actions = r#"[{"perform":{"target":"name","action":"set_value","value":"Ada"}},{"wait_for_named":{"target":"result","timeout_ms":750}},{"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},{"tap_at":[4,5]}]"#;
+            let standalone = parse_actions(actions).unwrap();
+            let complete = parse_spec(&format!(
+                r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json"}}"#
+            ))
+            .unwrap();
+            assert_eq!(complete.actions, standalone);
+            assert_eq!(complete.viewport, Some((800, 600)));
+            assert!(complete.audit);
+            assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
         }
-    }
 
-    #[test]
-    fn malformed_and_unknown_operations_are_rejected_strictly() {
-        for source in [
-            r#"[{"tap_at":[1]}]"#,
-            r#"[{"modifiers":["ctrl",3]}]"#,
-            r#"[{"perform":{"target":"x","action":"activate","extra":1}}]"#,
-            r#"[{"wait_for_named":{"target":"x","timeout_ms":0}}]"#,
-            r#"[{"wait_for_named":{"target":"x","timeout_ms":60001}}]"#,
-            r#"[{"wait_for_named":{"target":"","timeout_ms":100}}]"#,
-            r#"[{"wait_for_named":{"target":"x","timeout_ms":100,"extra":1}}]"#,
-            r#"[{"expect":{"target":"","focused":true}}]"#,
-            r#"[{"expect":{"target":"x","focused":"yes"}}]"#,
-            r#"[{"expect":{"target":"x","timeout_ms":0}}]"#,
-            r#"[{"expect":{"target":"x","timeout_ms":60001}}]"#,
-            r#"[{"expect":{"target":"x","timeout_ms":"soon"}}]"#,
-            r#"[{"expect":{"target":"x","role":"tree-row"}}]"#,
-            r#"[{"expect":{"target":"x","mystery":true}}]"#,
-            r#"[{"mystery":"x"}]"#,
-        ] {
-            assert!(parse_actions(source).is_err(), "accepted {source}");
+        // Phase: invocations_address_actions_and_parse_strictly.
+        {
+            let actions = parse_actions(
+                r#"[{"invoke":{"resource":"installer.review","action":"begin","confirmation_phrase":"/dev/vdb"}},
+                    {"invoke":{"resource":"installer.account","action":"set-passphrase","args":{"passphrase":"s3cret-words-here","confirmation":"s3cret-words-here"}}},
+                    {"invoke":{"resource":"installer","action":"next","expect_error":"action_unavailable"}}]"#,
+            )
+            .unwrap();
+            let Action::Invoke(begin) = &actions[0] else {
+                panic!("not an invocation");
+            };
+            assert_eq!(begin.resource, "installer.review");
+            assert_eq!(begin.confirmation_phrase.as_deref(), Some("/dev/vdb"));
+            assert!(!begin.confirm);
+            let Action::Invoke(secret) = &actions[1] else {
+                panic!("not an invocation");
+            };
+            assert!(
+                !format!("{secret:?}").contains("s3cret"),
+                "debug output must not print argument values"
+            );
+            let Action::Invoke(refused) = &actions[2] else {
+                panic!("not an invocation");
+            };
+            assert_eq!(refused.expect_error.as_deref(), Some("action_unavailable"));
+            for source in [
+                r#"[{"invoke":{"action":"next"}}]"#,
+                r#"[{"invoke":{"resource":"r","action":""}}]"#,
+                r#"[{"invoke":{"resource":"r","action":"a","args":[]}}]"#,
+                r#"[{"invoke":{"resource":"r","action":"a","confirm":"yes"}}]"#,
+                r#"[{"invoke":{"resource":"r","action":"a","expect_error":"nope"}}]"#,
+                r#"[{"invoke":{"resource":"r","action":"a","extra":1}}]"#,
+            ] {
+                assert!(parse_actions(source).is_err(), "accepted {source}");
+            }
         }
-        assert!(parse_spec(r#"{"actions":{},"dump":3}"#).is_err());
-        assert!(parse_spec(r#"{"audit":"yes"}"#).is_err());
-        assert!(parse_spec(r#"{"audit_report":3}"#).is_err());
+
+        // Phase: malformed_and_unknown_operations_are_rejected_strictly.
+        {
+            for source in [
+                r#"[{"tap_at":[1]}]"#,
+                r#"[{"modifiers":["ctrl",3]}]"#,
+                r#"[{"perform":{"target":"x","action":"activate","extra":1}}]"#,
+                r#"[{"wait_for_named":{"target":"x","timeout_ms":0}}]"#,
+                r#"[{"wait_for_named":{"target":"x","timeout_ms":60001}}]"#,
+                r#"[{"wait_for_named":{"target":"","timeout_ms":100}}]"#,
+                r#"[{"wait_for_named":{"target":"x","timeout_ms":100,"extra":1}}]"#,
+                r#"[{"expect":{"target":"","focused":true}}]"#,
+                r#"[{"expect":{"target":"x","focused":"yes"}}]"#,
+                r#"[{"expect":{"target":"x","timeout_ms":0}}]"#,
+                r#"[{"expect":{"target":"x","timeout_ms":60001}}]"#,
+                r#"[{"expect":{"target":"x","timeout_ms":"soon"}}]"#,
+                r#"[{"expect":{"target":"x","role":"tree-row"}}]"#,
+                r#"[{"expect":{"target":"x","mystery":true}}]"#,
+                r#"[{"mystery":"x"}]"#,
+            ] {
+                assert!(parse_actions(source).is_err(), "accepted {source}");
+            }
+            assert!(parse_spec(r#"{"actions":{},"dump":3}"#).is_err());
+            assert!(parse_spec(r#"{"audit":"yes"}"#).is_err());
+            assert!(parse_spec(r#"{"audit_report":3}"#).is_err());
+        }
     }
 }

@@ -18,6 +18,14 @@ fn replace(doc: &mut AutoCommit, key: &str, text: &str) {
     EditorDoc::splice(doc, &obj, 0, len, text);
 }
 #[test]
+fn diagnostics_cache_reuses_only_identical_committed_inputs() {
+    // Each phase builds a fresh sample fixture; read counts must not leak between phases.
+    unchanged_diagnostics_reuse_local_lint();
+    pending_edits_never_cache_or_commit();
+    heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not();
+    equal_pending_counts_with_different_text_never_alias();
+}
+
 fn unchanged_diagnostics_reuse_local_lint() {
     let (mut app, doc, _) = fixture();
     app.refresh_diagnostics(&doc);
@@ -36,7 +44,6 @@ fn unchanged_diagnostics_reuse_local_lint() {
     assert_eq!(baseline.diagnostics_buffer_reads, 11);
     assert_eq!(baseline.panel.problems(), expected);
 }
-#[test]
 fn pending_edits_never_cache_or_commit() {
     let (mut app, mut doc, key) = fixture();
     app.refresh_diagnostics(&doc);
@@ -55,7 +62,6 @@ fn pending_edits_never_cache_or_commit() {
     app.refresh_diagnostics(&doc);
     assert_eq!(app.diagnostics_buffer_reads, 6);
 }
-#[test]
 fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
     let (mut app, mut doc, key) = fixture();
     app.refresh_diagnostics(&doc);
@@ -137,7 +143,6 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
     assert_eq!(app.diagnostics_buffer_reads, 7);
 }
 
-#[test]
 fn equal_pending_counts_with_different_text_never_alias() {
     let (mut app, mut doc, key) = fixture();
     app.refresh_diagnostics(&doc);
@@ -157,6 +162,12 @@ fn equal_pending_counts_with_different_text_never_alias() {
 }
 
 #[test]
+fn diagnostics_leave_transactions_history_and_patch_cursor_untouched() {
+    // Each phase builds its own document and actor setup.
+    diagnostics_leave_zero_operation_transactions_and_patch_history_untouched();
+    diagnostics_preserve_active_patch_cursor();
+}
+
 fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     use automerge::{ActorId, ROOT};
     let mut app = CodeApp::new();
@@ -179,7 +190,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     // The transaction's owner discards its empty transaction. Diagnostics
     // must not have committed it first and poisoned the actor table.
     assert_eq!(doc.rollback(), 0);
-    // Match the owner's safe empty-transaction cleanup in qdoc::history.
+    // Match the owner's safe empty-transaction cleanup in tilo_resource::history.
     doc.reset_diff_cursor();
     doc.set_actor(ActorId::from(vec![0x20]));
     doc.put(ROOT, "body", "edited").unwrap();
@@ -216,13 +227,13 @@ fn diagnostics_clone_witness_cost() {
         previous = history;
         app.refresh_diagnostics(&doc);
         let expected = app.panel.problems().to_vec();
-        let start = std::time::Instant::now();
+        let start = ui::time::now();
         for _ in 0..50 {
             app.refresh_diagnostics(&doc);
         }
         let cached = start.elapsed();
         assert_eq!(app.panel.problems(), expected);
-        let start = std::time::Instant::now();
+        let start = ui::time::now();
         for _ in 0..50 {
             app.refresh_diagnostics_at(&doc, None);
         }
@@ -236,7 +247,6 @@ fn diagnostics_clone_witness_cost() {
     }
 }
 
-#[test]
 fn diagnostics_preserve_active_patch_cursor() {
     use automerge::{ROOT, transaction::Transactable};
     let (mut app, mut doc, _) = fixture();

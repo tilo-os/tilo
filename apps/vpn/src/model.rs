@@ -243,36 +243,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_has_home_connected_and_work_disconnected() {
-        let v = sample_vault();
-        let home = v.connections.iter().find(|c| c.name == "Home").unwrap();
-        assert_eq!(home.kind, ConnKind::WireGuard);
-        assert_eq!(home.status, ConnStatus::Connected);
-        let work = v.connections.iter().find(|c| c.name == "Work").unwrap();
-        assert_eq!(work.kind, ConnKind::OpenVpn);
-        assert_eq!(work.status, ConnStatus::Disconnected);
-        assert_eq!(v.selected, Some(home.id));
-        assert_eq!(v.active_count(), 1);
-    }
-
-    #[test]
-    fn byte_and_rate_formatting() {
-        // Transfer counters are base-1024, so they wear IEC binary units.
-        assert_eq!(ui::format::bytes(512), "512 B");
-        assert_eq!(ui::format::rate(6_710_886.0), "6.4 MiB/s");
-        assert_eq!(human_ago(34), "34s ago");
-        assert_eq!(human_ago(240), "4m ago");
-    }
-
-    #[test]
-    fn kind_status_round_trip() {
-        assert_eq!(
-            ConnKind::parse(ConnKind::OpenVpn.as_str()),
-            ConnKind::OpenVpn
-        );
-        assert_eq!(
-            ConnStatus::parse(ConnStatus::Connecting.as_str()),
-            ConnStatus::Connecting
-        );
+    fn vpn_model_sample_formatting_and_enum_round_trips() {
+        // Case `sample_has_home_connected_and_work_disconnected`.
+        {
+            let v = sample_vault();
+            let home = v.connections.iter().find(|c| c.name == "Home").unwrap();
+            assert_eq!(home.kind, ConnKind::WireGuard);
+            assert_eq!(home.status, ConnStatus::Connected);
+            let work = v.connections.iter().find(|c| c.name == "Work").unwrap();
+            assert_eq!(work.kind, ConnKind::OpenVpn);
+            assert_eq!(work.status, ConnStatus::Disconnected);
+            assert_eq!(v.selected, Some(home.id));
+            assert_eq!(v.active_count(), 1);
+        }
+        // Case `byte_and_rate_formatting`.
+        {
+            // Transfer counters are base-1024, so they wear IEC binary units.
+            assert_eq!(ui::format::bytes(512), "512 B");
+            assert_eq!(ui::format::rate(6_710_886.0), "6.4 MiB/s");
+            assert_eq!(human_ago(34), "34s ago");
+            assert_eq!(human_ago(240), "4m ago");
+        }
+        // Case `kind_status_round_trip`.
+        {
+            assert_eq!(
+                ConnKind::parse(ConnKind::OpenVpn.as_str()),
+                ConnKind::OpenVpn
+            );
+            assert_eq!(
+                ConnStatus::parse(ConnStatus::Connecting.as_str()),
+                ConnStatus::Connecting
+            );
+        }
     }
 }

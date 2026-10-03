@@ -51,13 +51,13 @@ pub mod doc;
 pub mod draw;
 mod endpoint_editor;
 pub mod geo;
-pub mod livetest;
 mod map_controls;
 mod map_info_sheet;
 pub mod model;
 pub mod net;
 mod offline_panel;
 pub mod rank;
+pub mod resource;
 pub mod sample;
 mod search_box;
 pub mod tiles;
@@ -74,9 +74,17 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(MapsApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.maps", app_root)
+        .component_actions(actions::register)
+        .as_definition("Maps")
+}
+
 /// Build the root widget for headless `--shots` and tests: no tile worker, no
 /// network. The stylised vector basemap stands in for raster imagery so the
 /// screenshot is fully populated offline.
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(MapsApp::offline())
 }
+pub use resource::{Maps, MapsShell};

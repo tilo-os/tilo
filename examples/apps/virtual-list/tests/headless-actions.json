@@ -1,0 +1,8 @@
+[
+  {"perform": {"target": "activity-list", "action": "focus"}},
+  {"wait_for_named": {"target": "open-0", "timeout_ms": 1000}},
+  {"perform": {"target": "activity-list", "semantic_target": "key:3", "action": "activate"}},
+  {"expect": {"target": "activity-list", "semantic_target": "key:3", "role": "list_item", "selected": true}},
+  {"perform": {"target": "open-0", "action": "activate"}},
+  {"expect": {"target": "last-opened", "name_contains": "Activity 0"}}
+]

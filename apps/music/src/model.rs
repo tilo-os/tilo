@@ -457,40 +457,47 @@ mod tests {
     use crate::seed;
 
     #[test]
-    fn sample_library_is_populated() {
-        let lib = seed::sample_library();
-        assert!(lib.artists.len() >= 4);
-        assert!(lib.albums.len() >= 6);
-        assert!(lib.tracks.len() >= 20);
-        assert!(!lib.playlists.is_empty());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn sample_library_orders_albums_searches_and_cycles_repeat() {
+        // Phase `sample_library_is_populated`.
+        {
+            let lib = seed::sample_library();
+            assert!(lib.artists.len() >= 4);
+            assert!(lib.albums.len() >= 6);
+            assert!(lib.tracks.len() >= 20);
+            assert!(!lib.playlists.is_empty());
+        }
 
-    #[test]
-    fn album_tracks_are_ordered() {
-        let lib = seed::sample_library();
-        for album in lib.albums.keys() {
-            let ts = lib.album_tracks(album);
-            for w in ts.windows(2) {
-                assert!(w[0].track_no <= w[1].track_no);
+        // Phase `album_tracks_are_ordered`.
+        {
+            let lib = seed::sample_library();
+            for album in lib.albums.keys() {
+                let ts = lib.album_tracks(album);
+                for w in ts.windows(2) {
+                    assert!(w[0].track_no <= w[1].track_no);
+                }
             }
         }
-    }
 
-    #[test]
-    fn search_finds_by_title_and_artist() {
-        let lib = seed::sample_library();
-        // Every track title should be findable by its own title.
-        let some = lib.tracks.values().next().unwrap().clone();
-        let res = lib.search(&some.title);
-        assert!(res.tracks.contains(&some.id));
-        // Empty query yields nothing.
-        assert!(lib.search("   ").is_empty());
-    }
+        // Phase `search_finds_by_title_and_artist`.
+        {
+            let lib = seed::sample_library();
+            // Every track title should be findable by its own title.
+            let some = lib.tracks.values().next().unwrap().clone();
+            let res = lib.search(&some.title);
+            assert!(res.tracks.contains(&some.id));
+            // Empty query yields nothing.
+            assert!(lib.search("   ").is_empty());
+        }
 
-    #[test]
-    fn repeat_cycles() {
-        assert_eq!(RepeatMode::Off.next(), RepeatMode::All);
-        assert_eq!(RepeatMode::All.next(), RepeatMode::One);
-        assert_eq!(RepeatMode::One.next(), RepeatMode::Off);
+        // Phase `repeat_cycles`.
+        {
+            assert_eq!(RepeatMode::Off.next(), RepeatMode::All);
+            assert_eq!(RepeatMode::All.next(), RepeatMode::One);
+            assert_eq!(RepeatMode::One.next(), RepeatMode::Off);
+        }
     }
 }

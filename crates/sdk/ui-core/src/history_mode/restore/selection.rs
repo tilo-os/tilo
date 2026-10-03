@@ -1,7 +1,9 @@
 //! Schema-directed projection. Structural maps normalize absence; entity keys do not.
 use super::{
-    HistoryMapOverlay, HistoryRestoreNode, HistoryRestoreSchema, HistoryRootPattern, RestoreError,
-    projection::{ContentProjection, Node, Properties, property},
+    HistoryRestoreNode, HistoryRestoreSchema, HistoryRootPattern, RestoreError,
+    projection::{
+        Alternatives, ContentProjection, Node, NodeId, ProjectionBuilder, Properties, property,
+    },
     schema::selectors,
 };
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -13,6 +15,7 @@ pub(super) fn content(
     doc: &AutoCommit,
     schema: &HistoryRestoreSchema,
 ) -> Result<ContentProjection, RestoreError> {
+    let mut builder = ProjectionBuilder::new();
     let mut result = BTreeMap::new();
     for selector in selectors(schema) {
         let keys = selector.pattern.keys(doc)?;
@@ -22,24 +25,48 @@ pub(super) fn content(
             ));
         }
         for key in keys {
-            result.insert(
-                key.clone(),
-                selected(
-                    doc,
-                    Some(&ROOT),
-                    &key,
-                    selector.node,
-                    selector.required,
-                    &key,
-                    0,
-                )?,
-            );
+            let values = selected(
+                &mut builder,
+                doc,
+                Some(&ROOT),
+                &key,
+                selector.node,
+                selector.required,
+                &key,
+                0,
+            )?;
+            result.insert(key, values);
         }
     }
-    Ok(ContentProjection(result))
+    builder.build(result)
+}
+
+struct SelectEval {
+    parent: Option<ObjId>,
+    key: String,
+    selector: HistoryRestoreNode,
+    required: bool,
+    path: String,
+    depth: usize,
+    output: usize,
+}
+
+enum SelectTask {
+    Eval(SelectEval),
+    FinishMap {
+        output: usize,
+        children: Vec<(String, usize)>,
+    },
+}
+
+fn output_slot(outputs: &mut Vec<Option<Alternatives>>) -> usize {
+    let slot = outputs.len();
+    outputs.push(None);
+    slot
 }
 
 fn selected(
+    builder: &mut ProjectionBuilder,
     doc: &AutoCommit,
     parent: Option<&ObjId>,
     key: &str,
@@ -47,74 +74,140 @@ fn selected(
     required: bool,
     path: &str,
     depth: usize,
-) -> Result<Vec<Node>, RestoreError> {
-    match selector {
-        HistoryRestoreNode::Whole { expected_type } => {
-            let values = match parent {
-                Some(parent) => property(doc, parent, key.into(), path, true, depth)?,
-                None => Vec::new(),
-            };
-            if values.is_empty() && required {
-                return Err(RestoreError::SchemaInvalid(format!(
-                    "missing required property {path}"
-                )));
-            }
-            if values
-                .first()
-                .is_some_and(|value| !expected_type.accepts(value.value_type()))
-            {
-                return Err(RestoreError::SchemaInvalid(format!(
-                    "wrong type for {path}"
-                )));
-            }
-            Ok(values)
-        }
-        HistoryRestoreNode::MapOverlay(overlay) => {
-            let object = map_object(doc, parent, key, required, path)?;
-            let mut fields = BTreeMap::new();
-            for field in overlay.fields {
-                let child_path = format!("{path}/{}", field.key);
-                fields.insert(
-                    field.key.into(),
-                    selected(
-                        doc,
-                        object.as_ref(),
-                        field.key,
-                        field.node,
-                        field.required,
-                        &child_path,
-                        depth.saturating_add(1),
-                    )?,
-                );
-            }
-            if let (Some(entries), Some(object)) = (overlay.entries, object.as_ref()) {
-                for child in doc.keys(object) {
-                    if overlay.fields.iter().any(|field| field.key == child) {
-                        continue;
+) -> Result<Alternatives, RestoreError> {
+    let mut outputs = vec![None];
+    let mut tasks = vec![SelectTask::Eval(SelectEval {
+        parent: parent.cloned(),
+        key: key.into(),
+        selector,
+        required,
+        path: path.into(),
+        depth,
+        output: 0,
+    })];
+    while let Some(task) = tasks.pop() {
+        match task {
+            SelectTask::Eval(eval) => {
+                let SelectEval {
+                    parent,
+                    key,
+                    selector,
+                    required,
+                    path,
+                    depth,
+                    output,
+                } = eval;
+                match selector {
+                    HistoryRestoreNode::Whole { expected_type } => {
+                        let values = match parent.as_ref() {
+                            Some(parent) => {
+                                property(builder, doc, parent, key.into(), &path, true, depth)?
+                            }
+                            None => Vec::new(),
+                        };
+                        if values.is_empty() && required {
+                            return Err(RestoreError::SchemaInvalid(format!(
+                                "missing required property {path}"
+                            )));
+                        }
+                        if values.first().is_some_and(|value| {
+                            !builder
+                                .value_type(*value)
+                                .is_ok_and(|found| expected_type.accepts(found))
+                        }) {
+                            return Err(RestoreError::SchemaInvalid(format!(
+                                "wrong type for {path}"
+                            )));
+                        }
+                        outputs[output] = Some(values);
                     }
-                    if child.is_empty() || child.len() > entries.key_limit_bytes {
-                        return Err(RestoreError::SchemaInvalid(format!(
-                            "entity key exceeds declared bounds at {path}/{child}"
-                        )));
+                    HistoryRestoreNode::MapContentExcept { preserved_fields } => {
+                        let object = map_object(doc, parent.as_ref(), &key, required, &path)?;
+                        let mut fields = BTreeMap::new();
+                        if let Some(object) = &object {
+                            for child in doc.keys(object) {
+                                if preserved_fields.contains(&child.as_str()) {
+                                    continue;
+                                }
+                                let child_path = format!("{path}/{child}");
+                                fields.insert(
+                                    child.clone(),
+                                    property(
+                                        builder,
+                                        doc,
+                                        object,
+                                        child.into(),
+                                        &child_path,
+                                        true,
+                                        depth.saturating_add(1),
+                                    )?,
+                                );
+                            }
+                        }
+                        outputs[output] = Some(vec![builder.push(Node::Map(ObjType::Map, fields))]);
                     }
-                    let child_path = format!("{path}/{child}");
-                    fields.insert(
-                        child.clone(),
-                        selected(
-                            doc,
-                            Some(object),
-                            &child,
-                            entries.node,
-                            true,
-                            &child_path,
-                            depth.saturating_add(1),
-                        )?,
-                    );
+                    HistoryRestoreNode::MapOverlay(overlay) => {
+                        let object = map_object(doc, parent.as_ref(), &key, required, &path)?;
+                        let mut children = Vec::new();
+                        let mut child_evals = Vec::new();
+                        for field in overlay.fields {
+                            let child_output = output_slot(&mut outputs);
+                            children.push((field.key.into(), child_output));
+                            child_evals.push(SelectEval {
+                                parent: object.clone(),
+                                key: field.key.into(),
+                                selector: field.node,
+                                required: field.required,
+                                path: format!("{path}/{}", field.key),
+                                depth: depth.saturating_add(1),
+                                output: child_output,
+                            });
+                        }
+                        if let (Some(entries), Some(object)) = (overlay.entries, object.as_ref()) {
+                            for child in doc.keys(object) {
+                                if overlay.fields.iter().any(|field| field.key == child) {
+                                    continue;
+                                }
+                                if child.is_empty() || child.len() > entries.key_limit_bytes {
+                                    return Err(RestoreError::SchemaInvalid(format!(
+                                        "entity key exceeds declared bounds at {path}/{child}"
+                                    )));
+                                }
+                                let child_output = output_slot(&mut outputs);
+                                children.push((child.clone(), child_output));
+                                child_evals.push(SelectEval {
+                                    parent: Some(object.clone()),
+                                    key: child.clone(),
+                                    selector: entries.node,
+                                    required: true,
+                                    path: format!("{path}/{child}"),
+                                    depth: depth.saturating_add(1),
+                                    output: child_output,
+                                });
+                            }
+                        }
+                        tasks.push(SelectTask::FinishMap { output, children });
+                        tasks.extend(child_evals.into_iter().rev().map(SelectTask::Eval));
+                    }
                 }
             }
-            Ok(vec![Node::Map(ObjType::Map, fields)])
+            SelectTask::FinishMap { output, children } => {
+                let mut fields = BTreeMap::new();
+                for (key, child_output) in children {
+                    fields.insert(
+                        key,
+                        outputs[child_output]
+                            .take()
+                            .ok_or(RestoreError::ContentPostconditionMismatch)?,
+                    );
+                }
+                outputs[output] = Some(vec![builder.push(Node::Map(ObjType::Map, fields))]);
+            }
         }
     }
+    outputs[0]
+        .take()
+        .ok_or(RestoreError::ContentPostconditionMismatch)
 }
 
 pub(super) fn map_object(
@@ -143,9 +236,15 @@ pub(super) fn map_object(
     }
 }
 
-pub(super) fn map_values(values: &[Node]) -> Result<&Properties, RestoreError> {
+pub(super) fn map_values<'a>(
+    projection: &'a ContentProjection,
+    values: &[NodeId],
+) -> Result<&'a Properties, RestoreError> {
     match values {
-        [Node::Map(ObjType::Map, fields)] => Ok(fields),
+        [node] => match projection.node(*node)? {
+            Node::Map(ObjType::Map, fields) => Ok(fields),
+            _ => Err(RestoreError::ContentPostconditionMismatch),
+        },
         _ => Err(RestoreError::ContentPostconditionMismatch),
     }
 }
@@ -161,6 +260,7 @@ pub(super) fn protected(
     identity_paths: Option<&IdentityPaths>,
 ) -> Result<(ContentProjection, IdentityPaths), RestoreError> {
     let selectors = selectors(schema);
+    let mut builder = ProjectionBuilder::new();
     let mut result = BTreeMap::new();
     let mut identities = ProtectedIdentities {
         existing: identity_paths,
@@ -173,14 +273,14 @@ pub(super) fn protected(
         {
             result.insert(
                 key.clone(),
-                property(doc, &ROOT, key.clone().into(), &key, false, 0)?,
+                property(&mut builder, doc, &ROOT, key.clone().into(), &key, false, 0)?,
             );
         }
     }
     for selector in selectors {
-        let HistoryRestoreNode::MapOverlay(overlay) = selector.node else {
+        if !structural(selector.node) {
             continue;
-        };
+        }
         let keys: Vec<String> = match selector.pattern {
             HistoryRootPattern::Exact(key) => vec![key.into()],
             pattern @ HistoryRootPattern::Affix { .. } => target
@@ -195,20 +295,17 @@ pub(super) fn protected(
                 .0
                 .get(&key)
                 .ok_or(RestoreError::ContentPostconditionMismatch)?;
-            let mut path = vec![key.clone()];
             let node = protected_map(
+                &mut builder,
                 doc,
-                Some(&ROOT),
-                &key,
-                overlay,
-                values,
-                &mut path,
+                ProtectedEval::at_root(&key, selector.node, values),
+                target,
                 &mut identities,
             )?;
             result.insert(key, vec![node]);
         }
     }
-    Ok((ContentProjection(result), identities.seen))
+    Ok((builder.build(result)?, identities.seen))
 }
 
 struct ProtectedIdentities<'a> {
@@ -216,83 +313,198 @@ struct ProtectedIdentities<'a> {
     seen: IdentityPaths,
 }
 
+fn node_output_slot(outputs: &mut Vec<Option<NodeId>>) -> usize {
+    let slot = outputs.len();
+    outputs.push(None);
+    slot
+}
+
+struct ProtectedEval {
+    parent: Option<ObjId>,
+    key: String,
+    selector: HistoryRestoreNode,
+    target: Alternatives,
+    path: Vec<String>,
+    output: usize,
+}
+
+impl ProtectedEval {
+    /// The first task of a walk: a root key, written to output slot 0.
+    fn at_root(key: &str, selector: HistoryRestoreNode, target: &[NodeId]) -> Self {
+        Self {
+            parent: Some(ROOT),
+            key: key.into(),
+            selector,
+            target: target.to_vec(),
+            path: vec![key.into()],
+            output: 0,
+        }
+    }
+}
+
+enum ProtectedTask {
+    Eval(ProtectedEval),
+    Finish {
+        object: Option<ObjId>,
+        path: Vec<String>,
+        output: usize,
+        fields: Properties,
+        children: Vec<(String, usize)>,
+    },
+}
+
 fn protected_map(
+    builder: &mut ProjectionBuilder,
     doc: &AutoCommit,
-    parent: Option<&ObjId>,
-    key: &str,
-    overlay: &HistoryMapOverlay,
-    target: &[Node],
-    path: &mut Vec<String>,
+    root: ProtectedEval,
+    target_projection: &ContentProjection,
     identities: &mut ProtectedIdentities<'_>,
-) -> Result<Node, RestoreError> {
-    let display = path.join("/");
-    let object = map_object(doc, parent, key, false, &display)?;
-    let target = map_values(target)?;
-    let mut result = BTreeMap::new();
-    if let Some(object) = &object {
-        for child in doc.keys(object) {
-            if overlay.fields.iter().any(|field| field.key == child) || overlay.entries.is_some() {
-                continue;
-            }
-            result.insert(
-                child.clone(),
-                property(
-                    doc,
+) -> Result<NodeId, RestoreError> {
+    let mut outputs = vec![None];
+    let mut tasks = vec![ProtectedTask::Eval(root)];
+    while let Some(task) = tasks.pop() {
+        match task {
+            ProtectedTask::Eval(eval) => {
+                let display = eval.path.join("/");
+                let object = map_object(doc, eval.parent.as_ref(), &eval.key, false, &display)?;
+                let target_fields = map_values(target_projection, &eval.target)?.clone();
+                let mut fields = BTreeMap::new();
+                let mut children = Vec::new();
+                let mut child_evals = Vec::new();
+                match eval.selector {
+                    HistoryRestoreNode::MapContentExcept { preserved_fields } => {
+                        for child in preserved_fields {
+                            let values = match &object {
+                                Some(object) => property(
+                                    builder,
+                                    doc,
+                                    object,
+                                    (*child).into(),
+                                    &format!("{display}/{child}"),
+                                    false,
+                                    eval.path.len(),
+                                )?,
+                                None => Vec::new(),
+                            };
+                            fields.insert((*child).into(), values);
+                        }
+                    }
+                    HistoryRestoreNode::MapOverlay(overlay) => {
+                        if let Some(object) = &object {
+                            for child in doc.keys(object) {
+                                if overlay.fields.iter().any(|field| field.key == child)
+                                    || overlay.entries.is_some()
+                                {
+                                    continue;
+                                }
+                                fields.insert(
+                                    child.clone(),
+                                    property(
+                                        builder,
+                                        doc,
+                                        object,
+                                        child.clone().into(),
+                                        &format!("{display}/{child}"),
+                                        false,
+                                        eval.path.len(),
+                                    )?,
+                                );
+                            }
+                        }
+                        for field in overlay.fields {
+                            if structural(field.node) {
+                                let child_output = node_output_slot(&mut outputs);
+                                children.push((field.key.into(), child_output));
+                                let mut child_path = eval.path.clone();
+                                child_path.push(field.key.into());
+                                child_evals.push(ProtectedEval {
+                                    parent: object.clone(),
+                                    key: field.key.into(),
+                                    selector: field.node,
+                                    target: target_fields
+                                        .get(field.key)
+                                        .ok_or(RestoreError::ContentPostconditionMismatch)?
+                                        .clone(),
+                                    path: child_path,
+                                    output: child_output,
+                                });
+                            }
+                        }
+                        if let Some(entries) = overlay.entries
+                            && structural(entries.node)
+                        {
+                            for (child, values) in &target_fields {
+                                if overlay.fields.iter().any(|field| field.key == child) {
+                                    continue;
+                                }
+                                let child_output = node_output_slot(&mut outputs);
+                                children.push((child.clone(), child_output));
+                                let mut child_path = eval.path.clone();
+                                child_path.push(child.clone());
+                                child_evals.push(ProtectedEval {
+                                    parent: object.clone(),
+                                    key: child.clone(),
+                                    selector: entries.node,
+                                    target: values.clone(),
+                                    path: child_path,
+                                    output: child_output,
+                                });
+                            }
+                        }
+                    }
+                    HistoryRestoreNode::Whole { .. } => {
+                        return Err(RestoreError::ContentPostconditionMismatch);
+                    }
+                }
+                tasks.push(ProtectedTask::Finish {
                     object,
-                    child.clone().into(),
-                    &format!("{display}/{child}"),
-                    false,
-                    path.len(),
-                )?,
-            );
-        }
-    }
-    for field in overlay.fields {
-        if let HistoryRestoreNode::MapOverlay(child_overlay) = field.node {
-            path.push(field.key.into());
-            let values = target
-                .get(field.key)
-                .ok_or(RestoreError::ContentPostconditionMismatch)?;
-            let child = protected_map(
-                doc,
-                object.as_ref(),
-                field.key,
-                child_overlay,
-                values,
-                path,
-                identities,
-            )?;
-            path.pop();
-            result.insert(field.key.into(), vec![child]);
-        }
-    }
-    if let Some(entries) = overlay.entries
-        && let HistoryRestoreNode::MapOverlay(child_overlay) = entries.node
-    {
-        for (child, values) in target {
-            if overlay.fields.iter().any(|field| field.key == child) {
-                continue;
+                    path: eval.path,
+                    output: eval.output,
+                    fields,
+                    children,
+                });
+                tasks.extend(child_evals.into_iter().rev().map(ProtectedTask::Eval));
             }
-            path.push(child.clone());
-            let node = protected_map(
-                doc,
-                object.as_ref(),
-                child,
-                child_overlay,
-                values,
+            ProtectedTask::Finish {
+                object,
                 path,
-                identities,
-            )?;
-            path.pop();
-            result.insert(child.clone(), vec![node]);
+                output,
+                mut fields,
+                children,
+            } => {
+                for (key, child_output) in children {
+                    fields.insert(
+                        key,
+                        vec![
+                            outputs[child_output]
+                                .take()
+                                .ok_or(RestoreError::ContentPostconditionMismatch)?,
+                        ],
+                    );
+                }
+                let map = builder.push(Node::Map(ObjType::Map, fields));
+                let node = if let Some(object) = object
+                    && identities
+                        .existing
+                        .is_none_or(|paths| paths.contains(&path))
+                {
+                    identities.seen.insert(path);
+                    builder.push(Node::Protected(object, map))
+                } else {
+                    map
+                };
+                outputs[output] = Some(node);
+            }
         }
     }
-    let node = Node::Map(ObjType::Map, result);
-    if let Some(object) = object
-        && identities.existing.is_none_or(|paths| paths.contains(path))
-    {
-        identities.seen.insert(path.clone());
-        return Ok(Node::Protected(object, Box::new(node)));
-    }
-    Ok(node)
+    outputs[0]
+        .take()
+        .ok_or(RestoreError::ContentPostconditionMismatch)
+}
+
+fn structural(node: HistoryRestoreNode) -> bool {
+    matches!(
+        node,
+        HistoryRestoreNode::MapOverlay(_) | HistoryRestoreNode::MapContentExcept { .. }
+    )
 }

@@ -9,7 +9,7 @@
 # pinned capnpc version. Change these together with that image.
 set -euo pipefail
 
-CAPNP_IMAGE="registry.fedoraproject.org/fedora:42" # capnproto 1.0.1
+CAPNP_IMAGE="registry.fedoraproject.org/fedora:44" # capnproto 1.3.0
 CAPNPC_VERSION="0.26.0"                              # workspace `capnpc`
 
 here="$(cd "$(dirname "$0")" && pwd)"

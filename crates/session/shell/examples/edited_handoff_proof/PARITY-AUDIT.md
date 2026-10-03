@@ -60,7 +60,8 @@ receipt redaction or persistence.
 Source evidence: `CapnpBrokerState::record_effect_receipt` reduces the terminal
 update through `EffectReceiptStatus::from_terminal`; a successful status carries
 no `ActionOutput`. The focused broker test
-`remote_agent_effect_terminals_become_redacted_workspace_receipts` asserts that
+`agent_principals_delegation_profiles_and_receipts_are_owner_bound` (phase
+`remote_agent_effect_terminals_become_redacted_workspace_receipts`) asserts that
 success output values/resource paths and failure messages/details do not appear
 in serialized workspace receipts. That unit test was not run as part of the
 native proof.

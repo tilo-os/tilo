@@ -161,70 +161,73 @@ impl Harness {
     }
 }
 
-/// Narrowing the window wraps the paragraph and pushes the button row
-/// down: content reflows to the new width instead of clipping.
 #[test]
-fn narrowing_window_reflows_content_downward() {
-    let mut h = Harness::new();
+fn resize_reflows_and_reshapes_only_when_width_changes() {
+    // Case `narrowing_window_reflows_content_downward`.
+    // Narrowing the window wraps the paragraph and pushes the button row
+    // down: content reflows to the new width instead of clipping.
+    {
+        let mut h = Harness::new();
 
-    h.layout(900.0);
-    let wide_row_top = row_top(h.root.as_ref());
+        h.layout(900.0);
+        let wide_row_top = row_top(h.root.as_ref());
 
-    h.layout(160.0);
-    let narrow_row_top = row_top(h.root.as_ref());
+        h.layout(160.0);
+        let narrow_row_top = row_top(h.root.as_ref());
 
-    assert!(
-        narrow_row_top > wide_row_top,
-        "narrower width must wrap the paragraph and push the row down \
-         (reflow): wide row_top={wide_row_top}, narrow row_top={narrow_row_top}",
-    );
-}
-
-/// Redraws at an unchanged size (a held / settled resize, and every
-/// static frame) must not reshape a single label — the property that
-/// makes a settled resize and idle content cost ~zero text work.
-#[test]
-fn settled_size_redraws_do_not_reshape() {
-    let mut h = Harness::new();
-    h.layout(900.0);
-
-    // First draw warms the shape cache (misses expected).
-    let (_h0, m0) = h.draw();
-    assert!(m0 > 0, "cold first draw shapes its labels");
-
-    // Every subsequent draw at the SAME size is a pure cache hit.
-    for i in 0..4 {
-        let (hits, misses) = h.draw();
-        assert_eq!(
-            misses, 0,
-            "settled-size redraw #{i} must not reshape any label",
-        );
         assert!(
-            hits > 0,
-            "settled-size redraw #{i} must reuse cached glyphs"
+            narrow_row_top > wide_row_top,
+            "narrower width must wrap the paragraph and push the row down \
+         (reflow): wide row_top={wide_row_top}, narrow row_top={narrow_row_top}",
         );
     }
-}
 
-/// When the width actually changes, wrapped text re-shapes so the user
-/// never sees stale glyph positions — the cache adapts, it does not
-/// pin old geometry.
-#[test]
-fn width_change_reshapes_wrapped_text() {
-    let mut h = Harness::new();
+    // Case `settled_size_redraws_do_not_reshape`.
+    // Redraws at an unchanged size (a held / settled resize, and every
+    // static frame) must not reshape a single label — the property that
+    // makes a settled resize and idle content cost ~zero text work.
+    {
+        let mut h = Harness::new();
+        h.layout(900.0);
 
-    h.layout(900.0);
-    let _ = h.draw(); // warm at wide width
-    let (_h_settled, m_settled) = h.draw();
-    assert_eq!(m_settled, 0, "wide width is settled before the resize");
+        // First draw warms the shape cache (misses expected).
+        let (_h0, m0) = h.draw();
+        assert!(m0 > 0, "cold first draw shapes its labels");
 
-    // Drag the window narrower: the paragraph's wrap width changed, so
-    // its shaped run must be recomputed (miss), proving reflow reaches
-    // the glyph layer and isn't served stale from the cache.
-    h.layout(160.0);
-    let (_hits, misses) = h.draw();
-    assert!(
-        misses > 0,
-        "a real width change must reshape the wrapped paragraph",
-    );
+        // Every subsequent draw at the SAME size is a pure cache hit.
+        for i in 0..4 {
+            let (hits, misses) = h.draw();
+            assert_eq!(
+                misses, 0,
+                "settled-size redraw #{i} must not reshape any label",
+            );
+            assert!(
+                hits > 0,
+                "settled-size redraw #{i} must reuse cached glyphs"
+            );
+        }
+    }
+
+    // Case `width_change_reshapes_wrapped_text`.
+    // When the width actually changes, wrapped text re-shapes so the user
+    // never sees stale glyph positions — the cache adapts, it does not
+    // pin old geometry.
+    {
+        let mut h = Harness::new();
+
+        h.layout(900.0);
+        let _ = h.draw(); // warm at wide width
+        let (_h_settled, m_settled) = h.draw();
+        assert_eq!(m_settled, 0, "wide width is settled before the resize");
+
+        // Drag the window narrower: the paragraph's wrap width changed, so
+        // its shaped run must be recomputed (miss), proving reflow reaches
+        // the glyph layer and isn't served stale from the cache.
+        h.layout(160.0);
+        let (_hits, misses) = h.draw();
+        assert!(
+            misses > 0,
+            "a real width change must reshape the wrapped paragraph",
+        );
+    }
 }

@@ -157,9 +157,7 @@ fn wayland_socket() -> Option<std::path::PathBuf> {
     if display.is_absolute() {
         Some(display)
     } else {
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .map(|root| root.join(display))
+        xdg_paths::xdg::runtime_dir().map(|root| root.join(display))
     }
 }
 

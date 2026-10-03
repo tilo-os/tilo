@@ -15,20 +15,35 @@ path = "src/lib.rs"
 name = "notes"
 path = "src/main.rs"
 
+# The Android library around this same `main.rs`, whose `ui::android_main!()`
+# the activity enters. `tilo-app build --platform android` builds it.
+[[example]]
+name = "notes-android"
+path = "src/android.rs"
+crate-type = ["cdylib"]
+required-features = ["android"]
+
 [features]
 thin = ["dep:runtime-dylib"]
+android = []
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Single-writer custody of a notebook directory.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../crates/system/atomic-file" }
-app-state = { path = "../../crates/system/app-state" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+tilo-app-state = { path = "../../crates/system/app-state" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
+# Page bodies are rich text, edited in the SDK rich-text editor.
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
-tilo-content = { path = "../../crates/system/content" }
+# Content addressing everywhere; the device store where the launcher hands
+# one over.
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
@@ -36,7 +51,7 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
 tempfile.workspace = true
 url.workspace = true
@@ -46,6 +61,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"
@@ -53,3 +69,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

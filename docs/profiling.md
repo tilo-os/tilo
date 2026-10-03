@@ -22,7 +22,7 @@ microseconds + frame index + a monotonic timestamp).
 Turn on the on-screen profiler for any app:
 
 ```bash
-TILO_PROFILE=1 <app>            # e.g. TILO_PROFILE=1 cargo run -p ui --example ui-lab -- gallery
+TILO_PROFILE=1 <app>            # e.g. TILO_PROFILE=1 cargo run -p ui-examples --example ui-lab -- gallery
 TILO_PROFILE=1 terminal
 ```
 
@@ -35,7 +35,7 @@ A panel appears top-right with:
   budget line** drawn across it and **over-budget bars painted red**.
 
 The HUD is painted *after* the frame's timing is committed, so it never inflates
-the numbers it reports. Unlike the debug overlay (`QUICK_UI_DEBUG`), `TILO_PROFILE`
+the numbers it reports. Unlike the debug overlay (`TILO_UI_DEBUG`), `TILO_PROFILE`
 is **not** gated on `debug_assertions` — you profile release builds, because
 that is where frame cost matters.
 
@@ -136,8 +136,8 @@ The `perf_scenario` example is the ready-made runner (scrollable list + the
 reference component gallery):
 
 ```bash
-cargo run -p ui --release --example ui-perf -- perf_scenario
-cargo run -p ui --release --example ui-perf -- perf_scenario --count 240 --json
+cargo run -p ui-examples --release --example ui-perf -- perf_scenario
+cargo run -p ui-examples --release --example ui-perf -- perf_scenario --count 240 --json
 ```
 
 ### Guard against regressions in a test

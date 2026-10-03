@@ -16,7 +16,6 @@
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
 use ed25519_dalek::SigningKey as DalekSigningKey;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -24,6 +23,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::text_selection::clipboard_copy;
@@ -230,25 +230,15 @@ impl InviteMintScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Invite-screen routing mirrors the host Widget event contract, including CRDT, focus/handled, and layout parameters."
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
@@ -259,24 +249,24 @@ impl InviteMintScreen {
                 for (i, r) in self.expiry_rects.iter().enumerate() {
                     if r.contains(self.last_cursor) {
                         self.expiry = EXPIRIES.get(i).copied().unwrap_or(InviteExpiry::Never);
-                        *handled = true;
+                        *ctx.handled = true;
                         return ScreenOutcome::Stay;
                     }
                 }
                 if self.last_url.is_some() && self.revoke_rect.contains(self.last_cursor) {
                     self.revoke();
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Stay;
                 }
                 if self.last_url.is_some() && self.copy_rect.contains(self.last_cursor) {
                     self.copy_url_to_clipboard();
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Stay;
                 }
                 // Needs the owner's key, which the shell-side host provides
                 // through `mint_now`; the button is wired up at that layer.
                 if self.generate_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.error = Some("Wire owner signing key via mint_now".to_string());
                     return ScreenOutcome::Stay;
                 }
@@ -284,7 +274,7 @@ impl InviteMintScreen {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -298,7 +288,7 @@ impl InviteMintScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -460,10 +450,7 @@ impl InviteMintScreen {
         }
         if let Some(rect) = plan.link_label {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 LINK_LABEL,
                 Role::Label,
@@ -473,10 +460,7 @@ impl InviteMintScreen {
         }
         for (line, rect) in &plan.link_lines {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 *rect,
                 line,
                 Role::Value,
@@ -488,8 +472,6 @@ impl InviteMintScreen {
 }
 
 impl Widget for InviteMintScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -547,10 +529,7 @@ impl Widget for InviteMintScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.expiry_label,
             EXPIRY_LABEL,
             Role::Label,
@@ -575,10 +554,7 @@ impl Widget for InviteMintScreen {
         self.draw_minted(scene, transform, text_renderer, theme, plan);
         if let Some(rect) = plan.hint {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 EMPTY_HINT,
                 Role::Caption,
@@ -588,10 +564,7 @@ impl Widget for InviteMintScreen {
         }
         if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 msg,
                 Role::Caption,
@@ -601,10 +574,7 @@ impl Widget for InviteMintScreen {
         }
         if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,
@@ -614,20 +584,6 @@ impl Widget for InviteMintScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -658,94 +614,98 @@ mod tests {
     use collab_types::generate_keypair;
 
     #[test]
-    fn mint_now_produces_url_and_envelope() {
-        let mut s = InviteMintScreen::new();
-        s.set_channel(ChannelId::new(), "engineering");
-        s.set_expiry(InviteExpiry::OneHour);
-        let (sk, pk) = generate_keypair();
-        let env = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap()
-            .clone();
-        assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
-        assert_eq!(env.role, ChannelRole::Editor);
-    }
+    fn invite_mint_produces_revokes_and_lays_out_links() {
+        fn mint_now_produces_url_and_envelope() {
+            let mut s = InviteMintScreen::new();
+            s.set_channel(ChannelId::new(), "engineering");
+            s.set_expiry(InviteExpiry::OneHour);
+            let (sk, pk) = generate_keypair();
+            let env = s
+                .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap()
+                .clone();
+            assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
+            assert_eq!(env.role, ChannelRole::Editor);
+        }
 
-    #[test]
-    fn mint_now_errors_without_channel() {
-        let mut s = InviteMintScreen::new();
-        let (sk, pk) = generate_keypair();
-        let err = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
-        ));
-    }
+        fn mint_now_errors_without_channel() {
+            let mut s = InviteMintScreen::new();
+            let (sk, pk) = generate_keypair();
+            let err = s
+                .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
+            ));
+        }
 
-    #[test]
-    fn revoke_clears_state() {
-        let mut s = InviteMintScreen::new();
-        s.set_channel(ChannelId::new(), "engineering");
-        let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap();
-        assert!(s.last_envelope().is_some());
-        s.revoke();
-        assert!(s.last_envelope().is_none());
-        assert!(s.last_url().is_none());
-        assert!(s.qr.is_none());
-    }
+        fn revoke_clears_state() {
+            let mut s = InviteMintScreen::new();
+            s.set_channel(ChannelId::new(), "engineering");
+            let (sk, pk) = generate_keypair();
+            s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap();
+            assert!(s.last_envelope().is_some());
+            s.revoke();
+            assert!(s.last_envelope().is_none());
+            assert!(s.last_url().is_none());
+            assert!(s.qr.is_none());
+        }
 
-    #[test]
-    fn expiry_one_hour_resolves_one_hour_ahead() {
-        let now = SystemTime::UNIX_EPOCH;
-        let expires = InviteExpiry::OneHour.resolve(now);
-        assert_eq!(
-            expires.duration_since(now).unwrap(),
-            Duration::from_secs(3600)
-        );
-    }
+        fn expiry_one_hour_resolves_one_hour_ahead() {
+            let now = SystemTime::UNIX_EPOCH;
+            let expires = InviteExpiry::OneHour.resolve(now);
+            assert_eq!(
+                expires.duration_since(now).unwrap(),
+                Duration::from_secs(3600)
+            );
+        }
 
-    /// Before an invite exists the body is the control plus a hint; after
-    /// one exists the QR is square, centred, and the link sits under it —
-    /// nothing at an absolute offset, nothing running off the card.
-    #[test]
-    fn plan_shows_a_centred_qr_and_link_only_once_minted() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let mut s = InviteMintScreen::new();
-        let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert_eq!(empty.segments.len(), 4);
-        assert_eq!(empty.segments[0].height(), 34.0);
-        assert!(empty.qr.is_none() && empty.link_lines.is_empty());
-        assert!(
-            empty.hint.is_some(),
-            "an empty state is designed, not blank"
-        );
+        /// Before an invite exists the body is the control plus a hint; after
+        /// one exists the QR is square, centred, and the link sits under it —
+        /// nothing at an absolute offset, nothing running off the card.
+        fn plan_shows_a_centred_qr_and_link_only_once_minted() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let mut s = InviteMintScreen::new();
+            let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert_eq!(empty.segments.len(), 4);
+            assert_eq!(empty.segments[0].height(), 34.0);
+            assert!(empty.qr.is_none() && empty.link_lines.is_empty());
+            assert!(
+                empty.hint.is_some(),
+                "an empty state is designed, not blank"
+            );
 
-        s.set_channel(ChannelId::new(), "engineering");
-        let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap();
-        let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let qr = minted.qr.expect("a minted invite shows its QR");
-        assert!((qr.width() - qr.height()).abs() < 1e-9, "the QR is square");
-        assert!((qr.center().x - body.center().x).abs() < 1e-9, "centred");
-        assert!(qr.width() <= body.width());
-        assert!(
-            minted.link_lines.len() > 1,
-            "a 200-character link needs more than one row at this width"
-        );
-        let whole: String = minted.link_lines.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(whole, s.last_url().unwrap(), "the link is readable in full");
-        let (_, first) = &minted.link_lines[0];
-        let (_, last) = minted.link_lines.last().unwrap();
-        assert!(first.y0 > qr.y1);
-        assert!(first.x1 <= body.x1, "the link rows stay inside the body");
-        assert!(minted.hint.is_none());
-        assert!((minted.bottom - last.y1).abs() < 1e-9);
+            s.set_channel(ChannelId::new(), "engineering");
+            let (sk, pk) = generate_keypair();
+            s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap();
+            let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let qr = minted.qr.expect("a minted invite shows its QR");
+            assert!((qr.width() - qr.height()).abs() < 1e-9, "the QR is square");
+            assert!((qr.center().x - body.center().x).abs() < 1e-9, "centred");
+            assert!(qr.width() <= body.width());
+            assert!(
+                minted.link_lines.len() > 1,
+                "a 200-character link needs more than one row at this width"
+            );
+            let whole: String = minted.link_lines.iter().map(|(l, _)| l.as_str()).collect();
+            assert_eq!(whole, s.last_url().unwrap(), "the link is readable in full");
+            let (_, first) = &minted.link_lines[0];
+            let (_, last) = minted.link_lines.last().unwrap();
+            assert!(first.y0 > qr.y1);
+            assert!(first.x1 <= body.x1, "the link rows stay inside the body");
+            assert!(minted.hint.is_none());
+            assert!((minted.bottom - last.y1).abs() < 1e-9);
+        }
+
+        mint_now_produces_url_and_envelope();
+        mint_now_errors_without_channel();
+        revoke_clears_state();
+        expiry_one_hour_resolves_one_hour_ahead();
+        plan_shows_a_centred_qr_and_link_only_once_minted();
     }
 }

@@ -1,8 +1,8 @@
 use super::text_runs::{BlockRuns, char_baseline, char_color, char_has, mark_style_segments};
-use qdoc::document::MarkSpan;
+use tilo_doc::document::MarkSpan;
 // Independent retained per-character reference for the mark-boundary optimization.
 use super::*;
-use qdoc::document::MarkValue;
+use tilo_doc::document::MarkValue;
 
 fn reference_block_runs(block: &BlockView) -> BlockRuns {
     let chars: Vec<char> = block.text.chars().collect();
@@ -71,9 +71,9 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
     let len = chars.len();
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_has(i, &block.marks, qdoc::schema::MARK_INS) {
+        if char_has(i, &block.marks, tilo_doc::schema::MARK_INS) {
             Some(INSERTION_RGB)
-        } else if char_has(i, &block.marks, qdoc::schema::MARK_DEL) {
+        } else if char_has(i, &block.marks, tilo_doc::schema::MARK_DEL) {
             Some(DELETION_RGB)
         } else {
             None
@@ -141,123 +141,133 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
     (runs, underlines, strikes)
 }
 
+/// Mark boundaries avoid per-character resolution and merge equal styles, and their runs match the
+/// per-character reference.
 #[test]
-fn mark_boundaries_avoid_per_character_resolution_and_merge_equal_styles() {
-    let marks = vec![MarkSpan {
-        start: 100,
-        end: 900,
-        name: "strong".into(),
-        value: MarkValue::Bool(true),
-    }];
-    let mut calls = 0;
-    let segments = mark_style_segments(1000, &marks, |i| {
-        calls += 1;
-        char_has(i, &marks, "strong")
-    });
-    assert_eq!(
-        segments,
-        vec![(0, 100, false), (100, 900, true), (900, 1000, false)]
-    );
-    assert_eq!(calls, 3);
-    let same = mark_style_segments(1000, &marks, |_| false);
-    assert_eq!(same, vec![(0, 1000, false)]);
-    assert!(mark_style_segments(0, &marks, |_| true).is_empty());
-}
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+)]
+fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
+    // Phase: mark_boundaries_avoid_per_character_resolution_and_merge_equal_styles.
+    {
+        let marks = vec![MarkSpan {
+            start: 100,
+            end: 900,
+            name: "strong".into(),
+            value: MarkValue::Bool(true),
+        }];
+        let mut calls = 0;
+        let segments = mark_style_segments(1000, &marks, |i| {
+            calls += 1;
+            char_has(i, &marks, "strong")
+        });
+        assert_eq!(
+            segments,
+            vec![(0, 100, false), (100, 900, true), (900, 1000, false)]
+        );
+        assert_eq!(calls, 3);
+        let same = mark_style_segments(1000, &marks, |_| false);
+        assert_eq!(same, vec![(0, 1000, false)]);
+        assert!(mark_style_segments(0, &marks, |_| true).is_empty());
+    }
 
-#[test]
-fn mark_boundary_runs_match_per_character_reference() {
-    let names = [
-        "strong",
-        "em",
-        "size",
-        "fontSize",
-        "font",
-        "fontFamily",
-        "color",
-        "highlight",
-        "super",
-        "sub",
-        "ins",
-        "del",
-        "link",
-        "underline",
-        "strike",
-        "unknown",
-    ];
-    for text in [
-        "",
-        "a",
-        "Aé中🙂e\u{301} abc defghijklmnop",
-        "plain text repeated ".repeat(50).as_str(),
-    ] {
-        let len = text.chars().count();
-        for seed in 0..48usize {
-            let mut marks = Vec::new();
-            for (i, name) in names.iter().enumerate() {
-                let start = (seed * 7 + i * 3) % (len + 5);
-                let end = (seed * 11 + i * 7) % (len + 5);
-                let value = match *name {
-                    "size" | "fontSize" => MarkValue::Int(12 + (i % 4) as i64),
-                    "font" => MarkValue::Str("serif".into()),
-                    "fontFamily" => MarkValue::Str("mono".into()),
-                    "color" | "highlight" => MarkValue::Str("#a14b07".into()),
-                    "link" => MarkValue::Str("https://example.invalid".into()),
-                    _ => MarkValue::Bool(seed % 2 == 0),
-                };
+    // Phase: mark_boundary_runs_match_per_character_reference.
+    {
+        let names = [
+            "strong",
+            "em",
+            "size",
+            "fontSize",
+            "font",
+            "fontFamily",
+            "color",
+            "highlight",
+            "super",
+            "sub",
+            "ins",
+            "del",
+            "link",
+            "underline",
+            "strike",
+            "unknown",
+        ];
+        for text in [
+            "",
+            "a",
+            "Aé中🙂e\u{301} abc defghijklmnop",
+            "plain text repeated ".repeat(50).as_str(),
+        ] {
+            let len = text.chars().count();
+            for seed in 0..48usize {
+                let mut marks = Vec::new();
+                for (i, name) in names.iter().enumerate() {
+                    let start = (seed * 7 + i * 3) % (len + 5);
+                    let end = (seed * 11 + i * 7) % (len + 5);
+                    let value = match *name {
+                        "size" | "fontSize" => MarkValue::Int(12 + (i % 4) as i64),
+                        "font" => MarkValue::Str("serif".into()),
+                        "fontFamily" => MarkValue::Str("mono".into()),
+                        "color" | "highlight" => MarkValue::Str("#a14b07".into()),
+                        "link" => MarkValue::Str("https://example.invalid".into()),
+                        _ => MarkValue::Bool(seed % 2 == 0),
+                    };
+                    marks.push(MarkSpan {
+                        start,
+                        end,
+                        name: (*name).into(),
+                        value,
+                    });
+                }
+                // First matching values, including malformed values, retain precedence.
                 marks.push(MarkSpan {
-                    start,
-                    end,
-                    name: (*name).into(),
-                    value,
+                    start: 0,
+                    end: len,
+                    name: "size".into(),
+                    value: MarkValue::Str("bad".into()),
                 });
-            }
-            // First matching values, including malformed values, retain precedence.
-            marks.push(MarkSpan {
-                start: 0,
-                end: len,
-                name: "size".into(),
-                value: MarkValue::Str("bad".into()),
-            });
-            marks.push(MarkSpan {
-                start: 0,
-                end: len,
-                name: "size".into(),
-                value: MarkValue::Int(99),
-            });
-            if seed % 2 == 0 {
-                marks.reverse();
-            }
-            let block = BlockView {
-                id: "fixture".into(),
-                kind: "paragraph".into(),
-                text: text.into(),
-                marks,
-                attrs: std::collections::BTreeMap::default(),
-                children: vec![],
-            };
-            for review in [false, true] {
-                let (actual, actual_underlines, actual_strikes) = block_runs_markup(&block, review);
-                let (expected, expected_underlines, expected_strikes) =
-                    reference_block_runs_markup(&block, review);
-                let fields = |r: RichSpan| {
-                    (
-                        r.text,
-                        r.bold,
-                        r.italic,
-                        r.size.map(f32::to_bits),
-                        r.family,
-                        r.color,
-                        r.background,
-                        r.baseline,
-                    )
+                marks.push(MarkSpan {
+                    start: 0,
+                    end: len,
+                    name: "size".into(),
+                    value: MarkValue::Int(99),
+                });
+                if seed % 2 == 0 {
+                    marks.reverse();
+                }
+                let block = BlockView {
+                    id: "fixture".into(),
+                    kind: "paragraph".into(),
+                    text: text.into(),
+                    marks,
+                    attrs: std::collections::BTreeMap::default(),
+                    children: vec![],
                 };
-                assert_eq!(
-                    actual.into_iter().map(fields).collect::<Vec<_>>(),
-                    expected.into_iter().map(fields).collect::<Vec<_>>(),
-                    "seed={seed} review={review} text={text:?}"
-                );
-                assert_eq!(actual_underlines, expected_underlines);
-                assert_eq!(actual_strikes, expected_strikes);
+                for review in [false, true] {
+                    let (actual, actual_underlines, actual_strikes) =
+                        block_runs_markup(&block, review);
+                    let (expected, expected_underlines, expected_strikes) =
+                        reference_block_runs_markup(&block, review);
+                    let fields = |r: RichSpan| {
+                        (
+                            r.text,
+                            r.bold,
+                            r.italic,
+                            r.size.map(f32::to_bits),
+                            r.family,
+                            r.color,
+                            r.background,
+                            r.baseline,
+                        )
+                    };
+                    assert_eq!(
+                        actual.into_iter().map(fields).collect::<Vec<_>>(),
+                        expected.into_iter().map(fields).collect::<Vec<_>>(),
+                        "seed={seed} review={review} text={text:?}"
+                    );
+                    assert_eq!(actual_underlines, expected_underlines);
+                    assert_eq!(actual_strikes, expected_strikes);
+                }
             }
         }
     }

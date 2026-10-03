@@ -46,7 +46,24 @@ pub enum Mark {
     Transclusion(PageId),
     /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
+    /// `@Ada` — a reference to a participant, by the owning model's id; the
+    /// marked text is the label shown. Renders bold in the participant's
+    /// colours ([`MentionPaint`]), accent-coloured by default.
+    Mention(String),
 }
+
+/// How a mention of one participant is painted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MentionColors {
+    /// The label's text colour.
+    pub ink: vello::peniko::Color,
+    /// A band drawn behind the label, if any (a mention of the viewer).
+    pub band: Option<vello::peniko::Color>,
+}
+
+/// The colours a mention of the participant with this id is painted in,
+/// supplied by the owning model (it knows who the participant is).
+pub type MentionPaint = std::rc::Rc<dyn Fn(&str) -> MentionColors>;
 
 impl Mark {
     /// True iff `other` is the same *kind* of mark, regardless of payload
@@ -62,6 +79,7 @@ impl Mark {
                 | (Mark::Link(_), Mark::Link(_))
                 | (Mark::Transclusion(_), Mark::Transclusion(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
+                | (Mark::Mention(_), Mark::Mention(_))
         )
     }
 }
@@ -297,6 +315,8 @@ pub struct MarkSegment {
     pub strikethrough: bool,
     pub link: Option<PageId>,
     pub external_link: bool,
+    /// The participant a mention covering this segment refers to.
+    pub mention: Option<String>,
 }
 
 impl MarkSegment {
@@ -310,6 +330,7 @@ impl MarkSegment {
             strikethrough: false,
             link: None,
             external_link: false,
+            mention: None,
         }
     }
 }
@@ -358,6 +379,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
                     Mark::ExternalLink(_) => seg.external_link = true,
+                    Mark::Mention(id) => seg.mention = Some(id.clone()),
                 }
             }
         }
@@ -375,194 +397,214 @@ mod tests {
     }
 
     #[test]
-    fn add_mark_inserts_span() {
-        let mut spans = Vec::new();
-        add_mark_to_range(&mut spans, 0..5, Mark::Bold);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].range, 0..5);
+    fn add_and_remove_marks_merge_separate_and_clip() {
+        fn add_mark_inserts_span() {
+            let mut spans = Vec::new();
+            add_mark_to_range(&mut spans, 0..5, Mark::Bold);
+            assert_eq!(spans.len(), 1);
+            assert_eq!(spans[0].range, 0..5);
+        }
+
+        fn add_mark_merges_touching_same_kind() {
+            let mut spans = vec![MarkSpan::new(0..3, Mark::Bold)];
+            add_mark_to_range(&mut spans, 3..6, Mark::Bold);
+            assert_eq!(spans.len(), 1);
+            assert_eq!(spans[0].range, 0..6);
+        }
+
+        fn add_mark_keeps_different_kinds_separate() {
+            let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
+            add_mark_to_range(&mut spans, 0..5, Mark::Italic);
+            assert_eq!(spans.len(), 2);
+        }
+
+        fn remove_mark_clips_straddle() {
+            let mut spans = vec![MarkSpan::new(0..10, Mark::Bold)];
+            remove_mark_from_range(&mut spans, 3..6, &Mark::Bold);
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0].range, 0..3);
+            assert_eq!(spans[1].range, 6..10);
+        }
+
+        fn underline_strikethrough_same_kind() {
+            assert!(Mark::Underline.same_kind(&Mark::Underline));
+            assert!(Mark::Strikethrough.same_kind(&Mark::Strikethrough));
+            assert!(!Mark::Underline.same_kind(&Mark::Strikethrough));
+            assert!(!Mark::Underline.same_kind(&Mark::Bold));
+        }
+
+        add_mark_inserts_span();
+        add_mark_merges_touching_same_kind();
+        add_mark_keeps_different_kinds_separate();
+        remove_mark_clips_straddle();
+        underline_strikethrough_same_kind();
     }
 
     #[test]
-    fn add_mark_merges_touching_same_kind() {
-        let mut spans = vec![MarkSpan::new(0..3, Mark::Bold)];
-        add_mark_to_range(&mut spans, 3..6, Mark::Bold);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].range, 0..6);
+    fn range_coverage_and_toggle_add_or_remove_marks() {
+        fn range_fully_covered_simple() {
+            let spans = vec![MarkSpan::new(0..5, Mark::Bold)];
+            assert!(range_fully_covered(&spans, &(0..5), &Mark::Bold));
+            assert!(range_fully_covered(&spans, &(1..4), &Mark::Bold));
+            assert!(!range_fully_covered(&spans, &(0..6), &Mark::Bold));
+            assert!(!range_fully_covered(&spans, &(0..5), &Mark::Italic));
+        }
+
+        fn range_fully_covered_two_adjacent_spans() {
+            let spans = vec![
+                MarkSpan::new(0..3, Mark::Bold),
+                MarkSpan::new(3..6, Mark::Bold),
+            ];
+            assert!(range_fully_covered(&spans, &(0..6), &Mark::Bold));
+        }
+
+        fn toggle_adds_when_uncovered() {
+            let mut spans = Vec::new();
+            let outcome = toggle_mark_range(&mut spans, 0..5, Mark::Bold);
+            assert_eq!(outcome, ToggleOutcome::Added);
+            assert_eq!(spans.len(), 1);
+        }
+
+        fn toggle_removes_when_fully_covered() {
+            let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
+            let outcome = toggle_mark_range(&mut spans, 0..5, Mark::Bold);
+            assert_eq!(outcome, ToggleOutcome::Removed);
+            assert!(spans.is_empty());
+        }
+
+        fn toggle_partial_range_adds_then_merges() {
+            let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
+            let outcome = toggle_mark_range(&mut spans, 3..10, Mark::Bold);
+            assert_eq!(outcome, ToggleOutcome::Added);
+            assert_eq!(spans.len(), 1);
+            assert_eq!(spans[0].range, 0..10);
+        }
+
+        range_fully_covered_simple();
+        range_fully_covered_two_adjacent_spans();
+        toggle_adds_when_uncovered();
+        toggle_removes_when_fully_covered();
+        toggle_partial_range_adds_then_merges();
     }
 
     #[test]
-    fn add_mark_keeps_different_kinds_separate() {
-        let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
-        add_mark_to_range(&mut spans, 0..5, Mark::Italic);
-        assert_eq!(spans.len(), 2);
+    fn shift_after_insert_moves_or_extends_spans() {
+        fn shift_after_insert_after_span() {
+            let mut spans = vec![MarkSpan::new(0..3, Mark::Bold)];
+            shift_after_edit(&mut spans, 5, 2, 0);
+            assert_eq!(spans[0].range, 0..3); // unaffected
+        }
+
+        fn shift_after_insert_inside_span_extends_right() {
+            let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
+            shift_after_edit(&mut spans, 2, 3, 0);
+            assert_eq!(spans[0].range, 0..8);
+        }
+
+        fn shift_after_insert_at_start_pushes_right() {
+            let mut spans = vec![MarkSpan::new(2..5, Mark::Bold)];
+            shift_after_edit(&mut spans, 0, 1, 0);
+            assert_eq!(spans[0].range, 3..6);
+        }
+
+        shift_after_insert_after_span();
+        shift_after_insert_inside_span_extends_right();
+        shift_after_insert_at_start_pushes_right();
     }
 
     #[test]
-    fn remove_mark_clips_straddle() {
-        let mut spans = vec![MarkSpan::new(0..10, Mark::Bold)];
-        remove_mark_from_range(&mut spans, 3..6, &Mark::Bold);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].range, 0..3);
-        assert_eq!(spans[1].range, 6..10);
+    fn shift_after_delete_clips_or_drops_spans() {
+        fn shift_after_delete_inside_span_clips() {
+            let mut spans = vec![MarkSpan::new(0..10, Mark::Bold)];
+            shift_after_edit(&mut spans, 2, 0, 3);
+            assert_eq!(spans[0].range, 0..7);
+        }
+
+        fn shift_after_delete_drops_engulfed_span() {
+            let mut spans = vec![MarkSpan::new(2..4, Mark::Bold)];
+            shift_after_edit(&mut spans, 0, 0, 10);
+            assert!(spans.is_empty());
+        }
+
+        shift_after_delete_inside_span_clips();
+        shift_after_delete_drops_engulfed_span();
     }
 
     #[test]
-    fn range_fully_covered_simple() {
-        let spans = vec![MarkSpan::new(0..5, Mark::Bold)];
-        assert!(range_fully_covered(&spans, &(0..5), &Mark::Bold));
-        assert!(range_fully_covered(&spans, &(1..4), &Mark::Bold));
-        assert!(!range_fully_covered(&spans, &(0..6), &Mark::Bold));
-        assert!(!range_fully_covered(&spans, &(0..5), &Mark::Italic));
-    }
+    fn segments_split_combine_and_carry_mark_presentation() {
+        fn segments_split_at_span_boundaries() {
+            let spans = vec![MarkSpan::new(3..6, Mark::Bold)];
+            let segs = segments_for(10, &spans);
+            assert_eq!(segs.len(), 3);
+            assert_eq!(segs[0].range, 0..3);
+            assert!(!segs[0].bold);
+            assert_eq!(segs[1].range, 3..6);
+            assert!(segs[1].bold);
+            assert_eq!(segs[2].range, 6..10);
+            assert!(!segs[2].bold);
+        }
 
-    #[test]
-    fn range_fully_covered_two_adjacent_spans() {
-        let spans = vec![
-            MarkSpan::new(0..3, Mark::Bold),
-            MarkSpan::new(3..6, Mark::Bold),
-        ];
-        assert!(range_fully_covered(&spans, &(0..6), &Mark::Bold));
-    }
+        fn segments_combine_overlapping_marks() {
+            let spans = vec![
+                MarkSpan::new(0..5, Mark::Bold),
+                MarkSpan::new(0..5, Mark::Italic),
+            ];
+            let segs = segments_for(5, &spans);
+            assert_eq!(segs.len(), 1);
+            assert!(segs[0].bold);
+            assert!(segs[0].italic);
+        }
 
-    #[test]
-    fn toggle_adds_when_uncovered() {
-        let mut spans = Vec::new();
-        let outcome = toggle_mark_range(&mut spans, 0..5, Mark::Bold);
-        assert_eq!(outcome, ToggleOutcome::Added);
-        assert_eq!(spans.len(), 1);
-    }
+        fn link_mark_carries_id() {
+            let i = id(42);
+            let spans = vec![MarkSpan::new(0..5, Mark::Link(i))];
+            let segs = segments_for(5, &spans);
+            assert_eq!(segs[0].link, Some(i));
+        }
 
-    #[test]
-    fn toggle_removes_when_fully_covered() {
-        let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
-        let outcome = toggle_mark_range(&mut spans, 0..5, Mark::Bold);
-        assert_eq!(outcome, ToggleOutcome::Removed);
-        assert!(spans.is_empty());
-    }
+        fn external_link_segment_gets_link_presentation_without_a_page_id() {
+            let spans = vec![MarkSpan::new(
+                0..5,
+                Mark::ExternalLink("https://example.test".into()),
+            )];
+            let segs = segments_for(5, &spans);
+            assert!(segs[0].external_link);
+            assert_eq!(segs[0].link, None);
+        }
 
-    #[test]
-    fn toggle_partial_range_adds_then_merges() {
-        let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
-        let outcome = toggle_mark_range(&mut spans, 3..10, Mark::Bold);
-        assert_eq!(outcome, ToggleOutcome::Added);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].range, 0..10);
-    }
+        fn segments_for_empty_text_is_empty() {
+            assert!(segments_for(0, &[]).is_empty());
+        }
 
-    #[test]
-    fn shift_after_insert_after_span() {
-        let mut spans = vec![MarkSpan::new(0..3, Mark::Bold)];
-        shift_after_edit(&mut spans, 5, 2, 0);
-        assert_eq!(spans[0].range, 0..3); // unaffected
-    }
+        fn segments_for_no_spans_is_one_plain_segment() {
+            let segs = segments_for(7, &[]);
+            assert_eq!(segs.len(), 1);
+            assert_eq!(segs[0].range, 0..7);
+            assert!(!segs[0].bold);
+            assert!(!segs[0].underline);
+            assert!(!segs[0].strikethrough);
+        }
 
-    #[test]
-    fn shift_after_insert_inside_span_extends_right() {
-        let mut spans = vec![MarkSpan::new(0..5, Mark::Bold)];
-        shift_after_edit(&mut spans, 2, 3, 0);
-        assert_eq!(spans[0].range, 0..8);
-    }
+        fn underline_and_strikethrough_segments_carry_their_flags() {
+            let spans = vec![
+                MarkSpan::new(0..4, Mark::Underline),
+                MarkSpan::new(2..6, Mark::Strikethrough),
+            ];
+            let segs = segments_for(8, &spans);
+            // Byte 0..2: underline only. 2..4: both. 4..6: strike only. 6..8: none.
+            let at = |b: usize| segs.iter().find(|s| s.range.contains(&b)).unwrap();
+            assert!(at(0).underline && !at(0).strikethrough);
+            assert!(at(2).underline && at(2).strikethrough);
+            assert!(!at(5).underline && at(5).strikethrough);
+            assert!(!at(7).underline && !at(7).strikethrough);
+        }
 
-    #[test]
-    fn shift_after_insert_at_start_pushes_right() {
-        let mut spans = vec![MarkSpan::new(2..5, Mark::Bold)];
-        shift_after_edit(&mut spans, 0, 1, 0);
-        assert_eq!(spans[0].range, 3..6);
-    }
-
-    #[test]
-    fn shift_after_delete_inside_span_clips() {
-        let mut spans = vec![MarkSpan::new(0..10, Mark::Bold)];
-        shift_after_edit(&mut spans, 2, 0, 3);
-        assert_eq!(spans[0].range, 0..7);
-    }
-
-    #[test]
-    fn shift_after_delete_drops_engulfed_span() {
-        let mut spans = vec![MarkSpan::new(2..4, Mark::Bold)];
-        shift_after_edit(&mut spans, 0, 0, 10);
-        assert!(spans.is_empty());
-    }
-
-    #[test]
-    fn segments_split_at_span_boundaries() {
-        let spans = vec![MarkSpan::new(3..6, Mark::Bold)];
-        let segs = segments_for(10, &spans);
-        assert_eq!(segs.len(), 3);
-        assert_eq!(segs[0].range, 0..3);
-        assert!(!segs[0].bold);
-        assert_eq!(segs[1].range, 3..6);
-        assert!(segs[1].bold);
-        assert_eq!(segs[2].range, 6..10);
-        assert!(!segs[2].bold);
-    }
-
-    #[test]
-    fn segments_combine_overlapping_marks() {
-        let spans = vec![
-            MarkSpan::new(0..5, Mark::Bold),
-            MarkSpan::new(0..5, Mark::Italic),
-        ];
-        let segs = segments_for(5, &spans);
-        assert_eq!(segs.len(), 1);
-        assert!(segs[0].bold);
-        assert!(segs[0].italic);
-    }
-
-    #[test]
-    fn link_mark_carries_id() {
-        let i = id(42);
-        let spans = vec![MarkSpan::new(0..5, Mark::Link(i))];
-        let segs = segments_for(5, &spans);
-        assert_eq!(segs[0].link, Some(i));
-    }
-
-    #[test]
-    fn external_link_segment_gets_link_presentation_without_a_page_id() {
-        let spans = vec![MarkSpan::new(
-            0..5,
-            Mark::ExternalLink("https://example.test".into()),
-        )];
-        let segs = segments_for(5, &spans);
-        assert!(segs[0].external_link);
-        assert_eq!(segs[0].link, None);
-    }
-
-    #[test]
-    fn segments_for_empty_text_is_empty() {
-        assert!(segments_for(0, &[]).is_empty());
-    }
-
-    #[test]
-    fn segments_for_no_spans_is_one_plain_segment() {
-        let segs = segments_for(7, &[]);
-        assert_eq!(segs.len(), 1);
-        assert_eq!(segs[0].range, 0..7);
-        assert!(!segs[0].bold);
-        assert!(!segs[0].underline);
-        assert!(!segs[0].strikethrough);
-    }
-
-    #[test]
-    fn underline_and_strikethrough_segments_carry_their_flags() {
-        let spans = vec![
-            MarkSpan::new(0..4, Mark::Underline),
-            MarkSpan::new(2..6, Mark::Strikethrough),
-        ];
-        let segs = segments_for(8, &spans);
-        // Byte 0..2: underline only. 2..4: both. 4..6: strike only. 6..8: none.
-        let at = |b: usize| segs.iter().find(|s| s.range.contains(&b)).unwrap();
-        assert!(at(0).underline && !at(0).strikethrough);
-        assert!(at(2).underline && at(2).strikethrough);
-        assert!(!at(5).underline && at(5).strikethrough);
-        assert!(!at(7).underline && !at(7).strikethrough);
-    }
-
-    #[test]
-    fn underline_strikethrough_same_kind() {
-        assert!(Mark::Underline.same_kind(&Mark::Underline));
-        assert!(Mark::Strikethrough.same_kind(&Mark::Strikethrough));
-        assert!(!Mark::Underline.same_kind(&Mark::Strikethrough));
-        assert!(!Mark::Underline.same_kind(&Mark::Bold));
+        segments_split_at_span_boundaries();
+        segments_combine_overlapping_marks();
+        link_mark_carries_id();
+        external_link_segment_gets_link_presentation_without_a_page_id();
+        segments_for_empty_text_is_empty();
+        segments_for_no_spans_is_one_plain_segment();
+        underline_and_strikethrough_segments_carry_their_flags();
     }
 }

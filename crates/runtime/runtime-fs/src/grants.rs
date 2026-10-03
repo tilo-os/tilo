@@ -93,6 +93,10 @@ pub enum FsError {
     Cancelled,
     LimitExceeded,
     StoreUnavailable,
+    /// Owns the original receipt-publication failure and any commit obligation.
+    /// Retrying its commit requires retaining the `OperationOwner`'s writer
+    /// exclusion; it neither unpoisons the owner nor resumes job bookkeeping.
+    Publication(tilo_files::native::atomic::PublicationError),
     Transport(runtime_portal::NotAvailable),
     Io(std::io::Error),
 }
@@ -100,6 +104,7 @@ pub enum FsError {
 impl std::fmt::Display for FsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Publication(error) => write!(f, "receipt publication: {error}"),
             Self::Io(error) => write!(f, "filesystem I/O: {error}"),
             Self::Transport(error) => write!(f, "filesystem transport: {error}"),
             other => write!(f, "filesystem: {other:?}"),
@@ -110,6 +115,7 @@ impl std::fmt::Display for FsError {
 impl std::error::Error for FsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Publication(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Transport(error) => Some(error),
             _ => None,

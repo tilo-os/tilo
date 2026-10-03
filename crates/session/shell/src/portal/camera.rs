@@ -7,14 +7,6 @@
 //! surface. It never guesses a security capability from translated display
 //! text; microphone access has its own PipeWire/portal path.
 
-#![allow(
-    clippy::used_underscore_binding,
-    reason = "the D-Bus AccessDialog signature requires unused positional parameters (handle, \
-              parent_window); zbus's #[interface] macro deserialises them into these named \
-              parameters and forwards them by identifier into its generated dispatcher, so the \
-              lint fires on macro-generated code a per-function #[allow] cannot reach"
-)]
-
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
@@ -22,14 +14,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
-use zbus::interface;
+use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
+use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalEmitter;
-#[cfg(target_os = "linux")]
-use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedObjectPath;
 use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
+use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
@@ -37,7 +29,7 @@ use crate::shell::state::{Capability, GRANT_ONCE};
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 use super::{CapabilityKind, PromptOutcome};
 #[cfg(target_os = "linux")]
-use super::{PortalContext, auth::authenticate_call, flow, lockdown};
+use super::{PortalContext, auth::authenticate_call, flow, interface_dispatch, lockdown};
 
 #[cfg(target_os = "linux")]
 pub struct AccessBackend {
@@ -55,27 +47,168 @@ impl AccessBackend {
     }
 }
 
-#[interface(name = "org.freedesktop.impl.portal.Access")]
+/// The spec arguments of one `AccessDialog` call that policy reads. The
+/// subtitle and options are accepted on the wire and ignored.
+#[cfg(target_os = "linux")]
+struct AccessDialogRequest {
+    handle: OwnedObjectPath,
+    app_id: String,
+    parent_window: String,
+    title: String,
+    body: String,
+}
+
+/// `AccessDialog`'s wire arguments: `handle o`, `app_id s`, `parent_window s`,
+/// `title s`, `subtitle s`, `body s`, `options a{sv}`.
+#[cfg(target_os = "linux")]
+type AccessDialogArgs = (
+    OwnedObjectPath,
+    String,
+    String,
+    String,
+    String,
+    String,
+    HashMap<String, OwnedValue>,
+);
+
+#[cfg(target_os = "linux")]
+impl From<AccessDialogArgs> for AccessDialogRequest {
+    fn from(
+        (handle, app_id, parent_window, title, _subtitle, body, _options): AccessDialogArgs,
+    ) -> Self {
+        Self {
+            handle,
+            app_id,
+            parent_window,
+            title,
+            body,
+        }
+    }
+}
+
+/// The interface's introspection, byte-identical to what zbus's
+/// `#[interface]` macro wrote for the former macro-dispatched backend.
+#[cfg(target_os = "linux")]
+const ACCESS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.impl.portal.Access">
+  <!--
+   `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
+   -->
+  <method name="AccessDialog">
+    <arg name="handle" type="o" direction="in"/>
+    <arg name="app_id" type="s" direction="in"/>
+    <arg name="parent_window" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="_subtitle" type="s" direction="in"/>
+    <arg name="body" type="s" direction="in"/>
+    <arg name="_options" type="a{sv}" direction="in"/>
+    <arg type="u" direction="out"/>
+    <arg type="a{sv}" direction="out"/>
+  </method>
+</interface>
+"#;
+
+#[cfg(target_os = "linux")]
+#[zbus::export::async_trait::async_trait]
+impl Interface for AccessBackend {
+    fn name() -> InterfaceName<'static> {
+        InterfaceName::from_static_str_unchecked("org.freedesktop.impl.portal.Access")
+    }
+
+    async fn get(
+        &self,
+        _property: &str,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<OwnedValue>> {
+        None
+    }
+
+    async fn get_all(
+        &self,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> fdo::Result<HashMap<String, OwnedValue>> {
+        Ok(HashMap::new())
+    }
+
+    fn set<'call>(
+        &'call self,
+        _property: &'call str,
+        _value: &'call zbus::zvariant::Value<'_>,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _header: Option<&'call Header<'_>>,
+        _emitter: &'call SignalEmitter<'_>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    async fn set_mut(
+        &mut self,
+        _property: &str,
+        _value: &zbus::zvariant::Value<'_>,
+        _server: &ObjectServer,
+        _connection: &Connection,
+        _header: Option<&Header<'_>>,
+        _emitter: &SignalEmitter<'_>,
+    ) -> Option<fdo::Result<()>> {
+        None
+    }
+
+    fn call<'call>(
+        &'call self,
+        _server: &'call ObjectServer,
+        connection: &'call Connection,
+        message: &'call Message,
+        name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        match name.as_str() {
+            "AccessDialog" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: AccessDialogArgs| async move {
+                    Ok(self.access_dialog(&hdr, connection, args.into()).await)
+                },
+            ),
+            _ => DispatchResult2::NotFound,
+        }
+    }
+
+    fn call_mut<'call>(
+        &'call mut self,
+        _server: &'call ObjectServer,
+        _connection: &'call Connection,
+        _message: &'call Message,
+        _name: MemberName<'call>,
+    ) -> DispatchResult2<'call> {
+        DispatchResult2::NotFound
+    }
+
+    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
+        interface_dispatch::write_introspection(writer, level, ACCESS_INTROSPECTION);
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Access.AccessDialog D-Bus signature"
-    )]
     async fn access_dialog(
         &self,
-        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
-        #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
-        handle: ObjectPath<'_>,
-        app_id: String,
-        parent_window: String,
-        title: String,
-        _subtitle: String,
-        body: String,
-        _options: HashMap<String, OwnedValue>,
+        hdr: &Header<'_>,
+        connection: &Connection,
+        request: AccessDialogRequest,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let AccessDialogRequest {
+            handle,
+            app_id,
+            parent_window,
+            title,
+            body,
+        } = request;
         tracing::debug!(
             "Access.AccessDialog: app={} title={:?} body={:?}",
             app_id,
@@ -91,7 +224,7 @@ impl AccessBackend {
         if lockdown::current_policy().disable_camera {
             return (1, HashMap::new());
         }
-        let request = handle.to_string();
+        let request = handle.as_str().to_owned();
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancellation = cancelled.clone();
         let prompts = self.ctx.prompts.clone();
@@ -146,29 +279,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn access_is_always_camera() {
-        let (kind, cap) = camera_capability();
-        assert_eq!(kind, CapabilityKind::Camera);
-        assert!(matches!(cap, Capability::Camera { .. }));
+    fn camera_access_is_always_the_camera_capability_and_maps_responses() {
+        // Phase `access_is_always_camera`.
+        {
+            let (kind, cap) = camera_capability();
+            assert_eq!(kind, CapabilityKind::Camera);
+            assert!(matches!(cap, Capability::Camera { .. }));
+        }
+        // (The former `translated_or_hostile_ui_text_cannot_change_the_capability` made exactly
+        // these assertions: `camera_capability` takes no UI text, so nothing can change it.)
+        // Phase `access_allow_returns_zero`.
+        {
+            let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
+            assert_eq!(code, 0);
+            assert!(results.is_empty());
+        }
+        // Phase `access_deny_returns_one`.
+        {
+            let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
+            assert_eq!(code, 1);
+        }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn translated_or_hostile_ui_text_cannot_change_the_capability() {
-        let (kind, cap) = camera_capability();
-        assert_eq!(kind, CapabilityKind::Camera);
-        assert!(matches!(cap, Capability::Camera { .. }));
-    }
-
-    #[test]
-    fn access_allow_returns_zero() {
-        let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
-        assert_eq!(code, 0);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn access_deny_returns_one() {
-        let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
-        assert_eq!(code, 1);
+    fn access_dialog_decodes_exactly_the_advertised_arguments() {
+        use zbus::zvariant::Type;
+        let advertised =
+            interface_dispatch::advertised_in_signature(ACCESS_INTROSPECTION, "AccessDialog");
+        assert_eq!(
+            format!("({advertised})"),
+            <AccessDialogArgs as Type>::SIGNATURE.to_string()
+        );
     }
 }

@@ -1,0 +1,8 @@
+[
+  {"perform": {"target": "name-input", "action": "set_value", "value": "Ada"}},
+  {"expect": {"target": "name-input", "role": "text_input", "value": "Ada"}},
+  {"perform": {"target": "refresh-input", "action": "set_value", "value": "30"}},
+  {"expect": {"target": "refresh-input", "role": "spin_button", "value": "30 min"}},
+  {"perform": {"target": "updates-checkbox", "action": "toggle_check"}},
+  {"expect": {"target": "updates-checkbox", "role": "checkbox", "checked": false}}
+]

@@ -62,6 +62,12 @@ pub struct HostIdentity {
     pub continuity_resume: Option<ContinuationMetadata>,
     /// The launcher-issued instance identity of this window.
     pub continuity_instance: Option<String>,
+    /// The launcher configured a collaboration service for this process, so
+    /// its absence is a failure rather than a standalone launch.
+    pub collab_service_configured: bool,
+    /// The process runs as an admitted managed agent, which receives task work
+    /// on its own broker queue instead of the room's task-run stream.
+    pub managed_agent_context: bool,
 }
 
 /// Where this process's user files live.
@@ -125,6 +131,10 @@ pub struct RunnerDiagnostics {
     pub presentation_profile: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
+    /// Restore the always-refresh hosted pump for paired host measurements.
+    pub host_perf_baseline: bool,
+    /// Print one payload-free timing line per hosted pump.
+    pub hosted_pump_timing: bool,
 }
 
 /// Everything the host tells a `ui` process about itself.
@@ -135,7 +145,20 @@ pub struct HostEnvironment {
     pub accessibility: AccessibilityInputs,
     /// The user's preferred locale, as a POSIX or BCP 47 tag.
     pub locale: Option<String>,
+    /// The desktop session (`XDG_CURRENT_DESKTOP`, a colon-separated list),
+    /// which decides who draws History and Search.
+    pub desktop: Option<String>,
     pub diagnostics: RunnerDiagnostics,
+    /// Directory `tilo-app dev` uses to hand the open document, route, and
+    /// caret to the next process. Absent outside that loop.
+    pub dev_session: Option<PathBuf>,
+    /// Directory of live `ui/*.json` screens. Absent when the app uses the
+    /// graph embedded in its binary.
+    pub ui_graph_dir: Option<PathBuf>,
+    /// Session `settings.json` the launcher named for this process
+    /// (`TILO_SESSION_SETTINGS`). Present when this process paints the same
+    /// document the shell chrome watches.
+    pub session_settings: Option<PathBuf>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);

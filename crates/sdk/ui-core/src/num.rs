@@ -89,20 +89,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integer_boundaries_saturate_instead_of_wrapping() {
-        assert_eq!(u8_of_i64(-1), 0);
-        assert_eq!(u8_of_i64(999), u8::MAX);
-        assert_eq!(u8_of_f64(-1.0), 0);
-        assert_eq!(u8_of_f64(999.0), u8::MAX);
-        assert_eq!(u32_of_i64(-1), 0);
-        assert_eq!(i32_of_usize(usize::MAX), i32::MAX);
-        assert_eq!(usize_of_i64(-1), 0);
-    }
+    fn numeric_conversions_saturate_at_boundaries_and_keep_ordinary_values() {
+        // Case `integer_boundaries_saturate_instead_of_wrapping`.
+        {
+            assert_eq!(u8_of_i64(-1), 0);
+            assert_eq!(u8_of_i64(999), u8::MAX);
+            assert_eq!(u8_of_f64(-1.0), 0);
+            assert_eq!(u8_of_f64(999.0), u8::MAX);
+            assert_eq!(u32_of_i64(-1), 0);
+            assert_eq!(i32_of_usize(usize::MAX), i32::MAX);
+            assert_eq!(usize_of_i64(-1), 0);
+        }
 
-    #[test]
-    fn ordinary_ui_values_keep_their_value() {
-        assert_eq!(f32_of_f64(12.5), 12.5);
-        assert_eq!(i64_of_f32(42.0), 42);
-        assert_eq!(usize_of_i32(7), 7);
+        // Case `ordinary_ui_values_keep_their_value`.
+        {
+            assert_eq!(f32_of_f64(12.5), 12.5);
+            assert_eq!(i64_of_f32(42.0), 42);
+            assert_eq!(usize_of_i32(7), 7);
+        }
     }
 }

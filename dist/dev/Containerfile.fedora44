@@ -38,3 +38,78 @@ RUN cd /tmp/tilo-pdfium \
  && bash install-pdfium.sh . /usr github-assets.tsv \
  && cd / && rm -rf /tmp/tilo-pdfium
 ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
+
+# The OS image build (os/build.sh, os/dev/build-dev-image.sh, tilo-vm image
+# build) runs in here too: podman nested in this container, skopeo for its
+# signed inputs and OCI layouts, and what os/dev/disk-image.sh writes a disk
+# with. Its image store belongs on a bind mount (native overlay needs a real
+# filesystem under it), not in this container's own layers.
+# A rootless container may neither create network namespaces for containers of
+# its own (netavark's setns is refused) nor cgroups (/sys/fs/cgroup is read-only
+# in it), so nested containers share its network and run without cgroups; and
+# as it runs unconfined (spc_t), its nested containers do not relabel either: a
+# label they cannot use makes even their own /etc/resolv.conf unreadable.
+# Its root is not the host's root, so overlay mounts need userxattr: without it
+# podman's probe mount fails and every layer commit falls back to diffing the
+# whole tree instead of reading the upper directory, minutes per build step.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      podman fuse-overlayfs skopeo qemu-img dosfstools mtools btrfs-progs \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && mkdir -p /etc/containers/containers.conf.d \
+ && printf '[containers]\nnetns = "host"\ncgroups = "disabled"\nlabel = false\n' > /etc/containers/containers.conf.d/50-nested.conf \
+ && sed 's/^mountopt = .*/mountopt = "nodev,userxattr"/' /usr/share/containers/storage.conf > /etc/containers/storage.conf \
+ && grep -qx 'mountopt = "nodev,userxattr"' /etc/containers/storage.conf
+
+# cosign, which the OS build verifies its RPM snapshot and kernel with: the
+# pinned, checksum-verified release CI installs (os/dev/install-cached-cosign.sh).
+COPY github-assets.tsv /tmp/tilo-cosign/
+RUN case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac \
+ && name="cosign-v2.5.2-linux-$arch" \
+ && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
+ && url=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $3}' /tmp/tilo-cosign/github-assets.tsv) \
+ && test -n "$sha" && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o /usr/local/bin/cosign "$url" \
+ && echo "$sha  /usr/local/bin/cosign" | sha256sum --check --strict \
+ && chmod 0755 /usr/local/bin/cosign
+
+# The web build's toolchain, as CI's builder image has it
+# (os/Containerfile.builder): wasm-opt, wasm-ld, Node.js, brotli, ar, and the
+# wasm-bindgen CLI Cargo.lock pins, from the checksum-pinned upstream release.
+RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli binutils \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && name="wasm-bindgen-0.2.108-$(uname -m)-unknown-linux-musl.tar.gz" \
+ && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
+ && url=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $3}' /tmp/tilo-cosign/github-assets.tsv) \
+ && test -n "$sha" && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "/tmp/$name" "$url" \
+ && echo "$sha  /tmp/$name" | sha256sum --check --strict \
+ && tar -xzf "/tmp/$name" -C /tmp \
+ && install -m 0755 "/tmp/${name%.tar.gz}/wasm-bindgen" /usr/local/bin/wasm-bindgen \
+ && rm -rf "/tmp/$name" "/tmp/${name%.tar.gz}" /tmp/tilo-cosign \
+ && wasm-bindgen --version && wasm-opt --version && wasm-ld --version && node --version
+
+# Android NDK for the standalone Android app host (docs/android.md). The SHA-1
+# is Google's published digest in repository2-3.xml; the SHA-256 was taken
+# from the same archive. API 29 is the minimum the host supports: it is the
+# first level that mandates Vulkan 1.1 on 64-bit devices. The Rust targets
+# themselves live in the mounted rustup home, not in this image.
+ARG ANDROID_NDK_RELEASE=r29
+ARG ANDROID_NDK_SHA256=4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf
+RUN dnf install -y --setopt=install_weak_deps=False unzip \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o /tmp/ndk.zip \
+      "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_RELEASE}-linux.zip" \
+ && echo "${ANDROID_NDK_SHA256}  /tmp/ndk.zip" | sha256sum -c - \
+ && unzip -q /tmp/ndk.zip -d /opt \
+ && mv "/opt/android-ndk-${ANDROID_NDK_RELEASE}" /opt/android-ndk \
+ && rm /tmp/ndk.zip
+ENV ANDROID_NDK_HOME=/opt/android-ndk \
+    ANDROID_NDK_ROOT=/opt/android-ndk \
+    CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang \
+    CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
+    CC_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang \
+    CXX_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++ \
+    AR_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+    CC_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
+    CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
+    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar

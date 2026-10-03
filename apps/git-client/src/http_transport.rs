@@ -3,7 +3,7 @@
 
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use git2::transport::{Service, SmartSubtransport, SmartSubtransportStream, Transport};
 use reqwest::blocking::{Client, Response};
@@ -189,7 +189,7 @@ impl Session {
         let helper = settings.for_url(raw_url)?;
         base.set_username("")
             .map_err(|()| failure("invalid Git HTTP username"))?;
-        let deadline = Instant::now()
+        let deadline = ui::time::now()
             .checked_add(OPERATION_TIMEOUT)
             .ok_or_else(|| failure("Git HTTP deadline exceeds the clock range"))?;
         Ok(Self {
@@ -205,7 +205,7 @@ impl Session {
 
     fn remaining(&self) -> Result<Duration, git2::Error> {
         self.deadline
-            .checked_duration_since(Instant::now())
+            .checked_duration_since(ui::time::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| failure("Git HTTP operation timed out"))
     }
@@ -521,7 +521,17 @@ impl Helper {
 mod tests {
     use super::*;
 
+    /// Credential configuration: fetch and push capture their own, the helper
+    /// snapshot ignores later edits, non-default ports stay isolated, and an empty
+    /// scoped helper resets prior entries while keeping order. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn credential_configuration_is_captured_per_operation_and_origin() {
+        fetch_and_push_capture_their_own_credential_configuration();
+        helper_snapshot_is_independent_of_later_repository_edits();
+        credential_origin_keeps_nondefault_ports_isolated();
+        scoped_empty_helper_resets_prior_multivars_then_keeps_order();
+    }
+
     fn fetch_and_push_capture_their_own_credential_configuration() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -558,7 +568,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn helper_snapshot_is_independent_of_later_repository_edits() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -575,7 +584,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn credential_origin_keeps_nondefault_ports_isolated() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -609,7 +617,6 @@ mod tests {
         assert_eq!(helper.host, "example.invalid:8443");
     }
 
-    #[test]
     fn scoped_empty_helper_resets_prior_multivars_then_keeps_order() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -643,7 +650,14 @@ mod tests {
         );
     }
 
+    /// HTTP protocol edges: Basic challenges parse outside quoted parameters and
+    /// boxed TLS certificate errors keep their classification. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn http_challenges_and_tls_errors_are_classified() {
+        basic_challenges_are_parsed_outside_quoted_parameters();
+        boxed_tls_certificate_errors_keep_their_classification();
+    }
+
     fn basic_challenges_are_parsed_outside_quoted_parameters() {
         assert!(offers_basic("Negotiate, Basic realm=\"git\""));
         assert!(offers_basic(
@@ -656,7 +670,6 @@ mod tests {
         assert!(!offers_basic("Digest realm=\"git\", Basic =\"parameter\""));
     }
 
-    #[test]
     fn boxed_tls_certificate_errors_keep_their_classification() {
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
@@ -673,7 +686,18 @@ mod tests {
         )));
     }
 
+    /// Credential helper command lines: native executables keep quotes, spaces and
+    /// backslashes; relative helpers keep the git- prefix and POSIX quoting; absolute
+    /// POSIX paths survive on every platform; shell scripts and expansion are kept.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
+    fn credential_helper_commands_preserve_paths_quoting_and_scripts() {
+        native_helper_executables_preserve_quotes_spaces_and_backslashes();
+        relative_helpers_keep_git_prefix_and_posix_argument_quoting();
+        posix_absolute_helpers_keep_their_shell_paths_on_every_platform();
+        configured_shell_scripts_and_expansion_are_preserved();
+    }
+
     fn native_helper_executables_preserve_quotes_spaces_and_backslashes() {
         for (command, expected) in [
             (
@@ -705,7 +729,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn relative_helpers_keep_git_prefix_and_posix_argument_quoting() {
         let command = r"store --file='C:/user'\''s credential store'";
         let HelperCommand::Process {
@@ -725,7 +748,6 @@ mod tests {
         assert!(!requires_shell(&shell_command));
     }
 
-    #[test]
     fn posix_absolute_helpers_keep_their_shell_paths_on_every_platform() {
         for command in [
             "/mingw64/bin/git-credential-custom.exe --mode=test",
@@ -745,7 +767,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn configured_shell_scripts_and_expansion_are_preserved() {
         let script = r#"f() { printf '%s\n' "$HOME"; }; f"#;
         assert_eq!(
@@ -936,7 +957,7 @@ fn run_helper_command(
                     let mut arguments: Vec<_> = arguments.iter().map(String::as_str).collect();
                     arguments.push("get");
                     let remaining = deadline
-                        .checked_duration_since(Instant::now())
+                        .checked_duration_since(ui::time::now())
                         .ok_or_else(|| failure("Git credential helper timed out"))?;
                     bounded_command::run(&executable, &arguments, Some(input), 64 * 1024, remaining)
                 }
@@ -951,7 +972,7 @@ impl Helper {
         &self,
         timeout: Duration,
     ) -> Result<(Zeroizing<String>, Zeroizing<String>), git2::Error> {
-        let deadline = Instant::now()
+        let deadline = ui::time::now()
             .checked_add(timeout)
             .ok_or_else(|| failure("credential deadline unavailable"))?;
         let mut username = self.username.clone().map(Zeroizing::new);
@@ -974,7 +995,7 @@ impl Helper {
             }
             input.push('\n');
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(ui::time::now())
                 .ok_or_else(|| failure("Git credential helper timed out"))?;
             let Ok(output) = run_helper_command(command, input.as_bytes(), deadline, remaining)?
             else {

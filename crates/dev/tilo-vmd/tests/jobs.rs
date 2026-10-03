@@ -94,118 +94,125 @@ fn run(root: &Path, path: &str, job: &BuildJob) -> (JobLine, String) {
 }
 
 #[test]
-fn in_vm_build_imports_a_layer_and_records_its_build_dir() {
-    let (root, path) = setup();
-    let shell = || {
-        job(BuildTarget::Component {
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn in_vm_builds_import_layers_and_report_errors_with_hints() {
+    // Phase `build_errors_come_back_with_hints`.
+    {
+        let (root, path) = setup();
+        let (line, _) = run(
+            root.path(),
+            &path,
+            &job(BuildTarget::Component {
+                name: "nope".into(),
+                profile: None,
+            }),
+        );
+        let error = line.error.unwrap();
+        assert_eq!(error.code, code::NOT_FOUND);
+        assert!(error.hint.contains("shell"), "{}", error.hint);
+
+        let (line, _) = run(
+            root.path(),
+            &path,
+            &job(BuildTarget::App {
+                dir: "missing-app".into(),
+                slot: "a".into(),
+            }),
+        );
+        assert!(line.error.unwrap().message.contains("apps/missing-app"));
+
+        let mut unsynced = job(BuildTarget::Component {
             name: "shell".into(),
             profile: None,
-        })
-    };
-    let (line, stderr) = run(root.path(), &path, &shell());
-    assert!(line.error.is_none(), "{:?}\n{stderr}", line.error);
-    assert!(
-        stderr.contains("Compiling shell"),
-        "build output streams: {stderr}"
-    );
-    assert!(
-        stderr.contains("shell/dev-overrides"),
-        "dev overrides are enabled: {stderr}"
-    );
-    let Some(JobOutput::Layer {
-        hash,
-        existed,
-        provenance,
-        phases,
-        ..
-    }) = line.result
-    else {
-        panic!("expected a layer");
-    };
-    assert!(!existed);
-    assert_eq!(provenance.builder.as_deref(), Some("vm"));
-    assert_eq!(provenance.source_commit.as_deref(), Some("abc"));
-    assert_eq!(provenance.component, "shell");
-    assert!(phases.contains_key("build") && phases.contains_key("import"));
-    let layer = root.path().join("state/layers").join(&hash);
-    assert!(layer.join("usr/bin/shell").is_file());
+        });
+        unsynced.worktree = "never-synced".into();
+        let (line, _) = run(root.path(), &path, &unsynced);
+        let error = line.error.unwrap();
+        assert!(error.hint.contains("--builder vm"), "{}", error.hint);
+    }
+    // Phase `in_vm_build_imports_a_layer_and_records_its_build_dir`.
+    {
+        let (root, path) = setup();
+        let shell = || {
+            job(BuildTarget::Component {
+                name: "shell".into(),
+                profile: None,
+            })
+        };
+        let (line, stderr) = run(root.path(), &path, &shell());
+        assert!(line.error.is_none(), "{:?}\n{stderr}", line.error);
+        assert!(
+            stderr.contains("Compiling shell"),
+            "build output streams: {stderr}"
+        );
+        assert!(
+            stderr.contains("shell/dev-overrides"),
+            "dev overrides are enabled: {stderr}"
+        );
+        let Some(JobOutput::Layer {
+            hash,
+            existed,
+            provenance,
+            phases,
+            ..
+        }) = line.result
+        else {
+            panic!("expected a layer");
+        };
+        assert!(!existed);
+        assert_eq!(provenance.builder.as_deref(), Some("vm"));
+        assert_eq!(provenance.source_commit.as_deref(), Some("abc"));
+        assert_eq!(provenance.component, "shell");
+        assert!(phases.contains_key("build") && phases.contains_key("import"));
+        let layer = root.path().join("state/layers").join(&hash);
+        assert!(layer.join("usr/bin/shell").is_file());
 
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.path().join("state/src/wt-1.json")).unwrap())
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.path().join("state/src/wt-1.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(record["bytes"].as_u64().unwrap() > 0);
+
+        // The same build again is the same layer.
+        let (again, _) = run(root.path(), &path, &shell());
+        assert!(matches!(
+            again.result,
+            Some(JobOutput::Layer { existed: true, .. })
+        ));
+
+        // gc sees the build dir and evicts it when told to keep none.
+        let mut rpc = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+            .args(["rpc", "--apply", "record", "--root"])
+            .arg(root.path().join("state"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
             .unwrap();
-    assert!(record["bytes"].as_u64().unwrap() > 0);
-
-    // The same build again is the same layer.
-    let (again, _) = run(root.path(), &path, &shell());
-    assert!(matches!(
-        again.result,
-        Some(JobOutput::Layer { existed: true, .. })
-    ));
-
-    // gc sees the build dir and evicts it when told to keep none.
-    let mut rpc = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
-        .args(["rpc", "--apply", "record", "--root"])
-        .arg(root.path().join("state"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut client = Client::new(
-        BufReader::new(rpc.stdout.take().unwrap()),
-        rpc.stdin.take().unwrap(),
-    );
-    client.hello("test").unwrap();
-    assert_eq!(client.call(LayerList {}).unwrap().len(), 1);
-    let status = client.call(Status { slot: None }).unwrap();
-    assert!(status.storage.targets_bytes > 0);
-    let gc = client
-        .call(Gc {
-            keep: 5,
-            dry_run: false,
-            keep_targets: Some(0),
-            free_goal_bytes: None,
-            min_age_seconds: None,
-        })
-        .unwrap();
-    assert_eq!(gc.removed_targets, ["wt-1"]);
-    assert!(gc.freed_target_bytes > 0);
-    assert!(!root.path().join("state/src/wt-1/target").exists());
-    assert!(root.path().join("state/src/wt-1/Cargo.toml").exists());
-    drop(client);
-    let _ = rpc.wait();
-}
-
-#[test]
-fn build_errors_come_back_with_hints() {
-    let (root, path) = setup();
-    let (line, _) = run(
-        root.path(),
-        &path,
-        &job(BuildTarget::Component {
-            name: "nope".into(),
-            profile: None,
-        }),
-    );
-    let error = line.error.unwrap();
-    assert_eq!(error.code, code::NOT_FOUND);
-    assert!(error.hint.contains("shell"), "{}", error.hint);
-
-    let (line, _) = run(
-        root.path(),
-        &path,
-        &job(BuildTarget::App {
-            dir: "missing-app".into(),
-            slot: "a".into(),
-        }),
-    );
-    assert!(line.error.unwrap().message.contains("apps/missing-app"));
-
-    let mut unsynced = job(BuildTarget::Component {
-        name: "shell".into(),
-        profile: None,
-    });
-    unsynced.worktree = "never-synced".into();
-    let (line, _) = run(root.path(), &path, &unsynced);
-    let error = line.error.unwrap();
-    assert!(error.hint.contains("--builder vm"), "{}", error.hint);
+        let mut client = Client::new(
+            BufReader::new(rpc.stdout.take().unwrap()),
+            rpc.stdin.take().unwrap(),
+        );
+        client.hello("test").unwrap();
+        assert_eq!(client.call(LayerList {}).unwrap().len(), 1);
+        let status = client.call(Status { slot: None }).unwrap();
+        assert!(status.storage.targets_bytes > 0);
+        let gc = client
+            .call(Gc {
+                keep: 5,
+                dry_run: false,
+                keep_targets: Some(0),
+                free_goal_bytes: None,
+                min_age_seconds: None,
+            })
+            .unwrap();
+        assert_eq!(gc.removed_targets, ["wt-1"]);
+        assert!(gc.freed_target_bytes > 0);
+        assert!(!root.path().join("state/src/wt-1/target").exists());
+        assert!(root.path().join("state/src/wt-1/Cargo.toml").exists());
+        drop(client);
+        let _ = rpc.wait();
+    }
 }

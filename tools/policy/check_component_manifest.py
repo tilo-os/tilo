@@ -219,11 +219,19 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              "that owns the bin to `packages`.")
         for key, features in (("features", component.features), ("dev_features", component.dev_features)):
             for feature in features:
+                if key == "dev_features" and "/" not in feature and len(component_packages) == 1:
+                    package = component_packages[0]
+                    if package in packages and feature not in packages[package].features:
+                        report.error(where, f"{key} entry {feature!r}: package {package!r} declares no feature",
+                                     f"add it to [features] in {packages[package].directory.relative_to(report.repo)}"
+                                     "/Cargo.toml or drop it from `dev_features`.")
+                    continue
                 package, _, name = feature.rpartition("/")
                 if not package or package not in component_packages:
                     report.error(where, f"{key} entry {feature!r} must be qualified with one of the "
                                  f"component's packages ({', '.join(component_packages[:6])}...)",
-                                 'write it as "<package>/<feature>".')
+                                 'write it as "<package>/<feature>" (or use an unqualified dev feature '
+                                 'when the component has one package).')
                 elif package in packages and name not in packages[package].features:
                     report.error(where, f"{key} entry {feature!r}: package {package!r} declares no feature "
                                  f"{name!r}",
@@ -287,7 +295,9 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                                  "set `layer` on the components that belong in it.")
                 consumed.setdefault(match.group(1), []).append(instruction.line)
             continue
-        if source_stage != "builder" or instruction.stage == PAYLOAD_STAGE:
+        # The image stages take build outputs from the payload stage, an exact
+        # copy of the builder's outputs.
+        if source_stage not in ("builder", PAYLOAD_STAGE) or instruction.stage == PAYLOAD_STAGE:
             continue
         for source, destination in pairs:
             key = (source.removeprefix("/out/") if source.startswith("/out/") else source, destination)
@@ -297,7 +307,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             output = key[0]
             report.error(
                 where,
-                f"COPY --from=builder {source} -> {destination} installs a Tilo build output outside "
+                f"COPY --from={source_stage} {source} -> {destination} installs a Tilo build output outside "
                 "os/components.toml",
                 f"delete this COPY and {snippet(Path(output.rstrip('/')).name or 'component', output, destination)}"
                 "      The component-files stage then installs it with its layer. Only outputs the build "
@@ -318,7 +328,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             report.error(report.manifest_line(entry.component),
                          f"direct file {entry.to} (component {entry.component!r}) is never copied by "
                          f"{relative}",
-                         f"add `COPY --from=builder {source} {entry.to}` to the rootfs stage, or give the "
+                         f"add `COPY --from={PAYLOAD_STAGE} {source} {entry.to}` to the rootfs stage, or give the "
                          "entry a real layer so the installer places it.")
 
     install_runs = [i for i in parsed if i.stage == INSTALL_STAGE and i.words and i.words[0].upper() == "RUN"]

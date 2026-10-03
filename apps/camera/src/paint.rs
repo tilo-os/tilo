@@ -30,12 +30,6 @@ pub fn circle_stroke(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, col
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a two-point line-segment primitive called from ~40 sites across paint.rs and \
-              app.rs; bundling the endpoints into Points would only add Point::new(..) \
-              boilerplate at every call site for no real readability gain"
-)]
 pub fn line(
     scene: &mut Scene,
     t: Affine,

@@ -15,18 +15,43 @@ pub(in crate::setup) const MAX_COLLISIONS: usize = 16;
 /// 2^32-1 transitions exceed the 16,384 intervals needed for a 1-TiB component,
 /// including three attempts. Arbitrarily repeated pauses eventually refuse.
 const MAX_GENERATION: u64 = u32::MAX as u64;
-const RECORD_LEN: usize = 8 + 1 + 32 + 32 + 32 + 43 + 8 * 4 + 32 + 32;
+/// Every working leaf a provider mints is this prefix and 32 lowercase hex
+/// digits.
+const WORKING_LEAF_PREFIX: &str = ".tilo-part-";
+/// A working leaf's exact length, which a checkpoint record stores in full.
+const WORKING_LEAF_LEN: usize = WORKING_LEAF_PREFIX.len() + 32;
+const RECORD_LEN: usize = layout::CHECKSUM + 32;
+
+/// Where each field of a checkpoint record starts, in the order `encode`
+/// writes them. Tests corrupt records field by field through these.
+pub(in crate::setup) mod layout {
+    pub(in crate::setup) const KIND: usize = 8;
+    pub(in crate::setup) const BINDING: usize = KIND + 1;
+    pub(in crate::setup) const PARENT: usize = BINDING + 32;
+    pub(in crate::setup) const FILE: usize = PARENT + 32;
+    pub(in crate::setup) const LEAF: usize = FILE + 32;
+    pub(in crate::setup) const GENERATION: usize = LEAF + super::WORKING_LEAF_LEN;
+    pub(in crate::setup) const EPOCH: usize = GENERATION + 8;
+    pub(in crate::setup) const LENGTH: usize = EPOCH + 8;
+    pub(in crate::setup) const FULL_SIZE: usize = LENGTH + 8;
+    pub(in crate::setup) const DIGEST: usize = FULL_SIZE + 8;
+    pub(in crate::setup) const CHECKSUM: usize = DIGEST + 32;
+}
+
+/// The working leaf named by the 128 bits of `name`.
+pub(in crate::setup) fn working_leaf(name: u128) -> String {
+    format!("{WORKING_LEAF_PREFIX}{name:032x}")
+}
 
 pub(in crate::setup) fn validate_leaf(
     selected: &SelectedManifest,
     leaf: &str,
 ) -> Result<(), String> {
-    if leaf.len() != 43
-        || !leaf.starts_with(".tilo-part-")
-        || !leaf.as_bytes()[10..]
-            .iter()
-            .copied()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    if leaf.len() != WORKING_LEAF_LEN
+        || !leaf.strip_prefix(WORKING_LEAF_PREFIX).is_some_and(|name| {
+            name.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
         || (0..2).any(|i| {
             selected
                 .bundle()
@@ -266,7 +291,7 @@ impl Record {
         let binding = take(b, &mut offset);
         let parent = take(b, &mut offset);
         let file = take(b, &mut offset);
-        let leaf = String::from_utf8(take::<43>(b, &mut offset).to_vec())
+        let leaf = String::from_utf8(take::<WORKING_LEAF_LEN>(b, &mut offset).to_vec())
             .map_err(|_| "Invalid leaf encoding")?;
         let generation = u64::from_le_bytes(take(b, &mut offset));
         let epoch = u64::from_le_bytes(take(b, &mut offset));
@@ -637,8 +662,11 @@ impl Hashes {
         }
         read_range(file, 0, length, cancel, phase, |mut bytes| {
             while !bytes.is_empty() {
+                // A boundary already behind the cursor can never match; read on
+                // and let the final "no unconsumed checkpoint" check refuse it.
                 let take = checkpoints.peek().map_or(bytes.len(), |p| {
-                    (p.0 - offset).min(bytes.len() as u64) as usize
+                    p.0.checked_sub(offset)
+                        .map_or(bytes.len(), |gap| gap.min(bytes.len() as u64) as usize)
                 });
                 stream.update(&bytes[..take]);
                 readback.update(&bytes[..take]);

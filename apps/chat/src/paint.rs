@@ -6,48 +6,12 @@
 //! colours from the [`Theme`] the caller passes — nothing here hardcodes
 //! a colour, in keeping with the OS-controlled theming contract.
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-
-/// Backend state shared by Chat's custom-painted views.
-///
-/// View helpers should accept this bundle alongside their semantic model and
-/// geometry inputs, instead of repeating renderer plumbing in every signature.
-pub struct PaintContext<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
-impl<'a> PaintContext<'a> {
-    pub fn new(
-        scene: &'a mut Scene,
-        transform: Affine,
-        text: &'a mut TextRenderer,
-        theme: &'a Theme,
-    ) -> Self {
-        Self {
-            scene,
-            transform,
-            text,
-            theme,
-        }
-    }
-
-    /// Borrow the same backend state for a nested paint helper.
-    pub fn reborrow(&mut self) -> PaintContext<'_> {
-        PaintContext {
-            scene: self.scene,
-            transform: self.transform,
-            text: self.text,
-            theme: self.theme,
-        }
-    }
-}
 
 /// Fill a rounded rectangle.
 pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color: Color) {
@@ -111,45 +75,25 @@ pub fn hline(scene: &mut Scene, tf: Affine, x0: f64, x1: f64, y: f64, color: Col
     );
 }
 
-/// Draw text with its top-left corner at `(x, y)`. Returns the measured
+/// Draw `s` in `style` with its top-left corner at `at`. Returns the measured
 /// `(width, height)` so callers can advance the layout cursor.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf text adapter mirrors independently variable TextRenderer inputs; its broad call surface benefits from keeping typography visible at each paint site"
-)]
 pub fn text(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    tf: Affine,
+    ctx: &mut PaintCtx<'_>,
     s: &str,
-    size: f32,
+    style: &TextStyle,
     color: Color,
-    x: f64,
-    y: f64,
-    weight: TextWeight,
+    at: Point,
     max_width: Option<f32>,
 ) -> (f32, f32) {
     if s.is_empty() {
         return (0.0, 0.0);
     }
-    let measured = tr.measure_weighted(s, size, max_width, weight);
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        tf * Affine::translate((x, y)),
-        max_width,
-        weight,
-    );
+    let measured = ctx.text.measure_style(s, max_width, style);
+    ctx.text(s, style, color, at, max_width);
     measured
 }
 
 /// Convenience: regular-weight single-line text, no wrap.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "regular-weight leaf adapter keeps the independently variable text, size, colour, and position visible at each paint site"
-)]
 pub fn label(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -160,18 +104,20 @@ pub fn label(
     x: f64,
     y: f64,
 ) -> (f32, f32) {
-    text(
+    if s.is_empty() {
+        return (0.0, 0.0);
+    }
+    let style = TextStyle::new(size);
+    let measured = tr.measure_style(s, None, &style);
+    tr.draw_style(
         scene,
-        tr,
-        tf,
         s,
-        size,
         color,
-        x,
-        y,
-        TextWeight::Regular,
+        tf * Affine::translate((x, y)),
         None,
-    )
+        &style,
+    );
+    measured
 }
 
 /// Push a rectangular clip layer; remember to `scene.pop_layer()`.
@@ -180,27 +126,10 @@ pub fn push_clip(scene: &mut Scene, tf: Affine, rect: Rect) {
 }
 
 /// Truncate `s` to fit `max_w` pixels at `size`, appending an ellipsis
-/// when it overflows. Cheap char-walk; good enough for single-line chrome.
+/// when it overflows. Thin wrapper over [`TextRenderer::elide_to_width`] so
+/// chat chrome shares the grapheme-safe cut with every other app.
 pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let (w, _) = tr.measure(s, size, None);
-    if f64::from(w) <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let ell = "…";
-    for ch in s.chars() {
-        let candidate = format!("{out}{ch}{ell}");
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if f64::from(cw) > max_w {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push_str(ell);
-    out
+    tr.elide_to_width(s, size, ui::num::f32_of_f64(max_w))
 }
 
 /// Deterministic accent colour for a 0-based palette index, sampling the

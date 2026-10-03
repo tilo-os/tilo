@@ -6,14 +6,14 @@
 //! ```text
 //! root
 //! └── "wb" (Map)
-//!     ├── "active" (Int)              # active sheet index
 //!     └── "sheets" (List)
 //!          └── [i] (Map)
 //!              ├── "name"  (Str)
 //!              └── "cells" (Map)      # key "col,row" -> Map
 //!                   └── "<c>,<r>" (Map)
 //!                        ├── "raw" (Str)   # raw input: "=SUM(A1:A3)" or "42"
-//!                        └── "fmt" (Str)   # CellFormat::as_str()
+//!                        ├── "fmt" (Str)   # CellFormat::as_str()
+//!                        └── "b"   (Bool)  # bold text; absent means regular
 //! ```
 //!
 //! Cells are keyed by a `"col,row"` string (zero-based) rather than A1 so
@@ -23,7 +23,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
+use crate::model::{Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle};
 use crate::settings::DocSettings;
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
@@ -34,6 +34,8 @@ pub struct SheetSnapshot {
     pub raw: std::collections::HashMap<Addr, String>,
     /// per-cell format (only present when not General)
     pub fmt: std::collections::HashMap<Addr, CellFormat>,
+    /// cells whose text is bold
+    pub bold: std::collections::HashSet<Addr>,
 }
 
 /// The first chart set deliberately stays compact: it is sufficient for the
@@ -225,19 +227,6 @@ impl SheetsDoc {
         Self::sheet_count(doc) == 0
     }
 
-    /// Active sheet index (clamped to a valid sheet when out of range).
-    pub fn active_index(doc: &mut AutoCommit) -> usize {
-        let wb = Self::wb_map(doc);
-        let raw = read_i64_coerced(doc, &wb, "active").unwrap_or(0);
-        let count = Self::sheet_count(doc).max(1);
-        (raw.max(0) as usize).min(count - 1)
-    }
-
-    pub fn set_active_index(doc: &mut AutoCommit, idx: usize) {
-        let wb = Self::wb_map(doc);
-        let _ = doc.put(&wb, "active", idx as i64);
-    }
-
     /// The Map `ObjId` for sheet `idx`, if it exists.
     fn sheet_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheets = Self::sheets_list(doc);
@@ -248,9 +237,8 @@ impl SheetsDoc {
     }
 
     /// Stable logical identity for history, search and the action palette.
-    /// Legacy sheets fall back to their Automerge object id; structural moves
-    /// copy that value into the replacement map so identity survives index and
-    /// name changes.
+    /// Structural moves copy it into the replacement map so identity survives
+    /// index and name changes.
     pub fn sheet_resource_id(doc: &AutoCommit, idx: usize) -> Option<String> {
         let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
             return None;
@@ -261,7 +249,7 @@ impl SheetsDoc {
         let Ok(Some((Value::Object(ObjType::Map), sheet))) = doc.get(&sheets, idx) else {
             return None;
         };
-        Some(read_str(doc, &sheet, "resource_id").unwrap_or_else(|| sheet.to_string()))
+        read_str(doc, &sheet, "resource_id")
     }
 
     /// Resolve a durable sheet identity to its current list position. This is
@@ -276,6 +264,77 @@ impl SheetsDoc {
         };
         (0..doc.length(&sheets))
             .find(|&idx| Self::sheet_resource_id(doc, idx).as_deref() == Some(wanted))
+    }
+
+    /// The cells an applied change touched on sheet `idx`, read from its
+    /// patches: a cell's key names it whether the cell or a field in it changed.
+    pub fn changed_cells(doc: &AutoCommit, idx: usize, changes: &[automerge::Patch]) -> Vec<Addr> {
+        let cells = (|| {
+            let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::List), sheets) = doc.get(&wb, "sheets").ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::Map), sheet) = doc.get(&sheets, idx).ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::Map), cells) = doc.get(&sheet, "cells").ok()?? else {
+                return None;
+            };
+            Some(cells)
+        })();
+        let Some(cells) = cells else {
+            return Vec::new();
+        };
+        let mut touched: Vec<Addr> = changes
+            .iter()
+            .filter_map(|patch| {
+                let key = if patch.obj == cells {
+                    match &patch.action {
+                        automerge::PatchAction::PutMap { key, .. }
+                        | automerge::PatchAction::DeleteMap { key } => key.as_str(),
+                        _ => return None,
+                    }
+                } else {
+                    match patch.path.iter().find(|(obj, _)| *obj == cells) {
+                        Some((_, automerge::Prop::Map(key))) => key.as_str(),
+                        _ => return None,
+                    }
+                };
+                Self::parse_cell_key(key)
+            })
+            .collect();
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+    }
+
+    /// The file sheet `idx` was imported from, if any.
+    pub fn sheet_source(doc: &AutoCommit, idx: usize) -> Option<String> {
+        let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::List), sheets) = doc.get(&wb, "sheets").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::Map), sheet) = doc.get(&sheets, idx).ok()?? else {
+            return None;
+        };
+        read_str(doc, &sheet, "source")
+    }
+
+    /// Record the file sheet `idx` was imported from.
+    pub fn set_sheet_source(doc: &mut AutoCommit, idx: usize, source: &str) {
+        if let Some(sheet) = Self::sheet_map(doc, idx) {
+            let _ = doc.put(&sheet, "source", source);
+        }
+    }
+
+    /// The first sheet imported from `source`.
+    pub fn sheet_index_by_source(doc: &AutoCommit, source: &str) -> Option<usize> {
+        (0..Self::sheet_count_readonly(doc))
+            .find(|&idx| Self::sheet_source(doc, idx).as_deref() == Some(source))
     }
 
     /// The `cells` Map for sheet `idx`, creating it if missing.
@@ -293,7 +352,7 @@ impl SheetsDoc {
     }
 
     /// Append a sheet carrying the action-authored durable identity. Empty is
-    /// reserved for legacy local seeding, which retains the object-id fallback.
+    /// stores the new sheet's own object id, for local seeding.
     pub fn add_sheet_with_id(doc: &mut AutoCommit, name: &str, resource_id: &str) -> usize {
         let sheets = Self::sheets_list(doc);
         let idx = doc.length(&sheets);
@@ -385,6 +444,9 @@ impl SheetsDoc {
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, new_idx, *addr, *fmt);
         }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, new_idx, *addr, true);
+        }
         Self::copy_annotations(doc, idx, new_idx);
         if let Some(c) = color {
             Self::set_sheet_color(doc, new_idx, Some(c));
@@ -402,6 +464,7 @@ impl SheetsDoc {
         let snap = Self::snapshot_sheet(doc, from, Currency::USD);
         let color = Self::sheet_color(doc, from);
         let resource_id = Self::sheet_resource_id(doc, from);
+        let source = Self::sheet_source(doc, from);
         let charts = Self::charts(doc, from);
         let comments = Self::comments(doc, from);
         let sheets = Self::sheets_list(doc);
@@ -411,6 +474,9 @@ impl SheetsDoc {
         if let Some(resource_id) = resource_id {
             let _ = doc.put(&sheet, "resource_id", resource_id);
         }
+        if let Some(source) = source {
+            let _ = doc.put(&sheet, "source", source);
+        }
         let _ = doc.put(&sheet, "name", &snap.name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         for (addr, raw) in &snap.raw {
@@ -418,6 +484,9 @@ impl SheetsDoc {
         }
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, insert_at, *addr, *fmt);
+        }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, insert_at, *addr, true);
         }
         for chart in charts {
             Self::put_chart(doc, insert_at, &chart);
@@ -456,6 +525,32 @@ impl SheetsDoc {
         (0..n).map(|i| Self::sheet_color(doc, i)).collect()
     }
 
+    /// All sheet names in order, without creating a missing workbook subtree.
+    pub fn sheet_names_readonly(doc: &AutoCommit) -> Vec<String> {
+        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
+            return Vec::new();
+        };
+        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
+            return Vec::new();
+        };
+        let n = doc.length(&sheets);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let name = match doc.get(&sheets, i) {
+                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
+                    read_str(doc, &sheet, "name").unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            out.push(if name.is_empty() {
+                format!("Sheet{}", i + 1)
+            } else {
+                name
+            });
+        }
+        out
+    }
+
     /// All sheet names in order.
     pub fn sheet_names(doc: &mut AutoCommit) -> Vec<String> {
         let sheets = Self::sheets_list(doc);
@@ -487,7 +582,8 @@ impl SheetsDoc {
         if raw.is_empty() {
             // Keep any format but clear the value; if both gone, delete.
             if let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) {
-                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)));
+                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)))
+                    || matches!(doc.get(&cell, "b"), Ok(Some(_)));
                 if has_fmt {
                     let _ = doc.put(&cell, "raw", "");
                 } else {
@@ -514,6 +610,33 @@ impl SheetsDoc {
             _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
         };
         let _ = doc.put(&cell, "fmt", fmt.as_str());
+    }
+
+    /// Make a cell's text bold, or regular again. A regular cell stores no
+    /// flag, and one left with neither value nor format disappears.
+    pub fn set_cell_bold(doc: &mut AutoCommit, idx: usize, addr: Addr, bold: bool) {
+        let Some(cells) = Self::cells_map(doc, idx) else {
+            return;
+        };
+        let key = Self::cell_key(addr);
+        if bold {
+            let cell = match doc.get(&cells, key.as_str()) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
+            };
+            let _ = doc.put(&cell, "b", true);
+            return;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) else {
+            return;
+        };
+        if matches!(doc.get(&cell, "b"), Ok(Some(_))) {
+            let _ = doc.delete(&cell, "b");
+        }
+        let empty_raw = read_str(doc, &cell, "raw").is_none_or(|raw| raw.is_empty());
+        if empty_raw && !matches!(doc.get(&cell, "fmt"), Ok(Some(_))) {
+            let _ = doc.delete(&cells, key.as_str());
+        }
     }
 
     /// Get-or-create the per-document `settings` Map under `wb`.
@@ -761,29 +884,6 @@ impl SheetsDoc {
                 ) else {
                     continue;
                 };
-                let mut replies = Vec::new();
-                // Legacy nested replies remain materialised; no migration write
-                // is required merely to read an older collaborative document.
-                if let Ok(Some((Value::Object(ObjType::Map), reply_map))) =
-                    doc.get(&object, "replies")
-                {
-                    for reply_id in doc.keys(&reply_map) {
-                        if let Ok(Some((Value::Object(ObjType::Map), reply))) =
-                            doc.get(&reply_map, reply_id.as_str())
-                            && let (Some(author), Some(body)) = (
-                                read_str(doc, &reply, "author"),
-                                read_str(doc, &reply, "body"),
-                            )
-                        {
-                            replies.push(CommentReply {
-                                id: reply_id,
-                                author,
-                                body,
-                            });
-                        }
-                    }
-                }
-                replies.sort_by(|a, b| a.id.cmp(&b.id));
                 out.push(CommentThread {
                     id,
                     start: (c0, r0),
@@ -791,12 +891,12 @@ impl SheetsDoc {
                     author,
                     body,
                     resolved,
-                    replies,
+                    replies: Vec::new(),
                 });
             }
         }
-        // Current-schema replies are independently-addressable records under
-        // the eager root. Read every conflicting legacy migration branch.
+        // Replies are independently-addressable records under
+        // the eager root. Read every conflicting branch.
         let mut seen_replies = std::collections::HashSet::new();
         for reply_map in Self::annotation_maps(doc, idx, "comment_replies") {
             for reply_id in doc.keys(&reply_map) {
@@ -840,18 +940,13 @@ impl SheetsDoc {
         }
     }
 
-    /// Rebase every annotation anchor through a row/column structural map.
-    /// An inserted/deleted cell never leaves a chart or comment pointing at a
-    /// stale coordinate; a deleted endpoint clamps to the closest surviving
-    /// point and a fully-deleted one-cell anchor is dropped.
-    pub fn remap_annotation_anchors(
-        doc: &mut AutoCommit,
-        idx: usize,
-        map: impl Fn(Addr) -> Option<Addr>,
-    ) {
-        let charts = Self::charts(doc, idx);
-        for mut chart in charts {
-            let (Some(start), Some(end)) = (map(chart.start), map(chart.end)) else {
+    /// Rebase every annotation anchor through a row/column structural edit.
+    /// An inserted/deleted line never leaves a chart or comment pointing at a
+    /// stale coordinate: deleting an anchor's edge line shrinks it, and only an
+    /// anchor whose every cell was deleted is dropped.
+    pub fn remap_annotation_anchors(doc: &mut AutoCommit, idx: usize, edit: GridEdit) {
+        for mut chart in Self::charts(doc, idx) {
+            let Some((start, end)) = edit.map_range(chart.start, chart.end) else {
                 Self::delete_chart(doc, idx, &chart.id);
                 continue;
             };
@@ -860,18 +955,8 @@ impl SheetsDoc {
             Self::put_chart(doc, idx, &chart);
         }
         for mut thread in Self::comments(doc, idx) {
-            let (Some(start), Some(end)) = (map(thread.start), map(thread.end)) else {
-                // Keep the discussion available when only one corner was
-                // removed; it follows the surviving end instead of silently
-                // evaporating an audit trail.
-                let survivor = map(thread.start).or_else(|| map(thread.end));
-                let Some(anchor) = survivor else {
-                    Self::delete_comment(doc, idx, &thread.id);
-                    continue;
-                };
-                thread.start = anchor;
-                thread.end = anchor;
-                Self::put_comment(doc, idx, &thread);
+            let Some((start, end)) = edit.map_range(thread.start, thread.end) else {
+                Self::delete_comment(doc, idx, &thread.id);
                 continue;
             };
             thread.start = (start.0.min(end.0), start.1.min(end.1));
@@ -915,6 +1000,9 @@ impl SheetsDoc {
                     snap.fmt.insert(addr, f);
                 }
             }
+            if read_bool(doc, &cell, "b") == Some(true) {
+                snap.bold.insert(addr);
+            }
         }
         snap
     }
@@ -957,315 +1045,341 @@ mod tests {
     use automerge::ActorId;
     use tilo_automerge::ApplyIncoming;
 
+    /// Seed/snapshot round-trip, clearing cells and document settings.
     #[test]
-    fn seed_and_snapshot_round_trip() {
-        let mut doc = AutoCommit::new();
-        let idx = SheetsDoc::add_sheet(&mut doc, "Budget");
-        SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "Hello");
-        SheetsDoc::set_cell_raw(&mut doc, idx, (1, 0), "=1+1");
-        SheetsDoc::set_cell_format(&mut doc, idx, (1, 0), CellFormat::Currency(Currency::USD));
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
-        assert_eq!(snap.name, "Budget");
-        assert_eq!(snap.raw.get(&(0, 0)).unwrap(), "Hello");
-        assert_eq!(snap.raw.get(&(1, 0)).unwrap(), "=1+1");
-        assert_eq!(
-            snap.fmt.get(&(1, 0)).copied(),
-            Some(CellFormat::Currency(Currency::USD))
-        );
+    fn doc_cells_and_settings_round_trip() {
+        // Case `seed_and_snapshot_round_trip`.
+        {
+            let mut doc = AutoCommit::new();
+            let idx = SheetsDoc::add_sheet(&mut doc, "Budget");
+            SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "Hello");
+            SheetsDoc::set_cell_raw(&mut doc, idx, (1, 0), "=1+1");
+            SheetsDoc::set_cell_format(&mut doc, idx, (1, 0), CellFormat::Currency(Currency::USD));
+            let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
+            assert_eq!(snap.name, "Budget");
+            assert_eq!(snap.raw.get(&(0, 0)).unwrap(), "Hello");
+            assert_eq!(snap.raw.get(&(1, 0)).unwrap(), "=1+1");
+            assert_eq!(
+                snap.fmt.get(&(1, 0)).copied(),
+                Some(CellFormat::Currency(Currency::USD))
+            );
+        }
+
+        // Case `clearing_cell_removes_it`.
+        {
+            let mut doc = AutoCommit::new();
+            let idx = SheetsDoc::add_sheet(&mut doc, "S");
+            SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "x");
+            SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "");
+            let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
+            assert!(snap.raw.is_empty());
+        }
+
+        // Case `doc_settings_round_trip_and_clear`.
+        {
+            let mut doc = AutoCommit::new();
+            SheetsDoc::add_sheet(&mut doc, "S");
+            // Default: everything inherits.
+            assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
+            // Set an override.
+            SheetsDoc::set_doc_settings(
+                &mut doc,
+                &DocSettings {
+                    currency: Some(Currency::EUR),
+                    date_format: Some(DateStyle::Eu),
+                    time_format: None,
+                },
+            );
+            let s = SheetsDoc::doc_settings(&mut doc);
+            assert_eq!(s.currency, Some(Currency::EUR));
+            assert_eq!(s.date_format, Some(DateStyle::Eu));
+            assert_eq!(s.time_format, None);
+            // Clearing returns to inherit.
+            SheetsDoc::set_doc_settings(&mut doc, &DocSettings::default());
+            assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
+        }
     }
 
+    /// Multiple sheets, insert/delete, duplicate and move.
     #[test]
-    fn clearing_cell_removes_it() {
-        let mut doc = AutoCommit::new();
-        let idx = SheetsDoc::add_sheet(&mut doc, "S");
-        SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "x");
-        SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "");
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
-        assert!(snap.raw.is_empty());
+    fn sheet_structure_edits_keep_cells() {
+        // Case `multiple_sheets`.
+        {
+            let mut doc = AutoCommit::new();
+            SheetsDoc::add_sheet(&mut doc, "One");
+            SheetsDoc::add_sheet(&mut doc, "Two");
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["One", "Two"]);
+        }
+
+        // Case `insert_and_delete_sheets`.
+        {
+            let mut doc = AutoCommit::new();
+            SheetsDoc::add_sheet(&mut doc, "A");
+            SheetsDoc::add_sheet(&mut doc, "C");
+            // Insert "B" between A and C.
+            SheetsDoc::insert_sheet(&mut doc, 1, "B");
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "B", "C"]);
+            // Delete the middle one.
+            assert!(SheetsDoc::delete_sheet(&mut doc, 1));
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
+            // The last remaining sheet cannot be deleted away.
+            SheetsDoc::delete_sheet(&mut doc, 0);
+            assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1);
+            assert!(
+                SheetsDoc::sheet_count(&mut doc) >= 1,
+                "a workbook keeps one sheet"
+            );
+        }
+
+        // Case `duplicate_copies_cells_and_format`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = SheetsDoc::add_sheet(&mut doc, "Data");
+            SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "=1+1");
+            SheetsDoc::set_cell_format(&mut doc, a, (0, 0), CellFormat::Currency(Currency::EUR));
+            SheetsDoc::set_sheet_color(&mut doc, a, Some(3));
+            let dup = SheetsDoc::duplicate_sheet(&mut doc, a).expect("duplicated");
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Data", "Data copy"]);
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, dup, (0, 0)), "=1+1");
+            let snap = SheetsDoc::snapshot_sheet(&mut doc, dup, Currency::USD);
+            assert_eq!(
+                snap.fmt.get(&(0, 0)).copied(),
+                Some(CellFormat::Currency(Currency::EUR))
+            );
+            assert_eq!(SheetsDoc::sheet_color(&mut doc, dup), Some(3));
+        }
+
+        // Case `move_sheet_reorders_and_keeps_cells`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = SheetsDoc::add_sheet(&mut doc, "A");
+            SheetsDoc::add_sheet(&mut doc, "B");
+            SheetsDoc::add_sheet(&mut doc, "C");
+            let stable = SheetsDoc::sheet_resource_id(&doc, a).expect("sheet identity");
+            SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "keep");
+            // Move A (idx 0) to the right (idx 1): order becomes B, A, C.
+            SheetsDoc::move_sheet(&mut doc, 0, 1);
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["B", "A", "C"]);
+            // A's content survived the move.
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
+            assert_eq!(SheetsDoc::sheet_resource_id(&doc, 1), Some(stable));
+        }
     }
 
+    /// Charts/threads records, concurrent annotations, deletes and structural anchors.
     #[test]
-    fn doc_settings_round_trip_and_clear() {
-        let mut doc = AutoCommit::new();
-        SheetsDoc::add_sheet(&mut doc, "S");
-        // Default: everything inherits.
-        assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
-        // Set an override.
-        SheetsDoc::set_doc_settings(
-            &mut doc,
-            &DocSettings {
-                currency: Some(Currency::EUR),
-                date_format: Some(DateStyle::Eu),
-                time_format: None,
-            },
-        );
-        let s = SheetsDoc::doc_settings(&mut doc);
-        assert_eq!(s.currency, Some(Currency::EUR));
-        assert_eq!(s.date_format, Some(DateStyle::Eu));
-        assert_eq!(s.time_format, None);
-        // Clearing returns to inherit.
-        SheetsDoc::set_doc_settings(&mut doc, &DocSettings::default());
-        assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn annotations_are_durable_and_merge_deterministically() {
+        // Case `charts_and_threads_are_durable_sheet_records`.
+        {
+            let mut doc = AutoCommit::new();
+            let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
+            let chart = ChartSnapshot {
+                id: "2cc2d8ba-bc65-4e98-966a-7d0ecb4ac00e".into(),
+                title: "Trend".into(),
+                kind: ChartKind::Line,
+                start: (0, 0),
+                end: (2, 4),
+            };
+            SheetsDoc::put_chart(&mut doc, sheet, &chart);
+            assert_eq!(SheetsDoc::charts(&mut doc, sheet), vec![chart]);
+            let thread = CommentThread {
+                id: "f9448d08-3b4a-4a7a-8e60-5259f8b67454".into(),
+                start: (1, 1),
+                end: (2, 1),
+                author: "Alex".into(),
+                body: "Review this".into(),
+                resolved: false,
+                replies: vec![CommentReply {
+                    id: "4eb25e43-28e8-4255-98f4-8bd5b89b2f26".into(),
+                    author: "Sam".into(),
+                    body: "On it".into(),
+                }],
+            };
+            SheetsDoc::put_comment(&mut doc, sheet, &thread);
+            SheetsDoc::set_comment_resolved(&mut doc, sheet, &thread.id, true);
+            let threads = SheetsDoc::comments(&mut doc, sheet);
+            assert_eq!(threads[0].replies, thread.replies);
+            assert!(threads[0].resolved);
+        }
 
-    #[test]
-    fn multiple_sheets_and_active() {
-        let mut doc = AutoCommit::new();
-        SheetsDoc::add_sheet(&mut doc, "One");
-        SheetsDoc::add_sheet(&mut doc, "Two");
-        assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
-        SheetsDoc::set_active_index(&mut doc, 1);
-        assert_eq!(SheetsDoc::active_index(&mut doc), 1);
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["One", "Two"]);
-    }
+        // Case `concurrent_first_annotations_and_replies_survive_merge_and_reload`.
+        {
+            let mut a = AutoCommit::new();
+            let sheet = SheetsDoc::add_sheet(&mut a, "Data");
+            let thread = CommentThread {
+                id: "00000000-0000-4000-8000-000000000003".into(),
+                start: (0, 0),
+                end: (0, 0),
+                author: "Alex".into(),
+                body: "Review".into(),
+                resolved: false,
+                replies: Vec::new(),
+            };
+            SheetsDoc::put_comment(&mut a, sheet, &thread);
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("base loads");
+            b.set_actor(ActorId::random());
+            let chart_a = ChartSnapshot {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                title: "A".into(),
+                kind: ChartKind::Column,
+                start: (0, 0),
+                end: (1, 1),
+            };
+            let chart_b = ChartSnapshot {
+                id: "00000000-0000-4000-8000-000000000002".into(),
+                title: "B".into(),
+                kind: ChartKind::Line,
+                start: (2, 0),
+                end: (3, 1),
+            };
+            let comment_a = CommentThread {
+                id: "00000000-0000-4000-8000-000000000006".into(),
+                start: (1, 0),
+                end: (1, 0),
+                author: "A".into(),
+                body: "First".into(),
+                resolved: false,
+                replies: Vec::new(),
+            };
+            let comment_b = CommentThread {
+                id: "00000000-0000-4000-8000-000000000007".into(),
+                start: (2, 0),
+                end: (2, 0),
+                author: "B".into(),
+                body: "Second".into(),
+                resolved: false,
+                replies: Vec::new(),
+            };
+            SheetsDoc::put_chart(&mut a, sheet, &chart_a);
+            SheetsDoc::put_comment(&mut a, sheet, &comment_a);
+            SheetsDoc::put_chart(&mut b, sheet, &chart_b);
+            SheetsDoc::put_comment(&mut b, sheet, &comment_b);
+            SheetsDoc::put_comment_reply(
+                &mut b,
+                sheet,
+                &thread.id,
+                &CommentReply {
+                    id: "00000000-0000-4000-8000-000000000004".into(),
+                    author: "Sam".into(),
+                    body: "Looking".into(),
+                },
+            );
+            SheetsDoc::put_comment_reply(
+                &mut a,
+                sheet,
+                &thread.id,
+                &CommentReply {
+                    id: "00000000-0000-4000-8000-000000000005".into(),
+                    author: "Jo".into(),
+                    body: "Approved".into(),
+                },
+            );
+            a.merge_incoming(&mut b)
+                .expect("merge concurrent first writes");
+            let reloaded = AutoCommit::load(&a.save()).expect("final reload");
+            let mut reloaded = reloaded;
+            assert_eq!(SheetsDoc::charts(&mut reloaded, sheet).len(), 2);
+            let threads = SheetsDoc::comments(&mut reloaded, sheet);
+            assert_eq!(threads.len(), 3);
+            assert_eq!(
+                threads
+                    .iter()
+                    .find(|candidate| candidate.id == thread.id)
+                    .expect("base thread")
+                    .replies
+                    .len(),
+                2
+            );
+        }
 
-    #[test]
-    fn insert_and_delete_sheets() {
-        let mut doc = AutoCommit::new();
-        SheetsDoc::add_sheet(&mut doc, "A");
-        SheetsDoc::add_sheet(&mut doc, "C");
-        // Insert "B" between A and C.
-        SheetsDoc::insert_sheet(&mut doc, 1, "B");
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "B", "C"]);
-        // Delete the middle one.
-        assert!(SheetsDoc::delete_sheet(&mut doc, 1));
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
-        // The last remaining sheet cannot be deleted away.
-        SheetsDoc::delete_sheet(&mut doc, 0);
-        assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1);
-        assert!(
-            SheetsDoc::sheet_count(&mut doc) >= 1,
-            "a workbook keeps one sheet"
-        );
-    }
+        // Case `concurrent_comment_delete_hides_reply_and_resolution_deterministically`.
+        {
+            let mut a = AutoCommit::new();
+            let sheet = SheetsDoc::add_sheet(&mut a, "Data");
+            let thread = CommentThread {
+                id: "00000000-0000-4000-8000-000000000010".into(),
+                start: (0, 0),
+                end: (0, 0),
+                author: "Alex".into(),
+                body: "Delete race".into(),
+                resolved: false,
+                replies: Vec::new(),
+            };
+            SheetsDoc::put_comment(&mut a, sheet, &thread);
+            a.commit();
+            let mut b = AutoCommit::load(&a.save()).expect("base loads");
+            b.set_actor(ActorId::random());
+            SheetsDoc::delete_comment(&mut a, sheet, &thread.id);
+            SheetsDoc::set_comment_resolved(&mut b, sheet, &thread.id, true);
+            SheetsDoc::put_comment_reply(
+                &mut b,
+                sheet,
+                &thread.id,
+                &CommentReply {
+                    id: "00000000-0000-4000-8000-000000000011".into(),
+                    author: "Sam".into(),
+                    body: "Too late".into(),
+                },
+            );
+            a.merge_incoming(&mut b).expect("merge");
+            let mut reloaded = AutoCommit::load(&a.save()).expect("reload");
+            assert!(
+                SheetsDoc::comments(&mut reloaded, sheet).is_empty(),
+                "delete wins; orphan replies are never surfaced"
+            );
+        }
 
-    #[test]
-    fn duplicate_copies_cells_and_format() {
-        let mut doc = AutoCommit::new();
-        let a = SheetsDoc::add_sheet(&mut doc, "Data");
-        SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "=1+1");
-        SheetsDoc::set_cell_format(&mut doc, a, (0, 0), CellFormat::Currency(Currency::EUR));
-        SheetsDoc::set_sheet_color(&mut doc, a, Some(3));
-        let dup = SheetsDoc::duplicate_sheet(&mut doc, a).expect("duplicated");
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Data", "Data copy"]);
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, dup, (0, 0)), "=1+1");
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, dup, Currency::USD);
-        assert_eq!(
-            snap.fmt.get(&(0, 0)).copied(),
-            Some(CellFormat::Currency(Currency::EUR))
-        );
-        assert_eq!(SheetsDoc::sheet_color(&mut doc, dup), Some(3));
-    }
-
-    #[test]
-    fn move_sheet_reorders_and_keeps_cells() {
-        let mut doc = AutoCommit::new();
-        let a = SheetsDoc::add_sheet(&mut doc, "A");
-        SheetsDoc::add_sheet(&mut doc, "B");
-        SheetsDoc::add_sheet(&mut doc, "C");
-        let stable = SheetsDoc::sheet_resource_id(&doc, a).expect("sheet identity");
-        SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "keep");
-        // Move A (idx 0) to the right (idx 1): order becomes B, A, C.
-        SheetsDoc::move_sheet(&mut doc, 0, 1);
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["B", "A", "C"]);
-        // A's content survived the move.
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
-        assert_eq!(SheetsDoc::sheet_resource_id(&doc, 1), Some(stable));
-    }
-
-    #[test]
-    fn charts_and_threads_are_durable_sheet_records() {
-        let mut doc = AutoCommit::new();
-        let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
-        let chart = ChartSnapshot {
-            id: "2cc2d8ba-bc65-4e98-966a-7d0ecb4ac00e".into(),
-            title: "Trend".into(),
-            kind: ChartKind::Line,
-            start: (0, 0),
-            end: (2, 4),
-        };
-        SheetsDoc::put_chart(&mut doc, sheet, &chart);
-        assert_eq!(SheetsDoc::charts(&mut doc, sheet), vec![chart]);
-        let thread = CommentThread {
-            id: "f9448d08-3b4a-4a7a-8e60-5259f8b67454".into(),
-            start: (1, 1),
-            end: (2, 1),
-            author: "Alex".into(),
-            body: "Review this".into(),
-            resolved: false,
-            replies: vec![CommentReply {
-                id: "4eb25e43-28e8-4255-98f4-8bd5b89b2f26".into(),
-                author: "Sam".into(),
-                body: "On it".into(),
-            }],
-        };
-        SheetsDoc::put_comment(&mut doc, sheet, &thread);
-        SheetsDoc::set_comment_resolved(&mut doc, sheet, &thread.id, true);
-        let threads = SheetsDoc::comments(&mut doc, sheet);
-        assert_eq!(threads[0].replies, thread.replies);
-        assert!(threads[0].resolved);
-    }
-
-    #[test]
-    fn concurrent_first_annotations_and_replies_survive_merge_and_reload() {
-        let mut a = AutoCommit::new();
-        let sheet = SheetsDoc::add_sheet(&mut a, "Data");
-        let thread = CommentThread {
-            id: "00000000-0000-4000-8000-000000000003".into(),
-            start: (0, 0),
-            end: (0, 0),
-            author: "Alex".into(),
-            body: "Review".into(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        SheetsDoc::put_comment(&mut a, sheet, &thread);
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("base loads");
-        b.set_actor(ActorId::random());
-        let chart_a = ChartSnapshot {
-            id: "00000000-0000-4000-8000-000000000001".into(),
-            title: "A".into(),
-            kind: ChartKind::Column,
-            start: (0, 0),
-            end: (1, 1),
-        };
-        let chart_b = ChartSnapshot {
-            id: "00000000-0000-4000-8000-000000000002".into(),
-            title: "B".into(),
-            kind: ChartKind::Line,
-            start: (2, 0),
-            end: (3, 1),
-        };
-        let comment_a = CommentThread {
-            id: "00000000-0000-4000-8000-000000000006".into(),
-            start: (1, 0),
-            end: (1, 0),
-            author: "A".into(),
-            body: "First".into(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        let comment_b = CommentThread {
-            id: "00000000-0000-4000-8000-000000000007".into(),
-            start: (2, 0),
-            end: (2, 0),
-            author: "B".into(),
-            body: "Second".into(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        SheetsDoc::put_chart(&mut a, sheet, &chart_a);
-        SheetsDoc::put_comment(&mut a, sheet, &comment_a);
-        SheetsDoc::put_chart(&mut b, sheet, &chart_b);
-        SheetsDoc::put_comment(&mut b, sheet, &comment_b);
-        SheetsDoc::put_comment_reply(
-            &mut b,
-            sheet,
-            &thread.id,
-            &CommentReply {
-                id: "00000000-0000-4000-8000-000000000004".into(),
-                author: "Sam".into(),
-                body: "Looking".into(),
-            },
-        );
-        SheetsDoc::put_comment_reply(
-            &mut a,
-            sheet,
-            &thread.id,
-            &CommentReply {
-                id: "00000000-0000-4000-8000-000000000005".into(),
-                author: "Jo".into(),
-                body: "Approved".into(),
-            },
-        );
-        a.merge_incoming(&mut b)
-            .expect("merge concurrent first writes");
-        let reloaded = AutoCommit::load(&a.save()).expect("final reload");
-        let mut reloaded = reloaded;
-        assert_eq!(SheetsDoc::charts(&mut reloaded, sheet).len(), 2);
-        let threads = SheetsDoc::comments(&mut reloaded, sheet);
-        assert_eq!(threads.len(), 3);
-        assert_eq!(
-            threads
-                .iter()
-                .find(|candidate| candidate.id == thread.id)
-                .expect("base thread")
-                .replies
-                .len(),
-            2
-        );
-    }
-
-    #[test]
-    fn concurrent_comment_delete_hides_reply_and_resolution_deterministically() {
-        let mut a = AutoCommit::new();
-        let sheet = SheetsDoc::add_sheet(&mut a, "Data");
-        let thread = CommentThread {
-            id: "00000000-0000-4000-8000-000000000010".into(),
-            start: (0, 0),
-            end: (0, 0),
-            author: "Alex".into(),
-            body: "Delete race".into(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        SheetsDoc::put_comment(&mut a, sheet, &thread);
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).expect("base loads");
-        b.set_actor(ActorId::random());
-        SheetsDoc::delete_comment(&mut a, sheet, &thread.id);
-        SheetsDoc::set_comment_resolved(&mut b, sheet, &thread.id, true);
-        SheetsDoc::put_comment_reply(
-            &mut b,
-            sheet,
-            &thread.id,
-            &CommentReply {
-                id: "00000000-0000-4000-8000-000000000011".into(),
-                author: "Sam".into(),
-                body: "Too late".into(),
-            },
-        );
-        a.merge_incoming(&mut b).expect("merge");
-        let mut reloaded = AutoCommit::load(&a.save()).expect("reload");
-        assert!(
-            SheetsDoc::comments(&mut reloaded, sheet).is_empty(),
-            "delete wins; orphan replies are never surfaced"
-        );
-    }
-
-    #[test]
-    fn annotation_anchors_follow_structural_coordinate_changes() {
-        let mut doc = AutoCommit::new();
-        let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
-        let chart = ChartSnapshot {
-            id: "00000000-0000-4000-8000-000000000020".into(),
-            title: "Trend".into(),
-            kind: ChartKind::Line,
-            start: (1, 1),
-            end: (3, 3),
-        };
-        let thread = CommentThread {
-            id: "00000000-0000-4000-8000-000000000021".into(),
-            start: (2, 2),
-            end: (2, 2),
-            author: "Alex".into(),
-            body: "Follow".into(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        SheetsDoc::put_chart(&mut doc, sheet, &chart);
-        SheetsDoc::put_comment(&mut doc, sheet, &thread);
-        SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |(c, r)| Some((c, r + 1)));
-        assert_eq!(SheetsDoc::charts(&mut doc, sheet)[0].start, (1, 2));
-        assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 3));
-        SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |addr| {
-            (addr != (2, 3)).then_some(addr)
-        });
-        assert!(
-            SheetsDoc::comments(&mut doc, sheet).is_empty(),
-            "a fully deleted one-cell anchor removes its thread"
-        );
+        // Case `annotation_anchors_follow_structural_coordinate_changes`.
+        {
+            let mut doc = AutoCommit::new();
+            let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
+            let chart = ChartSnapshot {
+                id: "00000000-0000-4000-8000-000000000020".into(),
+                title: "Trend".into(),
+                kind: ChartKind::Line,
+                start: (1, 1),
+                end: (3, 3),
+            };
+            let thread = CommentThread {
+                id: "00000000-0000-4000-8000-000000000021".into(),
+                start: (2, 2),
+                end: (2, 2),
+                author: "Alex".into(),
+                body: "Follow".into(),
+                resolved: false,
+                replies: Vec::new(),
+            };
+            SheetsDoc::put_chart(&mut doc, sheet, &chart);
+            SheetsDoc::put_comment(&mut doc, sheet, &thread);
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::InsertRow(0));
+            assert_eq!(SheetsDoc::charts(&mut doc, sheet)[0].start, (1, 2));
+            assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 3));
+            // The chart spans B3:D5 and the comment sits on C4. Deleting the
+            // chart's first row, then its last, shrinks it instead of deleting it.
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (3, 3)));
+            assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 2));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(3));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (3, 2)));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(2));
+            assert!(
+                SheetsDoc::comments(&mut doc, sheet).is_empty(),
+                "a fully deleted one-cell anchor removes its thread"
+            );
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(1));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (1, 2)));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
+            assert!(SheetsDoc::charts(&mut doc, sheet).is_empty());
+        }
     }
 }

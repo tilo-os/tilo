@@ -64,9 +64,22 @@ impl Default for StreamingThrottle {
 mod tests {
     use super::*;
 
+    /// The first call always accepts, back-to-back calls are rejected, and a damage loop
+    /// throttles to 30 fps.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn the_throttle_accepts_the_first_frame_and_holds_to_30fps() {
+        throttle_first_call_always_accepts();
+        throttle_rejects_back_to_back();
+        damage_loop_throttles_to_30fps();
+    }
+
     /// Drives 100 simulated captures across one wall-clock second; asserts at
     /// most 30 are accepted.
-    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn damage_loop_throttles_to_30fps() {
         let start = Instant::now();
         let mut throttle = StreamingThrottle::new();
@@ -85,14 +98,16 @@ mod tests {
         assert!(encoded > 0, "throttle muted every encode — interval bug");
     }
 
-    #[test]
     fn throttle_first_call_always_accepts() {
         let now = Instant::now();
         let throttle = StreamingThrottle::new();
         assert!(throttle.should_encode(now));
     }
 
-    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn throttle_rejects_back_to_back() {
         let now = Instant::now();
         let mut throttle = StreamingThrottle::new();

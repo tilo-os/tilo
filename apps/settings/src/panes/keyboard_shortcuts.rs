@@ -1,198 +1,109 @@
-//! Editable compositor shortcuts. The Settings CRDT is only the form model;
+//! Editable compositor shortcuts. The rows are the desktop's keyboard
+//! shortcut catalogue ([`settings_store::keyboard_shortcuts`]), the same one
+//! the shell publishes on the action door and the shortcut guide shows. The
+//! Settings CRDT is only the form model and never a replayable setting;
 //! accepted bindings are validated and atomically persisted through the
 //! shared typed contract the compositor consumes.
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
+use crate::i18n::t;
 use crate::widgets::{card, rows, setting_row};
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ShortcutRecorder, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
-const SEARCH: &str = "shortcuts.search";
-const OVERVIEW: &str = "shortcuts.overview";
-const LOCK: &str = "shortcuts.lock";
-const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
 const VIM_MODE: &str = "shortcuts.vim_mode";
 
 fn draft_key(key: &str) -> String {
     format!("{key}.edit")
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete shortcut catalog stays contiguous so its action/key/label mapping is auditable"
-)]
-fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> {
-    [
-        (
-            ShortcutAction::Search,
-            SEARCH,
-            "Open search",
-            "Search apps, documents, settings and actions",
-        ),
-        (
-            ShortcutAction::WorkspaceOverview,
-            OVERVIEW,
-            "Workspace overview",
-            "Show the infinite workspace map",
-        ),
-        (
-            ShortcutAction::Lock,
-            LOCK,
-            "Lock the screen",
-            "Always handled before applications",
-        ),
-        (
-            ShortcutAction::QuickSettings,
-            QUICK_SETTINGS,
-            "Quick Settings",
-            "Open the shell control surface",
-        ),
-        (
-            ShortcutAction::ShortcutHelp,
-            "shortcuts.help",
-            "Desktop help",
-            "F1 opens the desktop guide anywhere; Super+Shift+/ (Super+?) is the configurable shortcut for the same guide",
-        ),
-        (
-            ShortcutAction::FocusPreviousWindow,
-            "shortcuts.focus_previous_window",
-            "Focus previous window",
-            "Move the viewport left along the current strip",
-        ),
-        (
-            ShortcutAction::FocusNextWindow,
-            "shortcuts.focus_next_window",
-            "Focus next window",
-            "Move the viewport right along the current strip",
-        ),
-        (
-            ShortcutAction::PreviousTab,
-            "shortcuts.previous_tab",
-            "Previous tab",
-            "Cycle tabs in the focused window group",
-        ),
-        (
-            ShortcutAction::NextTab,
-            "shortcuts.next_tab",
-            "Next tab",
-            "Cycle tabs in the focused window group",
-        ),
-        (
-            ShortcutAction::PreviousStrip,
-            "shortcuts.previous_strip",
-            "Previous strip",
-            "Move the view to the strip above",
-        ),
-        (
-            ShortcutAction::NextStrip,
-            "shortcuts.next_strip",
-            "Next strip",
-            "Move the view to the strip below",
-        ),
-        (
-            ShortcutAction::PreviousWorkspace,
-            "shortcuts.previous_workspace",
-            "Previous workspace",
-            "Move the view to the workspace above",
-        ),
-        (
-            ShortcutAction::NextWorkspace,
-            "shortcuts.next_workspace",
-            "Next workspace",
-            "Move the view to the workspace below",
-        ),
-        (
-            ShortcutAction::ToggleMaximize,
-            "shortcuts.toggle_maximize",
-            "Maximize or restore window",
-            "Super+Up toggles the focused window group",
-        ),
-        (
-            ShortcutAction::DetachTab,
-            "shortcuts.detach_tab",
-            "Move tab to new group",
-            "Pull the active tab out into its own adjacent window group",
-        ),
-        (
-            ShortcutAction::AttachTabLeft,
-            "shortcuts.attach_tab_left",
-            "Move tab into group on left",
-            "Join the active tab to the adjacent window group",
-        ),
-        (
-            ShortcutAction::AttachTabRight,
-            "shortcuts.attach_tab_right",
-            "Move tab into group on right",
-            "Join the active tab to the adjacent window group",
-        ),
-        (
-            ShortcutAction::MoveGroupLeft,
-            "shortcuts.move_group_left",
-            "Move group left",
-            "Reorder the focused window group",
-        ),
-        (
-            ShortcutAction::MoveGroupRight,
-            "shortcuts.move_group_right",
-            "Move group right",
-            "Reorder the focused window group",
-        ),
-        (
-            ShortcutAction::ResizeNarrower,
-            "shortcuts.resize_narrower",
-            "Make window narrower",
-            "Reduce the focused group's width",
-        ),
-        (
-            ShortcutAction::ResizeWider,
-            "shortcuts.resize_wider",
-            "Make window wider",
-            "Increase the focused group's width",
-        ),
-        (
-            ShortcutAction::ReopenClosedTab,
-            "shortcuts.reopen_closed_tab",
-            "Reopen closed tab",
-            "Bring back the tab closed most recently in this workspace",
-        ),
-    ]
-    .to_vec()
+/// The form-model key of a rebindable action (`shortcuts.quick_settings`).
+fn durable_key(action: ShortcutAction) -> String {
+    format!("shortcuts.{}", action.id().replace('-', "_"))
 }
 
-/// The stable durable-key catalogue shared by the visible recorder rows and
-/// the Settings resource tree.  Keeping this next to [`entries`] makes it
-/// impossible for Ctrl+K (or an agent) to expose only a partial shortcut
-/// surface when a new compositor shortcut is added to the page.
-pub(crate) fn resource_entries() -> Vec<(&'static str, &'static str)> {
-    entries()
+/// Every rebindable action, in catalogue order.
+fn rebindable() -> impl Iterator<Item = ShortcutAction> {
+    ShortcutAction::ALL
         .into_iter()
-        .map(|(_, key, label, _)| (key, label))
+        .filter(|action| action.rebindable())
+}
+
+/// Every shortcut the page lists, with its name, in page order — what a pen
+/// or pad button can be set to run.
+pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
+    rebindable()
+        .map(|action| (action, t(&action.label_key())))
         .collect()
 }
 
-/// Whether `key` names one of this pane's durable shortcut preferences.
-/// Presentation drafts/errors intentionally do not pass this boundary.
-pub(crate) fn is_durable_key(key: &str) -> bool {
-    key == VIM_MODE || resource_entries().iter().any(|(known, _)| *known == key)
+/// The legends printed on the keys of the layout the keyboard is typing
+/// with, which the page names keys and modifiers in.
+fn active_keycaps() -> ui::Keycaps {
+    let config = settings_store::hardware::RichInputConfig::from_section(
+        &settings_store::load_section("input"),
+    );
+    config
+        .sources()
+        .into_iter()
+        .nth(config.active_layout_index())
+        .map_or(ui::Keycaps::US, |source| {
+            ui::Keycaps::from_xkb(&source.layout, source.variant.as_deref().unwrap_or(""))
+        })
 }
 
-fn is_desktop_navigation(action: ShortcutAction) -> bool {
-    !matches!(
-        action,
-        ShortcutAction::Search
-            | ShortcutAction::WorkspaceOverview
-            | ShortcutAction::Lock
-            | ShortcutAction::QuickSettings
-            | ShortcutAction::ShortcutHelp
-    )
+/// `chord` as the active layout's keycaps spell it (`Strg+Umschalt+T` on a
+/// German layout). The stored chord stays canonical.
+fn chord_label(chord: &KeyChord) -> String {
+    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
+fn chords_text(chords: &[KeyChord]) -> String {
+    if chords.is_empty() {
+        return t("settings-shortcut-unassigned");
+    }
+    chords
+        .iter()
+        .map(chord_label)
+        .collect::<Vec<_>>()
+        .join("  /  ")
+}
+
+fn entry_row(entry: &ShortcutEntry) -> Box<dyn Widget> {
+    let label = t(&entry.label_key);
+    match entry.action.filter(|_| entry.rebindable) {
+        Some(action) => {
+            let key = durable_key(action);
+            setting_row(
+                &label,
+                Box::new(ShortcutRecorder::new(
+                    &key,
+                    &draft_key(&key),
+                    &entry
+                        .chords
+                        .first()
+                        .map(KeyChord::display)
+                        .unwrap_or_default(),
+                    &entry
+                        .defaults
+                        .first()
+                        .map(KeyChord::display)
+                        .unwrap_or_default(),
+                )),
+            )
+        }
+        None => crate::widgets::value_row(&label, &chords_text(&entry.chords)),
+    }
 }
 
 pub struct ShortcutPane {
@@ -204,11 +115,12 @@ pub struct ShortcutPane {
     commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for ShortcutPane {
     fn default() -> Self {
+        ui::keycaps::set_active(active_keycaps());
         let config = ShortcutConfig::load();
         let desktop_controls = settings_store::hardware::DesktopControlsConfig::load();
         let last_text = config
@@ -225,64 +137,47 @@ impl Default for ShortcutPane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 }
 
 impl ShortcutPane {
     fn composition(&self) -> Box<dyn Widget> {
-        let mut system: Vec<Box<dyn Widget>> = Vec::new();
-        let mut desktop: Vec<Box<dyn Widget>> = vec![setting_row(
-            "Vim navigation (H J K L)",
-            Box::new(
-                Toggle::new("settings.shortcuts.vim_mode", &draft_key(VIM_MODE))
-                    .with_id("shortcuts.vim_mode"),
-            ),
-        )];
-        let defaults = ShortcutConfig::default();
-        for (action, key, label, _) in entries() {
-            let value = self
-                .config
-                .bindings
-                .get(&action)
-                .map(KeyChord::display)
-                .unwrap_or_default();
-            let default = defaults
-                .bindings
-                .get(&action)
-                .map(KeyChord::display)
-                .unwrap_or_default();
-            let row = setting_row(
-                label,
-                Box::new(ShortcutRecorder::new(
-                    key,
-                    &draft_key(key),
-                    &value,
-                    &default,
-                )),
-            );
-            if is_desktop_navigation(action) {
-                desktop.push(row);
-            } else {
-                system.push(row);
-            }
-        }
-        let mut cards = vec![
-            card("System", rows(system)),
-            card("Desktop navigation", rows(desktop)),
-        ];
+        let entries = catalogue(&self.config);
+        let mut cards: Vec<Box<dyn Widget>> = ShortcutCategory::ALL
+            .into_iter()
+            .map(|category| {
+                let mut body: Vec<Box<dyn Widget>> = Vec::new();
+                if category == ShortcutCategory::Navigation {
+                    body.push(setting_row(
+                        &t("settings-shortcuts-vim"),
+                        Box::new(
+                            Toggle::new("settings.shortcuts.vim_mode", &draft_key(VIM_MODE))
+                                .with_id("shortcuts.vim_mode"),
+                        ),
+                    ));
+                }
+                body.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| entry.category == category)
+                        .map(entry_row),
+                );
+                card(&t(&category.label_key()), rows(body))
+            })
+            .collect();
         if !self.config.actions.is_empty() {
             let mut actions: Vec<Box<dyn Widget>> = self
                 .config
                 .actions
                 .iter()
-                .map(|bound| crate::widgets::value_row(&bound.label, &bound.chord.display()))
+                .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
                 .collect();
-            actions.push(crate::widgets::caption(
-                "A saved shortcut's keyboard trigger binds its chord here; change or remove it in the shortcut.",
-            ));
-            cards.push(card("Actions", rows(actions)));
+            actions.push(crate::widgets::caption(&t(
+                "settings-shortcuts-actions-caption",
+            )));
+            cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
         }
         crate::widgets::cards(cards)
     }
@@ -292,8 +187,15 @@ impl ShortcutPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 }
 
@@ -302,17 +204,21 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for ShortcutPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
-            for (action, key, _, _) in entries() {
+            for action in rebindable() {
+                let key = durable_key(action);
                 let value = self
                     .config
                     .bindings
                     .get(&action)
                     .map(KeyChord::display)
                     .unwrap_or_default();
-                let _ = state.put(root, key, value.clone());
-                let _ = state.put(root, draft_key(key), value.clone());
+                let _ = state.put(root, &key, value.clone());
+                let _ = state.put(root, draft_key(&key), value.clone());
                 self.last_text.insert(action, value);
             }
             let _ = state.put(root, VIM_MODE, self.desktop_controls.vim_mode);
@@ -341,7 +247,9 @@ impl Widget for ShortcutPane {
                 let _ = state.put(root, draft_key(VIM_MODE), vim);
             }
         }
-        for (action, key, _, _) in entries() {
+        for action in rebindable() {
+            let key = durable_key(action);
+            let key = key.as_str();
             let Some(value) = read_str_or_text(state, root, key) else {
                 continue;
             };
@@ -358,7 +266,7 @@ impl Widget for ShortcutPane {
                 });
                 if valid.is_ok() && self.config.save().is_ok() {
                     self.last_text.insert(action, draft.clone());
-                    self.dispatch(state, &set_text_action(key, draft));
+                    let _ = state.put(root, key, draft);
                     let _ = state.put(root, format!("{key}.error"), false);
                 } else {
                     let _ = state.put(root, draft_key(key), value);
@@ -375,7 +283,7 @@ impl Widget for ShortcutPane {
                 self.last_text.insert(action, value);
                 let _ = state.put(root, format!("{key}.error"), false);
             } else if let Some(previous) = self.last_text.get(&action).cloned() {
-                self.dispatch(state, &set_text_action(key, previous.clone()));
+                let _ = state.put(root, key, previous.clone());
                 let _ = state.put(root, draft_key(key), previous.clone());
                 let _ = state.put(root, format!("{key}.error"), true);
             }
@@ -438,28 +346,15 @@ impl Widget for ShortcutPane {
             c.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event, scale, modifiers, state, path, handled, focus, cn, taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
@@ -475,22 +370,6 @@ impl Widget for ShortcutPane {
             .into_iter()
             .collect()
     }
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "keyboard-shortcuts",
-            "Keyboard shortcuts",
-            "Change keyboard shortcuts",
-        )
-    }
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
     fn name(&self) -> &'static str {
         "ShortcutPane"
     }
@@ -499,54 +378,93 @@ impl Widget for ShortcutPane {
     }
 }
 
+impl ui::undo::UndoPoints for ShortcutPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "keyboard-shortcuts",
+            "Keyboard shortcuts",
+            "Change keyboard shortcuts",
+        )
+    }
+}
+
+impl ui::undo::CommittedActions for ShortcutPane {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn seeds_real_default_bindings() {
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
-            Some("Super+k")
-        );
-    }
 
-    #[test]
-    fn help_setting_explains_fixed_and_configurable_routes() {
-        let (_, _, label, description) = entries()
-            .into_iter()
-            .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
-            .expect("help shortcut entry");
-        assert_eq!(label, "Desktop help");
-        assert!(description.contains("Super+Shift+/"));
-        assert!(description.contains("Super+?"));
-        assert!(description.contains("F1"));
-        assert!(description.contains("same guide"));
-    }
-    #[test]
-    fn conflicting_edit_is_rolled_back() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, LOCK).as_deref(),
-            Some("Super+l")
-        );
-    }
+    const SEARCH: &str = "shortcuts.search";
+    const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
 
+    /// Default bindings, catalogue rows, conflict rollback and the vim-mode shell contract.
     #[test]
-    fn vim_mode_toggle_persists_to_the_shell_contract() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, VIM_MODE, true);
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(settings_store::hardware::DesktopControlsConfig::load().vim_mode);
+    fn shortcut_bindings_seed_explain_and_persist_safely() {
+        // Case `seeds_real_default_bindings`.
+        {
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
+                Some("Super+k")
+            );
+        }
+
+        // Case `rows_are_the_shortcut_catalogue`.
+        {
+            let listed: Vec<String> = rebindable().map(durable_key).collect();
+            assert!(listed.contains(&QUICK_SETTINGS.to_string()));
+            assert!(
+                !listed.contains(&"shortcuts.lock".to_string()),
+                "the lock chord is shown, not offered for editing"
+            );
+            for entry in catalogue(&ShortcutConfig::default()) {
+                assert_ne!(
+                    t(&entry.label_key),
+                    entry.label_key,
+                    "{} has no name in the Settings catalogue",
+                    entry.id
+                );
+            }
+            for category in ShortcutCategory::ALL {
+                assert_ne!(t(&category.label_key()), category.label_key());
+            }
+        }
+
+        // Case `conflicting_edit_is_rolled_back`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(&automerge::ROOT, QUICK_SETTINGS, "Super+k");
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                read_str_or_text(&doc, &automerge::ROOT, QUICK_SETTINGS).as_deref(),
+                Some("Super+q")
+            );
+        }
+
+        // Case `vim_mode_toggle_persists_to_the_shell_contract`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(&automerge::ROOT, VIM_MODE, true);
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(settings_store::hardware::DesktopControlsConfig::load().vim_mode);
+        }
     }
 }

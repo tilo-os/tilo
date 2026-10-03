@@ -80,21 +80,29 @@ fn attachment_uris(values: &[String]) -> bool {
 #[cfg(target_os = "linux")]
 fn compose_detail(request: &EmailRequest) -> String {
     let mut recipients = request.addresses.clone();
-    recipients.extend(request.cc.iter().map(|address| format!("Cc: {address}")));
-    recipients.extend(request.bcc.iter().map(|address| format!("Bcc: {address}")));
+    recipients.extend(request.cc.iter().map(|address| {
+        crate::shell::i18n::t_args("portal-email-cc", &[("address", address.as_str().into())])
+    }));
+    recipients.extend(request.bcc.iter().map(|address| {
+        crate::shell::i18n::t_args("portal-email-bcc", &[("address", address.as_str().into())])
+    }));
     let mut detail = if recipients.is_empty() {
-        "No recipient prefilled".into()
+        crate::shell::i18n::t("portal-email-no-recipient")
     } else {
         recipients.join("\n")
     };
     if let Some(subject) = request.subject.as_deref() {
-        detail.push_str("\n\nSubject: ");
-        detail.push_str(subject);
+        detail.push_str("\n\n");
+        detail.push_str(&crate::shell::i18n::t_args(
+            "portal-email-subject",
+            &[("subject", subject.into())],
+        ));
     }
     if !request.attachments.is_empty() {
-        detail.push_str(&format!(
-            "\n\n{} attachment(s) will be available through the document portal.",
-            request.attachments.len()
+        detail.push_str("\n\n");
+        detail.push_str(&crate::shell::i18n::t_args(
+            "portal-email-attachments",
+            &[("count", request.attachments.len().into())],
         ));
     }
     detail
@@ -171,12 +179,10 @@ impl EmailBackend {
         let review = match self.dialogs.enqueue_review(ReviewRequest {
             handle: path.clone(),
             app_id: request.app_id.clone(),
-            title: "Open your mail app?".into(),
-            reason:
-                "Review the prefilled message before it is handed to your configured mail provider."
-                    .into(),
+            title: crate::shell::i18n::t("portal-email-title"),
+            reason: crate::shell::i18n::t("portal-email-reason"),
             resource: compose_detail(&request),
-            confirm_label: "Open mail app".into(),
+            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
         }) {
             Ok(review) => review,
             Err(_) => {
@@ -203,21 +209,21 @@ impl EmailBackend {
 mod tests {
     use super::*;
     #[test]
-    fn string_list_drops_controls() {
-        let mut v = HashMap::new();
-        v.insert(
-            "cc".into(),
-            OwnedValue::try_from(zbus::zvariant::Value::new(vec![
-                "a@example.test".to_string(),
-                "bad\n".to_string(),
-            ]))
-            .expect("string arrays serialize into a zvariant"),
-        );
-        assert_eq!(strings(&v, "cc", 8), None);
-    }
-
-    #[test]
-    fn host_paths_are_never_attachments() {
+    fn email_inputs_drop_controls_and_host_paths() {
+        // Phase `string_list_drops_controls`.
+        {
+            let mut v = HashMap::new();
+            v.insert(
+                "cc".into(),
+                OwnedValue::try_from(zbus::zvariant::Value::new(vec![
+                    "a@example.test".to_string(),
+                    "bad\n".to_string(),
+                ]))
+                .expect("string arrays serialize into a zvariant"),
+            );
+            assert_eq!(strings(&v, "cc", 8), None);
+        }
+        // Phase `host_paths_are_never_attachments`.
         // The helper additionally verifies that a file URI lies under the
         // live document portal mount; arbitrary host paths fail that check.
         assert!(!attachment_uris(&["file:///home/me/private.pdf".into()]));

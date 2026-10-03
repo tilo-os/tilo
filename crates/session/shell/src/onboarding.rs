@@ -14,15 +14,17 @@
 //! recovery material is an encrypted portable backup. The only true thing to
 //! tell a user is that losing every local key and that backup loses the
 //! identity. The copy in
-//! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
+//! [`no_recovery_points`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
 //! recovery is ever wired up, this copy changes in the same commit —
-//! `tests::copy_does_not_promise_recovery` guards against drift.
+//! `tests::onboarding_copy_is_honest_about_identity_and_recovery` guards against drift.
 
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::shell::i18n::t;
 
 /// Where the ceremony currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,38 +40,59 @@ pub enum Screen {
 }
 
 /// Title and body for the first screen.
-pub const INTRO_TITLE: &str = "Create your local Tilo identity";
-pub const INTRO_BODY: &str = "Tilo will create a cryptographic identity that belongs to you, \
-     then certify a separate key for this device. Tilo uses that chain for collaboration and \
-     peer invitations. Individual app edits are not all cryptographically signed yet.";
+#[must_use]
+pub fn intro_title() -> String {
+    t("onboarding-intro-title")
+}
+
+#[must_use]
+pub fn intro_body() -> String {
+    t("onboarding-intro-body")
+}
 
 /// The specific things the identity does today, without promising that every
 /// application operation already carries a signature.
-pub const INTRO_POINTS: &[&str] = &[
-    "It gives collaboration a stable identity for you and certifies this device to peers.",
-    "It is created here, on this machine. Nothing is uploaded and no server holds a copy.",
-    "It is not an account and has no password — there is nothing to log in to.",
-];
+#[must_use]
+pub fn intro_points() -> Vec<String> {
+    vec![
+        t("onboarding-intro-point-collaboration"),
+        t("onboarding-intro-point-local"),
+        t("onboarding-intro-point-not-account"),
+    ]
+}
 
 /// Heading for the consequence screen — stated as a fact, not a warning to be dismissed.
-pub const NO_RECOVERY_TITLE: &str =
-    "If you lose this device without a backup, this identity is gone";
+#[must_use]
+pub fn no_recovery_title() -> String {
+    t("onboarding-no-recovery-title")
+}
 
 /// The plain truth, without making people read an implementation tour before
-/// they can reach the backup step. Read `tests::copy_does_not_promise_recovery`
+/// they can reach the backup step. Read `tests::onboarding_copy_is_honest_about_identity_and_recovery`
 /// before editing these statements.
-pub const NO_RECOVERY_POINTS: &[&str] = &[
-    "There is no recovery service. No backup code and no recovery phrase can recreate this identity.",
-    "The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.",
-];
+#[must_use]
+pub fn no_recovery_points() -> Vec<String> {
+    vec![
+        t("onboarding-no-recovery-point-no-service"),
+        t("onboarding-no-recovery-point-backup"),
+    ]
+}
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
-pub const ACKNOWLEDGEMENT: &str =
-    "I understand that losing this device without a backup means losing this identity.";
+#[must_use]
+pub fn acknowledgement() -> String {
+    t("onboarding-acknowledgement")
+}
 
-pub const DONE_TITLE: &str = "Your identity is ready";
-pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. Tilo can \
-     present it in collaboration flows that support verification; you do not need to type it.";
+#[must_use]
+pub fn done_title() -> String {
+    t("onboarding-done-title")
+}
+
+#[must_use]
+pub fn done_body() -> String {
+    t("onboarding-done-body")
+}
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -323,173 +346,172 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_is_not_minted_until_the_consequence_is_acknowledged() {
-        let mut o = Onboarding::new();
-        assert!(!o.can_create(), "cannot create from the intro screen");
-        o.begin();
-        assert_eq!(o.screen(), Screen::NoRecovery);
-        assert!(
-            !o.can_create(),
-            "reaching the screen is not acknowledging it"
-        );
-        o.set_acknowledged(true);
-        assert!(o.can_create());
-    }
-
-    /// Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a gate.
-    #[test]
-    fn withdrawing_the_acknowledgement_closes_the_gate_again() {
-        let mut o = Onboarding::new();
-        o.begin();
-        o.set_acknowledged(true);
-        o.set_acknowledged(false);
-        assert!(!o.can_create());
-    }
-
-    #[test]
-    fn back_returns_to_the_choice_without_carrying_acknowledgement() {
-        let mut o = Onboarding::new();
-        o.begin();
-        o.set_acknowledged(true);
-        o.back();
-        assert_eq!(o.screen(), Screen::Intro);
-        assert!(!o.acknowledged());
-
-        o.begin_connect();
-        o.back();
-        assert_eq!(o.screen(), Screen::Intro);
-    }
-
-    /// A UI bug must not be able to mint behind the user's back.
-    #[test]
-    fn completing_without_the_gate_changes_nothing() {
-        let mut o = Onboarding::new();
-        let minted = MintedIdentity {
-            fingerprint: "ab".repeat(32),
-            path: PathBuf::from("/nowhere/primary.json"),
-        };
-        assert!(
-            !o.complete(minted.clone()),
-            "complete refuses before the gate"
-        );
-        assert_eq!(o.screen(), Screen::Intro);
-        assert!(o.minted().is_none());
-        assert!(!o.is_done());
-
-        o.begin();
-        o.set_acknowledged(true);
-        assert!(o.complete(minted));
-        assert_eq!(o.screen(), Screen::Done);
-        assert!(o.is_done());
-    }
-
-    #[test]
-    fn resuming_a_created_identity_never_reopens_the_creation_gate() {
-        let mut onboarding = Onboarding::new();
-        onboarding.resume_created(MintedIdentity {
-            fingerprint: "ab".repeat(32),
-            path: PathBuf::from("/identity/primary.json"),
-        });
-
-        assert_eq!(onboarding.screen(), Screen::Done);
-        assert!(onboarding.is_done());
-        assert!(!onboarding.acknowledged());
-        assert!(!onboarding.can_create());
-    }
-
-    #[test]
-    fn fingerprints_are_grouped_so_they_can_be_compared_by_eye() {
-        let m = MintedIdentity {
-            fingerprint: "0123456789abcdef".to_string(),
-            path: PathBuf::from("/x"),
-        };
-        assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
-    }
-
-    /// The copy must not imply a safety net that does not exist.
-    ///
-    /// Tilo mints a root and certified device key with no escrow or recovery phrase.
-    /// `threshold-identity` implements share-based recovery but is
-    /// deliberately not wired into this path. A user-held encrypted export is
-    /// a backup, but it is not escrow and cannot help without its passphrase.
-    #[test]
-    fn copy_does_not_promise_recovery() {
-        let all = NO_RECOVERY_POINTS.join(" ").to_lowercase();
-        assert!(
-            all.contains("there is no recovery"),
-            "the no-recovery screen must say so outright: {all}"
-        );
-        for weasel in [
-            "recovery phrase",
-            "backup code",
-            "restore your identity",
-            "we can help",
-            "contact support",
-        ] {
-            // The one legitimate mention is the denial itself, which names these things to rule them out.
-            let denied = all.contains(&format!("no {weasel}"))
-                || all.contains(&"no backup code, no recovery phrase".to_string());
+    fn identity_minting_waits_for_the_acknowledged_consequence() {
+        // Phase `the_key_is_not_minted_until_the_consequence_is_acknowledged`.
+        {
+            let mut o = Onboarding::new();
+            assert!(!o.can_create(), "cannot create from the intro screen");
+            o.begin();
+            assert_eq!(o.screen(), Screen::NoRecovery);
             assert!(
-                !all.contains(weasel) || denied,
-                "copy must not offer {weasel:?} unless it is denying it: {all}"
+                !o.can_create(),
+                "reaching the screen is not acknowledging it"
             );
+            o.set_acknowledged(true);
+            assert!(o.can_create());
+        }
+        // Phase `withdrawing_the_acknowledgement_closes_the_gate_again`.
+        // Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a gate.
+        {
+            let mut o = Onboarding::new();
+            o.begin();
+            o.set_acknowledged(true);
+            o.set_acknowledged(false);
+            assert!(!o.can_create());
+        }
+        // Phase `back_returns_to_the_choice_without_carrying_acknowledgement`.
+        {
+            let mut o = Onboarding::new();
+            o.begin();
+            o.set_acknowledged(true);
+            o.back();
+            assert_eq!(o.screen(), Screen::Intro);
+            assert!(!o.acknowledged());
+
+            o.begin_connect();
+            o.back();
+            assert_eq!(o.screen(), Screen::Intro);
+        }
+        // Phase `completing_without_the_gate_changes_nothing`.
+        // A UI bug must not be able to mint behind the user's back.
+        {
+            let mut o = Onboarding::new();
+            let minted = MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/nowhere/primary.json"),
+            };
+            assert!(
+                !o.complete(minted.clone()),
+                "complete refuses before the gate"
+            );
+            assert_eq!(o.screen(), Screen::Intro);
+            assert!(o.minted().is_none());
+            assert!(!o.is_done());
+
+            o.begin();
+            o.set_acknowledged(true);
+            assert!(o.complete(minted));
+            assert_eq!(o.screen(), Screen::Done);
+            assert!(o.is_done());
+        }
+        // Phase `resuming_a_created_identity_never_reopens_the_creation_gate`.
+        {
+            let mut onboarding = Onboarding::new();
+            onboarding.resume_created(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            });
+
+            assert_eq!(onboarding.screen(), Screen::Done);
+            assert!(onboarding.is_done());
+            assert!(!onboarding.acknowledged());
+            assert!(!onboarding.can_create());
+        }
+        // Phase `minting_writes_a_readable_record_and_reports_its_fingerprint`.
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "tilo-onboarding-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            let system = tilo_user_identity::IdentityPaths::under(dir.join("system"));
+            let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
+            assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
+            assert!(minted.path.exists());
+
+            // Minting again reports the same key rather than a fresh one.
+            let again =
+                mint_into_with_paths(&dir, &system, false).expect("second mint is idempotent");
+            assert_eq!(again.fingerprint, minted.fingerprint);
+
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
-    /// The acknowledgement states the consequence rather than asking for agreement, so ticking it means the user read a fact.
     #[test]
-    fn the_acknowledgement_names_the_consequence() {
-        let a = ACKNOWLEDGEMENT.to_lowercase();
-        assert!(
-            a.contains("losing"),
-            "must name the loss: {ACKNOWLEDGEMENT}"
-        );
-        assert!(
-            a.contains("identity"),
-            "must name what is lost: {ACKNOWLEDGEMENT}"
-        );
-        assert!(
-            !a.starts_with("i agree"),
-            "this is a fact to understand, not terms to accept: {ACKNOWLEDGEMENT}"
-        );
-    }
-
-    /// The intro must not describe the identity as an account — the mental model that makes people expect a password reset.
-    #[test]
-    fn the_intro_says_it_is_not_an_account() {
-        let joined = INTRO_POINTS.join(" ").to_lowercase();
-        assert!(
-            joined.contains("not an account"),
-            "the intro must rule out the account mental model: {joined}"
-        );
-    }
-
-    #[test]
-    fn identity_copy_does_not_overstate_per_edit_signing() {
-        let copy = format!("{} {}", INTRO_BODY, INTRO_POINTS.join(" ")).to_lowercase();
-        assert!(copy.contains("not all cryptographically signed"));
-        assert!(!copy.contains("signs the changes you make"));
-        assert!(!copy.contains("edit in a shared document really came from you"));
-    }
-
-    #[test]
-    fn minting_writes_a_readable_record_and_reports_its_fingerprint() {
-        let dir = std::env::temp_dir().join(format!(
-            "tilo-onboarding-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        let system = tilo_user_identity::IdentityPaths::under(dir.join("system"));
-        let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
-        assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
-        assert!(minted.path.exists());
-
-        // Minting again reports the same key rather than a fresh one.
-        let again = mint_into_with_paths(&dir, &system, false).expect("second mint is idempotent");
-        assert_eq!(again.fingerprint, minted.fingerprint);
-
-        let _ = std::fs::remove_dir_all(&dir);
+    fn onboarding_copy_is_honest_about_identity_and_recovery() {
+        // Phase `fingerprints_are_grouped_so_they_can_be_compared_by_eye`.
+        {
+            let m = MintedIdentity {
+                fingerprint: "0123456789abcdef".to_string(),
+                path: PathBuf::from("/x"),
+            };
+            assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
+        }
+        // Phase `copy_does_not_promise_recovery`.
+        // The copy must not imply a safety net that does not exist.
+        //
+        // Tilo mints a root and certified device key with no escrow or recovery phrase.
+        // `threshold-identity` implements share-based recovery but is
+        // deliberately not wired into this path. A user-held encrypted export is
+        // a backup, but it is not escrow and cannot help without its passphrase.
+        {
+            let all = no_recovery_points().join(" ").to_lowercase();
+            assert!(
+                all.contains("there is no recovery"),
+                "the no-recovery screen must say so outright: {all}"
+            );
+            for weasel in [
+                "recovery phrase",
+                "backup code",
+                "restore your identity",
+                "we can help",
+                "contact support",
+            ] {
+                // The one legitimate mention is the denial itself, which names these things to rule them out.
+                let denied = all.contains(&format!("no {weasel}"))
+                    || all.contains(&"no backup code, no recovery phrase".to_string());
+                assert!(
+                    !all.contains(weasel) || denied,
+                    "copy must not offer {weasel:?} unless it is denying it: {all}"
+                );
+            }
+        }
+        // Phase `the_acknowledgement_names_the_consequence`.
+        // The acknowledgement states the consequence rather than asking for agreement, so ticking it means the user read a fact.
+        {
+            let acknowledgement = acknowledgement();
+            let a = acknowledgement.to_lowercase();
+            assert!(
+                a.contains("losing"),
+                "must name the loss: {acknowledgement}"
+            );
+            assert!(
+                a.contains("identity"),
+                "must name what is lost: {acknowledgement}"
+            );
+            assert!(
+                !a.starts_with("i agree"),
+                "this is a fact to understand, not terms to accept: {acknowledgement}"
+            );
+        }
+        // Phase `the_intro_says_it_is_not_an_account`.
+        // The intro must not describe the identity as an account — the mental model that makes people expect a password reset.
+        {
+            let joined = intro_points().join(" ").to_lowercase();
+            assert!(
+                joined.contains("not an account"),
+                "the intro must rule out the account mental model: {joined}"
+            );
+        }
+        // Phase `identity_copy_does_not_overstate_per_edit_signing`.
+        {
+            let copy = format!("{} {}", intro_body(), intro_points().join(" ")).to_lowercase();
+            assert!(copy.contains("not all cryptographically signed"));
+            assert!(!copy.contains("signs the changes you make"));
+            assert!(!copy.contains("edit in a shared document really came from you"));
+        }
     }
 }

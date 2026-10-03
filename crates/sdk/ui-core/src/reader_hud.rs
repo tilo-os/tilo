@@ -45,6 +45,24 @@ impl HudSwatch {
     }
 }
 
+/// Which controls a [`SelectionHud`] offers besides the always-present Copy:
+/// the highlight swatch row, and the Note and Delete controls when enabled.
+#[derive(Clone, Copy, Debug)]
+pub struct HudControls<'a> {
+    pub swatches: &'a [HudSwatch],
+    pub show_note: bool,
+    pub show_delete: bool,
+}
+
+/// Where a [`SelectionHud`] floats: `anchor` is the horizontal centre and
+/// top-y of the selection's first band, `bounds` the area the bar must stay
+/// inside, both in the drawing transform's space.
+#[derive(Clone, Copy, Debug)]
+pub struct HudPlacement {
+    pub anchor: Point,
+    pub bounds: Rect,
+}
+
 /// Passing resolved colours rather than a `Theme` keeps the component usable
 /// from a reader whose *page* palette differs from OS chrome.
 #[derive(Clone, Copy, Debug)]
@@ -92,7 +110,8 @@ mod dims {
 /// Geometry [`SelectionHud::measure`] computes once and the draw helpers
 /// below consume — split out of [`SelectionHud::draw`] so that function
 /// stays under the line-count limit without changing any of its arithmetic.
-struct HudMeasurements {
+struct HudMeasurements<'a> {
+    controls: HudControls<'a>,
     rect: Rect,
     hud_x: f64,
     cyc: f64,
@@ -103,28 +122,19 @@ struct HudMeasurements {
 }
 
 impl SelectionHud {
-    /// `anchor` is the point the bar floats above (horizontal centre + top-y
-    /// of the selection's first band, in `transform`'s space); the bar
-    /// centres on `anchor.x` and prefers just above `anchor.y`, dropping
-    /// below if that would leave `bounds`. Copy is always present;
-    /// `show_note`/`show_delete` gate the other two controls.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
+    /// The bar centres on `placement.anchor.x` and prefers just above
+    /// `placement.anchor.y`, dropping below if that would leave
+    /// `placement.bounds`. `cursor` drives the hover treatment.
     pub fn draw(
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         style: &ReaderHudStyle,
-        swatches: &[HudSwatch],
-        show_note: bool,
-        show_delete: bool,
+        controls: &HudControls<'_>,
+        placement: HudPlacement,
         cursor: Point,
-        anchor: Point,
-        bounds: Rect,
     ) -> Self {
-        let m = Self::measure(tr, swatches, show_note, show_delete, anchor, bounds);
+        let m = Self::measure(tr, *controls, placement);
         let mut hud = SelectionHud {
             rect: m.rect,
             shown: true,
@@ -137,18 +147,8 @@ impl SelectionHud {
         fill_round(scene, transform, m.rect, radius, style.surface);
         stroke_round(scene, transform, m.rect, radius, style.border, 1.0);
 
-        Self::draw_swatches(scene, transform, style, swatches, cursor, &m, &mut hud);
-        Self::draw_pills(
-            scene,
-            transform,
-            tr,
-            style,
-            show_note,
-            show_delete,
-            cursor,
-            &m,
-            &mut hud,
-        );
+        hud.draw_swatches(scene, transform, style, cursor, &m);
+        hud.draw_pills(scene, transform, tr, style, cursor, &m);
 
         hud
     }
@@ -156,19 +156,18 @@ impl SelectionHud {
     /// The sizing/positioning half of [`Self::draw`] — every value here is
     /// pixel-comparing-test-sensitive, so this is pure code motion out of
     /// `draw`, not a rewrite.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
-    fn measure(
+    fn measure<'a>(
         tr: &mut TextRenderer,
-        swatches: &[HudSwatch],
-        show_note: bool,
-        show_delete: bool,
-        anchor: Point,
-        bounds: Rect,
-    ) -> HudMeasurements {
+        controls: HudControls<'a>,
+        placement: HudPlacement,
+    ) -> HudMeasurements<'a> {
         use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
+        let HudControls {
+            swatches,
+            show_note,
+            show_delete,
+        } = controls;
+        let HudPlacement { anchor, bounds } = placement;
 
         // Swatch counts are always small (a handful of highlight colours);
         // this cast can't lose meaningful precision, and the layout formula
@@ -204,6 +203,7 @@ impl SelectionHud {
         let rect = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + HEIGHT);
         let cyc = hud_y + HEIGHT / 2.0;
         HudMeasurements {
+            controls,
             rect,
             hud_x,
             cyc,
@@ -216,15 +216,15 @@ impl SelectionHud {
 
     /// The swatch-dot row + its divider, the second half of [`Self::draw`].
     fn draw_swatches(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         style: &ReaderHudStyle,
-        swatches: &[HudSwatch],
         cursor: Point,
-        m: &HudMeasurements,
-        hud: &mut SelectionHud,
+        m: &HudMeasurements<'_>,
     ) {
         use dims::{DOT_GAP, DOT_R, PAD};
+        let swatches = m.controls.swatches;
 
         let mut x = m.hud_x + PAD + DOT_R;
         for (i, sw) in swatches.iter().enumerate() {
@@ -261,7 +261,7 @@ impl SelectionHud {
                     1.2,
                 );
             }
-            hud.buttons
+            self.buttons
                 .push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
             x += DOT_R * 2.0 + DOT_GAP;
         }
@@ -283,22 +283,21 @@ impl SelectionHud {
     }
 
     /// The Copy / Note / Delete pills, the third half of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
-    )]
     fn draw_pills(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         style: &ReaderHudStyle,
-        show_note: bool,
-        show_delete: bool,
         cursor: Point,
-        m: &HudMeasurements,
-        hud: &mut SelectionHud,
+        m: &HudMeasurements<'_>,
     ) {
         use dims::{PAD, PILL_GAP, TRASH};
+        let HudControls {
+            show_note,
+            show_delete,
+            ..
+        } = m.controls;
 
         let dots_end = m.hud_x + PAD + m.dots_w;
         let copy_x = dots_end + m.sep_w;
@@ -327,7 +326,7 @@ impl SelectionHud {
             None,
             TextWeight::Medium,
         );
-        hud.buttons.push((copy_rect, HudAction::Copy));
+        self.buttons.push((copy_rect, HudAction::Copy));
 
         let mut cursor_x = copy_x + m.copy_w;
         if show_note {
@@ -355,7 +354,7 @@ impl SelectionHud {
                 None,
                 TextWeight::Medium,
             );
-            hud.buttons.push((note_rect, HudAction::Note));
+            self.buttons.push((note_rect, HudAction::Note));
             cursor_x = note_x + m.note_w;
         }
 
@@ -373,7 +372,7 @@ impl SelectionHud {
                 if thov { style.danger } else { style.text },
                 1.5,
             );
-            hud.buttons.push((trash, HudAction::Delete));
+            self.buttons.push((trash, HudAction::Delete));
         }
     }
 
@@ -563,119 +562,126 @@ mod tests {
             Affine::IDENTITY,
             &mut tr,
             &style(),
-            &swatches(),
-            show_note,
-            show_delete,
+            &HudControls {
+                swatches: &swatches(),
+                show_note,
+                show_delete,
+            },
+            HudPlacement { anchor, bounds },
             Point::new(-1000.0, -1000.0),
-            anchor,
-            bounds,
         )
     }
 
     #[test]
-    fn hud_lays_out_copy_and_every_swatch() {
-        let hud = draw_hud(
-            true,
-            false,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(hud.is_shown());
-        // Every swatch + Copy + Note is a hittable button.
-        let highlights: Vec<usize> = hud
-            .buttons()
-            .iter()
-            .filter_map(|(_, a)| {
-                if let HudAction::Highlight(i) = a {
-                    Some(*i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
-        assert!(
-            hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
-            "Copy present"
-        );
-        assert!(
-            hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
-            "Note present"
-        );
-        assert!(
-            !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
-            "no delete without a mark"
-        );
+    fn hud_layout_places_every_control_inside_bounds() {
+        // Case `hud_lays_out_copy_and_every_swatch`.
+        {
+            let hud = draw_hud(
+                true,
+                false,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(hud.is_shown());
+            // Every swatch + Copy + Note is a hittable button.
+            let highlights: Vec<usize> = hud
+                .buttons()
+                .iter()
+                .filter_map(|(_, a)| {
+                    if let HudAction::Highlight(i) = a {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
+            assert!(
+                hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
+                "Copy present"
+            );
+            assert!(
+                hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
+                "Note present"
+            );
+            assert!(
+                !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
+                "no delete without a mark"
+            );
+        }
+
+        // Case `delete_appears_only_when_asked`.
+        {
+            let hud = draw_hud(
+                true,
+                true,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
+        }
+
+        // Case `hud_stays_inside_bounds_when_anchor_is_at_an_edge`.
+        {
+            let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // Anchor jammed into the top-left corner: the bar must not spill out.
+            let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
+            let r = hud.rect();
+            assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
+            assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
+            assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
+            assert!(
+                r.y1 <= bounds.y1 + 0.01,
+                "bottom edge kept in bounds: {r:?}"
+            );
+        }
+
+        // Case `hud_floats_below_when_there_is_no_room_above`.
+        {
+            let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // Anchor near the top → the bar drops below it rather than off-screen.
+            let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
+            assert!(
+                hud.rect().y0 >= 10.0,
+                "bar sits at/below the anchor near the top"
+            );
+        }
     }
 
     #[test]
-    fn delete_appears_only_when_asked() {
-        let hud = draw_hud(
-            true,
-            true,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
-    }
+    fn hud_hits_controls_and_latches_marker_drags() {
+        // Case `hit_returns_the_control_under_the_point`.
+        {
+            let hud = draw_hud(
+                true,
+                false,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            let copy = hud
+                .buttons()
+                .iter()
+                .find(|(_, a)| *a == HudAction::Copy)
+                .unwrap()
+                .0;
+            assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
+            assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
+        }
 
-    #[test]
-    fn hit_returns_the_control_under_the_point() {
-        let hud = draw_hud(
-            true,
-            false,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        let copy = hud
-            .buttons()
-            .iter()
-            .find(|(_, a)| *a == HudAction::Copy)
-            .unwrap()
-            .0;
-        assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
-        assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
-    }
-
-    #[test]
-    fn hud_stays_inside_bounds_when_anchor_is_at_an_edge() {
-        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Anchor jammed into the top-left corner: the bar must not spill out.
-        let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
-        let r = hud.rect();
-        assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
-        assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
-        assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
-        assert!(
-            r.y1 <= bounds.y1 + 0.01,
-            "bottom edge kept in bounds: {r:?}"
-        );
-    }
-
-    #[test]
-    fn hud_floats_below_when_there_is_no_room_above() {
-        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Anchor near the top → the bar drops below it rather than off-screen.
-        let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
-        assert!(
-            hud.rect().y0 >= 10.0,
-            "bar sits at/below the anchor near the top"
-        );
-    }
-
-    #[test]
-    fn marker_drag_latches_moved_past_threshold() {
-        let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
-        // A grab keeps the offset so the first tiny move doesn't jump.
-        let o = d.update((101.0, 101.0));
-        assert!(!d.moved(), "a sub-threshold nudge is still a click");
-        assert!(
-            (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
-            "origin tracks pointer minus grab offset"
-        );
-        let o2 = d.update((130.0, 130.0));
-        assert!(d.moved(), "a real drag latches moved");
-        assert!(o2.0 > o.0 && o2.1 > o.1);
-        assert_eq!(d.id, "n1");
+        // Case `marker_drag_latches_moved_past_threshold`.
+        {
+            let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
+            // A grab keeps the offset so the first tiny move doesn't jump.
+            let o = d.update((101.0, 101.0));
+            assert!(!d.moved(), "a sub-threshold nudge is still a click");
+            assert!(
+                (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
+                "origin tracks pointer minus grab offset"
+            );
+            let o2 = d.update((130.0, 130.0));
+            assert!(d.moved(), "a real drag latches moved");
+            assert!(o2.0 > o.0 && o2.1 > o.1);
+            assert_eq!(d.id, "n1");
+        }
     }
 }

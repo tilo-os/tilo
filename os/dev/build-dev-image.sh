@@ -19,6 +19,8 @@
 #      the script stops after step 1 and prints the command to run later.
 #
 # Environment:
+#   TILO_LOCAL_TAG    tag of the local images below instead of latest, to keep
+#                     builds from different checkouts apart
 #   TILO_DEV_BASE     production image to build FROM (default localhost/tilo:latest,
 #                     what ./os/build.sh produces). A CI image works too:
 #                       podman pull registry.tilo.so/tilo/tilo:<tag>
@@ -28,7 +30,8 @@
 #                     missing or its inputs changed. The inputs are every file of
 #                     the production build context except the dev-image-only
 #                     sources, CI workflows and crates/dev/tilo-vm, hashed from git's
-#                     index and working tree, plus the build's input variables; the
+#                     index and working tree (outside a git checkout, from the
+#                     files themselves), plus the build's input variables; the
 #                     hash is the base's sh.tilo.base-inputs label. A base without
 #                     that label (built elsewhere) is used as it is. The base is
 #                     built with os/dev/local-inputs.sh, which resolves the RPM
@@ -41,12 +44,17 @@
 #   TILO_CARGO_FRESHNESS  content (default here): the dev binaries' compile keeps
 #                     its target cache and rebuilds only changed crates
 #                     (os/scripts/cargo-freshness.sh); clean: CI's clean compile
-#   TILO_TARGET_IMGREF, TILO_DISK_SIZE, TILO_ACCOUNT  passed to the disk step
+#   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
+#                     job, as far as memory holds out at 4 GiB a thin-LTO job)
+#   TILO_DISK_SIZE    the dev disk's size (default 64G, as the published dev
+#                     disks: the dev image alone fills most of 20G; qcow2 stays
+#                     sparse)
+#   TILO_TARGET_IMGREF, TILO_ACCOUNT  passed to the disk step
 set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
@@ -55,10 +63,11 @@ _dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _production_output="${TILO_OUTPUT:-$(cd "$_dev_dir/.." && pwd)/output}"
 export TILO_OUTPUT="${TILO_OUTPUT:-$(cd "$_dev_dir/.." && pwd)/output/dev}"
 export TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
+export TILO_DISK_SIZE="${TILO_DISK_SIZE:-64G}"
 source "$_dev_dir/_common.sh"
 
-base="${TILO_DEV_BASE:-localhost/tilo:latest}"
-dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:latest}"
+base="${TILO_DEV_BASE:-localhost/tilo:$TILO_LOCAL_TAG}"
+dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:$TILO_LOCAL_TAG}"
 case "$dev_image" in
   localhost/tilo-vm:*|registry.tilo.so/tilo/tilo-vm:*) ;;
   *) die "TILO_DEV_IMAGE=$dev_image: the dev image may only be tagged localhost/tilo-vm:<tag> or
@@ -78,24 +87,43 @@ _base_spec=(. ':(exclude)os/Containerfile.dev' ':(exclude)os/dev-image'
   ':(exclude)os/scripts/unseal-rootfs.py' ':(exclude)os/scripts/check-dev-kernel.sh'
   ':(exclude)os/scripts/finalize-dev-image.py' ':(exclude)crates/dev/tilo-vm'
   ':(exclude).forgejo' ':(exclude)os/external-assets/cache')
+# Outside a git checkout (a copy of the tree synced to a build host) the same
+# files are hashed from the tree itself: everything but what the build context
+# leaves out (.containerignore's big entries) and the excludes above.
+_base_prune=(./.git ./target ./os/output ./os/output-host ./os/external-assets/cache
+  ./os/Containerfile.dev ./os/dev-image ./os/dev/build-dev-image.sh ./crates/dev/tilo-vmd/data
+  ./os/scripts/unseal-rootfs.py ./os/scripts/check-dev-kernel.sh
+  ./os/scripts/finalize-dev-image.py ./crates/dev/tilo-vm ./.forgejo)
+tree_inputs() {
+  local prune=() p
+  for p in "${_base_prune[@]}"; do prune+=(-path "$p" -o); done
+  ( cd "$TILO_REPO" && find . \( "${prune[@]}" -false \) -prune -o -type f -print0 |
+      LC_ALL=C sort -z | xargs -0 -r sha256sum )
+}
 base_inputs() {
   {
     # What os/dev/local-inputs.sh does not resolve by itself.
     printf '%s=%s\n' browser "${TILO_WITH_BROWSER:-0}" rpms "${RPMS_REF:-}" \
       rpms-trust "${TILO_RPMS_TRUST:-}" kernel "${KERNEL_RPMS_REF:-}" \
       kernel-trust "${TILO_KERNEL_TRUST:-}"
-    git -C "$TILO_REPO" ls-files -s -- "${_base_spec[@]}"
-    # Edited and untracked files, which the index above does not describe.
-    git -C "$TILO_REPO" ls-files -z -m -o --exclude-standard -- "${_base_spec[@]}" |
-      while IFS= read -r -d '' f; do
-        if [ -f "$TILO_REPO/$f" ]; then
-          printf '%s %s\n' "$(git -C "$TILO_REPO" hash-object -- "$f")" "$f"
-        else
-          printf 'deleted %s\n' "$f"
-        fi
-      done
+    if [ "$_base_from_git" = 0 ]; then
+      tree_inputs
+    else
+      git -C "$TILO_REPO" ls-files -s -- "${_base_spec[@]}"
+      # Edited and untracked files, which the index above does not describe.
+      git -C "$TILO_REPO" ls-files -z -m -o --exclude-standard -- "${_base_spec[@]}" |
+        while IFS= read -r -d '' f; do
+          if [ -f "$TILO_REPO/$f" ]; then
+            printf '%s %s\n' "$(git -C "$TILO_REPO" hash-object -- "$f")" "$f"
+          else
+            printf 'deleted %s\n' "$f"
+          fi
+        done
+    fi
   } | sha256sum | cut -c1-64
 }
+_base_from_git=1
+[ "$(git -C "$TILO_REPO" rev-parse --show-toplevel 2>/dev/null)" = "$TILO_REPO" ] || _base_from_git=0
 
 base_seconds=""
 if [ "$base_build" != 0 ]; then
@@ -104,8 +132,8 @@ if [ "$base_build" != 0 ]; then
     *) die "TILO_DEV_BASE_BUILD=$base_build rebuilds the base, but TILO_DEV_BASE=$base is not a local
   production image. Use localhost/tilo:<tag>, or TILO_DEV_BASE_BUILD=0 for a CI base." ;;
   esac
-  git -C "$TILO_REPO" rev-parse --git-dir >/dev/null 2>&1 \
-    || die "TILO_DEV_BASE_BUILD=$base_build needs a git checkout to fingerprint the base's inputs"
+  [ "$_base_from_git" = 1 ] \
+    || msg "0/2 base: $TILO_REPO is not a git checkout; fingerprinting its files instead"
   want="$(base_inputs)"
   reason=""
   if [ "$base_build" = 1 ]; then
@@ -141,28 +169,51 @@ podman image exists "$base" || die "the production base $base is not in local st
     TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> $0"
 base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null || true)"
 [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || base_digest=""
-# Production builds clamp .Created to their commit's time; tilo-vm compares it
+# The base's commit time (its org.tilo.source-date-epoch label, else .Created,
+# which production builds clamp to it); tilo-vm compares it
 # with the base of the image a VM runs, so a VM is not moved onto an older base.
-base_created="$(podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$base" 2>/dev/null || true)"
+base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+case "$SOURCE_DATE_EPOCH" in
+  ''|0|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
+    ;;
+esac
 export SOURCE_DATE_EPOCH
 : "${TMPDIR:=$TILO_OUTPUT/.tmp}"
 mkdir -p "$TMPDIR"
 export TMPDIR
 
-rpms_ref="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
-[ -n "$rpms_ref" ] || die "os/rpms-snapshot.env pins no RPMS_REF"
+# The dev packages come from the snapshot the base was built from: the one its
+# org.tilo.rpms.ref label records (a base built here may use a local snapshot,
+# which nothing else resolves), else the published one for this commit.
+rpms_ref="${RPMS_REF:-}"
+if [ -z "$rpms_ref" ]; then
+  rpms_ref="$(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' "$base" 2>/dev/null || true)"
+  case "$rpms_ref" in "<no value>") rpms_ref="" ;; esac
+fi
+if [ -z "$rpms_ref" ]; then
+  rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
+fi
+
+# The Fedora bootc base the dev binaries compile on, as the production builder's.
+dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
+[ -n "$dev_compile_base" ] || die "os/base-snapshot.env pins no BASE_REF"
 
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
-podman build -f "$TILO_OS_DIR/Containerfile.dev" \
+podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
   --build-arg "RPMS_REF=$rpms_ref" \
+  --build-arg "BASE_REF=$dev_compile_base" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \
+  --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \

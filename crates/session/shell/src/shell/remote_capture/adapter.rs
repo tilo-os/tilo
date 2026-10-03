@@ -61,6 +61,15 @@ pub(crate) trait RemoteCaptureAdapter: Send {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteCaptureApproval([u8; 32]);
 
+/// One remote capture session between an exact source and target device, and
+/// the grant it runs under.
+pub(crate) struct RemoteSessionBinding {
+    pub(crate) source: DeviceId,
+    pub(crate) target: DeviceId,
+    pub(crate) session_id: [u8; 16],
+    pub(crate) grant: RemoteCaptureGrant,
+}
+
 struct LocalSession {
     source: DeviceId,
     target: DeviceId,
@@ -93,21 +102,20 @@ impl RemoteCaptureTargetBridge {
     /// Install an endpoint produced by the bounded provisioning worker. This
     /// half is deliberately non-blocking and safe to call from a compositor
     /// tick; discovery and subprocess startup happen before it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
-    )]
     pub(crate) fn prepare_endpoint(
         &mut self,
         app: &VerifiedAppRegistration,
         request: &RemoteCaptureRequest,
-        source: DeviceId,
-        target: DeviceId,
-        session_id: [u8; 16],
-        grant: RemoteCaptureGrant,
+        binding: RemoteSessionBinding,
         endpoint: RemoteCaptureEndpoint,
         adapter: &mut dyn RemoteCaptureAdapter,
     ) -> Result<(), RemoteCaptureAdapterError> {
+        let RemoteSessionBinding {
+            source,
+            target,
+            session_id,
+            grant,
+        } = binding;
         if !request.valid()
             || request.app_id != app.app_id()
             || request.workspace_id != app.workspace_id()
@@ -190,10 +198,6 @@ impl RemoteCaptureTargetBridge {
     }
 
     /// Consume the exact approval and make the endpoint available to the app.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every field of the exact source/target/session/grant binding is checked explicitly"
-    )]
     pub(crate) fn activate(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -316,7 +320,10 @@ impl RemoteCaptureTargetBridge {
             .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
             .register_source(
                 source_id,
-                format!("{} on certified device", request.app_label),
+                crate::shell::i18n::t_args(
+                    "remote-capture-source-label",
+                    &[("app", request.app_label.as_str().into())],
+                ),
                 capture_kind(request.profile.kind())?,
                 handle,
             )
@@ -818,10 +825,6 @@ mod tests {
             .unwrap()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "forwards the production prepare_endpoint binding unchanged"
-    )]
     fn prepare(
         bridge: &mut RemoteCaptureTargetBridge,
         adapter: &mut FakeAdapter,
@@ -834,169 +837,185 @@ mod tests {
     ) -> Result<(), RemoteCaptureAdapterError> {
         let endpoint = adapter.provision(session, &request.profile)?;
         bridge.prepare_endpoint(
-            owner, request, source, target, session, grant, endpoint, adapter,
+            owner,
+            request,
+            RemoteSessionBinding {
+                source,
+                target,
+                session_id: session,
+                grant,
+            },
+            endpoint,
+            adapter,
         )
     }
 
     #[test]
-    fn production_receiver_does_not_advertise_undeliverable_scans() {
-        let mut adapter = ProductionRemoteCaptureAdapter::detect();
-        assert!(!adapter.availability().scanner);
-        assert!(matches!(
-            adapter.provision(
-                [7; 16],
-                &RemoteCaptureProfile::DocumentScanner {
-                    format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
-                    max_pages: 1,
-                    max_document_bytes: 1024,
-                }
-            ),
-            Err(RemoteCaptureAdapterError::BackendUnavailable(_))
-        ));
-    }
-
-    #[test]
-    fn media_endpoint_requires_fresh_exact_app_approval_and_revokes_atomically() {
-        let broker = Arc::new(Mutex::new(CaptureBroker::new()));
-        let mut bridge = RemoteCaptureTargetBridge::new(Arc::clone(&broker));
-        let mut adapter = FakeAdapter::default();
-        let profile = RemoteCaptureProfile::Camera {
-            format: RemoteVideoFormat::Nv12,
-            width: 1280,
-            height: 720,
-            frames_per_second: 30,
-        };
-        let request = request(profile);
-        let (session, grant) = grant_for(&request);
-        let owner = app("so.tilo.Camera", "workspace-a");
-        let source = DeviceId::new("phone").unwrap();
-        let target = DeviceId::new("laptop").unwrap();
-        prepare(
-            &mut bridge,
-            &mut adapter,
-            &owner,
-            &request,
-            source.clone(),
-            target.clone(),
-            session,
-            grant,
-        )
-        .unwrap();
-        assert_eq!(
-            broker.lock().unwrap().enumerate(CaptureKind::Camera).len(),
-            1
-        );
-        assert!(matches!(
-            bridge.activate(
-                &owner,
-                &source,
-                &target,
-                session,
-                grant,
-                mint_approval(),
-                Instant::now()
-            ),
-            Err(RemoteCaptureAdapterError::ApprovalRequired)
-        ));
-        let approval = bridge
-            .approve(&owner, &source, &target, session, grant, Instant::now())
-            .unwrap();
-        bridge
-            .activate(
-                &owner,
-                &source,
-                &target,
-                session,
-                grant,
-                approval,
-                Instant::now(),
-            )
-            .unwrap();
-        assert!(matches!(
-            bridge.activate(
-                &owner,
-                &source,
-                &target,
-                session,
-                grant,
-                approval,
-                Instant::now(),
-            ),
-            Err(RemoteCaptureAdapterError::ApprovalRequired
-                | RemoteCaptureAdapterError::AlreadyActive)
-        ));
-        assert!(matches!(
-            bridge.revoke(
-                &app("so.tilo.Other", "workspace-a"),
-                &source,
-                &target,
-                session,
-                grant,
-                &mut adapter
-            ),
-            Err(RemoteCaptureAdapterError::BindingMismatch)
-        ));
-        bridge
-            .revoke(&owner, &source, &target, session, grant, &mut adapter)
-            .unwrap();
-        assert!(
-            broker
-                .lock()
-                .unwrap()
-                .enumerate(CaptureKind::Camera)
-                .is_empty()
-        );
-        assert_eq!(adapter.revoked, vec![session]);
-    }
-
-    #[test]
-    fn app_and_policy_teardown_are_exact_and_bounded() {
-        let broker = Arc::new(Mutex::new(CaptureBroker::new()));
-        let mut bridge = RemoteCaptureTargetBridge::new(broker);
-        let mut adapter = FakeAdapter::default();
-        let request = request(RemoteCaptureProfile::Camera {
-            format: RemoteVideoFormat::Mjpeg,
-            width: 640,
-            height: 480,
-            frames_per_second: 15,
-        });
-        let owner = app("so.tilo.Camera", "workspace-a");
-        for index in 1..=MAX_REMOTE_CAPTURE_SESSIONS {
-            let (session, grant) = grant_for(&request);
-            prepare(
-                &mut bridge,
-                &mut adapter,
-                &owner,
-                &request,
-                DeviceId::new(format!("phone-{index}")).unwrap(),
-                DeviceId::new("laptop").unwrap(),
-                session,
-                grant,
-            )
-            .unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_adapter_advertises_approves_and_tears_down_exactly() {
+        // Phase `production_receiver_does_not_advertise_undeliverable_scans`.
+        {
+            let mut adapter = ProductionRemoteCaptureAdapter::detect();
+            assert!(!adapter.availability().scanner);
+            assert!(matches!(
+                adapter.provision(
+                    [7; 16],
+                    &RemoteCaptureProfile::DocumentScanner {
+                        format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                        max_pages: 1,
+                        max_document_bytes: 1024,
+                    }
+                ),
+                Err(RemoteCaptureAdapterError::BackendUnavailable(_))
+            ));
         }
-        let (extra, extra_grant) = grant_for(&request);
-        assert!(matches!(
+
+        // Phase `media_endpoint_requires_fresh_exact_app_approval_and_revokes_atomically`.
+        {
+            let broker = Arc::new(Mutex::new(CaptureBroker::new()));
+            let mut bridge = RemoteCaptureTargetBridge::new(Arc::clone(&broker));
+            let mut adapter = FakeAdapter::default();
+            let profile = RemoteCaptureProfile::Camera {
+                format: RemoteVideoFormat::Nv12,
+                width: 1280,
+                height: 720,
+                frames_per_second: 30,
+            };
+            let request = request(profile);
+            let (session, grant) = grant_for(&request);
+            let owner = app("so.tilo.Camera", "workspace-a");
+            let source = DeviceId::new("phone").unwrap();
+            let target = DeviceId::new("laptop").unwrap();
             prepare(
                 &mut bridge,
                 &mut adapter,
                 &owner,
                 &request,
-                DeviceId::new("extra").unwrap(),
-                DeviceId::new("laptop").unwrap(),
-                extra,
-                extra_grant,
-            ),
-            Err(RemoteCaptureAdapterError::BindingMismatch)
-        ));
-        assert_eq!(
-            bridge.revoke_app("so.tilo.Other", "workspace-a", &mut adapter),
-            0
-        );
-        assert_eq!(
-            bridge.revoke_app("so.tilo.Camera", "workspace-a", &mut adapter),
-            MAX_REMOTE_CAPTURE_SESSIONS
-        );
-        assert_eq!(bridge.revoke_all(&mut adapter), 0);
+                source.clone(),
+                target.clone(),
+                session,
+                grant,
+            )
+            .unwrap();
+            assert_eq!(
+                broker.lock().unwrap().enumerate(CaptureKind::Camera).len(),
+                1
+            );
+            assert!(matches!(
+                bridge.activate(
+                    &owner,
+                    &source,
+                    &target,
+                    session,
+                    grant,
+                    mint_approval(),
+                    Instant::now()
+                ),
+                Err(RemoteCaptureAdapterError::ApprovalRequired)
+            ));
+            let approval = bridge
+                .approve(&owner, &source, &target, session, grant, Instant::now())
+                .unwrap();
+            bridge
+                .activate(
+                    &owner,
+                    &source,
+                    &target,
+                    session,
+                    grant,
+                    approval,
+                    Instant::now(),
+                )
+                .unwrap();
+            assert!(matches!(
+                bridge.activate(
+                    &owner,
+                    &source,
+                    &target,
+                    session,
+                    grant,
+                    approval,
+                    Instant::now(),
+                ),
+                Err(RemoteCaptureAdapterError::ApprovalRequired
+                    | RemoteCaptureAdapterError::AlreadyActive)
+            ));
+            assert!(matches!(
+                bridge.revoke(
+                    &app("so.tilo.Other", "workspace-a"),
+                    &source,
+                    &target,
+                    session,
+                    grant,
+                    &mut adapter
+                ),
+                Err(RemoteCaptureAdapterError::BindingMismatch)
+            ));
+            bridge
+                .revoke(&owner, &source, &target, session, grant, &mut adapter)
+                .unwrap();
+            assert!(
+                broker
+                    .lock()
+                    .unwrap()
+                    .enumerate(CaptureKind::Camera)
+                    .is_empty()
+            );
+            assert_eq!(adapter.revoked, vec![session]);
+        }
+
+        // Phase `app_and_policy_teardown_are_exact_and_bounded`.
+        {
+            let broker = Arc::new(Mutex::new(CaptureBroker::new()));
+            let mut bridge = RemoteCaptureTargetBridge::new(broker);
+            let mut adapter = FakeAdapter::default();
+            let request = request(RemoteCaptureProfile::Camera {
+                format: RemoteVideoFormat::Mjpeg,
+                width: 640,
+                height: 480,
+                frames_per_second: 15,
+            });
+            let owner = app("so.tilo.Camera", "workspace-a");
+            for index in 1..=MAX_REMOTE_CAPTURE_SESSIONS {
+                let (session, grant) = grant_for(&request);
+                prepare(
+                    &mut bridge,
+                    &mut adapter,
+                    &owner,
+                    &request,
+                    DeviceId::new(format!("phone-{index}")).unwrap(),
+                    DeviceId::new("laptop").unwrap(),
+                    session,
+                    grant,
+                )
+                .unwrap();
+            }
+            let (extra, extra_grant) = grant_for(&request);
+            assert!(matches!(
+                prepare(
+                    &mut bridge,
+                    &mut adapter,
+                    &owner,
+                    &request,
+                    DeviceId::new("extra").unwrap(),
+                    DeviceId::new("laptop").unwrap(),
+                    extra,
+                    extra_grant,
+                ),
+                Err(RemoteCaptureAdapterError::BindingMismatch)
+            ));
+            assert_eq!(
+                bridge.revoke_app("so.tilo.Other", "workspace-a", &mut adapter),
+                0
+            );
+            assert_eq!(
+                bridge.revoke_app("so.tilo.Camera", "workspace-a", &mut adapter),
+                MAX_REMOTE_CAPTURE_SESSIONS
+            );
+            assert_eq!(bridge.revoke_all(&mut adapter), 0);
+        }
     }
 }

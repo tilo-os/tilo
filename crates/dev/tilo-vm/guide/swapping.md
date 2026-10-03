@@ -37,6 +37,16 @@ iterating on logic, not for performance or timing work. The layer's
 provenance records the profile. `--profile` applies only to
 `--from worktree` components, not to apps or CI builds.
 
+Inside the VM, native GNU/Linux builds with `--profile dev` or
+`--profile test` use the LLVM linker bundled with Rust. The C compiler
+frontend and the target's existing linker flags, including hardening, are
+preserved. This avoids GNU ld's memory pressure when linking large debug
+binaries. The first build after switching linkers can rebuild cached outputs;
+later builds reuse the same driver and each worktree's own build directory.
+An explicit `CARGO_TARGET_<TRIPLE>_LINKER` environment variable on the daemon
+overrides this choice. Other profiles and host builds keep their existing
+linker selection.
+
 ## Builders (`--from worktree`, the default)
 
 `--builder vm` (default) works from every host:
@@ -52,7 +62,8 @@ provenance records the profile. `--profile` applies only to
 
 Each worktree has its own build dir in the VM; `gc` evicts old ones.
 
-`--builder host` builds with this host's cargo and uploads the layer. It
+`--builder host` builds with this host's cargo (or `TILO_VM_CARGO`, any cargo
+drop-in, such as one that builds on another machine) and uploads the layer. It
 needs a Linux host of the VM's architecture; macOS and Windows hosts use the
 VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
 python3 makes a Linux host build locally, with a warning before the build

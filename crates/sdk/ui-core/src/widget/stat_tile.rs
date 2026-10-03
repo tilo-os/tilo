@@ -15,18 +15,17 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -85,31 +84,29 @@ fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
     PAD * 2.0 + caption + 6.0 + value + delta
 }
 
+/// What an immediate-mode [`StatTile::paint`] shows.
+#[derive(Clone, Copy, Debug)]
+pub struct StatTileContent<'a> {
+    pub caption: &'a str,
+    pub value: &'a str,
+    pub value_color: Color,
+    pub icon: Option<Icon>,
+    /// E.g. `("12%", Trend::Up)`.
+    pub delta: Option<(&'a str, Trend)>,
+}
+
 /// Shared paint of a stat tile filling `rect`. Used by both the retained
 /// [`StatTile`] widget and the immediate-mode [`StatTile::paint`] entry point.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Shared stat-tile painting combines render context and bounds with caption, value/color, optional icon, and trend delta."
-)]
-fn paint_stat_tile(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    caption: &str,
-    value: &str,
-    value_color: Color,
-    icon: Option<Icon>,
-    delta: Option<(&str, Trend)>,
-) {
+fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
+    let theme = ctx.theme;
+    let transform = ctx.transform;
     // Card surface with its derived rest edge (HIG §9.5), crisp inside the
     // tile so it registers on a raised ground in dark and light alike.
     crate::surface::card(
-        scene,
+        ctx.scene,
         transform,
         rect,
         f64::from(theme.tokens.radii.lg),
@@ -121,67 +118,58 @@ fn paint_stat_tile(
     // scale is applied exactly once.
     let caption_step = f64::from(theme.tokens.typography.scale.sm);
     let value_step = f64::from(theme.tokens.typography.scale.x2l);
-    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-    let value_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.x2l);
-    let delta_size = caption_size;
+    let caption_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
+    let value_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.x2l);
+    let caption_style = TextStyle::new(caption_size);
 
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
-    let (_, caption_h) = text_renderer.measure(caption, caption_size, None);
-    text_renderer.draw_text(
-        scene,
-        caption,
-        caption_size,
+    let (_, caption_h) = ctx.text.measure(content.caption, caption_size, None);
+    ctx.text(
+        content.caption,
+        &caption_style,
         theme.text_dim,
-        transform.pre_translate(Vec2::new(x, y)),
+        Point::new(x, y),
         None,
     );
 
-    if let Some(icon) = icon {
+    if let Some(icon) = content.icon {
         // Centre the glyph on the caption's measured line so the two read as
         // one row.
         let ir = Rect::from_center_size(
             Point::new(rect.x1 - PAD - ICON_D / 2.0, y + f64::from(caption_h) / 2.0),
             (ICON_D, ICON_D),
         );
-        icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
+        icon.draw_with_stroke(ctx.scene, transform, ir, theme.text_dim, 1.6);
     }
 
     y += caption_step + 6.0;
 
-    text_renderer.draw_text(
-        scene,
-        value,
-        value_size,
-        value_color,
-        transform.pre_translate(Vec2::new(x, y)),
+    ctx.text(
+        content.value,
+        &TextStyle::new(value_size),
+        content.value_color,
+        Point::new(x, y),
         None,
     );
     y += value_step + 6.0;
 
-    if let Some((delta_text, trend)) = delta {
+    if let Some((delta_text, trend)) = content.delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
             // Centre the arrow on the delta text's measured line, like the
             // icon on the caption line.
-            let (_, delta_h) = text_renderer.measure(delta_text, delta_size, None);
+            let (_, delta_h) = ctx.text.measure(delta_text, caption_size, None);
             let ar = Rect::from_center_size(
                 Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
                 (caption_step, caption_step),
             );
-            arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
+            arrow.draw_with_stroke(ctx.scene, transform, ar, col, 1.8);
             dx += caption_step + 2.0;
         }
-        text_renderer.draw_text(
-            scene,
-            delta_text,
-            delta_size,
-            col,
-            transform.pre_translate(Vec2::new(dx, y)),
-            None,
-        );
+        ctx.text(delta_text, &caption_style, col, Point::new(dx, y), None);
     }
 }
 
@@ -234,40 +222,12 @@ impl StatTile {
     }
 
     /// For apps that render straight to a `Scene`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Immediate stat-tile painting forwards render context, bounds, caption/value/color, icon, and trend to the shared painter."
-    )]
-    pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        caption: &str,
-        value: &str,
-        value_color: Color,
-        icon: Option<Icon>,
-        delta: Option<(&str, Trend)>,
-    ) {
-        paint_stat_tile(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            caption,
-            value,
-            value_color,
-            icon,
-            delta,
-        );
+    pub fn paint(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent<'_>) {
+        paint_stat_tile(ctx, rect, content);
     }
 }
 
 impl Widget for StatTile {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -324,34 +284,18 @@ impl Widget for StatTile {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let value_color = self.value_color(theme);
+        let content = StatTileContent {
+            caption: &self.caption,
+            value: &self.value,
+            value_color: self.value_color(theme),
+            icon: self.icon,
+            delta: self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
+        };
         paint_stat_tile(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            &self.caption,
-            &self.value,
-            value_color,
-            self.icon,
-            self.delta.as_ref().map(|(t, tr)| (t.as_str(), *tr)),
+            &content,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Stat tiles are informational — no input handling.
     }
 
     fn name(&self) -> &'static str {
@@ -385,21 +329,49 @@ mod tests {
     use vello_encoding::DrawTag;
 
     #[test]
-    fn retained_measure_uses_the_active_text_scale() {
-        let mut tile = StatTile::new("CPU", "42%");
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-        let mut text = TextRenderer::new();
-        let measured = tile.measure(
-            taffy::Size {
-                width: None,
-                height: None,
-            },
-            taffy::Size::MAX_CONTENT,
-            &mut text,
-        );
-        assert!(measured.height > px(tile_height(false, &Theme::dark())));
+    fn stat_tile_layout_measures_at_text_scale_and_splits_rows() {
+        // Case `retained_measure_uses_the_active_text_scale`.
+        {
+            let mut tile = StatTile::new("CPU", "42%");
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+            let mut text = TextRenderer::new();
+            let measured = tile.measure(
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size::MAX_CONTENT,
+                &mut text,
+            );
+            assert!(measured.height > px(tile_height(false, &Theme::dark())));
+        }
+
+        // Case `tiles_split_a_row_evenly`.
+        {
+            let rects = lay_out_row(3);
+            assert_eq!(rects.len(), 3);
+            let w0 = rects[0].width();
+            for r in &rects {
+                assert!(
+                    (r.width() - w0).abs() < 1.0,
+                    "all tiles share width, got {} vs {w0}",
+                    r.width()
+                );
+            }
+            // Three tiles + 2×12px gaps must fit in 600px.
+            assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
+        }
+
+        // Case `delta_makes_tile_taller`.
+        {
+            let theme = Theme::dark();
+            assert!(
+                tile_height(true, &theme) > tile_height(false, &theme),
+                "a delta line adds height"
+            );
+        }
     }
 
     fn lay_out_row(tiles: usize) -> Vec<Rect> {
@@ -446,93 +418,71 @@ mod tests {
     }
 
     #[test]
-    fn tiles_split_a_row_evenly() {
-        let rects = lay_out_row(3);
-        assert_eq!(rects.len(), 3);
-        let w0 = rects[0].width();
-        for r in &rects {
-            assert!(
-                (r.width() - w0).abs() < 1.0,
-                "all tiles share width, got {} vs {w0}",
-                r.width()
+    fn stat_tile_paints_semantic_colours_and_pairs_semantics() {
+        // Case `trend_colors_are_semantic`.
+        {
+            let theme = Theme::dark();
+            assert_eq!(
+                Trend::Up.color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            assert_eq!(
+                Trend::Down.color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
+            assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
+            assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
+        }
+
+        // Case `value_color_defaults_to_primary_and_overrides`.
+        {
+            let theme = Theme::dark();
+            let plain = StatTile::new("CPU", "42%");
+            assert_eq!(plain.value_color(&theme), theme.text_primary);
+            let tinted =
+                StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
+            assert_eq!(
+                tinted.value_color(&theme),
+                theme.tokens.colors.semantic.danger
             );
         }
-        // Three tiles + 2×12px gaps must fit in 600px.
-        assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
-    }
 
-    #[test]
-    fn delta_makes_tile_taller() {
-        let theme = Theme::dark();
-        assert!(
-            tile_height(true, &theme) > tile_height(false, &theme),
-            "a delta line adds height"
-        );
-    }
+        // Case `draws_card_and_content`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            let mut t = StatTile::new("Requests", "1,284")
+                .with_icon(Icon::BarChart)
+                .with_delta("12%", Trend::Up);
+            t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
+            t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|x| **x == DrawTag::COLOR)
+                .count();
+            assert!(
+                fills > 4,
+                "card + caption + value + icon + delta ⇒ many fills, got {fills}"
+            );
+        }
 
-    #[test]
-    fn trend_colors_are_semantic() {
-        let theme = Theme::dark();
-        assert_eq!(
-            Trend::Up.color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        assert_eq!(
-            Trend::Down.color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
-        assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
-        assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
-    }
-
-    #[test]
-    fn value_color_defaults_to_primary_and_overrides() {
-        let theme = Theme::dark();
-        let plain = StatTile::new("CPU", "42%");
-        assert_eq!(plain.value_color(&theme), theme.text_primary);
-        let tinted =
-            StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
-        assert_eq!(
-            tinted.value_color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-    }
-
-    #[test]
-    fn draws_card_and_content() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        let mut t = StatTile::new("Requests", "1,284")
-            .with_icon(Icon::BarChart)
-            .with_delta("12%", Trend::Up);
-        t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
-        t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|x| **x == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills > 4,
-            "card + caption + value + icon + delta ⇒ many fills, got {fills}"
-        );
-    }
-
-    #[test]
-    fn accessibility_pairs_caption_and_value() {
-        use crate::a11y::Role;
-        let t = StatTile::new("CPU", "42%").with_delta("3%", Trend::Down);
-        let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some("42% (3%)"),
-            "delta joins the announced value"
-        );
+        // Case `accessibility_pairs_caption_and_value`.
+        {
+            use crate::a11y::Role;
+            let t = StatTile::new("CPU", "42%").with_delta("3%", Trend::Down);
+            let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("CPU"));
+            assert_eq!(
+                node.value.as_deref(),
+                Some("42% (3%)"),
+                "delta joins the announced value"
+            );
+        }
     }
 }

@@ -57,6 +57,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod cell_actions;
 pub mod csv;
 pub mod doc;
 pub mod fill;
@@ -67,6 +68,7 @@ pub mod infer;
 mod interchange_tests;
 pub mod model;
 pub mod ods;
+pub mod resource;
 pub mod search_provider;
 pub mod settings;
 pub mod xlsx;
@@ -78,4 +80,13 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SheetsApp::new())
+}
+
+pub use resource::{SheetsShell, SheetsWorkbook};
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.sheets", app_root)
+        .component_actions(actions::register)
+        .as_definition("Sheets")
 }

@@ -30,6 +30,15 @@ struct Tool {
     hit: Hit,
 }
 
+/// The measured sizes the tool layout reads, supplied by the app so this
+/// module stays renderer-free.
+pub(super) trait ToolMetrics {
+    /// Width of a toolbar pill for `label`, with room for an icon when `icon`.
+    fn pill_w(&self, label: &str, icon: bool) -> f64;
+    /// Height of one overflow-menu row.
+    fn menu_row_h(&self) -> f64;
+}
+
 #[derive(Default)]
 pub(super) struct ToolbarToolsLayout {
     pub(super) menu_bg: Option<Rect>,
@@ -64,33 +73,25 @@ impl ToolbarTools {
         self.open = false;
     }
 
-    /// Lay out the insert tools between `tools_x` and `tools_right`.
+    /// Lay out the insert tools as pills filling `slot`'s height, from its
+    /// left edge up to its right edge.
     ///
-    /// `text_pill_w` / `icon_pill_w` size a pill for a label (without / with
-    /// its icon) from the app's measured chrome metrics, so the slot a tool
-    /// gets is exactly as wide as the text it paints; `menu_row_h` is the
-    /// measured control height the overflow menu's rows take.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "toolbar bounds, the one-dimensional insertion slot and the measured sizing \
-                  callbacks are independent inputs"
-    )]
+    /// `metrics` sizes a pill for a label (without / with its icon) from the
+    /// app's measured chrome metrics, so the slot a tool gets is exactly as
+    /// wide as the text it paints, and gives the measured control height the
+    /// overflow menu's rows take.
     pub(super) fn layout(
         &self,
         buttons: &mut Vec<UiButton>,
-        tools_x: f64,
-        tools_right: f64,
-        by: f64,
-        bh: f64,
+        slot: Rect,
         toolbar: Rect,
-        text_pill_w: &dyn Fn(&str) -> f64,
-        icon_pill_w: &dyn Fn(&str) -> f64,
-        menu_row_h: f64,
+        metrics: &dyn ToolMetrics,
     ) -> ToolbarToolsLayout {
+        let (tools_x, tools_right, by, bh) = (slot.x0, slot.x1, slot.y0, slot.height());
         let tools = tools();
         let widths: Vec<f64> = tools
             .iter()
-            .map(|tool| tool_width(tool, text_pill_w, icon_pill_w))
+            .map(|tool| metrics.pill_w(&tr(tool.bar), tool.icon.is_some()))
             .collect();
         let total = widths.iter().sum::<f64>() + GAP * (tools.len() as f64 - 1.0);
         let fits_all = tools_x + total <= tools_right + 0.5;
@@ -130,7 +131,7 @@ impl ToolbarTools {
             return ToolbarToolsLayout::default();
         }
 
-        menu_layout(&tools, &hidden, overflow, toolbar, text_pill_w, menu_row_h)
+        menu_layout(&tools, &hidden, overflow, toolbar, metrics)
     }
 
     pub(super) fn on_press(
@@ -235,18 +236,6 @@ pub(super) fn menu_labels() -> [String; 6] {
     tools().map(|tool| tr(tool.menu))
 }
 
-fn tool_width(
-    tool: &Tool,
-    text_pill_w: &dyn Fn(&str) -> f64,
-    icon_pill_w: &dyn Fn(&str) -> f64,
-) -> f64 {
-    let label = tr(tool.bar);
-    match tool.icon {
-        Some(_) => icon_pill_w(&label),
-        None => text_pill_w(&label),
-    }
-}
-
 fn bar_button(tool: &Tool, rect: Rect) -> UiButton {
     let label = tr(tool.bar);
     let kind = match tool.icon {
@@ -273,9 +262,9 @@ fn menu_layout(
     hidden: &[usize],
     overflow: Rect,
     toolbar: Rect,
-    text_pill_w: &dyn Fn(&str) -> f64,
-    menu_row_h: f64,
+    metrics: &dyn ToolMetrics,
 ) -> ToolbarToolsLayout {
+    let menu_row_h = metrics.menu_row_h();
     // Rows are measured controls with a `MENU_ROW_SEAM` between them; the
     // panel is as wide as its widest row (plus the row inset and panel
     // padding), never narrower than its classic width.
@@ -284,7 +273,7 @@ fn menu_layout(
     let menu_w = hidden
         .iter()
         .filter_map(|&index| tools.get(index))
-        .map(|tool| text_pill_w(&tr(tool.menu)) + 2.0 * pad)
+        .map(|tool| metrics.pill_w(&tr(tool.menu), false) + 2.0 * pad)
         .fold(MENU_MIN_WIDTH, f64::max)
         .min(toolbar.width() - 2.0 * pad);
     let mx1 = overflow
@@ -324,80 +313,84 @@ mod tests {
     /// The 1× estimate the app falls back to before its first draw has
     /// measured the labels: a text pill is its label plus 12 px each side, an
     /// icon pill adds the 18 px icon and an 8 px gap.
-    fn text_pill_w(label: &str) -> f64 {
-        chrome::est_width(label, 13.0) + 24.0
-    }
+    struct Estimate;
 
-    fn icon_pill_w(label: &str) -> f64 {
-        26.0 + text_pill_w(label)
+    impl ToolMetrics for Estimate {
+        fn pill_w(&self, label: &str, icon: bool) -> f64 {
+            let icon_w = if icon { 26.0 } else { 0.0 };
+            icon_w + chrome::est_width(label, 13.0) + 24.0
+        }
+
+        fn menu_row_h(&self) -> f64 {
+            30.0
+        }
     }
 
     fn narrow_layout(component: &ToolbarTools) -> (Vec<UiButton>, ToolbarToolsLayout) {
         let mut buttons = Vec::new();
         let layout = component.layout(
             &mut buttons,
-            180.0,
-            430.0,
-            11.0,
-            34.0,
+            Rect::new(180.0, 11.0, 430.0, 45.0),
             Rect::new(0.0, 0.0, 560.0, 56.0),
-            &text_pill_w,
-            &icon_pill_w,
-            30.0,
+            &Estimate,
         );
         (buttons, layout)
     }
 
+    /// Narrow layouts keep hidden tools reachable and the pointer policy owns selection/click-away.
     #[test]
-    fn narrow_layout_keeps_hidden_tools_reachable() {
-        let mut component = ToolbarTools::default();
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        assert!(
-            buttons
-                .iter()
-                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
-        );
-        assert!(layout.menu_bg.is_some());
-        for kind in [
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ] {
+    fn toolbar_tools_stay_reachable_and_own_pointer_policy() {
+        // Case `narrow_layout_keeps_hidden_tools_reachable`.
+        {
+            let mut component = ToolbarTools::default();
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
             assert!(
                 buttons
                     .iter()
-                    .chain(&layout.menu_buttons)
-                    .any(|b| matches!(&b.hit, Hit::Insert(candidate) if *candidate == kind))
+                    .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
             );
+            assert!(layout.menu_bg.is_some());
+            for kind in [
+                ElementKind::Rect,
+                ElementKind::Ellipse,
+                ElementKind::Line,
+                ElementKind::Image,
+            ] {
+                assert!(
+                    buttons
+                        .iter()
+                        .chain(&layout.menu_buttons)
+                        .any(|b| matches!(&b.hit, Hit::Insert(candidate) if *candidate == kind))
+                );
+            }
         }
-    }
 
-    #[test]
-    fn pointer_policy_owns_row_selection_padding_and_click_away() {
-        let mut component = ToolbarTools::default();
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        let row = layout.menu_buttons.last().expect("narrow menu has rows");
-        assert!(matches!(
-            component.on_press(&layout, &buttons, row.rect.center()),
-            MenuPress::Action(_)
-        ));
-        assert!(!component.is_open());
+        // Case `pointer_policy_owns_row_selection_padding_and_click_away`.
+        {
+            let mut component = ToolbarTools::default();
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
+            let row = layout.menu_buttons.last().expect("narrow menu has rows");
+            assert!(matches!(
+                component.on_press(&layout, &buttons, row.rect.center()),
+                MenuPress::Action(_)
+            ));
+            assert!(!component.is_open());
 
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        let padding = layout.menu_bg.expect("open panel").origin() + (2.0, 2.0);
-        assert!(matches!(
-            component.on_press(&layout, &buttons, padding),
-            MenuPress::Consumed
-        ));
-        assert!(component.is_open());
-        assert!(matches!(
-            component.on_press(&layout, &buttons, Point::new(10.0, 200.0)),
-            MenuPress::Consumed
-        ));
-        assert!(!component.is_open());
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
+            let padding = layout.menu_bg.expect("open panel").origin() + (2.0, 2.0);
+            assert!(matches!(
+                component.on_press(&layout, &buttons, padding),
+                MenuPress::Consumed
+            ));
+            assert!(component.is_open());
+            assert!(matches!(
+                component.on_press(&layout, &buttons, Point::new(10.0, 200.0)),
+                MenuPress::Consumed
+            ));
+            assert!(!component.is_open());
+        }
     }
 }

@@ -7,7 +7,9 @@ use std::collections::BTreeSet;
 
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 
-use crate::shell::fixed_chords::FixedChordAction;
+use crate::shell::i18n::{t, t_args};
+use crate::shell::keyboard_shortcuts;
+use settings_store::keyboard_shortcuts::catalogue;
 use winit::event::Modifiers;
 use winit::keyboard::{Key, NamedKey};
 
@@ -151,72 +153,56 @@ pub(super) fn shortcut_chord_from_event(
     })
 }
 
-pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
-    match action {
-        ShortcutAction::Search => "open search",
-        ShortcutAction::WorkspaceOverview => "open the workspace overview",
-        ShortcutAction::Lock => "lock the screen",
-        ShortcutAction::QuickSettings => "open Quick Settings",
-        ShortcutAction::ShortcutHelp => "open this guide",
-        ShortcutAction::FocusPreviousWindow => "focus the previous window",
-        ShortcutAction::FocusNextWindow => "focus the next window",
-        ShortcutAction::PreviousTab => "select the previous tab",
-        ShortcutAction::NextTab => "select the next tab",
-        ShortcutAction::PreviousStrip => "select the previous strip",
-        ShortcutAction::NextStrip => "select the next strip",
-        ShortcutAction::PreviousWorkspace => "select the previous workspace",
-        ShortcutAction::NextWorkspace => "select the next workspace",
-        ShortcutAction::ToggleMaximize => "maximize or restore the window",
-        ShortcutAction::DetachTab => "move the tab into a new group",
-        ShortcutAction::AttachTabLeft => "move the tab into the group on the left",
-        ShortcutAction::AttachTabRight => "move the tab into the group on the right",
-        ShortcutAction::MoveGroupLeft => "move the group left",
-        ShortcutAction::MoveGroupRight => "move the group right",
-        ShortcutAction::ResizeNarrower => "make the window narrower",
-        ShortcutAction::ResizeWider => "make the window wider",
-        ShortcutAction::ReopenClosedTab => "reopen the tab you closed last",
-    }
+/// What `action` is called, as the keyboard-shortcuts catalogue names it.
+pub(super) fn shortcut_action_label(action: ShortcutAction) -> String {
+    t(&action.label_key())
 }
 
 /// Compact, non-editable reference shown below the configurable navigation
-/// pairs. Configurable actions use their live chord so the guide never
-/// promises a default the user has rebound; fixed chords come from the
-/// shell's one fixed-chord table.
-pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'static str, String)> {
-    let chord = |action| {
-        shortcuts
-            .bindings
-            .get(&action)
-            .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
-    };
-    let fixed = |action| {
-        crate::shell::fixed_chords::entry_for(action).map(|entry| (entry.label, entry.display()))
-    };
-    let editable = |label: &'static str, action| Some((label, chord(action)));
+/// pairs. Every row is a keyboard-shortcuts catalogue entry, so the guide
+/// lists the same names and live chords as the action door and Settings,
+/// and never promises a default the user has rebound.
+pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
+    let entries = catalogue(shortcuts);
     [
-        fixed(FixedChordAction::SwitchWindows),
-        fixed(FixedChordAction::CloseTab),
+        "fixed-switch-windows",
+        "fixed-close-tab",
         // Changing workspace is already an editable navigation pair above;
         // its essentials slot names how to undo a close instead.
-        editable("Reopen closed tab", ShortcutAction::ReopenClosedTab),
-        fixed(FixedChordAction::NewWindow),
-        fixed(FixedChordAction::AddTab),
-        fixed(FixedChordAction::DuplicateTab),
-        editable("Global search", ShortcutAction::Search),
-        fixed(FixedChordAction::GlobalSearch),
-        editable("Overview", ShortcutAction::WorkspaceOverview),
-        editable("Quick Settings", ShortcutAction::QuickSettings),
-        fixed(FixedChordAction::WorkspaceWheel),
-        editable("Lock", ShortcutAction::Lock),
-        fixed(FixedChordAction::Screenshot),
-        fixed(FixedChordAction::DisplayLayout),
-        fixed(FixedChordAction::CaptureScreenshot),
-        fixed(FixedChordAction::OpenTerminal),
-        fixed(FixedChordAction::PictureInPicture),
-        fixed(FixedChordAction::SaveRecentReplay),
+        ShortcutAction::ReopenClosedTab.id(),
+        "fixed-new-window",
+        "fixed-add-tab",
+        "fixed-duplicate-tab",
+        ShortcutAction::Search.id(),
+        // Super+Space and a lone Super tap search too; the keyboard map
+        // lists every alias, the guide keeps one row per action.
+        ShortcutAction::EmojiPicker.id(),
+        ShortcutAction::WorkspaceOverview.id(),
+        ShortcutAction::QuickSettings.id(),
+        "fixed-workspace-wheel",
+        ShortcutAction::Lock.id(),
+        "fixed-screenshot",
+        "fixed-display-layout",
+        "fixed-capture-screenshot",
+        "fixed-open-terminal",
+        "fixed-picture-in-picture",
+        "fixed-save-recent-replay",
     ]
     .into_iter()
-    .flatten()
+    .filter_map(|id| entries.iter().find(|entry| entry.id == id))
+    .map(|entry| {
+        let chords = if entry.chords.is_empty() {
+            t("guide-unassigned")
+        } else {
+            entry
+                .chords
+                .iter()
+                .map(shortcut_guide_chord)
+                .collect::<Vec<_>>()
+                .join("  /  ")
+        };
+        (keyboard_shortcuts::label(entry), chords)
+    })
     .collect()
 }
 
@@ -235,13 +221,12 @@ pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, S
 pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<String> {
     let rows = shortcut_action_rows(shortcuts);
     (!rows.is_empty()).then(|| {
-        format!(
-            "Your shortcuts: {}",
-            rows.into_iter()
-                .map(|(label, chord)| format!("{label} · {chord}"))
-                .collect::<Vec<_>>()
-                .join("   ")
-        )
+        let list = rows
+            .into_iter()
+            .map(|(label, chord)| format!("{label} · {chord}"))
+            .collect::<Vec<_>>()
+            .join("   ");
+        t_args("guide-your-shortcuts", &[("shortcuts", list.into())])
     })
 }
 
@@ -258,13 +243,5 @@ pub(super) fn shortcut_reference_group_height(compact: bool) -> f64 {
 }
 
 pub(super) fn shortcut_guide_chord(chord: &KeyChord) -> String {
-    let display = chord.display();
-    let Some((modifiers, key)) = display.rsplit_once('+') else {
-        return display;
-    };
-    if key.chars().count() == 1 {
-        format!("{modifiers}+{}", key.to_uppercase())
-    } else {
-        display
-    }
+    keyboard_shortcuts::chord_text(chord)
 }

@@ -15,9 +15,6 @@
 //! they bracket nothing, and an empty pair is removed rather than passed on.
 
 use std::path::Path;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 /// Why an `Exec=` could not become an argv.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -204,23 +201,13 @@ fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     out
 }
 
-/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`. Percent-encodes everything outside the
-/// URL "unreserved" set plus `/` (the separator). Deliberately minimal — exists so `%u` gets
-/// a well-formed URL, not to be a general URL library.
+/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`, so `%u` gets a well-formed URL. A string
+/// that is already a URL, or a relative path, passes through unchanged.
 pub fn path_to_url(path: &str) -> String {
     if path.contains("://") {
         return path.to_string();
     }
-    let mut out = String::from("file://");
-    for b in path.as_bytes() {
-        let c = *b as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
-            out.push(c);
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
+    url::Url::from_file_path(path).map_or_else(|()| path.to_string(), String::from)
 }
 
 #[cfg(test)]
@@ -232,168 +219,169 @@ mod tests {
     }
 
     #[test]
-    fn quoting_groups_without_invoking_a_shell() {
-        assert_eq!(
-            split(r#"/usr/bin/foo "a b" c"#),
-            vec!["/usr/bin/foo", "a b", "c"]
-        );
-        // Escapes valid inside quotes.
-        assert_eq!(split(r#"foo "a\"b""#), vec!["foo", r#"a"b"#]);
-        assert_eq!(split(r#"foo "a\\b""#), vec!["foo", r"a\b"]);
-        // Shell metacharacters are ordinary text, not operators.
-        assert_eq!(
-            split("foo a;rm -rf /|b"),
-            vec!["foo", "a;rm", "-rf", "/|b"],
-            "Exec is not shell syntax and must never be treated as such"
-        );
+    fn exec_lines_split_on_quotes_without_a_shell() {
+        // Phase `quoting_groups_without_invoking_a_shell`.
+        {
+            assert_eq!(
+                split(r#"/usr/bin/foo "a b" c"#),
+                vec!["/usr/bin/foo", "a b", "c"]
+            );
+            // Escapes valid inside quotes.
+            assert_eq!(split(r#"foo "a\"b""#), vec!["foo", r#"a"b"#]);
+            assert_eq!(split(r#"foo "a\\b""#), vec!["foo", r"a\b"]);
+            // Shell metacharacters are ordinary text, not operators.
+            assert_eq!(
+                split("foo a;rm -rf /|b"),
+                vec!["foo", "a;rm", "-rf", "/|b"],
+                "Exec is not shell syntax and must never be treated as such"
+            );
+        }
+        // Phase `an_unterminated_quote_is_an_error_not_a_guess`.
+        {
+            assert_eq!(split_exec(r#"foo "bar"#), Err(ExecError::UnterminatedQuote));
+            assert_eq!(split_exec("   "), Err(ExecError::Empty));
+        }
+        // Phase `percent_percent_is_a_literal_percent`.
+        {
+            let ctx = ExpandContext::default();
+            assert_eq!(expand(&split("app 100%%"), &ctx), vec!["app", "100%"]);
+        }
+        // Phase `deprecated_codes_are_removed`.
+        {
+            let ctx = ExpandContext::default();
+            assert_eq!(expand(&split("app %d %D %n %N %v %m"), &ctx), vec!["app"]);
+        }
     }
 
     #[test]
-    fn an_unterminated_quote_is_an_error_not_a_guess() {
-        assert_eq!(split_exec(r#"foo "bar"#), Err(ExecError::UnterminatedQuote));
-        assert_eq!(split_exec("   "), Err(ExecError::Empty));
-    }
-
-    #[test]
-    fn file_codes_expand_to_the_documents_being_opened() {
-        let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
-        let ctx = ExpandContext {
-            files: &files,
-            ..Default::default()
-        };
-        assert_eq!(
-            expand(&split("app %F"), &ctx),
-            vec!["app", "/tmp/a.txt", "/tmp/b.txt"]
-        );
-        assert_eq!(expand(&split("app %f"), &ctx), vec!["app", "/tmp/a.txt"]);
-        assert_eq!(
-            expand(&split("app %U"), &ctx),
-            vec!["app", "file:///tmp/a.txt", "file:///tmp/b.txt"],
-            "%U falls back to file:// URLs for the files"
-        );
-    }
-
-    /// A launch with nothing to open must not pass an empty argument — an app reading argv[1]
-    /// would see a filename of `""`.
-    #[test]
-    fn field_codes_with_nothing_to_open_leave_no_argument_behind() {
-        let ctx = ExpandContext::default();
-        assert_eq!(expand(&split("app %f"), &ctx), vec!["app"]);
-        assert_eq!(expand(&split("app %F"), &ctx), vec!["app"]);
-        assert_eq!(expand(&split("app %U %u"), &ctx), vec!["app"]);
-        assert_eq!(
-            expand(&split("app --file=%f"), &ctx),
-            vec!["app"],
-            "`--file=` with no filename after it is worse than no argument"
-        );
-        // A genuinely empty quoted argument is not a field code and survives.
-        assert_eq!(expand(&split(r#"app "" x"#), &ctx), vec!["app", "", "x"]);
-    }
-
-    #[test]
-    fn codes_expand_inside_a_larger_argument() {
-        let files = vec!["/tmp/a.txt".to_string()];
-        let ctx = ExpandContext {
-            files: &files,
-            ..Default::default()
-        };
-        assert_eq!(
-            expand(&split("app --file=%f"), &ctx),
-            vec!["app", "--file=/tmp/a.txt"]
-        );
-    }
-
-    #[test]
-    fn percent_percent_is_a_literal_percent() {
-        let ctx = ExpandContext::default();
-        assert_eq!(expand(&split("app 100%%"), &ctx), vec!["app", "100%"]);
-    }
-
-    #[test]
-    fn icon_and_name_and_path_codes() {
-        let path = Path::new("/usr/share/applications/x.desktop");
-        let ctx = ExpandContext {
-            icon: Some("text-editor"),
-            name: Some("Text Editor"),
-            path: Some(path),
-            ..Default::default()
-        };
-        assert_eq!(
-            expand(&split("app %i %c %k"), &ctx),
-            vec![
-                "app",
-                "--icon",
-                "text-editor",
-                "Text Editor",
-                "/usr/share/applications/x.desktop"
-            ]
-        );
-        // No icon declared: %i contributes nothing, not an empty --icon.
-        let no_icon = ExpandContext::default();
-        assert_eq!(expand(&split("app %i"), &no_icon), vec!["app"]);
-    }
-
-    #[test]
-    fn deprecated_codes_are_removed() {
-        let ctx = ExpandContext::default();
-        assert_eq!(expand(&split("app %d %D %n %N %v %m"), &ctx), vec!["app"]);
-    }
-
-    /// The exact `Exec=` of the Spotify Flatpak on a real Fedora host.
-    #[test]
-    fn a_flatpak_export_expands_to_a_runnable_argv() {
-        let raw = "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
-                   --command=spotify --file-forwarding com.spotify.Client @@u %U @@";
-        let argv = expand(&split(raw), &ExpandContext::default());
-        assert_eq!(
-            argv,
-            vec![
-                "/usr/bin/flatpak",
-                "run",
-                "--branch=stable",
-                "--arch=x86_64",
-                "--command=spotify",
-                "--file-forwarding",
-                "com.spotify.Client",
-            ],
-            "with nothing to open, the file-forwarding markers bracket \
-             nothing and are dropped"
-        );
-    }
-
-    #[test]
-    fn a_flatpak_export_keeps_the_markers_when_there_is_a_document() {
-        let raw = "/usr/bin/flatpak run --file-forwarding com.spotify.Client @@u %U @@";
-        let files = vec!["/tmp/a.txt".to_string()];
-        let argv = expand(
-            &split(raw),
-            &ExpandContext {
+    fn field_codes_expand_documents_icons_names_and_paths() {
+        // Phase `file_codes_expand_to_the_documents_being_opened`.
+        {
+            let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
+            let ctx = ExpandContext {
                 files: &files,
                 ..Default::default()
-            },
-        );
-        assert_eq!(
-            argv,
-            vec![
-                "/usr/bin/flatpak",
-                "run",
-                "--file-forwarding",
-                "com.spotify.Client",
-                "@@u",
-                "file:///tmp/a.txt",
-                "@@",
-            ]
-        );
+            };
+            assert_eq!(
+                expand(&split("app %F"), &ctx),
+                vec!["app", "/tmp/a.txt", "/tmp/b.txt"]
+            );
+            assert_eq!(expand(&split("app %f"), &ctx), vec!["app", "/tmp/a.txt"]);
+            assert_eq!(
+                expand(&split("app %U"), &ctx),
+                vec!["app", "file:///tmp/a.txt", "file:///tmp/b.txt"],
+                "%U falls back to file:// URLs for the files"
+            );
+        }
+        // Phase `field_codes_with_nothing_to_open_leave_no_argument_behind`.
+        // A launch with nothing to open must not pass an empty argument — an app reading argv[1]
+        // would see a filename of `""`.
+        {
+            let ctx = ExpandContext::default();
+            assert_eq!(expand(&split("app %f"), &ctx), vec!["app"]);
+            assert_eq!(expand(&split("app %F"), &ctx), vec!["app"]);
+            assert_eq!(expand(&split("app %U %u"), &ctx), vec!["app"]);
+            assert_eq!(
+                expand(&split("app --file=%f"), &ctx),
+                vec!["app"],
+                "`--file=` with no filename after it is worse than no argument"
+            );
+            // A genuinely empty quoted argument is not a field code and survives.
+            assert_eq!(expand(&split(r#"app "" x"#), &ctx), vec!["app", "", "x"]);
+        }
+        // Phase `codes_expand_inside_a_larger_argument`.
+        {
+            let files = vec!["/tmp/a.txt".to_string()];
+            let ctx = ExpandContext {
+                files: &files,
+                ..Default::default()
+            };
+            assert_eq!(
+                expand(&split("app --file=%f"), &ctx),
+                vec!["app", "--file=/tmp/a.txt"]
+            );
+        }
+        // Phase `icon_and_name_and_path_codes`.
+        {
+            let path = Path::new("/usr/share/applications/x.desktop");
+            let ctx = ExpandContext {
+                icon: Some("text-editor"),
+                name: Some("Text Editor"),
+                path: Some(path),
+                ..Default::default()
+            };
+            assert_eq!(
+                expand(&split("app %i %c %k"), &ctx),
+                vec![
+                    "app",
+                    "--icon",
+                    "text-editor",
+                    "Text Editor",
+                    "/usr/share/applications/x.desktop"
+                ]
+            );
+            // No icon declared: %i contributes nothing, not an empty --icon.
+            let no_icon = ExpandContext::default();
+            assert_eq!(expand(&split("app %i"), &no_icon), vec!["app"]);
+        }
+        // Phase `url_encoding_covers_spaces_and_reserved_bytes`.
+        {
+            assert_eq!(path_to_url("/tmp/a b.txt"), "file:///tmp/a%20b.txt");
+            assert_eq!(path_to_url("/tmp/a#b"), "file:///tmp/a%23b");
+            assert_eq!(
+                path_to_url("https://example.com/x"),
+                "https://example.com/x",
+                "something already a URL is left alone"
+            );
+        }
     }
 
     #[test]
-    fn url_encoding_covers_spaces_and_reserved_bytes() {
-        assert_eq!(path_to_url("/tmp/a b.txt"), "file:///tmp/a%20b.txt");
-        assert_eq!(path_to_url("/tmp/a#b"), "file:///tmp/a%23b");
-        assert_eq!(
-            path_to_url("https://example.com/x"),
-            "https://example.com/x",
-            "something already a URL is left alone"
-        );
+    fn flatpak_exports_expand_to_runnable_argv_with_document_markers() {
+        // Phase `a_flatpak_export_expands_to_a_runnable_argv`.
+        // The exact `Exec=` of the Spotify Flatpak on a real Fedora host.
+        {
+            let raw = "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
+                       --command=spotify --file-forwarding com.spotify.Client @@u %U @@";
+            let argv = expand(&split(raw), &ExpandContext::default());
+            assert_eq!(
+                argv,
+                vec![
+                    "/usr/bin/flatpak",
+                    "run",
+                    "--branch=stable",
+                    "--arch=x86_64",
+                    "--command=spotify",
+                    "--file-forwarding",
+                    "com.spotify.Client",
+                ],
+                "with nothing to open, the file-forwarding markers bracket \
+                 nothing and are dropped"
+            );
+        }
+        // Phase `a_flatpak_export_keeps_the_markers_when_there_is_a_document`.
+        {
+            let raw = "/usr/bin/flatpak run --file-forwarding com.spotify.Client @@u %U @@";
+            let files = vec!["/tmp/a.txt".to_string()];
+            let argv = expand(
+                &split(raw),
+                &ExpandContext {
+                    files: &files,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                argv,
+                vec![
+                    "/usr/bin/flatpak",
+                    "run",
+                    "--file-forwarding",
+                    "com.spotify.Client",
+                    "@@u",
+                    "file:///tmp/a.txt",
+                    "@@",
+                ]
+            );
+        }
     }
 }

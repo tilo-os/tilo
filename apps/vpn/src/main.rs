@@ -52,25 +52,44 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.vpn", vpn::app_root)
+        .shot_root(shot_root)
+        .scenarios(&[
+            "confirm",
+            "add",
+            "import",
+            "detail",
+            "config",
+            "logs",
+            "loading",
+            "empty",
+            "error",
+            "disconnected",
+            "connecting",
+            "unprovisioned",
+            "setup",
+        ])
+        .configure_app(|app| vpn::actions::register(app.action_registry_mut()))
+}
+
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.vpn", vpn::app_root)
-            .shot_root(shot_root)
-            .scenarios(&[
-                "confirm",
-                "add",
-                "import",
-                "detail",
-                "config",
-                "logs",
-                "loading",
-                "empty",
-                "error",
-                "disconnected",
-                "connecting",
-                "unprovisioned",
-                "setup",
-            ])
-            .configure_app(|app| vpn::actions::register(app.action_registry_mut())),
-    );
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&vpn::launch_spec());
 }

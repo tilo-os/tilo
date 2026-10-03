@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -67,11 +66,28 @@ pub enum PushOutcome {
     DecodeFailed,
 }
 
+/// A peer's announcement that one of its surfaces is streaming: which
+/// surface, which app's tab shows it, how it is encoded, and where input on
+/// the local view goes back to.
+#[derive(Clone)]
+pub struct PeerStreamStart {
+    pub source_peer: u64,
+    pub surface: u64,
+    pub local_peer: u64,
+    pub app_id: String,
+    pub codec: String,
+    /// The size the sender announced; decoded pictures are cropped to it.
+    pub display_size: Option<(u32, u32)>,
+    pub hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+    pub input_sink: Arc<dyn Fn(InputEvent) + Send + Sync>,
+}
+
 /// Peer-side widget rendering one shared surface: the decoder, the latest
 /// decoded frame as a peniko image, and the pending-input queue.
 pub struct PeerView {
-    /// Cached `AppWidget::app_title` result, materialised at construction.
-    title: String,
+    /// Cached `AppWidget::app_title` result, resolved on first use so
+    /// building a view never waits on the catalogue.
+    title: std::sync::OnceLock<String>,
     /// Surface id the owner uses to address this share.
     surface_id: SurfaceId,
     /// Local peer id (the *viewer*) — the value the owner sees as the
@@ -89,6 +105,9 @@ pub struct PeerView {
     /// Cached `peniko::ImageData` derived from `latest`; rebuilt only
     /// when `latest` changes.
     cached_image: Option<vello::peniko::ImageData>,
+    /// `latest` at full precision when it carries an HDR signal; composited
+    /// in place of `cached_image` where the output shows HDR.
+    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
     /// Pending input events to ship back to the owner.
     pending_inputs: Vec<InputEvent>,
     /// Production sends directly through this non-blocking bridge; tests
@@ -142,7 +161,7 @@ impl PeerView {
         metrics: PeerSurfaceMetrics,
     ) -> Self {
         Self {
-            title: format!("Peer surface #{surface_id}"),
+            title: std::sync::OnceLock::new(),
             surface_id,
             local_peer,
             decoder: {
@@ -153,6 +172,7 @@ impl PeerView {
             latest: None,
             hdr_tonemap: None,
             cached_image: None,
+            cached_hdr: None,
             pending_inputs: Vec::new(),
             input_sink: None,
             pointer_inside: false,
@@ -209,13 +229,14 @@ impl PeerView {
             | SurfaceColorOp::TranscodeHdrTransfer => None,
         };
         Self {
-            title: format!("Peer surface #{surface_id}"),
+            title: std::sync::OnceLock::new(),
             surface_id,
             local_peer,
             decoder,
             latest: None,
             hdr_tonemap,
             cached_image: None,
+            cached_hdr: None,
             pending_inputs: Vec::new(),
             input_sink: None,
             pointer_inside: false,
@@ -311,6 +332,7 @@ impl PeerView {
 
         self.latest = Some(frame);
         self.cached_image = None;
+        self.cached_hdr = None;
         self.dirty = true;
 
         self.metrics.record_received(latency_ns.unwrap_or(0));
@@ -422,6 +444,20 @@ impl PeerView {
                     uv_stride,
                 } => {
                     let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
+                    self.cached_hdr = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+                        frame.colorimetry,
+                        cfg,
+                    )
+                    .and_then(|signal| {
+                        crate::shell::hdr_surface::HdrPlane::p010(
+                            y,
+                            uv,
+                            (*y_stride, *uv_stride),
+                            (frame.width, frame.height),
+                            signal,
+                        )
+                    })
+                    .map(Arc::new);
                     tonemap_p010_to_rgba8(
                         y,
                         uv,
@@ -448,8 +484,6 @@ impl PeerView {
 }
 
 impl Widget for PeerView {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -516,7 +550,9 @@ impl Widget for PeerView {
 
         let rect = self.content_rect();
 
-        if let Some(image) = self.ensure_image() {
+        let image = self.ensure_image().cloned();
+        let hdr_plane = self.cached_hdr.clone();
+        if let Some(image) = &image {
             // Scale + translate so the natural-size image fills `rect`.
             let img_w = f64::from(image.width);
             let img_h = f64::from(image.height);
@@ -531,17 +567,25 @@ impl Widget for PeerView {
                 let placement = transform
                     .pre_translate((rect.x0, rect.y0).into())
                     .pre_scale_non_uniform(sx, sy);
+                if let Some(plane) = &hdr_plane {
+                    crate::shell::hdr_surface::record(
+                        plane,
+                        image,
+                        placement,
+                        transform.transform_rect_bbox(rect),
+                    );
+                }
                 scene.draw_image(image, placement);
             }
         } else {
-            let label = "Awaiting peer surface…";
+            let label = crate::shell::i18n::t("peer-view-awaiting");
             let size = tokens.typography.scale.base;
-            let (lw, lh) = text_renderer.measure(label, size, None);
+            let (lw, lh) = text_renderer.measure(&label, size, None);
             let cx = rect.center().x - f64::from(lw) / 2.0;
             let cy = rect.center().y - f64::from(lh) / 2.0;
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 size,
                 tokens.colors.text_dim,
                 transform.pre_translate((cx, cy).into()),
@@ -550,18 +594,7 @@ impl Widget for PeerView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = Point::new(position.x, position.y);
@@ -578,7 +611,7 @@ impl Widget for PeerView {
                     let y = ((point.y - content.y0) / content.height() * height)
                         .clamp(0.0, height.max(1.0) - 1.0);
                     self.record_pointer_motion(x, y);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } => self.set_pointer_inside(false),
@@ -591,9 +624,9 @@ impl Widget for PeerView {
                     && let Some(button) = crate::shell::input_policy::evdev_button(*button)
                 {
                     self.record_pointer_button(button, pressed);
-                    *handled = true;
+                    *ctx.handled = true;
                     if pressed {
-                        *focus_target = Some(node_id);
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
             }
@@ -602,9 +635,9 @@ impl Widget for PeerView {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),
-                        Self::modifier_bits(*modifiers),
+                        Self::modifier_bits(*ctx.modifiers),
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Focused(false) => self.set_keyboard_focused(false),
@@ -658,7 +691,12 @@ impl AppWidget for PeerView {
     }
 
     fn app_title(&self) -> &str {
-        &self.title
+        self.title.get_or_init(|| {
+            crate::shell::i18n::t_args(
+                "peer-view-surface-title",
+                &[("id", self.surface_id.to_string().into())],
+            )
+        })
     }
 
     fn app_icon(&self) -> IconDescriptor {
@@ -681,7 +719,9 @@ mod tests {
     /// Cisco binary needed.
     fn vp9_unit(width: u32, height: u32) -> Vec<u8> {
         let mut enc = VideoEncoder::new(StreamCodec::Vp9, width, height, 30).expect("VP9 encoder");
-        enc.encode(&gradient_frame(width, height)).expect("encode")
+        let mut units = enc.encode(&gradient_frame(width, height)).expect("encode");
+        units.extend(enc.finish().expect("finish"));
+        units.swap_remove(0).data
     }
 
     fn vp9_view(metrics: PeerSurfaceMetrics) -> PeerView {
@@ -722,211 +762,223 @@ mod tests {
     }
 
     #[test]
-    fn personal_display_aspect_fit_preserves_pixels_and_letterboxes() {
-        let viewport = Rect::new(0.0, 0.0, 1000.0, 1000.0);
-        let fitted = aspect_fit_rect(viewport, 1920, 1080);
-        assert!(fitted.x0.abs() < 0.001);
-        assert!((fitted.x1 - 1000.0).abs() < 0.001);
-        assert!((fitted.height() - 562.5).abs() < 0.001);
-        assert!((fitted.y0 - 218.75).abs() < 0.001);
+    fn peer_view_paints_fitted_frames_or_a_placeholder() {
+        fn personal_display_aspect_fit_preserves_pixels_and_letterboxes() {
+            let viewport = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+            let fitted = aspect_fit_rect(viewport, 1920, 1080);
+            assert!(fitted.x0.abs() < 0.001);
+            assert!((fitted.x1 - 1000.0).abs() < 0.001);
+            assert!((fitted.height() - 562.5).abs() < 0.001);
+            assert!((fitted.y0 - 218.75).abs() < 0.001);
+        }
+
+        fn decoded_frame_paints_image_into_scene() {
+            use vello_encoding::DrawTag;
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let nalus = vp9_unit(W, H);
+
+            let mut view = vp9_view(PeerSurfaceMetrics::default());
+            let progressed = view.push_encoded(&nalus);
+            assert!(progressed, "decoder produced no frame from encoder output");
+            let latest = view.latest_frame().expect("frame stashed");
+            assert_eq!(latest.width, W);
+            assert_eq!(latest.height, H);
+            assert!(latest.pixels.is_rgba(), "an SDR stream yields RGBA pixels");
+
+            view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::default();
+            let presence = PresenceCtx::default();
+            view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+            let enc_ref = scene.encoding();
+            let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
+            assert!(
+                has_image,
+                "PeerView::draw emitted no image into the scene's draw stream"
+            );
+        }
+
+        fn empty_view_paints_placeholder_text_not_image() {
+            use vello_encoding::DrawTag;
+            let mut view = PeerView::new(1, 1);
+            view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::default();
+            let presence = PresenceCtx::default();
+            view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let enc_ref = scene.encoding();
+            let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
+            assert!(
+                !has_image,
+                "fresh PeerView with no decoded frame leaked an image draw"
+            );
+        }
+
+        personal_display_aspect_fit_preserves_pixels_and_letterboxes();
+        decoded_frame_paints_image_into_scene();
+        empty_view_paints_placeholder_text_not_image();
     }
 
     #[test]
-    fn decoded_frame_paints_image_into_scene() {
-        use vello_encoding::DrawTag;
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
+    fn peer_view_records_inputs_and_keeps_click_focus() {
+        fn pending_inputs_recorded_and_drained() {
+            let mut view = PeerView::new(1, 9);
+            view.record_pointer_motion(10.0, 20.0);
+            view.record_pointer_button(272, true);
+            view.record_key(0xFF0D, true, 0);
+            let drained = view.take_pending_inputs();
+            assert_eq!(drained.len(), 3);
+            assert!(matches!(drained[0], InputEvent::PointerMotion { .. }));
+            assert!(matches!(drained[1], InputEvent::PointerButton { .. }));
+            assert!(matches!(drained[2], InputEvent::Key { .. }));
+            assert!(view.take_pending_inputs().is_empty());
+        }
 
-        let mut view = vp9_view(PeerSurfaceMetrics::default());
-        let progressed = view.push_encoded(&nalus);
-        assert!(progressed, "decoder produced no frame from encoder output");
-        let latest = view.latest_frame().expect("frame stashed");
-        assert_eq!(latest.width, W);
-        assert_eq!(latest.height, H);
-        assert!(latest.pixels.is_rgba(), "an SDR stream yields RGBA pixels");
+        fn pointer_leave_preserves_click_focus_until_explicit_blur() {
+            let mut view = PeerView::new(42, 9);
+            view.set_pointer_inside(true);
+            view.set_keyboard_focused(true);
+            view.set_pointer_inside(false);
+            assert!(view.keyboard_focused, "hover leave must preserve the caret");
 
-        view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+            view.set_keyboard_focused(false);
+            let events = view.take_pending_inputs();
+            assert!(matches!(
+                events.as_slice(),
+                [
+                    InputEvent::PointerEnter { surface: 42 },
+                    InputEvent::KeyboardFocus {
+                        surface: 42,
+                        focused: true
+                    },
+                    InputEvent::PointerLeave { surface: 42 },
+                    InputEvent::KeyboardFocus {
+                        surface: 42,
+                        focused: false
+                    }
+                ]
+            ));
+        }
 
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::default();
-        let presence = PresenceCtx::default();
-        view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let enc_ref = scene.encoding();
-        let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
-        assert!(
-            has_image,
-            "PeerView::draw emitted no image into the scene's draw stream"
-        );
+        pending_inputs_recorded_and_drained();
+        pointer_leave_preserves_click_focus_until_explicit_blur();
     }
 
     #[test]
-    fn empty_view_paints_placeholder_text_not_image() {
-        use vello_encoding::DrawTag;
-        let mut view = PeerView::new(1, 1);
-        view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::default();
-        let presence = PresenceCtx::default();
-        view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let enc_ref = scene.encoding();
-        let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
-        assert!(
-            !has_image,
-            "fresh PeerView with no decoded frame leaked an image draw"
-        );
-    }
+    fn peer_view_stream_queue_bounds_latency_and_rebuilds_decoders() {
+        fn push_encoded_returns_false_for_empty_payload() {
+            let mut view = PeerView::new(0, 0);
+            assert!(!view.push_encoded(&[]));
+            assert!(view.latest_frame().is_none());
+        }
 
-    #[test]
-    fn pending_inputs_recorded_and_drained() {
-        let mut view = PeerView::new(1, 9);
-        view.record_pointer_motion(10.0, 20.0);
-        view.record_pointer_button(272, true);
-        view.record_key(0xFF0D, true, 0);
-        let drained = view.take_pending_inputs();
-        assert_eq!(drained.len(), 3);
-        assert!(matches!(drained[0], InputEvent::PointerMotion { .. }));
-        assert!(matches!(drained[1], InputEvent::PointerButton { .. }));
-        assert!(matches!(drained[2], InputEvent::Key { .. }));
-        assert!(view.take_pending_inputs().is_empty());
-    }
+        fn push_encoded_with_latency_drops_oldest_after_ceiling() {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let nalus = vp9_unit(W, H);
 
-    #[test]
-    fn pointer_leave_preserves_click_focus_until_explicit_blur() {
-        let mut view = PeerView::new(42, 9);
-        view.set_pointer_inside(true);
-        view.set_keyboard_focused(true);
-        view.set_pointer_inside(false);
-        assert!(view.keyboard_focused, "hover leave must preserve the caret");
+            let metrics = PeerSurfaceMetrics::default();
+            let mut view = vp9_view(metrics.clone());
 
-        view.set_keyboard_focused(false);
-        let events = view.take_pending_inputs();
-        assert!(matches!(
-            events.as_slice(),
-            [
-                InputEvent::PointerEnter { surface: 42 },
-                InputEvent::KeyboardFocus {
-                    surface: 42,
-                    focused: true
-                },
-                InputEvent::PointerLeave { surface: 42 },
-                InputEvent::KeyboardFocus {
-                    surface: 42,
-                    focused: false
-                }
-            ]
-        ));
-    }
+            assert_eq!(
+                view.push_encoded_with_latency(&nalus, Some(1_000)),
+                PushOutcome::Decoded,
+            );
+            assert_eq!(view.frames_pending(), 1);
 
-    #[test]
-    fn push_encoded_returns_false_for_empty_payload() {
-        let mut view = PeerView::new(0, 0);
-        assert!(!view.push_encoded(&[]));
-        assert!(view.latest_frame().is_none());
-    }
+            assert_eq!(
+                view.push_encoded_with_latency(&nalus, Some(1_500)),
+                PushOutcome::Decoded,
+            );
+            assert_eq!(view.frames_pending(), 2);
 
-    #[test]
-    fn push_encoded_with_latency_drops_oldest_after_ceiling() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
+            // Ceiling is 2; the older frame drops.
+            assert_eq!(
+                view.push_encoded_with_latency(&nalus, Some(2_000)),
+                PushOutcome::DroppedOldest,
+            );
+            let snap = metrics.snapshot();
+            assert_eq!(snap.frames_dropped, 1);
+            assert_eq!(snap.frames_received, 3, "every accepted decode counts");
 
-        let metrics = PeerSurfaceMetrics::default();
-        let mut view = vp9_view(metrics.clone());
+            view.mark_drawn();
+            assert_eq!(view.frames_pending(), 0);
 
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, Some(1_000)),
-            PushOutcome::Decoded,
-        );
-        assert_eq!(view.frames_pending(), 1);
+            assert_eq!(
+                view.push_encoded_with_latency(&nalus, Some(2_500)),
+                PushOutcome::Decoded,
+            );
+            let snap = metrics.snapshot();
+            assert_eq!(
+                snap.frames_dropped, 1,
+                "no additional drops after mark_drawn"
+            );
+        }
 
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, Some(1_500)),
-            PushOutcome::Decoded,
-        );
-        assert_eq!(view.frames_pending(), 2);
+        /// A stream-start label the receiver can't honour must never cost the
+        /// viewer the share: it degrades to the SDR H.264 decoder.
+        fn an_unknown_stream_label_degrades_to_h264() {
+            let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+            let unknown =
+                PeerView::new_for_stream(42, 7, "h266", PeerSurfaceMetrics::default(), &caps, None);
+            assert_eq!(unknown.codec(), StreamCodec::H264);
+            let hevc = PeerView::new_for_stream(
+                43,
+                7,
+                "hevc-main10",
+                PeerSurfaceMetrics::default(),
+                &caps,
+                None,
+            );
+            assert_eq!(hevc.codec(), StreamCodec::HevcMain10);
+            assert!(
+                hevc.is_hdr(),
+                "a 10-bit stream runs the HDR path on an SDR display"
+            );
+        }
 
-        // Ceiling is 2; the older frame drops.
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, Some(2_000)),
-            PushOutcome::DroppedOldest,
-        );
-        let snap = metrics.snapshot();
-        assert_eq!(snap.frames_dropped, 1);
-        assert_eq!(snap.frames_received, 3, "every accepted decode counts");
+        /// A sender that switches codec announces a new stream; the view
+        /// follows it and decodes the new codec.
+        fn a_codec_switch_rebuilds_the_decoder() {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+            let mut view =
+                PeerView::new_for_stream(42, 7, "h264", PeerSurfaceMetrics::default(), &caps, None);
+            view.restart_stream("vp9", Some((W, H)));
+            assert_eq!(view.codec(), StreamCodec::Vp9);
+            assert!(view.push_encoded(&vp9_unit(W, H)), "the new codec decodes");
+            view.restart_stream("vp9", Some((W, H)));
+            assert!(
+                view.latest_frame().is_some(),
+                "an unchanged codec keeps the picture"
+            );
+        }
 
-        view.mark_drawn();
-        assert_eq!(view.frames_pending(), 0);
+        fn metrics_handle_is_shared_via_clone() {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let nalus = vp9_unit(W, H);
 
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, Some(2_500)),
-            PushOutcome::Decoded,
-        );
-        let snap = metrics.snapshot();
-        assert_eq!(
-            snap.frames_dropped, 1,
-            "no additional drops after mark_drawn"
-        );
-    }
+            let metrics = PeerSurfaceMetrics::default();
+            let external = metrics.clone();
+            let mut view = vp9_view(metrics);
 
-    /// A stream-start label the receiver can't honour must never cost the
-    /// viewer the share: it degrades to the SDR H.264 decoder.
-    #[test]
-    fn an_unknown_stream_label_degrades_to_h264() {
-        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
-        let unknown =
-            PeerView::new_for_stream(42, 7, "h266", PeerSurfaceMetrics::default(), &caps, None);
-        assert_eq!(unknown.codec(), StreamCodec::H264);
-        let hevc = PeerView::new_for_stream(
-            43,
-            7,
-            "hevc-main10",
-            PeerSurfaceMetrics::default(),
-            &caps,
-            None,
-        );
-        assert_eq!(hevc.codec(), StreamCodec::HevcMain10);
-        assert!(
-            hevc.is_hdr(),
-            "a 10-bit stream runs the HDR path on an SDR display"
-        );
-    }
+            assert_eq!(external.snapshot().frames_received, 0);
+            view.push_encoded_with_latency(&nalus, Some(500));
+            assert_eq!(external.snapshot().frames_received, 1);
+            assert_eq!(external.snapshot().latency_ns_mean, 500);
+        }
 
-    /// A sender that switches codec announces a new stream; the view
-    /// follows it and decodes the new codec.
-    #[test]
-    fn a_codec_switch_rebuilds_the_decoder() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
-        let mut view =
-            PeerView::new_for_stream(42, 7, "h264", PeerSurfaceMetrics::default(), &caps, None);
-        view.restart_stream("vp9", Some((W, H)));
-        assert_eq!(view.codec(), StreamCodec::Vp9);
-        assert!(view.push_encoded(&vp9_unit(W, H)), "the new codec decodes");
-        view.restart_stream("vp9", Some((W, H)));
-        assert!(
-            view.latest_frame().is_some(),
-            "an unchanged codec keeps the picture"
-        );
-    }
-
-    #[test]
-    fn metrics_handle_is_shared_via_clone() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
-
-        let metrics = PeerSurfaceMetrics::default();
-        let external = metrics.clone();
-        let mut view = vp9_view(metrics);
-
-        assert_eq!(external.snapshot().frames_received, 0);
-        view.push_encoded_with_latency(&nalus, Some(500));
-        assert_eq!(external.snapshot().frames_received, 1);
-        assert_eq!(external.snapshot().latency_ns_mean, 500);
+        push_encoded_returns_false_for_empty_payload();
+        push_encoded_with_latency_drops_oldest_after_ceiling();
+        an_unknown_stream_label_degrades_to_h264();
+        a_codec_switch_rebuilds_the_decoder();
+        metrics_handle_is_shared_via_clone();
     }
 }

@@ -15,8 +15,8 @@ name = "tinker"
 path = "src/main.rs"
 
 [dependencies]
-tilo-clock = { path = "../tilo-clock" }
-xdg-paths = { path = "../xdg-paths" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-xdg-paths = { path = "../xdg-paths" }
 anyhow = { workspace = true }
 bounded-command = { path = "../bounded-command" }
 clap = { workspace = true }
@@ -24,6 +24,7 @@ libc = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 walkdir = { workspace = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

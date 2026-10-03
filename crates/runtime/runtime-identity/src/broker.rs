@@ -170,67 +170,68 @@ mod tests {
     use std::os::fd::IntoRawFd;
 
     #[test]
-    fn broker_signs_without_exposing_the_key() {
-        let key = SigningKey::from_bytes(&[42; 32]);
-        let verifier = key.verifying_key();
-        let identity = SigningIdentity::from_local_parts(
-            "Ada".into(),
-            [1, 2, 3],
-            verifier.to_bytes(),
-            1,
-            1,
-            1,
-            Some(key),
-        );
-        let (host, mut app) = UnixStream::pair().unwrap();
-        let thread = std::thread::spawn(move || serve(host, identity).unwrap());
+    fn broker_signs_over_pinned_bounded_frames_without_exposing_the_key() {
+        // phase: broker_signs_without_exposing_the_key
+        {
+            let key = SigningKey::from_bytes(&[42; 32]);
+            let verifier = key.verifying_key();
+            let identity = SigningIdentity::from_local_parts(
+                "Ada".into(),
+                [1, 2, 3],
+                verifier.to_bytes(),
+                1,
+                1,
+                1,
+                Some(key),
+            );
+            let (host, mut app) = UnixStream::pair().unwrap();
+            let thread = std::thread::spawn(move || serve(host, identity).unwrap());
 
-        write_frame(&mut app, OP_METADATA, &[]).unwrap();
-        let (status, metadata) = read_frame(&mut app).unwrap();
-        assert_eq!(status, 0);
-        assert!(!String::from_utf8_lossy(&metadata).contains("secret"));
+            write_frame(&mut app, OP_METADATA, &[]).unwrap();
+            let (status, metadata) = read_frame(&mut app).unwrap();
+            assert_eq!(status, 0);
+            assert!(!String::from_utf8_lossy(&metadata).contains("secret"));
 
-        let message = b"brokered operation";
-        write_frame(&mut app, OP_SIGN, message).unwrap();
-        let (status, signature) = read_frame(&mut app).unwrap();
-        assert_eq!(status, 0);
-        verifier
-            .verify(
-                message,
-                &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
+            let message = b"brokered operation";
+            write_frame(&mut app, OP_SIGN, message).unwrap();
+            let (status, signature) = read_frame(&mut app).unwrap();
+            assert_eq!(status, 0);
+            verifier
+                .verify(
+                    message,
+                    &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
+                )
+                .unwrap();
+            drop(app);
+            thread.join().unwrap();
+        }
+        // phase: broker_wire_bytes_are_pinned
+        // The per-launch broker's bytes: a status or operation byte, a
+        // big-endian `u32` length, then the payload.
+        {
+            let (mut left, mut right) = UnixStream::pair().unwrap();
+            write_frame(&mut left, OP_SIGN, b"hi").unwrap();
+            let mut sent = [0_u8; 7];
+            right.read_exact(&mut sent).unwrap();
+            assert_eq!(sent, [OP_SIGN, 0, 0, 0, 2, b'h', b'i']);
+            left.write_all(&[1, 0, 0, 0, 3, 7, 8, 9]).unwrap();
+            assert_eq!(read_frame(&mut right).unwrap(), (1, vec![7, 8, 9]));
+            left.write_all(&[OP_METADATA, 0, 0, 0, 0]).unwrap();
+            assert_eq!(read_frame(&mut right).unwrap(), (OP_METADATA, Vec::new()));
+        }
+        // phase: oversized_request_is_rejected_before_allocation
+        {
+            let (mut left, mut right) = UnixStream::pair().unwrap();
+            left.write_all(&[OP_SIGN]).unwrap();
+            left.write_all(
+                &(u32::try_from(FRAMING.max_len()).expect("limit fits in u32") + 1).to_be_bytes(),
             )
             .unwrap();
-        drop(app);
-        thread.join().unwrap();
-    }
-
-    /// The per-launch broker's bytes: a status or operation byte, a
-    /// big-endian `u32` length, then the payload.
-    #[test]
-    fn broker_wire_bytes_are_pinned() {
-        let (mut left, mut right) = UnixStream::pair().unwrap();
-        write_frame(&mut left, OP_SIGN, b"hi").unwrap();
-        let mut sent = [0_u8; 7];
-        right.read_exact(&mut sent).unwrap();
-        assert_eq!(sent, [OP_SIGN, 0, 0, 0, 2, b'h', b'i']);
-        left.write_all(&[1, 0, 0, 0, 3, 7, 8, 9]).unwrap();
-        assert_eq!(read_frame(&mut right).unwrap(), (1, vec![7, 8, 9]));
-        left.write_all(&[OP_METADATA, 0, 0, 0, 0]).unwrap();
-        assert_eq!(read_frame(&mut right).unwrap(), (OP_METADATA, Vec::new()));
-    }
-
-    #[test]
-    fn oversized_request_is_rejected_before_allocation() {
-        let (mut left, mut right) = UnixStream::pair().unwrap();
-        left.write_all(&[OP_SIGN]).unwrap();
-        left.write_all(
-            &(u32::try_from(FRAMING.max_len()).expect("limit fits in u32") + 1).to_be_bytes(),
-        )
-        .unwrap();
-        assert_eq!(
-            read_frame(&mut right).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+            assert_eq!(
+                read_frame(&mut right).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 
     #[test]

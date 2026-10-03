@@ -1,12 +1,13 @@
 //! Reader for the checked-in data files written by `tools/regenerate.py`.
 //!
-//! Both files are tab-separated records keyed by their first field; `#` lines
+//! The files are tab-separated records keyed by their first field; `#` lines
 //! are comments. The files are generated, so a malformed record is skipped
 //! rather than trusted.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
-use crate::{Catalogue, Emoji, Gender, Group, SkinTone, Subgroup, search};
+use crate::{Catalogue, Emoji, Gender, Group, SkinTone, Subgroup};
 
 const VS16: char = '\u{FE0F}';
 
@@ -65,8 +66,26 @@ pub(crate) fn build(
     locale: &'static str,
     structure: &'static str,
     names_text: &'static str,
+    fallback_text: Option<&'static str>,
 ) -> Catalogue {
     let names = read_names(names_text);
+    let fallback = fallback_text.map(read_names);
+    let label_of = |id: &'static str| -> &'static str {
+        names
+            .labels
+            .get(id)
+            .or_else(|| fallback.as_ref()?.labels.get(id))
+            .copied()
+            .unwrap_or(id)
+    };
+    let entry_of = |text: &'static str| -> (&'static str, &'static str) {
+        names
+            .entries
+            .get(text)
+            .or_else(|| fallback.as_ref()?.entries.get(text))
+            .copied()
+            .unwrap_or((text, ""))
+    };
     let mut emoji: Vec<Emoji> = Vec::new();
     let mut groups: Vec<Group> = Vec::new();
     let mut subgroups: Vec<Subgroup> = Vec::new();
@@ -89,7 +108,7 @@ pub(crate) fn build(
                 let sub_at = subgroups.len();
                 groups.push(Group {
                     id,
-                    label: names.labels.get(id).copied().unwrap_or(id),
+                    label: label_of(id),
                     first: "",
                     subgroups: sub_at..sub_at,
                     emoji: at..at,
@@ -115,7 +134,7 @@ pub(crate) fn build(
                 else {
                     continue;
                 };
-                let (name, keywords) = names.entries.get(text).copied().unwrap_or((text, ""));
+                let (name, keywords) = entry_of(text);
                 emoji.push(Emoji {
                     text,
                     name,
@@ -193,7 +212,6 @@ pub(crate) fn build(
         }
     }
 
-    let keys = emoji.iter().map(search::Key::new).collect();
     Catalogue {
         locale,
         emoji,
@@ -203,6 +221,6 @@ pub(crate) fn build(
         toned,
         genders,
         neutral_of,
-        keys,
+        search: OnceLock::new(),
     }
 }

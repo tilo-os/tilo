@@ -21,6 +21,7 @@
 //! - [`locale`] — the `Name[xx]=` fallback chain.
 //! - [`mod@scan`]   — the XDG search path, desktop-file IDs, precedence.
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
+//! - [`icon_theme`] — resolving `Icon=` through the icon-theme search path.
 //! - [`launch`] — spawning a host application, and what that costs.
 //! - [`autostart`] — the XDG autostart entries a session starts at login.
 
@@ -41,6 +42,7 @@ pub mod autostart;
 pub mod cache;
 pub mod entry;
 pub mod exec;
+pub mod icon_theme;
 pub mod launch;
 pub mod locale;
 pub mod scan;

@@ -110,14 +110,16 @@ fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
     let root = automerge::ROOT;
     host.handle_event(
         event,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &tree,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &tree,
+        },
     );
 }
 
@@ -259,7 +261,10 @@ async fn pump_until(
     what: &str,
     mut f: impl FnMut(&mut ShellOverlayHost) -> bool,
 ) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if f(host) {
             return;
@@ -282,7 +287,10 @@ async fn await_response(
     what: &str,
     handle: tokio::task::JoinHandle<(u32, std::collections::HashMap<String, OwnedValue>)>,
 ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if handle.is_finished() {
             return handle.await.expect("join");
@@ -306,291 +314,28 @@ fn path_of_uri(uri: &str) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
-    const BYTES: &str = "the bytes the app must be able to read\n";
-
-    let dir = user_dir();
-    let target = dir.path().join("report.txt");
-    std::fs::write(&target, BYTES).expect("seed file");
-    std::fs::write(dir.path().join("other.txt"), "not this one").expect("seed decoy");
-
-    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-    let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
-    let (_srv, _cli, proxy) = portal_proxy(context(grants.clone(), prompts, pickers, ws)).await;
-
-    // The app's request. Parks on the dialog, so it runs concurrently.
-    let call = tokio::spawn(async move {
-        let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").unwrap();
-        proxy
-            .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
-                "OpenFile",
-                &(
-                    handle,
-                    APP.to_string(),
-                    String::new(),
-                    "Open a document".to_string(),
-                    std::collections::HashMap::<String, OwnedValue>::new(),
-                ),
-            )
-            .await
-            .expect("OpenFile")
-    });
-
-    pump_until(&mut host, "the dialog to appear", |h| {
-        h.file_picker().is_some()
-    })
-    .await;
-
-    // Point it at the seeded directory, the way a user browsing there would.
-    let rect = picker_rect();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+async fn file_chooser_opens_and_saves_what_the_user_picked() {
+    // Phase `an_app_opens_a_file_the_user_picked_and_reads_it`.
     {
-        let picker = host.file_picker_mut().expect("dialog");
-        picker.set_rect(rect);
-        picker.navigate_to(dir.path());
-        picker.set_rect(rect);
-    }
-    let row = {
-        let picker = host.file_picker().expect("dialog");
-        let idx = picker
-            .entries()
-            .iter()
-            .position(|e| e.name == "report.txt")
-            .expect("report.txt must be listed");
-        picker.entry_rect(idx).expect("row must be laid out")
-    };
-    // Two clicks on the row: select, then activate — through the widget's own
-    // hit-test path, so a layout regression breaks this test.
-    click_at(&mut host, row.center());
-    click_at(&mut host, row.center());
+        const BYTES: &str = "the bytes the app must be able to read\n";
 
-    // Confirm. Again by rect, not by calling `click_open`.
-    let confirm = host.file_picker().expect("dialog").open_rect();
-    click_at(&mut host, confirm.center());
+        let dir = user_dir();
+        let target = dir.path().join("report.txt");
+        std::fs::write(&target, BYTES).expect("seed file");
+        std::fs::write(dir.path().join("other.txt"), "not this one").expect("seed decoy");
 
-    pump_until(&mut host, "the dialog to close", |h| {
-        h.file_picker().is_none()
-    })
-    .await;
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        let pickers = FilePickerQueue::new();
+        let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
+        let (_srv, _cli, proxy) = portal_proxy(context(grants.clone(), prompts, pickers, ws)).await;
 
-    let (code, results) = await_response(&mut host, "the open", call).await;
-
-    assert_eq!(code, 0, "a completed pick is response=0");
-    let uris = uris_of(&results);
-    assert_eq!(uris.len(), 1, "OpenFile returns exactly one uri: {uris:?}");
-
-    let handed = path_of_uri(&uris[0]);
-    let read_back = std::fs::read_to_string(&handed)
-        .unwrap_or_else(|e| panic!("the app cannot read {}: {e}", handed.display()));
-    assert_eq!(
-        read_back, BYTES,
-        "the app must get the file the user picked"
-    );
-
-    // The implementation backend returns the host selection only to the
-    // trusted xdg-desktop-portal frontend, which exports it through the
-    // document portal. It must not turn a personal pick into replicated room
-    // filesystem authority.
-    let tree = grants.tree_handle();
-    let paths: Vec<PathBuf> = {
-        let guard = tree.read();
-        guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws)
-            .expect("workspace")
-            .app_capabilities(APP)
-            .into_iter()
-            .filter_map(|c| match Capability::from_capability(c) {
-                Some(Capability::Filesystem { path, .. }) => Some(path),
-                _ => None,
-            })
-            .collect()
-    };
-    assert!(
-        paths.is_empty(),
-        "a file pick must remain private; got {paths:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
-    const BYTES: &str = "saved from the app\n";
-
-    let dir = user_dir();
-    let fresh = dir.path().join("untouched");
-    std::fs::create_dir(&fresh).expect("mkdir");
-
-    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-    let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
-
-    // Prove the starting condition rather than assuming it: nothing in
-    // this workspace grants the app anything under `fresh` yet.
-    let caller = PortalCaller::new(ws, APP);
-    assert!(
-        !grants.filesystem_path_granted(&caller, &fresh),
-        "precondition: the app must start with no access to the save directory"
-    );
-
-    let (_srv, _cli, proxy) = portal_proxy(context(grants.clone(), prompts, pickers, ws)).await;
-
-    let call = tokio::spawn(async move {
-        let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/2").unwrap();
-        proxy
-            .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
-                "SaveFile",
-                &(
-                    handle,
-                    APP.to_string(),
-                    String::new(),
-                    "Save as".to_string(),
-                    std::collections::HashMap::<String, OwnedValue>::new(),
-                ),
-            )
-            .await
-            .expect("SaveFile")
-    });
-
-    pump_until(&mut host, "the save dialog to appear", |h| {
-        h.file_picker().is_some()
-    })
-    .await;
-
-    let rect = picker_rect();
-    {
-        let picker = host.file_picker_mut().expect("dialog");
-        picker.set_rect(rect);
-        picker.navigate_to(&fresh);
-        picker.set_rect(rect);
-    }
-    // Type the filename, character by character, through the host's
-    // modal keyboard route.
-    for ch in "notes.md".chars() {
-        dispatch(&mut host, &key_press(ch));
-    }
-    assert_eq!(
-        host.file_picker().expect("dialog").filename(),
-        "notes.md",
-        "the typed filename must reach the dialog through the modal route"
-    );
-
-    // Save starts on the filename control; Enter accepts only after the name
-    // made the primary action valid. This goes through the host modal route,
-    // not a widget-only helper or a pointer click.
-    dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Enter));
-
-    pump_until(&mut host, "the save dialog to close", |h| {
-        h.file_picker().is_none()
-    })
-    .await;
-
-    let (code, results) = await_response(&mut host, "the save", call).await;
-
-    assert_eq!(code, 0);
-    assert!(
-        results.contains_key("writable"),
-        "a Save response must be marked writable: {:?}",
-        results.keys().collect::<Vec<_>>()
-    );
-    let handed = path_of_uri(&uris_of(&results)[0]);
-    assert_eq!(handed, fresh.join("notes.md"));
-
-    std::fs::write(&handed, BYTES)
-        .unwrap_or_else(|e| panic!("the app cannot write {}: {e}", handed.display()));
-    assert_eq!(
-        std::fs::read_to_string(&handed).expect("read back"),
-        BYTES,
-        "the bytes must land on disk at the path the user chose"
-    );
-
-    // Writable access is conferred by the frontend's document export, never
-    // by adding a collaborative workspace capability.
-    let tree = grants.tree_handle();
-    let replicated = {
-        let guard = tree.read();
-        guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws)
-            .expect("workspace")
-            .app_capabilities(APP)
-            .into_iter()
-            .any(|c| {
-                matches!(
-                    Capability::from_capability(c),
-                    Some(Capability::Filesystem { .. })
-                )
-            })
-    };
-    assert!(
-        !replicated,
-        "a private Save choice must not add collaborative filesystem authority"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
-    let dir = user_dir();
-    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-    let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
-    let (_srv, _cli, proxy) = portal_proxy(context(grants, prompts, pickers, ws)).await;
-
-    let call = tokio::spawn(async move {
-        let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/3").unwrap();
-        proxy
-            .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
-                "OpenFile",
-                &(
-                    handle,
-                    APP.to_string(),
-                    String::new(),
-                    "Open".to_string(),
-                    std::collections::HashMap::<String, OwnedValue>::new(),
-                ),
-            )
-            .await
-            .expect("OpenFile")
-    });
-
-    pump_until(&mut host, "the dialog to appear", |h| {
-        h.file_picker().is_some()
-    })
-    .await;
-
-    // Escape is routed to the modal, not through to the requesting app, and
-    // resolves the parked portal call exactly like the visible Cancel button.
-    dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Escape));
-
-    pump_until(&mut host, "the dialog to close", |h| {
-        h.file_picker().is_none()
-    })
-    .await;
-
-    let (code, results) = await_response(&mut host, "the cancel", call).await;
-    assert_eq!(code, 1, "cancel is response=1");
-    assert!(results.is_empty());
-}
-
-/// Two modals for two apps, with no way to tell which is which, is worse
-/// than a cancel the app can retry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
-    let dir = user_dir();
-    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-    let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
-    let ctx = context(grants, prompts, pickers.clone(), ws);
-    let (_srv, _cli, proxy) = portal_proxy(ctx).await;
-    let proxy = Arc::new(proxy);
-
-    let first = {
-        let proxy = Arc::clone(&proxy);
-        tokio::spawn(async move {
-            let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/4").unwrap();
+        // The app's request. Parks on the dialog, so it runs concurrently.
+        let call = tokio::spawn(async move {
+            let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").unwrap();
             proxy
                 .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
                     "OpenFile",
@@ -598,21 +343,225 @@ async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
                         handle,
                         APP.to_string(),
                         String::new(),
-                        "First".to_string(),
+                        "Open a document".to_string(),
                         std::collections::HashMap::<String, OwnedValue>::new(),
                     ),
                 )
                 .await
-                .expect("first OpenFile")
+                .expect("OpenFile")
+        });
+
+        pump_until(&mut host, "the dialog to appear", |h| {
+            h.file_picker().is_some()
         })
-    };
+        .await;
 
-    pump_until(&mut host, "the first dialog", |h| h.file_picker().is_some()).await;
+        // Point it at the seeded directory, the way a user browsing there would.
+        let rect = picker_rect();
+        {
+            let picker = host.file_picker_mut().expect("dialog");
+            picker.set_rect(rect);
+            picker.navigate_to(dir.path());
+            picker.set_rect(rect);
+        }
+        let row = {
+            let picker = host.file_picker().expect("dialog");
+            let idx = picker
+                .entries()
+                .iter()
+                .position(|e| e.name == "report.txt")
+                .expect("report.txt must be listed");
+            picker.entry_rect(idx).expect("row must be laid out")
+        };
+        // Two clicks on the row: select, then activate — through the widget's own
+        // hit-test path, so a layout regression breaks this test.
+        click_at(&mut host, row.center());
+        click_at(&mut host, row.center());
 
-    let second = {
-        let proxy = Arc::clone(&proxy);
-        tokio::spawn(async move {
-            let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/5").unwrap();
+        // Confirm. Again by rect, not by calling `click_open`.
+        let confirm = host.file_picker().expect("dialog").open_rect();
+        click_at(&mut host, confirm.center());
+
+        pump_until(&mut host, "the dialog to close", |h| {
+            h.file_picker().is_none()
+        })
+        .await;
+
+        let (code, results) = await_response(&mut host, "the open", call).await;
+
+        assert_eq!(code, 0, "a completed pick is response=0");
+        let uris = uris_of(&results);
+        assert_eq!(uris.len(), 1, "OpenFile returns exactly one uri: {uris:?}");
+
+        let handed = path_of_uri(&uris[0]);
+        let read_back = std::fs::read_to_string(&handed)
+            .unwrap_or_else(|e| panic!("the app cannot read {}: {e}", handed.display()));
+        assert_eq!(
+            read_back, BYTES,
+            "the app must get the file the user picked"
+        );
+
+        // The implementation backend returns the host selection only to the
+        // trusted xdg-desktop-portal frontend, which exports it through the
+        // document portal. It must not turn a personal pick into replicated room
+        // filesystem authority.
+        let tree = grants.tree_handle();
+        let paths: Vec<PathBuf> = {
+            let guard = tree.read();
+            guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws)
+                .expect("workspace")
+                .app_capabilities(APP)
+                .into_iter()
+                .filter_map(|c| match Capability::from_capability(c) {
+                    Some(Capability::Filesystem { path, .. }) => Some(path),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(
+            paths.is_empty(),
+            "a file pick must remain private; got {paths:?}"
+        );
+    }
+
+    // Phase `an_app_saves_into_a_directory_it_did_not_previously_have`.
+    {
+        const BYTES: &str = "saved from the app\n";
+
+        let dir = user_dir();
+        let fresh = dir.path().join("untouched");
+        std::fs::create_dir(&fresh).expect("mkdir");
+
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        let pickers = FilePickerQueue::new();
+        let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
+
+        // Prove the starting condition rather than assuming it: nothing in
+        // this workspace grants the app anything under `fresh` yet.
+        let caller = PortalCaller::new(ws, APP);
+        assert!(
+            !grants.filesystem_path_granted(&caller, &fresh),
+            "precondition: the app must start with no access to the save directory"
+        );
+
+        let (_srv, _cli, proxy) = portal_proxy(context(grants.clone(), prompts, pickers, ws)).await;
+
+        let call = tokio::spawn(async move {
+            let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/2").unwrap();
+            proxy
+                .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
+                    "SaveFile",
+                    &(
+                        handle,
+                        APP.to_string(),
+                        String::new(),
+                        "Save as".to_string(),
+                        std::collections::HashMap::<String, OwnedValue>::new(),
+                    ),
+                )
+                .await
+                .expect("SaveFile")
+        });
+
+        pump_until(&mut host, "the save dialog to appear", |h| {
+            h.file_picker().is_some()
+        })
+        .await;
+
+        let rect = picker_rect();
+        {
+            let picker = host.file_picker_mut().expect("dialog");
+            picker.set_rect(rect);
+            picker.navigate_to(&fresh);
+            picker.set_rect(rect);
+        }
+        // Type the filename, character by character, through the host's
+        // modal keyboard route.
+        for ch in "notes.md".chars() {
+            dispatch(&mut host, &key_press(ch));
+        }
+        assert_eq!(
+            host.file_picker().expect("dialog").filename(),
+            "notes.md",
+            "the typed filename must reach the dialog through the modal route"
+        );
+
+        // Save starts on the filename control; Enter accepts only after the name
+        // made the primary action valid. This goes through the host modal route,
+        // not a widget-only helper or a pointer click.
+        dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Enter));
+
+        pump_until(&mut host, "the save dialog to close", |h| {
+            h.file_picker().is_none()
+        })
+        .await;
+
+        let (code, results) = await_response(&mut host, "the save", call).await;
+
+        assert_eq!(code, 0);
+        assert!(
+            results.contains_key("writable"),
+            "a Save response must be marked writable: {:?}",
+            results.keys().collect::<Vec<_>>()
+        );
+        let handed = path_of_uri(&uris_of(&results)[0]);
+        assert_eq!(handed, fresh.join("notes.md"));
+
+        std::fs::write(&handed, BYTES)
+            .unwrap_or_else(|e| panic!("the app cannot write {}: {e}", handed.display()));
+        assert_eq!(
+            std::fs::read_to_string(&handed).expect("read back"),
+            BYTES,
+            "the bytes must land on disk at the path the user chose"
+        );
+
+        // Writable access is conferred by the frontend's document export, never
+        // by adding a collaborative workspace capability.
+        let tree = grants.tree_handle();
+        let replicated = {
+            let guard = tree.read();
+            guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws)
+                .expect("workspace")
+                .app_capabilities(APP)
+                .into_iter()
+                .any(|c| {
+                    matches!(
+                        Capability::from_capability(c),
+                        Some(Capability::Filesystem { .. })
+                    )
+                })
+        };
+        assert!(
+            !replicated,
+            "a private Save choice must not add collaborative filesystem authority"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+async fn file_chooser_answers_cancelled_and_concurrent_requests_instead_of_hanging() {
+    // Phase `cancelling_the_dialog_answers_the_app_instead_of_hanging_it`.
+    {
+        let dir = user_dir();
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        let pickers = FilePickerQueue::new();
+        let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
+        let (_srv, _cli, proxy) = portal_proxy(context(grants, prompts, pickers, ws)).await;
+
+        let call = tokio::spawn(async move {
+            let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/3").unwrap();
             proxy
                 .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
                     "OpenFile",
@@ -620,36 +569,117 @@ async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
                         handle,
                         APP.to_string(),
                         String::new(),
-                        "Second".to_string(),
+                        "Open".to_string(),
                         std::collections::HashMap::<String, OwnedValue>::new(),
                     ),
                 )
                 .await
-                .expect("second OpenFile")
+                .expect("OpenFile")
+        });
+
+        pump_until(&mut host, "the dialog to appear", |h| {
+            h.file_picker().is_some()
         })
-    };
+        .await;
 
-    // The second request is refused while the first dialog holds the
-    // screen; the first is still up.
-    let (code2, _) = await_response(&mut host, "the second request", second).await;
-    assert_eq!(code2, 1, "a request we will not show is cancelled");
-    assert!(
-        host.file_picker().is_some(),
-        "the first dialog must survive the second request"
-    );
+        // Escape is routed to the modal, not through to the requesting app, and
+        // resolves the parked portal call exactly like the visible Cancel button.
+        dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Escape));
 
-    // And the first still resolves normally.
-    let rect = picker_rect();
-    let cancel = {
-        let picker = host.file_picker_mut().expect("dialog");
-        picker.set_rect(rect);
-        picker.cancel_rect()
-    };
-    click_at(&mut host, cancel.center());
-    pump_until(&mut host, "the first dialog to close", |h| {
-        h.file_picker().is_none()
-    })
-    .await;
-    let (code1, _) = await_response(&mut host, "the first request", first).await;
-    assert_eq!(code1, 1);
+        pump_until(&mut host, "the dialog to close", |h| {
+            h.file_picker().is_none()
+        })
+        .await;
+
+        let (code, results) = await_response(&mut host, "the cancel", call).await;
+        assert_eq!(code, 1, "cancel is response=1");
+        assert!(results.is_empty());
+    }
+
+    // Phase `a_second_request_while_a_dialog_is_up_is_answered_not_stacked`.
+    // Two modals for two apps, with no way to tell which is which, is worse
+    // than a cancel the app can retry.
+    {
+        let dir = user_dir();
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        let pickers = FilePickerQueue::new();
+        let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
+        let ctx = context(grants, prompts, pickers.clone(), ws);
+        let (_srv, _cli, proxy) = portal_proxy(ctx).await;
+        let proxy = Arc::new(proxy);
+
+        let first = {
+            let proxy = Arc::clone(&proxy);
+            tokio::spawn(async move {
+                let handle =
+                    ObjectPath::try_from("/org/freedesktop/portal/desktop/request/4").unwrap();
+                proxy
+                    .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
+                        "OpenFile",
+                        &(
+                            handle,
+                            APP.to_string(),
+                            String::new(),
+                            "First".to_string(),
+                            std::collections::HashMap::<String, OwnedValue>::new(),
+                        ),
+                    )
+                    .await
+                    .expect("first OpenFile")
+            })
+        };
+
+        pump_until(&mut host, "the first dialog", |h| h.file_picker().is_some()).await;
+
+        let second = {
+            let proxy = Arc::clone(&proxy);
+            tokio::spawn(async move {
+                let handle =
+                    ObjectPath::try_from("/org/freedesktop/portal/desktop/request/5").unwrap();
+                proxy
+                    .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
+                        "OpenFile",
+                        &(
+                            handle,
+                            APP.to_string(),
+                            String::new(),
+                            "Second".to_string(),
+                            std::collections::HashMap::<String, OwnedValue>::new(),
+                        ),
+                    )
+                    .await
+                    .expect("second OpenFile")
+            })
+        };
+
+        // The second request is refused while the first dialog holds the
+        // screen; the first is still up.
+        let (code2, _) = await_response(&mut host, "the second request", second).await;
+        assert_eq!(code2, 1, "a request we will not show is cancelled");
+        assert!(
+            host.file_picker().is_some(),
+            "the first dialog must survive the second request"
+        );
+
+        // And the first still resolves normally.
+        let rect = picker_rect();
+        let cancel = {
+            let picker = host.file_picker_mut().expect("dialog");
+            picker.set_rect(rect);
+            picker.cancel_rect()
+        };
+        click_at(&mut host, cancel.center());
+        pump_until(&mut host, "the first dialog to close", |h| {
+            h.file_picker().is_none()
+        })
+        .await;
+        let (code1, _) = await_response(&mut host, "the first request", first).await;
+        assert_eq!(code1, 1);
+    }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

@@ -76,9 +76,10 @@ for file in Image initrd .cmdline; do
   [[ -s $tmp/$file ]] || { echo "boot entry has no $file" >&2; exit 1; }
 done
 
-python3 - "$tmp/.cmdline" "$partuuid" "$tmp/boot.json" <<'PY'
+python3 - "$tmp/.cmdline" "$partuuid" "$tmp/boot.json" "$mode" <<'PY'
 import json
 import pathlib
+import re
 import sys
 import uuid
 
@@ -87,6 +88,21 @@ if "\0" in cmdline or "root=tilo-auto" not in cmdline.split():
     raise SystemExit("boot command line does not name the Tilo root resolver")
 if "systemd.setenv=TILO_ROOT_LOADER_PARTUUID=" in cmdline:
     raise SystemExit("boot command line already overrides the loader UUID")
+# An unsealed dev BLS entry uses bootc's read-only ESP mount. Direct boot is
+# only used with a throwaway VM overlay, where tilo-boot-entries must rename
+# loader entries and maintain its repair metadata on /boot during first boot.
+# Keep sealed UKI command lines byte-for-byte unchanged.
+if sys.argv[4] == "bls":
+    words = cmdline.split()
+    for index, word in enumerate(words):
+        match = re.fullmatch(r"systemd\.mount-extra=([^:]+):/boot:([^:]+):([^:]+)", word)
+        if not match:
+            continue
+        options = match.group(3).split(",")
+        if "ro" in options:
+            options = ["rw" if option == "ro" else option for option in options]
+            words[index] = f"systemd.mount-extra={match.group(1)}:/boot:{match.group(2)}:{','.join(options)}"
+    cmdline = " ".join(words)
 partuuid = str(uuid.UUID(sys.argv[2]))
 with open(sys.argv[3], "w", encoding="utf-8") as output:
     json.dump({"kernel": "Image", "initrd": "initrd", "cmdline": cmdline,

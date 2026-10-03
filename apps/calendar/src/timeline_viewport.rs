@@ -224,14 +224,16 @@ impl TimelineViewport {
     pub fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
             input.event,
-            input.scale_factor,
-            &input.modifiers,
-            input.state,
-            input.path,
-            input.handled,
-            input.focus_target,
-            input.node_id,
-            input.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: input.scale_factor,
+                modifiers: &input.modifiers,
+                state: input.state,
+                path: input.path,
+                handled: input.handled,
+                focus_target: input.focus_target,
+                node_id: input.node_id,
+                taffy: input.taffy,
+            },
         );
         *input.handled
     }
@@ -271,128 +273,132 @@ mod tests {
     use super::*;
 
     #[test]
-    fn geometry_keeps_legible_hours_and_maps_columns() {
-        let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-        let geom = TimelineViewport::geometry(area);
-        assert_eq!(geom.hour_h, TIMELINE_MIN_HOUR_H);
-        assert_eq!(geom.content_h, 24.0 * TIMELINE_MIN_HOUR_H);
-        let width = TimelineViewport::column_width(area, 7, geom);
-        assert_eq!(
-            TimelineViewport::column_at(area, 7, geom, area.x0 + geom.gutter + width * 3.5),
-            3
-        );
-    }
-
-    /// The 1× geometry is the authored design on whole pixels; the 2× one
-    /// holds the scaled lines and stays on whole pixels too.
-    #[test]
-    fn geometry_reproduces_the_authored_design_at_one_x_and_grows_whole() {
-        let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-        let sp = Spacing::default();
-        let one = TimelineViewport::geometry_for(area, 1.0, &sp);
-        assert_eq!(one.head_h, TIMELINE_HEAD_H);
-        assert_eq!(one.allday_h, TIMELINE_ALLDAY_H);
-        // The smallest block always holds its title line plus the pad the
-        // painter puts above it (so descenders are never clipped), on a whole
-        // pixel, and never shrinks under the authored minimum.
-        let title_1x = crate::metrics::line_h(TIMELINE_TITLE_TEXT, 1.0);
-        assert!(one.min_block_h >= title_1x + f64::from(sp.s1));
-        assert!(one.min_block_h >= TIMELINE_MIN_BLOCK_H);
-        assert_eq!(one.min_block_h.fract(), 0.0);
-        assert_eq!(one.body_top, area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H);
-        assert_eq!(one.gutter, TIMELINE_GUTTER);
-
-        let two = TimelineViewport::geometry_for(area, 2.0, &sp);
-        // The gutter widens by the hour label's extra width, so "08:00" at 2×
-        // stays inside it instead of running into the first column.
-        let mut tr = ui::text_render::TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (label_w, _) = tr.measure("00:00", TIMELINE_HOUR_TEXT, None);
-        assert!(
-            two.gutter >= f64::from(sp.s3) + f64::from(label_w),
-            "gutter {} must hold the measured 2× hour label ({label_w}) after its inset",
-            two.gutter
-        );
-        assert!(two.gutter > one.gutter);
-        for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
-            assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
+    fn geometry_keeps_legible_hours_maps_columns_and_grows_whole_when_scaled() {
+        // Case `geometry_keeps_legible_hours_and_maps_columns`.
+        {
+            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+            let geom = TimelineViewport::geometry(area);
+            assert_eq!(geom.hour_h, TIMELINE_MIN_HOUR_H);
+            assert_eq!(geom.content_h, 24.0 * TIMELINE_MIN_HOUR_H);
+            let width = TimelineViewport::column_width(area, 7, geom);
+            assert_eq!(
+                TimelineViewport::column_at(area, 7, geom, area.x0 + geom.gutter + width * 3.5),
+                3
+            );
         }
-        // Header: both scaled lines plus the `s2` pad above and below them;
-        // block: the scaled title plus its `s1` pad — the same tokens the
-        // painter lays the text out with.
-        assert!(
-            two.head_h
-                >= 2.0 * f64::from(sp.s2)
-                    + crate::metrics::line_h(TIMELINE_WEEKDAY_TEXT, 2.0)
-                    + crate::metrics::line_h(TIMELINE_DAY_TEXT, 2.0)
-        );
-        assert!(
-            two.min_block_h >= crate::metrics::line_h(TIMELINE_TITLE_TEXT, 2.0) + f64::from(sp.s1)
-        );
-        assert!(two.allday_h > one.allday_h && two.head_h > one.head_h);
-    }
+        // Case `geometry_reproduces_the_authored_design_at_one_x_and_grows_whole`:
+        // The 1× geometry is the authored design on whole pixels; the 2× one
+        // holds the scaled lines and stays on whole pixels too.
+        {
+            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+            let sp = Spacing::default();
+            let one = TimelineViewport::geometry_for(area, 1.0, &sp);
+            assert_eq!(one.head_h, TIMELINE_HEAD_H);
+            assert_eq!(one.allday_h, TIMELINE_ALLDAY_H);
+            // The smallest block always holds its title line plus the pad the
+            // painter puts above it (so descenders are never clipped), on a whole
+            // pixel, and never shrinks under the authored minimum.
+            let title_1x = crate::metrics::line_h(TIMELINE_TITLE_TEXT, 1.0);
+            assert!(one.min_block_h >= title_1x + f64::from(sp.s1));
+            assert!(one.min_block_h >= TIMELINE_MIN_BLOCK_H);
+            assert_eq!(one.min_block_h.fract(), 0.0);
+            assert_eq!(one.body_top, area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H);
+            assert_eq!(one.gutter, TIMELINE_GUTTER);
 
-    /// A fractional focus hour ("now − 1 h") seeds on the whole hour below
-    /// it, so the first visible hour rule sits exactly on the body top and
-    /// its label — painted just under the rule — is never clipped by the
-    /// all-day strip.
-    #[test]
-    fn seeded_scroll_lands_on_a_whole_hour() {
-        let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-        let geom = TimelineViewport::geometry(area);
-        let mut viewport = TimelineViewport::new();
-        viewport.layout(area, 7.23);
-        assert!(viewport.vertical_overflows());
-        assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
-        // The 07:00 rule is at the body top; the label below it is inside.
-        let rule_y = geom.body_top + 7.0 * geom.hour_h - f64::from(viewport.offset_y());
-        assert!((rule_y - geom.body_top).abs() < 0.01);
-        assert_eq!(viewport.minute_at(geom, geom.body_top), 7 * 60);
-    }
-
-    /// When the seeded hour lies past what the scroll range can reach (a tall
-    /// 2× header in a short window), the seed snaps to the last whole hour
-    /// that fits instead of letting the `Scrollable` clamp the offset to a
-    /// fractional maximum — which would clip the first label just the same.
-    #[test]
-    fn seeded_scroll_caps_at_the_last_whole_hour_the_range_allows() {
-        // 24 × 44 = 1056 of content in a 600-tall body: at most 456 / 44 =
-        // 10.36 hours of scroll, so hour 9 is the last whole one that fits.
-        let area = Rect::new(
-            0.0,
-            0.0,
-            1000.0,
-            600.0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H + 8.0,
-        );
-        let geom = TimelineViewport::geometry(area);
-        let mut viewport = TimelineViewport::new();
-        viewport.layout(area, 22.0);
-        let offset = f64::from(viewport.offset_y());
-        assert!(
-            (offset / geom.hour_h).fract().abs() < 1e-6,
-            "seed is a whole hour"
-        );
-        assert!(offset + (geom.body_bottom - geom.body_top) <= geom.content_h + 1e-6);
-        let rule_y = geom.body_top + (offset / geom.hour_h).round() * geom.hour_h - offset;
-        assert!(
-            (rule_y - geom.body_top).abs() < 1e-6,
-            "an hour rule sits on the body top"
-        );
+            let two = TimelineViewport::geometry_for(area, 2.0, &sp);
+            // The gutter widens by the hour label's extra width, so "08:00" at 2×
+            // stays inside it instead of running into the first column.
+            let mut tr = ui::text_render::TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let (label_w, _) = tr.measure("00:00", TIMELINE_HOUR_TEXT, None);
+            assert!(
+                two.gutter >= f64::from(sp.s3) + f64::from(label_w),
+                "gutter {} must hold the measured 2× hour label ({label_w}) after its inset",
+                two.gutter
+            );
+            assert!(two.gutter > one.gutter);
+            for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
+                assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
+            }
+            // Header: both scaled lines plus the `s2` pad above and below them;
+            // block: the scaled title plus its `s1` pad — the same tokens the
+            // painter lays the text out with.
+            assert!(
+                two.head_h
+                    >= 2.0 * f64::from(sp.s2)
+                        + crate::metrics::line_h(TIMELINE_WEEKDAY_TEXT, 2.0)
+                        + crate::metrics::line_h(TIMELINE_DAY_TEXT, 2.0)
+            );
+            assert!(
+                two.min_block_h
+                    >= crate::metrics::line_h(TIMELINE_TITLE_TEXT, 2.0) + f64::from(sp.s1)
+            );
+            assert!(two.allday_h > one.allday_h && two.head_h > one.head_h);
+        }
     }
 
     #[test]
-    fn scroll_offset_drives_minute_and_block_hit_geometry() {
-        let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-        let geom = TimelineViewport::geometry(area);
-        let mut viewport = TimelineViewport::new();
-        viewport.layout(area, 7.0);
-        viewport.set_offset_y((geom.hour_h * 2.0) as f32);
-        assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
-        let block = viewport.block_rect(area, 7, geom, 2, 120, 180);
-        assert!((block.y0 - geom.body_top).abs() < 0.01);
-        assert_eq!(
-            TimelineViewport::column_at(area, 7, geom, block.center().x),
-            2
-        );
+    fn scroll_seeds_on_whole_hours_and_drives_minute_and_block_geometry() {
+        // Case `seeded_scroll_lands_on_a_whole_hour`:
+        // A fractional focus hour ("now − 1 h") seeds on the whole hour below
+        // it, so the first visible hour rule sits exactly on the body top and
+        // its label — painted just under the rule — is never clipped by the
+        // all-day strip.
+        {
+            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+            let geom = TimelineViewport::geometry(area);
+            let mut viewport = TimelineViewport::new();
+            viewport.layout(area, 7.23);
+            assert!(viewport.vertical_overflows());
+            assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
+            // The 07:00 rule is at the body top; the label below it is inside.
+            let rule_y = geom.body_top + 7.0 * geom.hour_h - f64::from(viewport.offset_y());
+            assert!((rule_y - geom.body_top).abs() < 0.01);
+            assert_eq!(viewport.minute_at(geom, geom.body_top), 7 * 60);
+        }
+        // Case `seeded_scroll_caps_at_the_last_whole_hour_the_range_allows`:
+        // When the seeded hour lies past what the scroll range can reach (a tall
+        // 2× header in a short window), the seed snaps to the last whole hour
+        // that fits instead of letting the `Scrollable` clamp the offset to a
+        // fractional maximum — which would clip the first label just the same.
+        {
+            // 24 × 44 = 1056 of content in a 600-tall body: at most 456 / 44 =
+            // 10.36 hours of scroll, so hour 9 is the last whole one that fits.
+            let area = Rect::new(
+                0.0,
+                0.0,
+                1000.0,
+                600.0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H + 8.0,
+            );
+            let geom = TimelineViewport::geometry(area);
+            let mut viewport = TimelineViewport::new();
+            viewport.layout(area, 22.0);
+            let offset = f64::from(viewport.offset_y());
+            assert!(
+                (offset / geom.hour_h).fract().abs() < 1e-6,
+                "seed is a whole hour"
+            );
+            assert!(offset + (geom.body_bottom - geom.body_top) <= geom.content_h + 1e-6);
+            let rule_y = geom.body_top + (offset / geom.hour_h).round() * geom.hour_h - offset;
+            assert!(
+                (rule_y - geom.body_top).abs() < 1e-6,
+                "an hour rule sits on the body top"
+            );
+        }
+        // Case `scroll_offset_drives_minute_and_block_hit_geometry`.
+        {
+            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+            let geom = TimelineViewport::geometry(area);
+            let mut viewport = TimelineViewport::new();
+            viewport.layout(area, 7.0);
+            viewport.set_offset_y((geom.hour_h * 2.0) as f32);
+            assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
+            let block = viewport.block_rect(area, 7, geom, 2, 120, 180);
+            assert!((block.y0 - geom.body_top).abs() < 0.01);
+            assert_eq!(
+                TimelineViewport::column_at(area, 7, geom, block.center().x),
+                2
+            );
+        }
     }
 }

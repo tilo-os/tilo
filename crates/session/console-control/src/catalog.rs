@@ -303,129 +303,133 @@ mod tests {
     }
 
     #[test]
-    fn ids_round_trip_and_reject_non_ids() {
-        let address = ActionAddress::new("installer.disk:/dev/vdb", "select");
-        assert_eq!(id_for(&address), "select@installer.disk:/dev/vdb");
-        assert_eq!(parse_id(&id_for(&address)), Some(address));
-        for bad in ["select", "@x", "x@", ""] {
-            assert_eq!(parse_id(bad), None, "{bad}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn catalog_projects_actions_and_admits_only_exact_bindings() {
+        // Phase `ids_round_trip_and_reject_non_ids`.
+        {
+            let address = ActionAddress::new("installer.disk:/dev/vdb", "select");
+            assert_eq!(id_for(&address), "select@installer.disk:/dev/vdb");
+            assert_eq!(parse_id(&id_for(&address)), Some(address));
+            for bad in ["select", "@x", "x@", ""] {
+                assert_eq!(parse_id(bad), None, "{bad}");
+            }
         }
-    }
+        // Phase `enumeration_projects_confirmation_and_availability_without_handles`.
+        {
+            let listed = enumerate("test", &tree(), "");
+            assert_eq!(listed["count"], 4);
+            let actions = listed["actions"].as_array().unwrap();
+            let erase = actions.iter().find(|a| a["operation"] == "erase").unwrap();
+            assert_eq!(erase["id"], "erase@disk:/dev/vdb");
+            assert!(
+                erase["params"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p["name"] == PHRASE_ARG && p["required"] == true)
+            );
+            assert_eq!(erase["contract"]["confirmation"]["phrase"], "/dev/vdb");
+            let off = actions.iter().find(|a| a["operation"] == "off").unwrap();
+            assert!(
+                off["params"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p["name"] == CONFIRM_ARG)
+            );
+            let reset = actions.iter().find(|a| a["operation"] == "reset").unwrap();
+            assert_eq!(reset["available"], false);
+            assert_eq!(reset["unavailable"]["code"], "not_now");
+            assert_eq!(enumerate("test", &tree(), "power OFF")["count"], 1);
+            assert_eq!(enumerate("test", &tree(), "nothing-matches")["count"], 0);
+        }
+        // Phase `admission_binds_strictly_and_refuses_by_code`.
+        {
+            let tree = tree();
+            let admitted = admit(
+                "test",
+                &tree,
+                "test",
+                "rename@session",
+                &args(&json!({"name": "x"})),
+            )
+            .unwrap_or_else(|refusal| panic!("{refusal:?}"));
+            assert_eq!(admitted.kind, OperationKind::Effect);
+            assert_eq!(admitted.encoded.type_id, OP);
+            assert!(admitted.phrase.is_none());
 
-    #[test]
-    fn enumeration_projects_confirmation_and_availability_without_handles() {
-        let listed = enumerate("test", &tree(), "");
-        assert_eq!(listed["count"], 4);
-        let actions = listed["actions"].as_array().unwrap();
-        let erase = actions.iter().find(|a| a["operation"] == "erase").unwrap();
-        assert_eq!(erase["id"], "erase@disk:/dev/vdb");
-        assert!(
-            erase["params"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|p| p["name"] == PHRASE_ARG && p["required"] == true)
-        );
-        assert_eq!(erase["contract"]["confirmation"]["phrase"], "/dev/vdb");
-        let off = actions.iter().find(|a| a["operation"] == "off").unwrap();
-        assert!(
-            off["params"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|p| p["name"] == CONFIRM_ARG)
-        );
-        let reset = actions.iter().find(|a| a["operation"] == "reset").unwrap();
-        assert_eq!(reset["available"], false);
-        assert_eq!(reset["unavailable"]["code"], "not_now");
-        assert_eq!(enumerate("test", &tree(), "power OFF")["count"], 1);
-        assert_eq!(enumerate("test", &tree(), "nothing-matches")["count"], 0);
-    }
+            let code = |provider: &str, id: &str, value: Value| {
+                admit("test", &tree, provider, id, &args(&value))
+                    .err()
+                    .map(|r| r.code)
+            };
+            assert_eq!(
+                code("other", "rename@session", json!({"name": "x"})),
+                Some("unknown_action")
+            );
+            assert_eq!(
+                code("test", "nope@session", json!({})),
+                Some("unknown_action")
+            );
+            assert_eq!(code("test", "rename", json!({})), Some("unknown_action"));
+            assert_eq!(
+                code("test", "rename@session", json!({})),
+                Some("invalid_arguments")
+            );
+            assert_eq!(
+                code("test", "rename@session", json!({"name": 3})),
+                Some("invalid_arguments")
+            );
+            assert_eq!(
+                code("test", "rename@session", json!({"name": "x", "extra": 1})),
+                Some("invalid_arguments")
+            );
+            assert_eq!(
+                code("test", "reset@session", json!({})),
+                Some("action_unavailable")
+            );
+        }
+        // Phase `destructive_actions_need_their_exact_confirmation`.
+        {
+            let tree = tree();
+            let refused = |value: Value| {
+                admit("test", &tree, "test", "erase@disk:/dev/vdb", &args(&value))
+                    .err()
+                    .map(|r| r.code)
+            };
+            assert_eq!(refused(json!({})), Some("action_confirmation_required"));
+            assert_eq!(
+                refused(json!({PHRASE_ARG: "/dev/vda"})),
+                Some("action_confirmation_required")
+            );
+            assert_eq!(
+                refused(json!({CONFIRM_ARG: true})),
+                Some("action_confirmation_required"),
+                "a boolean cannot stand in for a typed phrase"
+            );
+            let admitted = admit(
+                "test",
+                &tree,
+                "test",
+                "erase@disk:/dev/vdb",
+                &args(&json!({PHRASE_ARG: "/dev/vdb"})),
+            )
+            .unwrap_or_else(|refusal| panic!("{refusal:?}"));
+            assert_eq!(admitted.phrase.as_deref(), Some("/dev/vdb"));
 
-    #[test]
-    fn admission_binds_strictly_and_refuses_by_code() {
-        let tree = tree();
-        let admitted = admit(
-            "test",
-            &tree,
-            "test",
-            "rename@session",
-            &args(&json!({"name": "x"})),
-        )
-        .unwrap_or_else(|refusal| panic!("{refusal:?}"));
-        assert_eq!(admitted.kind, OperationKind::Effect);
-        assert_eq!(admitted.encoded.type_id, OP);
-        assert!(admitted.phrase.is_none());
-
-        let code = |provider: &str, id: &str, value: Value| {
-            admit("test", &tree, provider, id, &args(&value))
-                .err()
-                .map(|r| r.code)
-        };
-        assert_eq!(
-            code("other", "rename@session", json!({"name": "x"})),
-            Some("unknown_action")
-        );
-        assert_eq!(
-            code("test", "nope@session", json!({})),
-            Some("unknown_action")
-        );
-        assert_eq!(code("test", "rename", json!({})), Some("unknown_action"));
-        assert_eq!(
-            code("test", "rename@session", json!({})),
-            Some("invalid_arguments")
-        );
-        assert_eq!(
-            code("test", "rename@session", json!({"name": 3})),
-            Some("invalid_arguments")
-        );
-        assert_eq!(
-            code("test", "rename@session", json!({"name": "x", "extra": 1})),
-            Some("invalid_arguments")
-        );
-        assert_eq!(
-            code("test", "reset@session", json!({})),
-            Some("action_unavailable")
-        );
-    }
-
-    #[test]
-    fn destructive_actions_need_their_exact_confirmation() {
-        let tree = tree();
-        let refused = |value: Value| {
-            admit("test", &tree, "test", "erase@disk:/dev/vdb", &args(&value))
-                .err()
-                .map(|r| r.code)
-        };
-        assert_eq!(refused(json!({})), Some("action_confirmation_required"));
-        assert_eq!(
-            refused(json!({PHRASE_ARG: "/dev/vda"})),
-            Some("action_confirmation_required")
-        );
-        assert_eq!(
-            refused(json!({CONFIRM_ARG: true})),
-            Some("action_confirmation_required"),
-            "a boolean cannot stand in for a typed phrase"
-        );
-        let admitted = admit(
-            "test",
-            &tree,
-            "test",
-            "erase@disk:/dev/vdb",
-            &args(&json!({PHRASE_ARG: "/dev/vdb"})),
-        )
-        .unwrap_or_else(|refusal| panic!("{refusal:?}"));
-        assert_eq!(admitted.phrase.as_deref(), Some("/dev/vdb"));
-
-        let off = |value: Value| admit("test", &tree, "test", "off@power", &args(&value));
-        assert_eq!(
-            off(json!({})).err().map(|r| r.code),
-            Some("action_confirmation_required")
-        );
-        assert_eq!(
-            off(json!({CONFIRM_ARG: false})).err().map(|r| r.code),
-            Some("action_confirmation_required")
-        );
-        assert!(off(json!({CONFIRM_ARG: true})).is_ok());
+            let off = |value: Value| admit("test", &tree, "test", "off@power", &args(&value));
+            assert_eq!(
+                off(json!({})).err().map(|r| r.code),
+                Some("action_confirmation_required")
+            );
+            assert_eq!(
+                off(json!({CONFIRM_ARG: false})).err().map(|r| r.code),
+                Some("action_confirmation_required")
+            );
+            assert!(off(json!({CONFIRM_ARG: true})).is_ok());
+        }
     }
 }

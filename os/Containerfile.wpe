@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.7
+# Isolated WPE WebKit compilation recipe.
+#
+# This is the only place that compiles libwpe + wpebackend-fdo + wpewebkit for
+# the OS image. The completed stage is consumed by os/Containerfile through a
+# named build context (`wpe-builder=container-image://…`); the OS recipe must
+# not keep a second copy of this compile. Artifact dependency keys hash this
+# file (and os/dev/build-wpe.sh), not the full OS Containerfile.
+#
+# Build (repo root as context):
+#   podman build -f os/Containerfile.wpe --target wpe-builder-1 \
+#     --build-context github-assets=<frozen-assets> \
+#     --build-arg WPE_BUILDROOT_REF=registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:… \
+#     --build-arg TILO_WPE_SOURCE_DATE_EPOCH=0 \
+#     --build-arg WPE_BUILD_JOBS=8 \
+#     .
+
+ARG WPE_BUILDROOT_REF
+
+# CI restores these checksum-pinned archives before the build; local builds use
+# the same resumable verifier (os/dev/cache-github-assets.sh).
+FROM scratch AS external-assets
+# Only these three archives are WPE inputs. Copying the whole asset cache
+# invalidates the hour-long compile when an unrelated OS/Windows asset changes.
+COPY --from=github-assets /libwpe-1.16.3.tar.xz /
+COPY --from=github-assets /wpebackend-fdo-1.16.1.tar.xz /
+COPY --from=github-assets /wpewebkit-2.52.6.tar.xz /
+
+# The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
+# stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
+# tarballs by the same script developers use locally (os/dev/build-wpe.sh).
+# Configured for prefix=/usr and staged into /wpe: the rust builder overlays
+# it to link `browser --features wpe`, the final image copies it into the
+# rootfs.
+#
+# Fedora's source BuildRequires are resolved only by the protected WPE
+# buildroot snapshot workflow. Production builds consume that per-architecture
+# image by digest and therefore have no Fedora mirror path in this stage.
+FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
+ARG WPE_BUILD_JOBS=8
+# The engine carries its own dependency epoch, independent of the OS release.
+# Taking the OS commit time here would give every commit a new cache key for
+# the longest compile in the image, although no engine input changed.
+# Expose it to compiler/build tools as well as the layer timestamp normalizer.
+ARG TILO_WPE_SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${TILO_WPE_SOURCE_DATE_EPOCH}
+RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
+    && test "$(cat /usr/lib/tilo/wpe-buildroot-arch)" = "$(uname -m)"
+
+COPY os/dev/build-wpe.sh /build-wpe.sh
+RUN --mount=type=cache,target=/wpe-cache \
+    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    started=$(date +%s) \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=wpe elapsed_seconds=%s exit_code=%s\n" "$(( $(date +%s) - started ))" "$status"; exit "$status"' EXIT \
+    && TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
+    TILO_WPE_PREFIX=/usr TILO_WPE_DESTDIR=/wpe \
+    JOBS="$WPE_BUILD_JOBS" \
+    bash /build-wpe.sh build \
+    && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+# The engine alone, as build-buildroots.yml publishes it and os/Containerfile
+# consumes it (`wpe-builder=docker-image://…`): the /wpe tree and the
+# architecture it was compiled for, without the multi-gigabyte buildroot.
+FROM scratch AS wpe-stage
+COPY --from=wpe-builder-1 /wpe/ /wpe/
+COPY --from=wpe-builder-1 /usr/lib/tilo/wpe-buildroot-arch /usr/lib/tilo/wpe-stage-arch

@@ -7,6 +7,7 @@
 //! updates therefore keep widget identity, focus, scroll positions, and other
 //! retained presentation state.
 
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -20,7 +21,7 @@ use crate::theme::Theme;
 use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
 
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
-type Builder<K> = Box<dyn FnMut(&K) -> Element>;
+type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
 
 /// A retained subtree selected by a value projected from application state.
 ///
@@ -30,6 +31,9 @@ type Builder<K> = Box<dyn FnMut(&K) -> Element>;
 pub struct ModelView<K> {
     project: Projection<K>,
     build: Builder<K>,
+    control_domain: Option<crate::ControlDomain>,
+    child_domain: Option<crate::ControlDomain>,
+    scope_domain: Option<crate::ControlDomain>,
     current: Option<K>,
     child: Element,
     rect: Rect,
@@ -49,11 +53,14 @@ where
     /// unequal to the previous value.
     pub fn from_document(
         project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,
-        build: impl FnMut(&K) -> Element + 'static,
+        mut build: impl FnMut(&K) -> Element + 'static,
     ) -> Self {
         Self {
             project: Box::new(project),
-            build: Box::new(build),
+            build: Box::new(move |key, _| build(key)),
+            control_domain: None,
+            child_domain: None,
+            scope_domain: None,
             current: None,
             // The first sync happens before layout. This inert child merely
             // keeps the wrapper valid for headless/manual users that inspect it
@@ -66,6 +73,21 @@ where
         }
     }
 
+    /// Build with the exact installed domain before any constructor emission.
+    /// The supplied domain must be the owner obtained from HostContext/runner.
+    pub fn from_document_in(
+        domain: &crate::ControlDomain,
+        project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,
+        mut build: impl FnMut(&K, &crate::ControlDomain) -> Element + 'static,
+    ) -> Self {
+        let mut view = Self::from_document(project, |_| Box::new(Text::new("")));
+        view.control_domain = Some(domain.clone());
+        // A view with an installed domain always builds under its child domain;
+        // the installed owner is only the fallback for that invariant.
+        let installed = domain.clone();
+        view.build = Box::new(move |key, domain| build(key, domain.unwrap_or(&installed)));
+        view
+    }
     /// Focus the first focusable descendant after a projection changes.
     ///
     /// This is opt-in because replacing a passive detail pane should not steal
@@ -85,7 +107,24 @@ where
         {
             return;
         }
-        self.child = (self.build)(&next);
+        if let Some(old) = self.child_domain.take() {
+            old.close();
+        }
+        if self.scope_domain.is_none() {
+            self.scope_domain = self
+                .control_domain
+                .as_ref()
+                .map(crate::ControlDomain::child);
+        }
+        self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
+        self.child = (self.build)(&next, self.child_domain.as_ref());
+        if let Some(domain) = &self.child_domain {
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
+                domain,
+                crate::control_custody::CustodyAttachment::Dynamic,
+            );
+        }
         self.current = Some(next);
         self.structure_dirty = true;
         self.focus_reset |= self.autofocus;
@@ -155,19 +194,25 @@ impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(
+        dyn crate::widget::FullscreenProvider,
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::view::capability::ViewState,
+        dyn crate::undo::UndoPoints
+    );
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }
@@ -229,32 +274,12 @@ where
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -278,14 +303,6 @@ where
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset) || self.child.take_focus_reset()
     }
@@ -298,40 +315,8 @@ where
         self.child.needs_idle_sync()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         self.child.on_external_event(payload, state, root);
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.child.record_intent()
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        self.child.view_state()
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        self.child.restore_view_state(view);
-    }
-
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        self.child.set_record_scope(record);
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.child.resources(doc)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.child.search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
-        self.child.activate_search_result(action_id, doc, path);
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.child.take_committed_action()
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
@@ -358,6 +343,120 @@ where
     }
 }
 
+impl<K> crate::undo::UndoPoints for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl<K> crate::view::capability::ViewState for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        crate::view::capability::view_state(self.child.as_ref())
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        crate::view::capability::restore_view_state(self.child.as_mut(), view);
+    }
+}
+
+impl<K> crate::record::capability::RecordScoped for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        crate::record::capability::record_intent(self.child.as_ref())
+    }
+    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+        crate::record::capability::set_record_scope(self.child.as_mut(), record);
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        crate::record::capability::release_record_scope(self.child.as_mut())
+    }
+}
+
+impl<K> crate::search::capability::SearchSource for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        crate::search::capability::search_providers(self.child.as_ref())
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        crate::search::capability::activate_search_result(
+            self.child.as_mut(),
+            action_id,
+            doc,
+            path,
+        );
+    }
+}
+
+impl<K> crate::resources::PublishesResources for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::resources::resources(self.child.as_ref(), doc)
+    }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        crate::resources::document_action_result(self.child.as_ref(), doc, address, changes)
+    }
+}
+
+impl<K> crate::widget::controls::ActionControls for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(old) = &self.control_domain {
+            if !old.same(domain) {
+                if !domain.permits_renewal(old, attachment) {
+                    domain.unsafe_attachment();
+                    return;
+                }
+                if let Some(scope) = self.scope_domain.take() {
+                    scope.close();
+                }
+                self.child_domain = None;
+            }
+        }
+        self.control_domain = Some(domain.clone());
+        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
+        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
+        crate::widget::controls::install_control_custody(
+            self.child.as_mut(),
+            child_domain,
+            attachment,
+        );
+    }
+}
+
+impl<K> crate::undo::CommittedActions for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        crate::undo::take_committed_action(self.child.as_mut())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -378,142 +477,154 @@ mod tests {
     }
 
     #[test]
-    fn keyed_projection_retains_subtree_across_unrelated_document_edits() {
-        let builds = Rc::new(Cell::new(0));
-        let observed_builds = Rc::clone(&builds);
-        let mut view = ModelView::from_document(
-            |doc, _| string(doc, "selection"),
-            move |selection| {
-                observed_builds.set(observed_builds.get() + 1);
-                Box::new(Text::new(selection))
-            },
-        );
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "selection", "alpha").unwrap();
+    fn document_view_projects_keyed_subtrees_and_tracks_undo() {
+        fn keyed_projection_retains_subtree_across_unrelated_document_edits() {
+            let builds = Rc::new(Cell::new(0));
+            let observed_builds = Rc::clone(&builds);
+            let mut view = ModelView::from_document(
+                |doc, _| string(doc, "selection"),
+                move |selection| {
+                    observed_builds.set(observed_builds.get() + 1);
+                    Box::new(Text::new(selection))
+                },
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(&ROOT, "selection", "alpha").unwrap();
 
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 1);
-        assert!(view.take_structure_dirty());
-        assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 1);
+            assert!(view.take_structure_dirty());
+            assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
 
-        doc.put(&ROOT, "unrelated", 42).unwrap();
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
-        assert!(!view.take_structure_dirty());
+            doc.put(&ROOT, "unrelated", 42).unwrap();
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
+            assert!(!view.take_structure_dirty());
 
-        doc.put(&ROOT, "selection", "beta").unwrap();
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2);
-        assert!(view.take_structure_dirty());
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("beta")
-        );
-    }
-
-    #[test]
-    fn document_view_tracks_undo_without_app_owned_notifications() {
-        let mut state = crate::State::new();
-        state.doc.put(&ROOT, "mode", "list").unwrap();
-        state.commit_action(None, None);
-        let mut view = ModelView::from_document(
-            |doc, _| string(doc, "mode"),
-            |mode| Box::new(Text::new(mode)),
-        )
-        .autofocus_on_change(true);
-
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("list")
-        );
-        assert!(view.take_focus_reset());
-
-        state.doc.put(&ROOT, "mode", "detail").unwrap();
-        state.commit_action(None, None);
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("detail")
-        );
-
-        state.undo(None, None).unwrap();
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("list")
-        );
-    }
-
-    #[test]
-    fn typed_state_selects_arbitrary_subtrees() {
-        let state = crate::LocalState::new(String::from("loading"));
-        let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
-        let mut doc = AutoCommit::new();
-
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("loading")
-        );
-        state.set(String::from("ready"));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("ready")
-        );
-    }
-
-    #[test]
-    fn separately_keyed_state_does_not_clone_or_compare_the_payload() {
-        struct Project {
-            title: String,
-        }
-        enum LoadState {
-            Loading,
-            Ready(Project),
-        }
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum Screen {
-            Loading,
-            Ready,
+            doc.put(&ROOT, "selection", "beta").unwrap();
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2);
+            assert!(view.take_structure_dirty());
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("beta")
+            );
         }
 
-        let state = crate::LocalState::new(LoadState::Loading);
-        let builds = Rc::new(Cell::new(0));
-        let observed_builds = Rc::clone(&builds);
-        let mut view = ModelView::from_state_by(
-            &state,
-            |state| match state {
-                LoadState::Loading => Screen::Loading,
-                LoadState::Ready(_) => Screen::Ready,
-            },
-            move |state| {
-                observed_builds.set(observed_builds.get() + 1);
-                let label = match state {
-                    LoadState::Loading => "loading",
-                    LoadState::Ready(project) => &project.title,
-                };
-                Box::new(Text::new(label))
-            },
-        );
-        let mut doc = AutoCommit::new();
+        fn document_view_tracks_undo_without_app_owned_notifications() {
+            let mut state = crate::State::new();
+            state.doc.put(&ROOT, "mode", "list").unwrap();
+            state.commit_action(None, None);
+            let mut view = ModelView::from_document(
+                |doc, _| string(doc, "mode"),
+                |mode| Box::new(Text::new(mode)),
+            )
+            .autofocus_on_change(true);
 
-        view.sync(&mut doc, &ROOT);
-        state.set(LoadState::Ready(Project {
-            title: String::from("First"),
-        }));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("First")
-        );
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("list")
+            );
+            assert!(view.take_focus_reset());
 
-        state.set(LoadState::Ready(Project {
-            title: String::from("Updated without structural replacement"),
-        }));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
+            state.doc.put(&ROOT, "mode", "detail").unwrap();
+            state.commit_action(None, None);
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("detail")
+            );
+
+            state.undo(None, None).unwrap();
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("list")
+            );
+        }
+
+        fn typed_state_selects_arbitrary_subtrees() {
+            let state = crate::LocalState::new(String::from("loading"));
+            let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
+            let mut doc = AutoCommit::new();
+
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("loading")
+            );
+            state.set(String::from("ready"));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("ready")
+            );
+        }
+
+        fn separately_keyed_state_does_not_clone_or_compare_the_payload() {
+            struct Project {
+                title: String,
+            }
+            enum LoadState {
+                Loading,
+                Ready(Project),
+            }
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum Screen {
+                Loading,
+                Ready,
+            }
+
+            let state = crate::LocalState::new(LoadState::Loading);
+            let builds = Rc::new(Cell::new(0));
+            let observed_builds = Rc::clone(&builds);
+            let mut view = ModelView::from_state_by(
+                &state,
+                |state| match state {
+                    LoadState::Loading => Screen::Loading,
+                    LoadState::Ready(_) => Screen::Ready,
+                },
+                move |state| {
+                    observed_builds.set(observed_builds.get() + 1);
+                    let label = match state {
+                        LoadState::Loading => "loading",
+                        LoadState::Ready(project) => &project.title,
+                    };
+                    Box::new(Text::new(label))
+                },
+            );
+            let mut doc = AutoCommit::new();
+
+            view.sync(&mut doc, &ROOT);
+            state.set(LoadState::Ready(Project {
+                title: String::from("First"),
+            }));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("First")
+            );
+
+            state.set(LoadState::Ready(Project {
+                title: String::from("Updated without structural replacement"),
+            }));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
+        }
+
+        keyed_projection_retains_subtree_across_unrelated_document_edits();
+        document_view_tracks_undo_without_app_owned_notifications();
+        typed_state_selects_arbitrary_subtrees();
+        separately_keyed_state_does_not_clone_or_compare_the_payload();
+    }
+}
+
+impl<K> Drop for ModelView<K> {
+    fn drop(&mut self) {
+        if let Some(domain) = &self.scope_domain {
+            domain.close();
+        }
     }
 }

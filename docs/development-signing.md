@@ -313,7 +313,7 @@ identity rejection and failure cleanup. Run
 `podman unshare python3 os/tests/development_source_registry.py` with the pinned
 Cosign tool available to exercise a real loopback registry, temporary signing
 keys, accepted native image and rejected unsigned/wrong-identity inputs. The
-`Development / signed native source verification` CI workflow runs this fixture
+`CI / development signing tools` workflow runs this fixture
 on both native architectures. Final EFI/PCR sealing, disk creation and VM
 acceptance remain required integration work.
 

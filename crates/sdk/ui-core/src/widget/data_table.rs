@@ -11,7 +11,7 @@
 //! same visible rows.
 
 use crate::time::Instant;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -1729,20 +1729,10 @@ impl<Row> DataTable<Row> {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus handled/focus outputs"
-    )]
     fn route_to_cell_widgets(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         if let Some(cell) = self
             .mounted_cells
@@ -1750,33 +1740,15 @@ impl<Row> DataTable<Row> {
             .find(|cell| cell.widget.wants_pointer_capture())
             && let Some(node) = cell.node
         {
-            cell.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            cell.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for cell in self.mounted_cells.iter_mut().rev() {
             let Some(node) = cell.node else { continue };
-            cell.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            cell.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -1852,7 +1824,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.visible_window_changed();
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self
             .model
             .as_deref_mut()
@@ -1885,12 +1857,6 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
         self.refresh_view_anchor();
         received_changes || moved || children_changed
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for cell in &mut self.mounted_cells {
-            cell.widget.sync(state, path);
-        }
     }
 
     fn build_layout(
@@ -2072,61 +2038,41 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.refresh_view_anchor();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
-            self.route_to_cell_widgets(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.route_to_cell_widgets(event, ctx);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(pt, handled);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(pt, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(*modifiers, handled, focus_target, node_id);
+                self.on_left_press(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_release(*modifiers, handled, focus_target, node_id);
+                self.on_left_release(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
-                self.on_wheel(delta, *phase, handled);
+                self.on_wheel(delta, *phase, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
                 self.drag_scroll.cancel();
                 self.momentum.stop();
-                self.on_key(ke, *modifiers, handled);
+                self.on_key(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2354,8 +2300,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         // Empty path: the table itself, not a row — nothing table-specific to do.
@@ -2405,8 +2351,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
 
@@ -2597,80 +2543,85 @@ mod tier_tests {
     }
 
     #[test]
-    fn selected_row_fill_registers_on_every_preset() {
-        for theme in presets() {
+    fn selected_rows_and_tier_hairlines_register_on_every_ground() {
+        fn selected_row_fill_registers_on_every_preset() {
+            for theme in presets() {
+                let base = theme.tokens.colors.surfaces.base;
+                let fill = selection_fill(&theme);
+                let moved = edge_delta(fill, base);
+                assert!(
+                    moved >= HAIRLINE_MIN_DELTA,
+                    "{}: selected row moved the ground only {moved:.4}",
+                    theme.name
+                );
+            }
+        }
+
+        /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
+        /// the shared lift is weaker than a floor, so the row takes one that reads
+        /// as a control and still carries the theme's text.
+        fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
+            let theme = Theme::high_contrast();
             let base = theme.tokens.colors.surfaces.base;
-            let fill = selection_fill(&theme);
-            let moved = edge_delta(fill, base);
+            let shared =
+                crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true))
+                    .fill;
             assert!(
-                moved >= HAIRLINE_MIN_DELTA,
-                "{}: selected row moved the ground only {moved:.4}",
-                theme.name
+                edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
+                "fixture: the shared lift is expected to collapse on this ground"
+            );
+            let fill = blend(selection_fill(&theme), base);
+            let step = contrast_ratio(fill, base);
+            assert!(
+                step >= NON_TEXT_MIN_CONTRAST,
+                "selected row step {step:.2}:1"
+            );
+            let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
+            assert!(
+                ink >= ON_FILL_MIN_CONTRAST,
+                "text on the selected row {ink:.2}:1"
             );
         }
-    }
 
-    /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
-    /// the shared lift is weaker than a floor, so the row takes one that reads
-    /// as a control and still carries the theme's text.
-    #[test]
-    fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
-        let theme = Theme::high_contrast();
-        let base = theme.tokens.colors.surfaces.base;
-        let shared =
-            crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true)).fill;
-        assert!(
-            edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
-            "fixture: the shared lift is expected to collapse on this ground"
-        );
-        let fill = blend(selection_fill(&theme), base);
-        let step = contrast_ratio(fill, base);
-        assert!(
-            step >= NON_TEXT_MIN_CONTRAST,
-            "selected row step {step:.2}:1"
-        );
-        let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
-        assert!(
-            ink >= ON_FILL_MIN_CONTRAST,
-            "text on the selected row {ink:.2}:1"
-        );
-    }
-
-    /// Pins the dark and light screenshots: on the two grounds this module's
-    /// callers paint tiers on, the gain never engages. (The dark preset's
-    /// overlay tier is itself near black and does take it, by design.)
-    #[test]
-    fn tier_on_is_plain_hairline_on_ordinary_grounds() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let s = &theme.tokens.colors.surfaces;
-            for ground in [s.base, s.raised] {
-                for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
-                    assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
+        /// Pins the dark and light screenshots: on the two grounds this module's
+        /// callers paint tiers on, the gain never engages. (The dark preset's
+        /// overlay tier is itself near black and does take it, by design.)
+        fn tier_on_is_plain_hairline_on_ordinary_grounds() {
+            for theme in [Theme::dark(), Theme::light()] {
+                let s = &theme.tokens.colors.surfaces;
+                for ground in [s.base, s.raised] {
+                    for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
+                        assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
+                    }
                 }
             }
         }
-    }
 
-    /// The stripe stays fainter than the band on every preset, and on black
-    /// both still register (the high-contrast preset's own floor).
-    #[test]
-    fn tiers_keep_their_order_and_register_on_black() {
-        for theme in presets() {
-            let raised = theme.tokens.colors.surfaces.raised;
-            let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
-            let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
-            assert!(
-                zebra < band,
-                "{}: zebra {zebra:.4} vs band {band:.4}",
-                theme.name
+        /// The stripe stays fainter than the band on every preset, and on black
+        /// both still register (the high-contrast preset's own floor).
+        fn tiers_keep_their_order_and_register_on_black() {
+            for theme in presets() {
+                let raised = theme.tokens.colors.surfaces.raised;
+                let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
+                let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
+                assert!(
+                    zebra < band,
+                    "{}: zebra {zebra:.4} vs band {band:.4}",
+                    theme.name
+                );
+            }
+            let black = Theme::high_contrast().tokens.colors.surfaces.raised;
+            assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
+            assert_eq!(
+                tier_on(black, ZEBRA_ALPHA),
+                Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
             );
         }
-        let black = Theme::high_contrast().tokens.colors.surfaces.raised;
-        assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
-        assert_eq!(
-            tier_on(black, ZEBRA_ALPHA),
-            Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
-        );
+
+        selected_row_fill_registers_on_every_preset();
+        selected_row_on_a_black_ground_reads_as_a_control_and_carries_text();
+        tier_on_is_plain_hairline_on_ordinary_grounds();
+        tiers_keep_their_order_and_register_on_black();
     }
 }
 
@@ -2679,6 +2630,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::Button;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -2904,579 +2856,766 @@ mod tests {
     }
 
     #[test]
-    fn compute_column_rects_splits_flex_after_fixed() {
-        let cols = sample_cols();
-        let host = Rect::new(0.0, 0.0, 200.0, 28.0);
-        let rects = compute_column_rects(&cols, host, &HashMap::new());
-        assert_eq!(rects.len(), 2);
-        assert!((rects[0].width() - 160.0).abs() < 0.01);
-        assert!((rects[1].width() - 40.0).abs() < 0.01);
+    fn columns_split_flex_and_resize_from_the_press_origin() {
+        fn compute_column_rects_splits_flex_after_fixed() {
+            let cols = sample_cols();
+            let host = Rect::new(0.0, 0.0, 200.0, 28.0);
+            let rects = compute_column_rects(&cols, host, &HashMap::new());
+            assert_eq!(rects.len(), 2);
+            assert!((rects[0].width() - 160.0).abs() < 0.01);
+            assert!((rects[1].width() - 40.0).abs() < 0.01);
+        }
+
+        fn column_resize_uses_press_origin_clamps_and_stops_on_release() {
+            let mut table = DataTable::<R>::new(vec![ColumnDef::new(
+                "name",
+                "Name",
+                ColumnWidth::Fixed(80.0),
+            )]);
+
+            table.begin_resize("name", 200.0);
+            table.drag_resize(215.0);
+            assert_eq!(table.column_width_px("name"), Some(95.0));
+            table.drag_resize(220.0);
+            assert_eq!(
+                table.column_width_px("name"),
+                Some(100.0),
+                "drag deltas must stay relative to the initial press"
+            );
+
+            table.end_resize();
+            table.drag_resize(1_000.0);
+            assert_eq!(
+                table.column_width_px("name"),
+                Some(100.0),
+                "release must end resize ownership"
+            );
+
+            table.begin_resize("name", 100.0);
+            table.drag_resize(0.0);
+            assert_eq!(
+                table.column_width_px("name"),
+                Some(DataTable::<R>::MIN_COL_WIDTH)
+            );
+        }
+
+        /// One extra stroke over the unfocused render, asserted on the production `draw` path.
+        fn focused_table_paints_a_focus_ring() {
+            let mut unfocused = DataTable::<R>::new(sample_cols()).selectable(true);
+            unfocused.set_rows(rows4());
+            unfocused.set_focus(false);
+            let without = table_color_fills(&mut unfocused);
+
+            let mut focused = DataTable::<R>::new(sample_cols()).selectable(true);
+            focused.set_rows(rows4());
+            focused.set_focus(true);
+            let with = table_color_fills(&mut focused);
+
+            assert_eq!(
+                with,
+                without + 1,
+                "a focused table must add exactly one focus-ring stroke ({with} vs {without})",
+            );
+        }
+
+        compute_column_rects_splits_flex_after_fixed();
+        column_resize_uses_press_origin_clamps_and_stops_on_release();
+        focused_table_paints_a_focus_ring();
     }
 
     #[test]
-    fn column_resize_uses_press_origin_clamps_and_stops_on_release() {
-        let mut table = DataTable::<R>::new(vec![ColumnDef::new(
-            "name",
-            "Name",
-            ColumnWidth::Fixed(80.0),
-        )]);
-
-        table.begin_resize("name", 200.0);
-        table.drag_resize(215.0);
-        assert_eq!(table.column_width_px("name"), Some(95.0));
-        table.drag_resize(220.0);
-        assert_eq!(
-            table.column_width_px("name"),
-            Some(100.0),
-            "drag deltas must stay relative to the initial press"
-        );
-
-        table.end_resize();
-        table.drag_resize(1_000.0);
-        assert_eq!(
-            table.column_width_px("name"),
-            Some(100.0),
-            "release must end resize ownership"
-        );
-
-        table.begin_resize("name", 100.0);
-        table.drag_resize(0.0);
-        assert_eq!(
-            table.column_width_px("name"),
-            Some(DataTable::<R>::MIN_COL_WIDTH)
-        );
-    }
-
-    #[test]
-    fn model_selection_builder_discards_absent_keys() {
-        let mut selection = crate::selection::KeySelection::new();
-        selection.toggle(3);
-        selection.toggle(100_000_000);
-        let table = DataTable::from_model(
-            sample_cols(),
-            HugeModel {
-                row: R {
-                    name: "resident".into(),
+    fn model_table_virtualizes_pages_and_keeps_stable_selection() {
+        fn model_selection_builder_discards_absent_keys() {
+            let mut selection = crate::selection::KeySelection::new();
+            selection.toggle(3);
+            selection.toggle(100_000_000);
+            let table = DataTable::from_model(
+                sample_cols(),
+                HugeModel {
+                    row: R {
+                        name: "resident".into(),
+                    },
+                    key_queries: Rc::new(Cell::new(0)),
+                    row_queries: Rc::new(Cell::new(0)),
                 },
-                key_queries: Rc::new(Cell::new(0)),
-                row_queries: Rc::new(Cell::new(0)),
-            },
-        )
-        .with_model_selection(selection)
-        .with_viewport(120.0, 24.0);
+            )
+            .with_model_selection(selection)
+            .with_viewport(120.0, 24.0);
 
-        assert!(table.model_selection().is_selected(&3));
-        assert!(!table.model_selection().is_selected(&100_000_000));
-        assert_eq!(table.model_selection().len(100_000_000), 1);
-        let visible = table.visible_row_range();
-        assert_eq!(visible.0, 0);
-        assert!(visible.1 <= 10, "viewport plus overscan stays bounded");
+            assert!(table.model_selection().is_selected(&3));
+            assert!(!table.model_selection().is_selected(&100_000_000));
+            assert_eq!(table.model_selection().len(100_000_000), 1);
+            let visible = table.visible_row_range();
+            assert_eq!(visible.0, 0);
+            assert!(visible.1 <= 10, "viewport plus overscan stays bounded");
+        }
+
+        fn model_table_virtualizes_a_hundred_million_rows_in_constant_space() {
+            let key_queries = Rc::new(Cell::new(0));
+            let row_queries = Rc::new(Cell::new(0));
+            let mut table = DataTable::from_model(
+                sample_cols(),
+                HugeModel {
+                    row: R {
+                        name: "resident".into(),
+                    },
+                    key_queries: Rc::clone(&key_queries),
+                    row_queries: Rc::clone(&row_queries),
+                },
+            )
+            .selectable(true);
+            table.set_viewport(120.0, 24.0);
+            table.set_scroll_y(f32::MAX);
+            let _laid = lay_out(&mut table);
+
+            let semantics = Widget::accessibility(&table).expect("table semantics");
+            assert_eq!(table.viewport.len(), 100_000_000);
+            assert_eq!(table.viewport.resident_measurements(), 0);
+            assert!(semantics.children.len() <= 10);
+            assert!(
+                key_queries.get() < 100,
+                "queried {} keys",
+                key_queries.get()
+            );
+            assert!(
+                row_queries.get() < 100,
+                "queried {} rows",
+                row_queries.get()
+            );
+
+            assert!(Widget::perform_semantic_action(
+                &mut table,
+                "row:99999999:0",
+                &crate::a11y::Action::Focus,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(table.model_selection().primary(), Some(&99_999_999));
+            table.model_selection_mut().select_all();
+            assert!(table.model_selection().is_select_all());
+            assert_eq!(table.model_selection().len(100_000_000), 100_000_000);
+            assert_eq!(table.model_selection().stored_keys().count(), 0);
+        }
+
+        fn paged_model_requests_only_the_window_and_wakes_on_loaded_rows() {
+            let loaded = Rc::new(Cell::new(false));
+            let changed = Rc::new(Cell::new(false));
+            let requested = Rc::new(RefCell::new(Vec::new()));
+            let mut table = DataTable::from_model(
+                sample_cols(),
+                PagingModel {
+                    row: R {
+                        name: "loaded row".into(),
+                    },
+                    loaded: Rc::clone(&loaded),
+                    changed: Rc::clone(&changed),
+                    requested: Rc::clone(&requested),
+                },
+            );
+            table.set_viewport(96.0, 24.0);
+
+            let before = Widget::accessibility(&table).expect("loading semantics");
+            assert_eq!(before.children[0].name.as_deref(), Some("Loading"));
+            assert!(before.children[0].state.busy);
+            assert_eq!(
+                before.children[3].name.as_deref(),
+                Some("row failed to load")
+            );
+            assert!(before.children[3].state.invalid);
+            assert!(table.needs_animation_frame());
+
+            let _fills = table_color_fills(&mut table);
+            let requested = requested.borrow();
+            assert_eq!(requested.len(), 1);
+            assert!(requested[0].start == 0 && requested[0].end < 16);
+            drop(requested);
+
+            loaded.set(true);
+            changed.set(true);
+            assert!(Widget::update(
+                &mut table,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let after = Widget::accessibility(&table).expect("loaded semantics");
+            assert_eq!(after.children[0].name, None);
+            assert!(!table.needs_animation_frame());
+        }
+
+        fn model_insert_preserves_stable_anchor_and_key_selection() {
+            let inserted = Rc::new(Cell::new(false));
+            let mut table = DataTable::from_model(
+                sample_cols(),
+                InsertModel {
+                    row: R { name: "row".into() },
+                    inserted: Rc::clone(&inserted),
+                },
+            )
+            .selectable(true);
+            table.set_viewport(48.0, 24.0);
+            table.set_scroll_y(50.0 * 24.0 + 5.0);
+            table.model_selection_mut().select_only(50);
+            let before = table.viewport.item_view_top(50);
+
+            inserted.set(true);
+            table.notify_model_changed();
+
+            assert_eq!(table.semantic_row_index("row:50:0"), Some(51));
+            assert_eq!(table.viewport.item_view_top(51), before);
+            assert_eq!(table.model_selection().primary(), Some(&50));
+            assert!(table.model_selection().is_selected(&50));
+        }
+
+        fn stable_row_keys_anchor_inserts_above_the_viewport() {
+            let mut t = DataTable::<R>::new(sample_cols())
+                .with_row_key(|row| u64::from(row.name.as_bytes()[0]));
+            t.set_rows(rows4());
+            t.set_viewport(24.0, px(ROW_HEIGHT));
+            t.set_scroll_y(2.0 * px(ROW_HEIGHT) + 5.0);
+            let before = t.viewport.item_view_top(2);
+
+            t.set_rows(vec![
+                R { name: "x".into() },
+                R { name: "a".into() },
+                R { name: "b".into() },
+                R { name: "c".into() },
+                R { name: "d".into() },
+            ]);
+
+            let c = t.semantic_row_index(&format!("row:{}:0", u64::from(b'c')));
+            assert_eq!(c, Some(3));
+            assert_eq!(t.viewport.item_view_top(c.unwrap()), before);
+        }
+
+        model_selection_builder_discards_absent_keys();
+        model_table_virtualizes_a_hundred_million_rows_in_constant_space();
+        paged_model_requests_only_the_window_and_wakes_on_loaded_rows();
+        model_insert_preserves_stable_anchor_and_key_selection();
+        stable_row_keys_anchor_inserts_above_the_viewport();
     }
 
     #[test]
-    fn model_table_virtualizes_a_hundred_million_rows_in_constant_space() {
-        let key_queries = Rc::new(Cell::new(0));
-        let row_queries = Rc::new(Cell::new(0));
-        let mut table = DataTable::from_model(
-            sample_cols(),
-            HugeModel {
+    fn granular_model_changes_retain_controls_by_stable_key() {
+        fn granular_row_change_rebuilds_only_that_rows_retained_control() {
+            let builds = Rc::new(Cell::new(0));
+            let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let mut table = DataTable::from_model(
+                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+                NotifyingModel {
+                    row: R { name: "row".into() },
+                    order,
+                    changes: Rc::clone(&changes),
+                },
+            );
+            table.set_viewport(120.0, 24.0);
+            let _ = lay_out(&mut table);
+            let initial_builds = builds.get();
+
+            changes
+                .borrow_mut()
+                .push(TableModelChange::RowsChanged { keys: vec![2] });
+            assert!(Widget::update(
+                &mut table,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let _ = lay_out(&mut table);
+
+            assert_eq!(builds.get(), initial_builds + 1);
+            assert_eq!(table.mounted_cell_count(), 4);
+        }
+
+        fn granular_structural_changes_retain_controls_by_stable_key() {
+            let builds = Rc::new(Cell::new(0));
+            let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let mut table = DataTable::from_model(
+                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+                NotifyingModel {
+                    row: R { name: "row".into() },
+                    order: Rc::clone(&order),
+                    changes: Rc::clone(&changes),
+                },
+            );
+            table.set_viewport(144.0, 24.0);
+            let _ = lay_out(&mut table);
+            let initial_builds = builds.get();
+
+            order.borrow_mut().insert(0, 99);
+            changes
+                .borrow_mut()
+                .push(TableModelChange::RowsInserted { index: 0, count: 1 });
+            assert!(Widget::update(
+                &mut table,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let _ = lay_out(&mut table);
+            assert_eq!(builds.get(), initial_builds + 1);
+
+            order.borrow_mut().swap(1, 3);
+            changes.borrow_mut().push(TableModelChange::RowsMoved {
+                from: 1,
+                to: 3,
+                count: 1,
+            });
+            assert!(Widget::update(
+                &mut table,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let _ = lay_out(&mut table);
+
+            assert_eq!(
+                builds.get(),
+                initial_builds + 1,
+                "moving stable keys retains their live cell controls"
+            );
+            assert_eq!(table.mounted_cell_count(), 5);
+        }
+
+        fn retained_cell_widgets_are_bounded_to_the_huge_model_window() {
+            let key_queries = Rc::new(Cell::new(0));
+            let row_queries = Rc::new(Cell::new(0));
+            let builds = Rc::new(Cell::new(0));
+            let model = HugeModel {
                 row: R {
-                    name: "resident".into(),
+                    name: "Edit".into(),
                 },
                 key_queries: Rc::clone(&key_queries),
                 row_queries: Rc::clone(&row_queries),
-            },
-        )
-        .selectable(true);
-        table.set_viewport(120.0, 24.0);
-        table.set_scroll_y(f32::MAX);
-        let _laid = lay_out(&mut table);
+            };
+            let mut table = DataTable::from_model(
+                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+                model,
+            );
+            table.set_viewport(48.0, 24.0);
+            let _ = lay_out(&mut table);
 
-        let semantics = Widget::accessibility(&table).expect("table semantics");
-        assert_eq!(table.viewport.len(), 100_000_000);
-        assert_eq!(table.viewport.resident_measurements(), 0);
-        assert!(semantics.children.len() <= 10);
-        assert!(
-            key_queries.get() < 100,
-            "queried {} keys",
-            key_queries.get()
-        );
-        assert!(
-            row_queries.get() < 100,
-            "queried {} rows",
-            row_queries.get()
-        );
-
-        assert!(Widget::perform_semantic_action(
-            &mut table,
-            "row:99999999:0",
-            &crate::a11y::Action::Focus,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(table.model_selection().primary(), Some(&99_999_999));
-        table.model_selection_mut().select_all();
-        assert!(table.model_selection().is_select_all());
-        assert_eq!(table.model_selection().len(100_000_000), 100_000_000);
-        assert_eq!(table.model_selection().stored_keys().count(), 0);
-    }
-
-    #[test]
-    fn paged_model_requests_only_the_window_and_wakes_on_loaded_rows() {
-        let loaded = Rc::new(Cell::new(false));
-        let changed = Rc::new(Cell::new(false));
-        let requested = Rc::new(RefCell::new(Vec::new()));
-        let mut table = DataTable::from_model(
-            sample_cols(),
-            PagingModel {
-                row: R {
-                    name: "loaded row".into(),
-                },
-                loaded: Rc::clone(&loaded),
-                changed: Rc::clone(&changed),
-                requested: Rc::clone(&requested),
-            },
-        );
-        table.set_viewport(96.0, 24.0);
-
-        let before = Widget::accessibility(&table).expect("loading semantics");
-        assert_eq!(before.children[0].name.as_deref(), Some("Loading"));
-        assert!(before.children[0].state.busy);
-        assert_eq!(
-            before.children[3].name.as_deref(),
-            Some("row failed to load")
-        );
-        assert!(before.children[3].state.invalid);
-        assert!(table.needs_animation_frame());
-
-        let _fills = table_color_fills(&mut table);
-        let requested = requested.borrow();
-        assert_eq!(requested.len(), 1);
-        assert!(requested[0].start == 0 && requested[0].end < 16);
-        drop(requested);
-
-        loaded.set(true);
-        changed.set(true);
-        assert!(Widget::update(
-            &mut table,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let after = Widget::accessibility(&table).expect("loaded semantics");
-        assert_eq!(after.children[0].name, None);
-        assert!(!table.needs_animation_frame());
-    }
-
-    #[test]
-    fn granular_row_change_rebuilds_only_that_rows_retained_control() {
-        let builds = Rc::new(Cell::new(0));
-        let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-        let changes = Rc::new(RefCell::new(Vec::new()));
-        let mut table = DataTable::from_model(
-            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-            NotifyingModel {
-                row: R { name: "row".into() },
-                order,
-                changes: Rc::clone(&changes),
-            },
-        );
-        table.set_viewport(120.0, 24.0);
-        let _ = lay_out(&mut table);
-        let initial_builds = builds.get();
-
-        changes
-            .borrow_mut()
-            .push(TableModelChange::RowsChanged { keys: vec![2] });
-        assert!(Widget::update(
-            &mut table,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let _ = lay_out(&mut table);
-
-        assert_eq!(builds.get(), initial_builds + 1);
-        assert_eq!(table.mounted_cell_count(), 4);
-    }
-
-    #[test]
-    fn granular_structural_changes_retain_controls_by_stable_key() {
-        let builds = Rc::new(Cell::new(0));
-        let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-        let changes = Rc::new(RefCell::new(Vec::new()));
-        let mut table = DataTable::from_model(
-            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-            NotifyingModel {
-                row: R { name: "row".into() },
-                order: Rc::clone(&order),
-                changes: Rc::clone(&changes),
-            },
-        );
-        table.set_viewport(144.0, 24.0);
-        let _ = lay_out(&mut table);
-        let initial_builds = builds.get();
-
-        order.borrow_mut().insert(0, 99);
-        changes
-            .borrow_mut()
-            .push(TableModelChange::RowsInserted { index: 0, count: 1 });
-        assert!(Widget::update(
-            &mut table,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let _ = lay_out(&mut table);
-        assert_eq!(builds.get(), initial_builds + 1);
-
-        order.borrow_mut().swap(1, 3);
-        changes.borrow_mut().push(TableModelChange::RowsMoved {
-            from: 1,
-            to: 3,
-            count: 1,
-        });
-        assert!(Widget::update(
-            &mut table,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let _ = lay_out(&mut table);
-
-        assert_eq!(
-            builds.get(),
-            initial_builds + 1,
-            "moving stable keys retains their live cell controls"
-        );
-        assert_eq!(table.mounted_cell_count(), 5);
-    }
-
-    #[test]
-    fn model_insert_preserves_stable_anchor_and_key_selection() {
-        let inserted = Rc::new(Cell::new(false));
-        let mut table = DataTable::from_model(
-            sample_cols(),
-            InsertModel {
-                row: R { name: "row".into() },
-                inserted: Rc::clone(&inserted),
-            },
-        )
-        .selectable(true);
-        table.set_viewport(48.0, 24.0);
-        table.set_scroll_y(50.0 * 24.0 + 5.0);
-        table.model_selection_mut().select_only(50);
-        let before = table.viewport.item_view_top(50);
-
-        inserted.set(true);
-        table.notify_model_changed();
-
-        assert_eq!(table.semantic_row_index("row:50:0"), Some(51));
-        assert_eq!(table.viewport.item_view_top(51), before);
-        assert_eq!(table.model_selection().primary(), Some(&50));
-        assert!(table.model_selection().is_selected(&50));
-    }
-
-    #[test]
-    fn model_owns_sort_order_while_table_owns_header_state() {
-        let descending = Rc::new(Cell::new(false));
-        let mut table = DataTable::from_model(
-            sample_cols(),
-            SortableModel {
-                row: R { name: "row".into() },
-                descending: Rc::clone(&descending),
-            },
-        );
-
-        assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
-        assert!(!descending.get());
-        assert_eq!(table.sort_state(), Some(("name", true)));
-        assert_eq!(table.semantic_row_index("row:1:0"), Some(0));
-
-        assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
-        assert!(descending.get());
-        assert_eq!(table.sort_state(), Some(("name", false)));
-        assert_eq!(table.semantic_row_index("row:1:0"), Some(2));
-    }
-
-    #[test]
-    fn toggle_sort_requires_prior_sort_by_with() {
-        let mut t = DataTable::<R>::new(sample_cols());
-        // No comparator installed yet → toggle returns None.
-        assert!(t.toggle_sort(0).is_none());
-        // Install comparator, then toggling the same column flips direction.
-        t.set_rows(vec![R { name: "b".into() }, R { name: "a".into() }]);
-        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-        assert_eq!(t.view_rows()[0].name, "a");
-        let (_, asc) = t.toggle_sort(0).unwrap();
-        assert!(!asc);
-        assert_eq!(t.view_rows()[0].name, "b");
-    }
-
-    #[test]
-    fn set_rows_reapplies_sort() {
-        let mut t = DataTable::<R>::new(sample_cols());
-        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-        t.set_rows(vec![
-            R { name: "c".into() },
-            R { name: "a".into() },
-            R { name: "b".into() },
-        ]);
-        let v = t.view_rows();
-        assert_eq!(v[0].name, "a");
-        assert_eq!(v[1].name, "b");
-        assert_eq!(v[2].name, "c");
-    }
-
-    #[test]
-    fn data_table_exposes_stable_test_and_accessible_names() {
-        let t = DataTable::<R>::new(sample_cols());
-        assert_eq!(Widget::test_id(&t), Some("data_table"));
-        let named = DataTable::<R>::new(sample_cols())
-            .with_id("results-table")
-            .with_accessible_name("Results");
-        assert_eq!(Widget::test_id(&named), Some("results-table"));
-        assert_eq!(
-            Widget::accessibility(&named).and_then(|node| node.name),
-            Some("Results".into())
-        );
-    }
-
-    #[test]
-    fn semantic_row_actions_use_stable_row_identities() {
-        let activated = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&activated);
-        let mut table = DataTable::<R>::new(sample_cols())
-            .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
-            .selectable(true)
-            .on_activate(move |index| captured.borrow_mut().push(index));
-        table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
-
-        let semantics = Widget::accessibility(&table).expect("table semantics");
-        assert_eq!(
-            semantics.children[1].action_target.as_deref(),
-            Some("row:98:0")
-        );
-        assert!(Widget::perform_semantic_action(
-            &mut table,
-            "row:98:0",
-            &crate::a11y::Action::Focus,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(table.selection().primary(), Some(1));
-        assert!(Widget::perform_semantic_action(
-            &mut table,
-            "row:98:0",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(&*activated.borrow(), &[1]);
-
-        let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
-        index_keyed.set_rows(vec![R { name: "a".into() }]);
-        assert_eq!(
-            Widget::accessibility(&index_keyed).unwrap().children[0].action_target,
-            None,
-            "index fallbacks are not stable action identities"
-        );
-    }
-
-    #[test]
-    fn semantic_rows_and_cells_publish_scrolled_viewport_geometry() {
-        let mut table = DataTable::<R>::new(sample_cols());
-        table.set_rows(rows4());
-        table.set_viewport(72.0, 24.0);
-        table.set_scroll_y(10.0);
-        let _ = lay_out(&mut table);
-
-        let semantics = Widget::accessibility(&table).expect("table semantics");
-        let row = semantics.children.first().expect("first visible row");
-        let row_bounds = row.bounds.expect("row bounds").to_rect();
-        assert_eq!(row_bounds.y0, table.rect.y0 + HEADER_HEIGHT - 10.0);
-        assert_eq!(row_bounds.y1, row_bounds.y0 + 24.0);
-        assert_eq!(row_bounds.x0, table.rect.x0);
-        assert_eq!(row_bounds.x1, table.rect.x1);
-
-        let first_cell = row.children.first().expect("first cell");
-        let cell_bounds = first_cell.bounds.expect("cell bounds").to_rect();
-        assert_eq!(cell_bounds.y0, row_bounds.y0);
-        assert_eq!(cell_bounds.y1, row_bounds.y1);
-        assert_eq!(cell_bounds.x0, table.col_rects[0].x0);
-        assert_eq!(cell_bounds.x1, table.col_rects[0].x1);
-    }
-
-    #[test]
-    fn accessibility_reports_table_role_sort_and_selection() {
-        use crate::a11y::Role;
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(rows4());
-        // Active sort surfaces via the column's human header, not its key.
-        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-        // Select the second display row.
-        t.selection_mut().select_only(1);
-        let node = Widget::accessibility(&t).expect("table is not presentational");
-        assert_eq!(node.role, Role::Table);
-        assert!(node.state.focusable);
-        assert!(!node.state.focused);
-        // The selected row's position is structured (rendered as "2 of 4" by
-        // the reader) rather than baked into the value string.
-        assert_eq!(node.pos_in_set, Some(2));
-        assert_eq!(node.set_size, Some(4));
-        assert_eq!(
-            node.description.as_deref(),
-            Some("sorted by Name ascending")
-        );
-    }
-
-    #[test]
-    fn accessibility_no_sort_or_selection_omits_value_and_description() {
-        let t = DataTable::<R>::new(sample_cols());
-        let node = Widget::accessibility(&t).unwrap();
-        assert_eq!(node.value, None, "no selection → no value");
-        assert_eq!(node.pos_in_set, None, "no selection → no position");
-        assert_eq!(node.set_size, None, "no selection → no set size");
-        assert_eq!(
-            node.description, None,
-            "no active sort → no active sort description"
-        );
-    }
-
-    #[test]
-    fn the_keyboard_cursor_row_is_exported_as_the_active_descendant() {
-        // Exactly one row may claim focus, and it must be the row Up/Down moved
-        // the cursor to — that is what puts a reader on the row rather than on
-        // the table.
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(vec![
-            R { name: "a".into() },
-            R { name: "b".into() },
-            R { name: "c".into() },
-        ]);
-        t.selection_mut().move_to(1, false);
-        let node = Widget::accessibility(&t).unwrap();
-        let focused: Vec<usize> = node
-            .children
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.state.focused)
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(focused, vec![1], "the cursor row, and only it, is focused");
-        assert!(
-            node.children.iter().all(|r| r.state.focusable),
-            "every row must be focusable or an AT cannot navigate to it"
-        );
-
-        t.selection_mut().move_to(2, false);
-        let node = Widget::accessibility(&t).unwrap();
-        assert!(node.children[2].state.focused, "focus follows the cursor");
-        assert!(!node.children[1].state.focused);
-    }
-
-    #[test]
-    fn a_read_only_tables_rows_are_not_focusable() {
-        // Nothing to operate, so nothing should advertise itself as operable.
-        let mut t = DataTable::<R>::new(sample_cols());
-        t.set_rows(rows4());
-        assert!(!t.selectable, "the default table is read-only");
-        let node = Widget::accessibility(&t).unwrap();
-        assert!(node.children.iter().all(|r| !r.state.focusable));
-        assert!(node.children.iter().all(|r| !r.state.focused));
-    }
-
-    #[test]
-    fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
-        // An assistive technology can hold a node id across a row being
-        // removed. Acting on whatever now sits at that index would operate on
-        // the wrong record — so an out-of-range row must be dropped, not
-        // clamped.
-        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
-        let sink = fired.clone();
-        let mut t = DataTable::<R>::new(sample_cols())
-            .selectable(true)
-            .on_activate(move |i| sink.borrow_mut().push(i));
-        t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
-        t.selection_mut().move_to(0, false);
-
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let handled = Widget::perform_action_at(
-            &mut t,
-            &crate::a11y::Action::Activate,
-            &[7],
-            &mut doc,
-            &root,
-        );
-        assert!(!handled, "a vanished row cannot be activated");
-        assert!(
-            fired.borrow().is_empty(),
-            "and must not activate some other row in its place"
-        );
-        assert_eq!(
-            t.selection.primary(),
-            Some(0),
-            "nor move the cursor off the row the user was on"
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_per_row_and_cell_structure() {
-        use crate::a11y::Role;
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(rows4());
-        t.selection_mut().select_only(2);
-        let node = Widget::accessibility(&t).unwrap();
-
-        // One Row child per display row, each numbered "N of 4".
-        assert_eq!(node.children.len(), 4, "a row node per display row");
-        for (i, row) in node.children.iter().enumerate() {
-            assert_eq!(row.role, Role::Row);
-            assert_eq!(row.pos_in_set, Some(i + 1));
-            assert_eq!(row.set_size, Some(4));
-            // Every row exposes one cell per column, named by the column header.
-            assert_eq!(row.children.len(), 2, "two cells per row (two columns)");
-            assert_eq!(row.children[0].role, Role::Cell);
-            assert_eq!(row.children[0].name.as_deref(), Some("Name"));
-            assert_eq!(row.children[0].pos_in_set, Some(1));
-            assert_eq!(row.children[1].name.as_deref(), Some("X"));
-            assert_eq!(row.children[1].pos_in_set, Some(2));
+            assert!(table.mounted_cell_count() > 0);
+            assert!(
+                table.mounted_cell_count() < 20,
+                "100M logical rows retain only the viewport window"
+            );
+            assert_eq!(builds.get(), table.mounted_cell_count());
+            assert!(key_queries.get() < 100);
+            assert!(row_queries.get() < 100);
         }
-        // The selected display row carries the selected flag on its node.
-        assert!(
-            node.children[2].state.selected,
-            "row 3 (index 2) is selected"
-        );
-        assert!(!node.children[0].state.selected);
+
+        fn retained_cell_widgets_follow_stable_rows_through_sorting() {
+            let builds = Rc::new(Cell::new(0));
+            let mut table =
+                DataTable::new(interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)))
+                    .with_row_key(|row: &R| {
+                        u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
+                    });
+            table.set_rows(rows4());
+            let _ = lay_out(&mut table);
+            let first_builds = builds.get();
+            table.sort_by_with(|a, b| a.name.cmp(&b.name), "name", false);
+            let _ = lay_out(&mut table);
+
+            assert_eq!(
+                builds.get(),
+                first_builds,
+                "sorting repositions cells without rebuilding retained controls"
+            );
+        }
+
+        fn retained_cell_widgets_track_scroll_inside_the_same_mounted_window() {
+            let mut table = DataTable::new(interactive_cols(
+                Rc::new(Cell::new(0)),
+                Rc::new(Cell::new(0)),
+            ));
+            table.set_rows(rows4());
+            table.set_viewport(48.0, 24.0);
+            let (tree, node) = lay_out(&mut table);
+            let before = table
+                .mounted_cells
+                .first()
+                .expect("first mounted cell")
+                .widget
+                .get_rect()
+                .y0;
+            table.set_scroll_y(5.0);
+            table.apply_layout(&tree, node, Point::ZERO);
+            let after = table
+                .mounted_cells
+                .first()
+                .expect("first mounted cell")
+                .widget
+                .get_rect()
+                .y0;
+            assert_eq!(after, before - 5.0);
+        }
+
+        granular_row_change_rebuilds_only_that_rows_retained_control();
+        granular_structural_changes_retain_controls_by_stable_key();
+        retained_cell_widgets_are_bounded_to_the_huge_model_window();
+        retained_cell_widgets_follow_stable_rows_through_sorting();
+        retained_cell_widgets_track_scroll_inside_the_same_mounted_window();
     }
 
     #[test]
-    fn typed_text_and_custom_cells_publish_row_specific_values() {
-        let columns = vec![
-            ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
-                .with_text(|row: &R| row.name.clone()),
-            ColumnDef::new("custom", "Custom", ColumnWidth::Fixed(80.0))
-                .with_render(Box::new(|_, _, _, _, _| {}))
-                .with_accessible_value(|row: &R| format!("custom {}", row.name)),
-            ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
-                .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
-        ];
-        let mut table = DataTable::new(columns);
-        table.set_rows(vec![R { name: "Ada".into() }]);
-        let semantics = Widget::accessibility(&table).expect("table semantics");
-        let cells = &semantics.children.first().expect("ready row").children;
+    fn sorting_is_owned_by_the_model_and_reapplied_on_rows() {
+        fn model_owns_sort_order_while_table_owns_header_state() {
+            let descending = Rc::new(Cell::new(false));
+            let mut table = DataTable::from_model(
+                sample_cols(),
+                SortableModel {
+                    row: R { name: "row".into() },
+                    descending: Rc::clone(&descending),
+                },
+            );
 
-        assert_eq!(
-            cells.first().and_then(|cell| cell.value.as_deref()),
-            Some("Ada")
-        );
-        assert_eq!(
-            cells.get(1).and_then(|cell| cell.value.as_deref()),
-            Some("custom Ada")
-        );
-        assert_eq!(
-            cells.get(2).and_then(|cell| cell.value.as_deref()),
-            None,
-            "retained controls provide their own nested semantics"
-        );
-        assert!(table.columns[0].text_render.is_some());
+            assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
+            assert!(!descending.get());
+            assert_eq!(table.sort_state(), Some(("name", true)));
+            assert_eq!(table.semantic_row_index("row:1:0"), Some(0));
+
+            assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
+            assert!(descending.get());
+            assert_eq!(table.sort_state(), Some(("name", false)));
+            assert_eq!(table.semantic_row_index("row:1:0"), Some(2));
+        }
+
+        fn toggle_sort_requires_prior_sort_by_with() {
+            let mut t = DataTable::<R>::new(sample_cols());
+            // No comparator installed yet → toggle returns None.
+            assert!(t.toggle_sort(0).is_none());
+            // Install comparator, then toggling the same column flips direction.
+            t.set_rows(vec![R { name: "b".into() }, R { name: "a".into() }]);
+            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+            assert_eq!(t.view_rows()[0].name, "a");
+            let (_, asc) = t.toggle_sort(0).unwrap();
+            assert!(!asc);
+            assert_eq!(t.view_rows()[0].name, "b");
+        }
+
+        fn set_rows_reapplies_sort() {
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+            t.set_rows(vec![
+                R { name: "c".into() },
+                R { name: "a".into() },
+                R { name: "b".into() },
+            ]);
+            let v = t.view_rows();
+            assert_eq!(v[0].name, "a");
+            assert_eq!(v[1].name, "b");
+            assert_eq!(v[2].name, "c");
+        }
+
+        fn header_click_fires_on_header_click_instead_of_toggle() {
+            let hits = Rc::new(RefCell::new(Vec::<usize>::new()));
+            let mut t = {
+                let hits = hits.clone();
+                DataTable::<R>::new(sample_cols())
+                    .on_header_click(move |i| hits.borrow_mut().push(i))
+            };
+            t.set_rows(rows4());
+            // Install a comparator so a fallback toggle *would* have sorted —
+            // proving the callback path takes precedence (rows stay put).
+            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+            let (tree, node) = lay_out(&mut t);
+            let mods = winit::event::Modifiers::default();
+
+            // Header band is y ∈ [0, 28). Name column starts at x=0. Click (20, 10).
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (20.0, 10.0).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+
+            assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
+            // Sort direction unchanged because the callback replaced toggle.
+            assert_eq!(t.sort_state(), Some(("name", true)));
+        }
+
+        model_owns_sort_order_while_table_owns_header_state();
+        toggle_sort_requires_prior_sort_by_with();
+        set_rows_reapplies_sort();
+        header_click_fires_on_header_click_instead_of_toggle();
+    }
+
+    #[test]
+    fn table_accessibility_names_roles_sort_and_selection() {
+        fn data_table_exposes_stable_test_and_accessible_names() {
+            let t = DataTable::<R>::new(sample_cols());
+            assert_eq!(Widget::test_id(&t), Some("data_table"));
+            let named = DataTable::<R>::new(sample_cols())
+                .with_id("results-table")
+                .with_accessible_name("Results");
+            assert_eq!(Widget::test_id(&named), Some("results-table"));
+            assert_eq!(
+                Widget::accessibility(&named).and_then(|node| node.name),
+                Some("Results".into())
+            );
+        }
+
+        fn accessibility_reports_table_role_sort_and_selection() {
+            use crate::a11y::Role;
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(rows4());
+            // Active sort surfaces via the column's human header, not its key.
+            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+            // Select the second display row.
+            t.selection_mut().select_only(1);
+            let node = Widget::accessibility(&t).expect("table is not presentational");
+            assert_eq!(node.role, Role::Table);
+            assert!(node.state.focusable);
+            assert!(!node.state.focused);
+            // The selected row's position is structured (rendered as "2 of 4" by
+            // the reader) rather than baked into the value string.
+            assert_eq!(node.pos_in_set, Some(2));
+            assert_eq!(node.set_size, Some(4));
+            assert_eq!(
+                node.description.as_deref(),
+                Some("sorted by Name ascending")
+            );
+        }
+
+        fn accessibility_no_sort_or_selection_omits_value_and_description() {
+            let t = DataTable::<R>::new(sample_cols());
+            let node = Widget::accessibility(&t).unwrap();
+            assert_eq!(node.value, None, "no selection → no value");
+            assert_eq!(node.pos_in_set, None, "no selection → no position");
+            assert_eq!(node.set_size, None, "no selection → no set size");
+            assert_eq!(
+                node.description, None,
+                "no active sort → no active sort description"
+            );
+        }
+
+        fn the_keyboard_cursor_row_is_exported_as_the_active_descendant() {
+            // Exactly one row may claim focus, and it must be the row Up/Down moved
+            // the cursor to — that is what puts a reader on the row rather than on
+            // the table.
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(vec![
+                R { name: "a".into() },
+                R { name: "b".into() },
+                R { name: "c".into() },
+            ]);
+            t.selection_mut().move_to(1, false);
+            let node = Widget::accessibility(&t).unwrap();
+            let focused: Vec<usize> = node
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.state.focused)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(focused, vec![1], "the cursor row, and only it, is focused");
+            assert!(
+                node.children.iter().all(|r| r.state.focusable),
+                "every row must be focusable or an AT cannot navigate to it"
+            );
+
+            t.selection_mut().move_to(2, false);
+            let node = Widget::accessibility(&t).unwrap();
+            assert!(node.children[2].state.focused, "focus follows the cursor");
+            assert!(!node.children[1].state.focused);
+        }
+
+        fn a_read_only_tables_rows_are_not_focusable() {
+            // Nothing to operate, so nothing should advertise itself as operable.
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.set_rows(rows4());
+            assert!(!t.selectable, "the default table is read-only");
+            let node = Widget::accessibility(&t).unwrap();
+            assert!(node.children.iter().all(|r| !r.state.focusable));
+            assert!(node.children.iter().all(|r| !r.state.focused));
+        }
+
+        data_table_exposes_stable_test_and_accessible_names();
+        accessibility_reports_table_role_sort_and_selection();
+        accessibility_no_sort_or_selection_omits_value_and_description();
+        the_keyboard_cursor_row_is_exported_as_the_active_descendant();
+        a_read_only_tables_rows_are_not_focusable();
+    }
+
+    #[test]
+    fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
+        fn semantic_row_actions_use_stable_row_identities() {
+            let activated = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&activated);
+            let mut table = DataTable::<R>::new(sample_cols())
+                .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
+                .selectable(true)
+                .on_activate(move |index| captured.borrow_mut().push(index));
+            table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+
+            let semantics = Widget::accessibility(&table).expect("table semantics");
+            assert_eq!(
+                semantics.children[1].action_target.as_deref(),
+                Some("row:98:0")
+            );
+            assert!(Widget::perform_semantic_action(
+                &mut table,
+                "row:98:0",
+                &crate::a11y::Action::Focus,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(table.selection().primary(), Some(1));
+            assert!(Widget::perform_semantic_action(
+                &mut table,
+                "row:98:0",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(&*activated.borrow(), &[1]);
+
+            let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
+            index_keyed.set_rows(vec![R { name: "a".into() }]);
+            assert_eq!(
+                Widget::accessibility(&index_keyed).unwrap().children[0].action_target,
+                None,
+                "index fallbacks are not stable action identities"
+            );
+        }
+
+        fn semantic_rows_and_cells_publish_scrolled_viewport_geometry() {
+            let mut table = DataTable::<R>::new(sample_cols());
+            table.set_rows(rows4());
+            table.set_viewport(72.0, 24.0);
+            table.set_scroll_y(10.0);
+            let _ = lay_out(&mut table);
+
+            let semantics = Widget::accessibility(&table).expect("table semantics");
+            let row = semantics.children.first().expect("first visible row");
+            let row_bounds = row.bounds.expect("row bounds").to_rect();
+            assert_eq!(row_bounds.y0, table.rect.y0 + HEADER_HEIGHT - 10.0);
+            assert_eq!(row_bounds.y1, row_bounds.y0 + 24.0);
+            assert_eq!(row_bounds.x0, table.rect.x0);
+            assert_eq!(row_bounds.x1, table.rect.x1);
+
+            let first_cell = row.children.first().expect("first cell");
+            let cell_bounds = first_cell.bounds.expect("cell bounds").to_rect();
+            assert_eq!(cell_bounds.y0, row_bounds.y0);
+            assert_eq!(cell_bounds.y1, row_bounds.y1);
+            assert_eq!(cell_bounds.x0, table.col_rects[0].x0);
+            assert_eq!(cell_bounds.x1, table.col_rects[0].x1);
+        }
+
+        fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
+            // An assistive technology can hold a node id across a row being
+            // removed. Acting on whatever now sits at that index would operate on
+            // the wrong record — so an out-of-range row must be dropped, not
+            // clamped.
+            let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+            let sink = fired.clone();
+            let mut t = DataTable::<R>::new(sample_cols())
+                .selectable(true)
+                .on_activate(move |i| sink.borrow_mut().push(i));
+            t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+            t.selection_mut().move_to(0, false);
+
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let handled = Widget::perform_action_at(
+                &mut t,
+                &crate::a11y::Action::Activate,
+                &[7],
+                &mut doc,
+                &root,
+            );
+            assert!(!handled, "a vanished row cannot be activated");
+            assert!(
+                fired.borrow().is_empty(),
+                "and must not activate some other row in its place"
+            );
+            assert_eq!(
+                t.selection.primary(),
+                Some(0),
+                "nor move the cursor off the row the user was on"
+            );
+        }
+
+        fn accessibility_exposes_per_row_and_cell_structure() {
+            use crate::a11y::Role;
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(rows4());
+            t.selection_mut().select_only(2);
+            let node = Widget::accessibility(&t).unwrap();
+
+            // One Row child per display row, each numbered "N of 4".
+            assert_eq!(node.children.len(), 4, "a row node per display row");
+            for (i, row) in node.children.iter().enumerate() {
+                assert_eq!(row.role, Role::Row);
+                assert_eq!(row.pos_in_set, Some(i + 1));
+                assert_eq!(row.set_size, Some(4));
+                // Every row exposes one cell per column, named by the column header.
+                assert_eq!(row.children.len(), 2, "two cells per row (two columns)");
+                assert_eq!(row.children[0].role, Role::Cell);
+                assert_eq!(row.children[0].name.as_deref(), Some("Name"));
+                assert_eq!(row.children[0].pos_in_set, Some(1));
+                assert_eq!(row.children[1].name.as_deref(), Some("X"));
+                assert_eq!(row.children[1].pos_in_set, Some(2));
+            }
+            // The selected display row carries the selected flag on its node.
+            assert!(
+                node.children[2].state.selected,
+                "row 3 (index 2) is selected"
+            );
+            assert!(!node.children[0].state.selected);
+        }
+
+        fn typed_text_and_custom_cells_publish_row_specific_values() {
+            let columns = vec![
+                ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+                    .with_text(|row: &R| row.name.clone()),
+                ColumnDef::new("custom", "Custom", ColumnWidth::Fixed(80.0))
+                    .with_render(Box::new(|_, _, _, _, _| {}))
+                    .with_accessible_value(|row: &R| format!("custom {}", row.name)),
+                ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
+                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
+            ];
+            let mut table = DataTable::new(columns);
+            table.set_rows(vec![R { name: "Ada".into() }]);
+            let semantics = Widget::accessibility(&table).expect("table semantics");
+            let cells = &semantics.children.first().expect("ready row").children;
+
+            assert_eq!(
+                cells.first().and_then(|cell| cell.value.as_deref()),
+                Some("Ada")
+            );
+            assert_eq!(
+                cells.get(1).and_then(|cell| cell.value.as_deref()),
+                Some("custom Ada")
+            );
+            assert_eq!(
+                cells.get(2).and_then(|cell| cell.value.as_deref()),
+                None,
+                "retained controls provide their own nested semantics"
+            );
+            assert!(table.columns[0].text_render.is_some());
+        }
+
+        semantic_row_actions_use_stable_row_identities();
+        semantic_rows_and_cells_publish_scrolled_viewport_geometry();
+        a_routed_action_naming_a_row_that_no_longer_exists_does_nothing();
+        accessibility_exposes_per_row_and_cell_structure();
+        typed_text_and_custom_cells_publish_row_specific_values();
     }
 
     use winit::event::{DeviceId, ElementState, MouseButton};
@@ -3539,135 +3678,167 @@ mod tests {
     }
 
     #[test]
-    fn retained_cell_widgets_are_bounded_to_the_huge_model_window() {
-        let key_queries = Rc::new(Cell::new(0));
-        let row_queries = Rc::new(Cell::new(0));
-        let builds = Rc::new(Cell::new(0));
-        let model = HugeModel {
-            row: R {
-                name: "Edit".into(),
-            },
-            key_queries: Rc::clone(&key_queries),
-            row_queries: Rc::clone(&row_queries),
-        };
-        let mut table = DataTable::from_model(
-            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-            model,
-        );
-        table.set_viewport(48.0, 24.0);
-        let _ = lay_out(&mut table);
+    fn pointer_and_keyboard_select_rows_unless_cells_or_mode_consume() {
+        fn interactive_cell_consumes_click_without_selecting_its_row() {
+            let clicks = Rc::new(Cell::new(0));
+            let mut table =
+                DataTable::new(interactive_cols(Rc::clone(&clicks), Rc::new(Cell::new(0))))
+                    .selectable(true)
+                    .with_row_key(|row: &R| {
+                        u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
+                    });
+            table.set_rows(rows4());
+            // The first pass learns flex column geometry; the second positions
+            // retained cell controls against those exact column rectangles.
+            let _ = lay_out(&mut table);
+            let (tree, node) = lay_out(&mut table);
+            let modifiers = winit::event::Modifiers::default();
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (20.0, HEADER_HEIGHT + 12.0).into(),
+                },
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                modifiers,
+            );
 
-        assert!(table.mounted_cell_count() > 0);
-        assert!(
-            table.mounted_cell_count() < 20,
-            "100M logical rows retain only the viewport window"
-        );
-        assert_eq!(builds.get(), table.mounted_cell_count());
-        assert!(key_queries.get() < 100);
-        assert!(row_queries.get() < 100);
-    }
+            assert_eq!(clicks.get(), 1, "real cell button receives activation");
+            assert!(
+                table.selection().is_empty(),
+                "the button gesture does not leak into row selection"
+            );
+            assert_eq!(table.accessibility_child_path(0), Some(vec![0, 0]));
+        }
 
-    #[test]
-    fn retained_cell_widgets_follow_stable_rows_through_sorting() {
-        let builds = Rc::new(Cell::new(0));
-        let mut table = DataTable::new(interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)))
-            .with_row_key(|row: &R| {
-                u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
-            });
-        table.set_rows(rows4());
-        let _ = lay_out(&mut table);
-        let first_builds = builds.get();
-        table.sort_by_with(|a, b| a.name.cmp(&b.name), "name", false);
-        let _ = lay_out(&mut table);
+        fn click_selects_row_and_fires_callback() {
+            let clicks = Rc::new(RefCell::new(Vec::<(usize, bool, bool)>::new()));
+            let mut t = {
+                let clicks = clicks.clone();
+                DataTable::<R>::new(sample_cols())
+                    .selectable(true)
+                    .on_row_click(move |i, c, s| clicks.borrow_mut().push((i, c, s)))
+            };
+            t.set_rows(rows4());
+            let (tree, node) = lay_out(&mut t);
+            let mods = winit::event::Modifiers::default();
 
-        assert_eq!(
-            builds.get(),
-            first_builds,
-            "sorting repositions cells without rebuilding retained controls"
-        );
-    }
+            // Row 2 spans y ∈ [28 + 2*24, +24) = [76, 100). Click at (50, 85).
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (50.0, 85.0).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
 
-    #[test]
-    fn interactive_cell_consumes_click_without_selecting_its_row() {
-        let clicks = Rc::new(Cell::new(0));
-        let mut table = DataTable::new(interactive_cols(Rc::clone(&clicks), Rc::new(Cell::new(0))))
-            .selectable(true)
-            .with_row_key(|row: &R| {
-                u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
-            });
-        table.set_rows(rows4());
-        // The first pass learns flex column geometry; the second positions
-        // retained cell controls against those exact column rectangles.
-        let _ = lay_out(&mut table);
-        let (tree, node) = lay_out(&mut table);
-        let modifiers = winit::event::Modifiers::default();
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (20.0, HEADER_HEIGHT + 12.0).into(),
-            },
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            modifiers,
-        );
+            assert!(t.selection().is_selected(2), "row 2 selected");
+            assert_eq!(t.selection().primary(), Some(2));
+            assert_eq!(*clicks.borrow(), vec![(2, false, false)]);
+        }
 
-        assert_eq!(clicks.get(), 1, "real cell button receives activation");
-        assert!(
-            table.selection().is_empty(),
-            "the button gesture does not leak into row selection"
-        );
-        assert_eq!(table.accessibility_child_path(0), Some(vec![0, 0]));
-    }
+        fn non_selectable_table_ignores_body_clicks() {
+            let mut t = DataTable::<R>::new(sample_cols()); // selectable defaults false
+            t.set_rows(rows4());
+            let (tree, node) = lay_out(&mut t);
+            let mods = winit::event::Modifiers::default();
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (50.0, 85.0).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+            assert!(
+                t.selection().is_empty(),
+                "read-only table keeps empty selection"
+            );
+        }
 
-    #[test]
-    fn retained_cell_widgets_track_scroll_inside_the_same_mounted_window() {
-        let mut table = DataTable::new(interactive_cols(
-            Rc::new(Cell::new(0)),
-            Rc::new(Cell::new(0)),
-        ));
-        table.set_rows(rows4());
-        table.set_viewport(48.0, 24.0);
-        let (tree, node) = lay_out(&mut table);
-        let before = table
-            .mounted_cells
-            .first()
-            .expect("first mounted cell")
-            .widget
-            .get_rect()
-            .y0;
-        table.set_scroll_y(5.0);
-        table.apply_layout(&tree, node, Point::ZERO);
-        let after = table
-            .mounted_cells
-            .first()
-            .expect("first mounted cell")
-            .widget
-            .get_rect()
-            .y0;
-        assert_eq!(after, before - 5.0);
+        fn keyboard_arrows_move_selection_when_focused() {
+            use winit::keyboard::NamedKey;
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(rows4());
+            t.set_focus(true);
+            let (tree, node) = lay_out(&mut t);
+            let mods = winit::event::Modifiers::default();
+            // `KeyEvent`'s extra field is `pub(crate)`; zero-init and set the fields we care about.
+            let key = |named| {
+                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = winit::keyboard::Key::Named(named);
+                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                ev.location = winit::keyboard::KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                WindowEvent::KeyboardInput {
+                    device_id: device(),
+                    event: ev,
+                    is_synthetic: false,
+                }
+            };
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
+            assert_eq!(t.selection().primary(), Some(1));
+            assert!(t.selection().is_selected(1));
+        }
+
+        interactive_cell_consumes_click_without_selecting_its_row();
+        click_selects_row_and_fires_callback();
+        non_selectable_table_ignores_body_clicks();
+        keyboard_arrows_move_selection_when_focused();
     }
 
     fn dispatch(
@@ -3683,14 +3854,16 @@ mod tests {
         let root = automerge::ROOT;
         t.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 
@@ -3699,289 +3872,144 @@ mod tests {
     }
 
     #[test]
-    fn click_selects_row_and_fires_callback() {
-        let clicks = Rc::new(RefCell::new(Vec::<(usize, bool, bool)>::new()));
-        let mut t = {
-            let clicks = clicks.clone();
-            DataTable::<R>::new(sample_cols())
-                .selectable(true)
-                .on_row_click(move |i, c, s| clicks.borrow_mut().push((i, c, s)))
-        };
-        t.set_rows(rows4());
-        let (tree, node) = lay_out(&mut t);
-        let mods = winit::event::Modifiers::default();
-
-        // Row 2 spans y ∈ [28 + 2*24, +24) = [76, 100). Click at (50, 85).
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (50.0, 85.0).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-
-        assert!(t.selection().is_selected(2), "row 2 selected");
-        assert_eq!(t.selection().primary(), Some(2));
-        assert_eq!(*clicks.borrow(), vec![(2, false, false)]);
-    }
-
-    #[test]
-    fn header_click_fires_on_header_click_instead_of_toggle() {
-        let hits = Rc::new(RefCell::new(Vec::<usize>::new()));
-        let mut t = {
-            let hits = hits.clone();
-            DataTable::<R>::new(sample_cols()).on_header_click(move |i| hits.borrow_mut().push(i))
-        };
-        t.set_rows(rows4());
-        // Install a comparator so a fallback toggle *would* have sorted —
-        // proving the callback path takes precedence (rows stay put).
-        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-        let (tree, node) = lay_out(&mut t);
-        let mods = winit::event::Modifiers::default();
-
-        // Header band is y ∈ [0, 28). Name column starts at x=0. Click (20, 10).
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (20.0, 10.0).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-
-        assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
-        // Sort direction unchanged because the callback replaced toggle.
-        assert_eq!(t.sort_state(), Some(("name", true)));
-    }
-
-    #[test]
-    fn non_selectable_table_ignores_body_clicks() {
-        let mut t = DataTable::<R>::new(sample_cols()); // selectable defaults false
-        t.set_rows(rows4());
-        let (tree, node) = lay_out(&mut t);
-        let mods = winit::event::Modifiers::default();
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (50.0, 85.0).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        assert!(
-            t.selection().is_empty(),
-            "read-only table keeps empty selection"
-        );
-    }
-
-    #[test]
-    fn keyboard_arrows_move_selection_when_focused() {
-        use winit::keyboard::NamedKey;
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(rows4());
-        t.set_focus(true);
-        let (tree, node) = lay_out(&mut t);
-        let mods = winit::event::Modifiers::default();
-        // `KeyEvent`'s extra field is `pub(crate)`; zero-init and set the fields we care about.
-        let key = |named| {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(named);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+    fn scrolling_shares_variable_row_geometry_with_hit_testing() {
+        fn page_navigation_and_accelerated_wheel_share_variable_row_geometry() {
+            let mut table = DataTable::<R>::new(sample_cols()).selectable(true);
+            table.set_rows(
+                (0..100)
+                    .map(|i| R {
+                        name: format!("row {i}"),
+                    })
+                    .collect(),
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            WindowEvent::KeyboardInput {
+            table.set_viewport(100.0, 24.0);
+            assert!(table.set_row_height(0, 300.0));
+            table.selection_mut().select_only(0);
+
+            assert!(table.page_selection(true, false));
+            assert_eq!(table.selection().primary(), Some(0));
+            assert_eq!(table.scroll_y(), 90.0);
+            assert!(table.page_selection(false, false));
+            assert_eq!(table.scroll_y(), 0.0);
+
+            let mut handled = false;
+            table.on_wheel(
+                &MouseScrollDelta::LineDelta(0.0, -1.0),
+                TouchPhase::Moved,
+                &mut handled,
+            );
+            assert!(handled);
+            let immediate = table.scroll_y();
+            assert_eq!(immediate, 60.0);
+            assert!(table.needs_animation_frame());
+            table.last_tick = Some(
+                crate::time::now()
+                    .checked_sub(crate::time::Duration::from_millis(16))
+                    .expect("a 16 ms earlier instant is representable"),
+            );
+            assert!(Widget::update(
+                &mut table,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(
+                table.scroll_y() > immediate,
+                "momentum advances after input"
+            );
+        }
+
+        fn internal_scroll_offsets_hit_testing() {
+            // draw() subtracts scroll_y and row_at() adds it — these must stay
+            // inverses or a click resolves to the wrong row once scrolled.
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(
+                (0..100)
+                    .map(|i| R {
+                        name: format!("r{i}"),
+                    })
+                    .collect(),
+            );
+            let _laid = lay_out(&mut t);
+            t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+            t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
+            let rect = t.get_rect();
+            let p = Point::new(rect.x0 + 5.0, rect.y0 + HEADER_HEIGHT + 1.0);
+            assert_eq!(
+                t.row_at(p),
+                Some(10),
+                "top of body maps to the scrolled-in row"
+            );
+            // visible window also starts around row 10 (minus overscan).
+            let (start, _end) = t.visible_row_range();
+            assert!(
+                (8..=10).contains(&start),
+                "window starts near the scroll position: {start}"
+            );
+        }
+
+        fn variable_row_heights_share_placement_and_hit_testing() {
+            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+            t.set_rows(rows4());
+            t.set_viewport(60.0, px(ROW_HEIGHT));
+            assert!(t.set_row_height(0, 10.0));
+            assert!(t.set_row_height(1, 50.0));
+            let _laid = lay_out(&mut t);
+            let body = t.get_rect().y0 + HEADER_HEIGHT;
+
+            assert_eq!(t.row_at(Point::new(10.0, body + 9.0)), Some(0));
+            assert_eq!(t.row_at(Point::new(10.0, body + 10.0)), Some(1));
+            assert_eq!(t.row_at(Point::new(10.0, body + 59.0)), Some(1));
+            assert_eq!(t.row_at(Point::new(10.0, body + 60.0)), None);
+        }
+
+        fn configured_viewport_bounds_layout_and_accessibility_work() {
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.set_rows(
+                (0..100_000)
+                    .map(|i| R {
+                        name: format!("r{i}"),
+                    })
+                    .collect(),
+            );
+            t.set_viewport(120.0, px(ROW_HEIGHT));
+            t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
+            let _laid = lay_out(&mut t);
+
+            assert!((t.get_rect().height() - (HEADER_HEIGHT + 120.0)).abs() < 0.01);
+            let node = Widget::accessibility(&t).expect("table semantics");
+            assert!(
+                node.children.len() <= 10,
+                "semantic tree stays proportional to the viewport: {} rows",
+                node.children.len()
+            );
+            let first = node.children.first().expect("visible semantic row");
+            assert_eq!(first.set_size, Some(100_000));
+            assert!(first.pos_in_set.expect("absolute row position") > 49_990);
+        }
+
+        fn wheel_scrolls_in_internal_mode() {
+            let (mut t, tree, node) = scrolling_table();
+            let mods = winit::event::Modifiers::default();
+            assert_eq!(t.scroll_y(), 0.0);
+            let wheel = WindowEvent::MouseWheel {
                 device_id: device(),
-                event: ev,
-                is_synthetic: false,
-            }
-        };
-        dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
-        dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
-        assert_eq!(t.selection().primary(), Some(1));
-        assert!(t.selection().is_selected(1));
-    }
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            dispatch(&mut t, &tree, node, &wheel, mods);
+            assert!(
+                t.scroll_y() > 0.0,
+                "wheel down increases scroll_y: {}",
+                t.scroll_y()
+            );
+            assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
+        }
 
-    #[test]
-    fn page_navigation_and_accelerated_wheel_share_variable_row_geometry() {
-        let mut table = DataTable::<R>::new(sample_cols()).selectable(true);
-        table.set_rows(
-            (0..100)
-                .map(|i| R {
-                    name: format!("row {i}"),
-                })
-                .collect(),
-        );
-        table.set_viewport(100.0, 24.0);
-        assert!(table.set_row_height(0, 300.0));
-        table.selection_mut().select_only(0);
-
-        assert!(table.page_selection(true, false));
-        assert_eq!(table.selection().primary(), Some(0));
-        assert_eq!(table.scroll_y(), 90.0);
-        assert!(table.page_selection(false, false));
-        assert_eq!(table.scroll_y(), 0.0);
-
-        let mut handled = false;
-        table.on_wheel(
-            &MouseScrollDelta::LineDelta(0.0, -1.0),
-            TouchPhase::Moved,
-            &mut handled,
-        );
-        assert!(handled);
-        let immediate = table.scroll_y();
-        assert_eq!(immediate, 60.0);
-        assert!(table.needs_animation_frame());
-        table.last_tick = Some(
-            crate::time::now()
-                .checked_sub(crate::time::Duration::from_millis(16))
-                .expect("a 16 ms earlier instant is representable"),
-        );
-        assert!(Widget::update(
-            &mut table,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(
-            table.scroll_y() > immediate,
-            "momentum advances after input"
-        );
-    }
-
-    #[test]
-    fn internal_scroll_offsets_hit_testing() {
-        // draw() subtracts scroll_y and row_at() adds it — these must stay
-        // inverses or a click resolves to the wrong row once scrolled.
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(
-            (0..100)
-                .map(|i| R {
-                    name: format!("r{i}"),
-                })
-                .collect(),
-        );
-        let _laid = lay_out(&mut t);
-        t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
-        t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
-        let rect = t.get_rect();
-        let p = Point::new(rect.x0 + 5.0, rect.y0 + HEADER_HEIGHT + 1.0);
-        assert_eq!(
-            t.row_at(p),
-            Some(10),
-            "top of body maps to the scrolled-in row"
-        );
-        // visible window also starts around row 10 (minus overscan).
-        let (start, _end) = t.visible_row_range();
-        assert!(
-            (8..=10).contains(&start),
-            "window starts near the scroll position: {start}"
-        );
-    }
-
-    #[test]
-    fn variable_row_heights_share_placement_and_hit_testing() {
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-        t.set_rows(rows4());
-        t.set_viewport(60.0, px(ROW_HEIGHT));
-        assert!(t.set_row_height(0, 10.0));
-        assert!(t.set_row_height(1, 50.0));
-        let _laid = lay_out(&mut t);
-        let body = t.get_rect().y0 + HEADER_HEIGHT;
-
-        assert_eq!(t.row_at(Point::new(10.0, body + 9.0)), Some(0));
-        assert_eq!(t.row_at(Point::new(10.0, body + 10.0)), Some(1));
-        assert_eq!(t.row_at(Point::new(10.0, body + 59.0)), Some(1));
-        assert_eq!(t.row_at(Point::new(10.0, body + 60.0)), None);
-    }
-
-    #[test]
-    fn stable_row_keys_anchor_inserts_above_the_viewport() {
-        let mut t = DataTable::<R>::new(sample_cols())
-            .with_row_key(|row| u64::from(row.name.as_bytes()[0]));
-        t.set_rows(rows4());
-        t.set_viewport(24.0, px(ROW_HEIGHT));
-        t.set_scroll_y(2.0 * px(ROW_HEIGHT) + 5.0);
-        let before = t.viewport.item_view_top(2);
-
-        t.set_rows(vec![
-            R { name: "x".into() },
-            R { name: "a".into() },
-            R { name: "b".into() },
-            R { name: "c".into() },
-            R { name: "d".into() },
-        ]);
-
-        let c = t.semantic_row_index(&format!("row:{}:0", u64::from(b'c')));
-        assert_eq!(c, Some(3));
-        assert_eq!(t.viewport.item_view_top(c.unwrap()), before);
-    }
-
-    #[test]
-    fn configured_viewport_bounds_layout_and_accessibility_work() {
-        let mut t = DataTable::<R>::new(sample_cols());
-        t.set_rows(
-            (0..100_000)
-                .map(|i| R {
-                    name: format!("r{i}"),
-                })
-                .collect(),
-        );
-        t.set_viewport(120.0, px(ROW_HEIGHT));
-        t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
-        let _laid = lay_out(&mut t);
-
-        assert!((t.get_rect().height() - (HEADER_HEIGHT + 120.0)).abs() < 0.01);
-        let node = Widget::accessibility(&t).expect("table semantics");
-        assert!(
-            node.children.len() <= 10,
-            "semantic tree stays proportional to the viewport: {} rows",
-            node.children.len()
-        );
-        let first = node.children.first().expect("visible semantic row");
-        assert_eq!(first.set_size, Some(100_000));
-        assert!(first.pos_in_set.expect("absolute row position") > 49_990);
+        page_navigation_and_accelerated_wheel_share_variable_row_geometry();
+        internal_scroll_offsets_hit_testing();
+        variable_row_heights_share_placement_and_hit_testing();
+        configured_viewport_bounds_layout_and_accessibility_work();
+        wheel_scrolls_in_internal_mode();
     }
 
     /// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px
@@ -4005,334 +4033,323 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_hidden_without_viewport() {
-        // No `set_viewport` → defers to an outer Scrollable, no built-in bar.
-        let mut t = DataTable::<R>::new(sample_cols());
-        t.set_rows(
-            (0..100)
-                .map(|i| R {
-                    name: format!("r{i}"),
-                })
-                .collect(),
-        );
-        let _ = lay_out(&mut t);
-        assert!(
-            t.scrollbar_thumb().is_none(),
-            "no bar without an explicit viewport"
-        );
+    fn scrollbar_visibility_thumb_drag_and_track_paging() {
+        fn scrollbar_hidden_without_viewport() {
+            // No `set_viewport` → defers to an outer Scrollable, no built-in bar.
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.set_rows(
+                (0..100)
+                    .map(|i| R {
+                        name: format!("r{i}"),
+                    })
+                    .collect(),
+            );
+            let _ = lay_out(&mut t);
+            assert!(
+                t.scrollbar_thumb().is_none(),
+                "no bar without an explicit viewport"
+            );
+        }
+
+        fn scrollbar_hidden_when_rows_fit() {
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.set_rows(rows4());
+            let _ = lay_out(&mut t);
+            // Viewport taller than the 4 rows → content fits → no bar.
+            t.set_viewport(50.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+            assert!(
+                t.scrollbar_thumb().is_none(),
+                "no bar when rows fit the viewport"
+            );
+        }
+
+        fn scrollbar_thumb_tracks_scroll_y() {
+            let (mut t, _tree, _node) = scrolling_table();
+            let track = t.v_track().expect("bar live");
+            let top = t.scrollbar_thumb().expect("thumb at top");
+            assert!(
+                (top.y0 - track.y0).abs() < 1e-6,
+                "thumb starts at track top"
+            );
+
+            t.set_scroll_y(t.max_scroll_y());
+            let bottom = t.scrollbar_thumb().expect("thumb at bottom");
+            assert!(bottom.y0 > top.y0, "thumb moves down as scroll_y grows");
+            assert!(
+                (bottom.y1 - track.y1).abs() < 1e-3,
+                "fully scrolled thumb reaches track bottom: {} vs {}",
+                bottom.y1,
+                track.y1,
+            );
+        }
+
+        fn dragging_scrollbar_updates_scroll_y() {
+            let (mut t, tree, node) = scrolling_table();
+            let thumb = t.scrollbar_thumb().unwrap();
+            let x = bar_x(&t);
+            let mid_y = thumb.y0.midpoint(thumb.y1);
+            let mods = winit::event::Modifiers::default();
+
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, mid_y).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+            assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
+            assert!(t.wants_pointer_capture(), "drag captures the pointer");
+            assert_eq!(t.scroll_y(), 0.0);
+
+            // Drag down 50 px → scroll_y increases, staying clamped to max.
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, mid_y + 50.0).into(),
+                },
+                mods,
+            );
+            assert!(
+                t.scroll_y() > 0.0,
+                "drag down increases scroll_y: {}",
+                t.scroll_y()
+            );
+            assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
+            let after = t.scroll_y();
+
+            // Drag back up past the start → scroll_y returns toward 0.
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, mid_y - 50.0).into(),
+                },
+                mods,
+            );
+            assert!(t.scroll_y() < after, "drag up decreases scroll_y");
+
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+            assert!(!t.vbar.is_dragging(), "release ends the drag");
+        }
+
+        fn track_click_pages_scroll_y() {
+            let (mut t, tree, node) = scrolling_table();
+            let thumb = t.scrollbar_thumb().unwrap();
+            let x = bar_x(&t);
+            let below_y = thumb.y1 + 5.0;
+            let mods = winit::event::Modifiers::default();
+
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, below_y).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+            assert!(!t.vbar.is_dragging(), "track click is not a drag");
+            // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
+            let expected = 120.0 * px(crate::widget::scrollbar::PAGE_FRACTION);
+            assert!(
+                (t.scroll_y() - expected).abs() < 1.0,
+                "page step ≈ viewport*frac ({expected}), got {}",
+                t.scroll_y(),
+            );
+        }
+
+        fn scrollbar_press_does_not_select_a_row() {
+            // A press on the bar must be swallowed before body-row selection.
+            let (mut t, tree, node) = scrolling_table();
+            let thumb = t.scrollbar_thumb().unwrap();
+            let x = bar_x(&t);
+            let mid_y = thumb.y0.midpoint(thumb.y1);
+            let mods = winit::event::Modifiers::default();
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, mid_y).into(),
+                },
+                mods,
+            );
+            dispatch(
+                &mut t,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                mods,
+            );
+            assert!(
+                t.selection().is_empty(),
+                "scrollbar press must not select a row"
+            );
+        }
+
+        scrollbar_hidden_without_viewport();
+        scrollbar_hidden_when_rows_fit();
+        scrollbar_thumb_tracks_scroll_y();
+        dragging_scrollbar_updates_scroll_y();
+        track_click_pages_scroll_y();
+        scrollbar_press_does_not_select_a_row();
     }
 
     #[test]
-    fn scrollbar_hidden_when_rows_fit() {
-        let mut t = DataTable::<R>::new(sample_cols());
-        t.set_rows(rows4());
-        let _ = lay_out(&mut t);
-        // Viewport taller than the 4 rows → content fits → no bar.
-        t.set_viewport(50.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
-        assert!(
-            t.scrollbar_thumb().is_none(),
-            "no bar when rows fit the viewport"
-        );
-    }
-
-    #[test]
-    fn scrollbar_thumb_tracks_scroll_y() {
-        let (mut t, _tree, _node) = scrolling_table();
-        let track = t.v_track().expect("bar live");
-        let top = t.scrollbar_thumb().expect("thumb at top");
-        assert!(
-            (top.y0 - track.y0).abs() < 1e-6,
-            "thumb starts at track top"
-        );
-
-        t.set_scroll_y(t.max_scroll_y());
-        let bottom = t.scrollbar_thumb().expect("thumb at bottom");
-        assert!(bottom.y0 > top.y0, "thumb moves down as scroll_y grows");
-        assert!(
-            (bottom.y1 - track.y1).abs() < 1e-3,
-            "fully scrolled thumb reaches track bottom: {} vs {}",
-            bottom.y1,
-            track.y1,
-        );
-    }
-
-    #[test]
-    fn dragging_scrollbar_updates_scroll_y() {
-        let (mut t, tree, node) = scrolling_table();
-        let thumb = t.scrollbar_thumb().unwrap();
-        let x = bar_x(&t);
-        let mid_y = thumb.y0.midpoint(thumb.y1);
-        let mods = winit::event::Modifiers::default();
-
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
+    fn body_drag_scrolls_with_or_without_motion_decay() {
+        fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
+            let (mut table, tree, node) = scrolling_table();
+            let modifiers = winit::event::Modifiers::default();
+            let body_top = table.get_rect().y0 + HEADER_HEIGHT;
+            let move_cursor = |y| WindowEvent::CursorMoved {
                 device_id: device(),
-                position: (x, mid_y).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
+                position: (20.0, y).into(),
+            };
+            let button = |state| WindowEvent::MouseInput {
                 device_id: device(),
-                state: ElementState::Pressed,
+                state,
                 button: MouseButton::Left,
-            },
-            mods,
-        );
-        assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
-        assert!(t.wants_pointer_capture(), "drag captures the pointer");
-        assert_eq!(t.scroll_y(), 0.0);
+            };
 
-        // Drag down 50 px → scroll_y increases, staying clamped to max.
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, mid_y + 50.0).into(),
-            },
-            mods,
-        );
-        assert!(
-            t.scroll_y() > 0.0,
-            "drag down increases scroll_y: {}",
-            t.scroll_y()
-        );
-        assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
-        let after = t.scroll_y();
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &move_cursor(body_top + 100.0),
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &button(ElementState::Pressed),
+                modifiers,
+            );
+            assert!(table.wants_pointer_capture());
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &move_cursor(body_top + 40.0),
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &button(ElementState::Released),
+                modifiers,
+            );
+            assert_eq!(table.scroll_y(), 60.0);
+            assert!(
+                table.selection().is_empty(),
+                "panning does not select a row"
+            );
 
-        // Drag back up past the start → scroll_y returns toward 0.
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, mid_y - 50.0).into(),
-            },
-            mods,
-        );
-        assert!(t.scroll_y() < after, "drag up decreases scroll_y");
+            table.set_scroll_y(0.0);
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &move_cursor(body_top + 10.0),
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &button(ElementState::Pressed),
+                modifiers,
+            );
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &button(ElementState::Released),
+                modifiers,
+            );
+            assert!(table.selection().is_selected(0));
+        }
 
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        assert!(!t.vbar.is_dragging(), "release ends the drag");
-    }
+        fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
+            let (mut table, _tree, node) = scrolling_table();
+            table.reduce_motion = true;
+            let mut handled = false;
+            table.on_wheel(
+                &MouseScrollDelta::LineDelta(0.0, -1.0),
+                TouchPhase::Moved,
+                &mut handled,
+            );
+            assert!(handled);
+            assert_eq!(table.scroll_y(), 60.0_f32);
+            assert!(!table.momentum.is_active());
 
-    #[test]
-    fn track_click_pages_scroll_y() {
-        let (mut t, tree, node) = scrolling_table();
-        let thumb = t.scrollbar_thumb().unwrap();
-        let x = bar_x(&t);
-        let below_y = thumb.y1 + 5.0;
-        let mods = winit::event::Modifiers::default();
+            let now = crate::time::now();
+            let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+            let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+            table
+                .drag_scroll
+                .begin(50.0, f64::from(table.scroll_y()), started);
+            assert!(table.drag_scroll.update(10.0, moved).is_some());
+            let mut focus = None;
+            table.on_left_release(
+                winit::event::Modifiers::default(),
+                &mut handled,
+                &mut focus,
+                node,
+            );
+            assert!(!table.momentum.is_active());
+            assert!(!table.needs_animation_frame());
+        }
 
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, below_y).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        assert!(!t.vbar.is_dragging(), "track click is not a drag");
-        // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
-        let expected = 120.0 * px(crate::widget::scrollbar::PAGE_FRACTION);
-        assert!(
-            (t.scroll_y() - expected).abs() < 1.0,
-            "page step ≈ viewport*frac ({expected}), got {}",
-            t.scroll_y(),
-        );
-    }
-
-    #[test]
-    fn wheel_scrolls_in_internal_mode() {
-        let (mut t, tree, node) = scrolling_table();
-        let mods = winit::event::Modifiers::default();
-        assert_eq!(t.scroll_y(), 0.0);
-        let wheel = WindowEvent::MouseWheel {
-            device_id: device(),
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        dispatch(&mut t, &tree, node, &wheel, mods);
-        assert!(
-            t.scroll_y() > 0.0,
-            "wheel down increases scroll_y: {}",
-            t.scroll_y()
-        );
-        assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
-    }
-
-    #[test]
-    fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
-        let (mut table, tree, node) = scrolling_table();
-        let modifiers = winit::event::Modifiers::default();
-        let body_top = table.get_rect().y0 + HEADER_HEIGHT;
-        let move_cursor = |y| WindowEvent::CursorMoved {
-            device_id: device(),
-            position: (20.0, y).into(),
-        };
-        let button = |state| WindowEvent::MouseInput {
-            device_id: device(),
-            state,
-            button: MouseButton::Left,
-        };
-
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &move_cursor(body_top + 100.0),
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &button(ElementState::Pressed),
-            modifiers,
-        );
-        assert!(table.wants_pointer_capture());
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &move_cursor(body_top + 40.0),
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &button(ElementState::Released),
-            modifiers,
-        );
-        assert_eq!(table.scroll_y(), 60.0);
-        assert!(
-            table.selection().is_empty(),
-            "panning does not select a row"
-        );
-
-        table.set_scroll_y(0.0);
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &move_cursor(body_top + 10.0),
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &button(ElementState::Pressed),
-            modifiers,
-        );
-        dispatch(
-            &mut table,
-            &tree,
-            node,
-            &button(ElementState::Released),
-            modifiers,
-        );
-        assert!(table.selection().is_selected(0));
-    }
-
-    #[test]
-    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
-        let (mut table, _tree, node) = scrolling_table();
-        table.reduce_motion = true;
-        let mut handled = false;
-        table.on_wheel(
-            &MouseScrollDelta::LineDelta(0.0, -1.0),
-            TouchPhase::Moved,
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(table.scroll_y(), 60.0_f32);
-        assert!(!table.momentum.is_active());
-
-        let now = crate::time::now();
-        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
-        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-        table
-            .drag_scroll
-            .begin(50.0, f64::from(table.scroll_y()), started);
-        assert!(table.drag_scroll.update(10.0, moved).is_some());
-        let mut focus = None;
-        table.on_left_release(
-            winit::event::Modifiers::default(),
-            &mut handled,
-            &mut focus,
-            node,
-        );
-        assert!(!table.momentum.is_active());
-        assert!(!table.needs_animation_frame());
-    }
-
-    #[test]
-    fn scrollbar_press_does_not_select_a_row() {
-        // A press on the bar must be swallowed before body-row selection.
-        let (mut t, tree, node) = scrolling_table();
-        let thumb = t.scrollbar_thumb().unwrap();
-        let x = bar_x(&t);
-        let mid_y = thumb.y0.midpoint(thumb.y1);
-        let mods = winit::event::Modifiers::default();
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, mid_y).into(),
-            },
-            mods,
-        );
-        dispatch(
-            &mut t,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        assert!(
-            t.selection().is_empty(),
-            "scrollbar press must not select a row"
-        );
+        body_drag_scrolls_table_without_selecting_but_click_still_selects();
+        reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay();
     }
 
     fn table_color_fills(t: &mut DataTable<R>) -> usize {
@@ -4356,25 +4373,5 @@ mod tests {
             .iter()
             .filter(|tag| **tag == DrawTag::COLOR)
             .count()
-    }
-
-    /// One extra stroke over the unfocused render, asserted on the production `draw` path.
-    #[test]
-    fn focused_table_paints_a_focus_ring() {
-        let mut unfocused = DataTable::<R>::new(sample_cols()).selectable(true);
-        unfocused.set_rows(rows4());
-        unfocused.set_focus(false);
-        let without = table_color_fills(&mut unfocused);
-
-        let mut focused = DataTable::<R>::new(sample_cols()).selectable(true);
-        focused.set_rows(rows4());
-        focused.set_focus(true);
-        let with = table_color_fills(&mut focused);
-
-        assert_eq!(
-            with,
-            without + 1,
-            "a focused table must add exactly one focus-ring stroke ({with} vs {without})",
-        );
     }
 }

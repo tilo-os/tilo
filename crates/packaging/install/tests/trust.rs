@@ -196,358 +196,369 @@ fn run(mut cmd: Command) -> (bool, String, String) {
 }
 
 #[test]
-fn install_require_attestor_refuses_self_signed() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let manifest = manifest(&publisher_pub_hex);
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
+    // Phase `install_require_attestor_refuses_self_signed`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let manifest = manifest(&publisher_pub_hex);
 
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
 
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-    // No attestor registered.
-    env.write_trusted_attestors(&TrustedAttestors::default());
-    env.write_revocation(&RevocationList::default());
+        // No attestor registered.
+        env.write_trusted_attestors(&TrustedAttestors::default());
+        env.write_revocation(&RevocationList::default());
 
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-attestor")
-        .arg("tilo-curated/2026.07");
-    let (ok, _stdout, stderr) = run(cmd);
-    assert!(!ok, "expected refusal, stderr: {stderr}");
-    assert!(
-        stderr.contains("--require-attestor")
-            && (stderr.contains("self-signed")
-                || stderr.contains("verified as")
-                || stderr.contains("policy refused")),
-        "unexpected stderr: {stderr}"
-    );
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-attestor")
+            .arg("tilo-curated/2026.07");
+        let (ok, _stdout, stderr) = run(cmd);
+        assert!(!ok, "expected refusal, stderr: {stderr}");
+        assert!(
+            stderr.contains("--require-attestor")
+                && (stderr.contains("self-signed")
+                    || stderr.contains("verified as")
+                    || stderr.contains("policy refused")),
+            "unexpected stderr: {stderr}"
+        );
+    }
+    // Phase `install_require_attestor_permits_matching_attestation`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let (attestor_sk, attestor_pub_hex) = fresh_key();
+
+        let mut manifest = manifest(&publisher_pub_hex);
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
+        attest_and_inject(
+            &mut manifest,
+            payload_dir.path(),
+            &publisher_sk,
+            "tilo-curated/2026.07",
+            &attestor_sk,
+        );
+
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+        env.write_trusted_attestors(&TrustedAttestors {
+            attestor: vec![TrustedAttestor {
+                id: "tilo-curated/2026.07".into(),
+                pubkey_hex: attestor_pub_hex,
+                scope: AttestorScope::All,
+            }],
+        });
+        env.write_revocation(&RevocationList::default());
+
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-attestor")
+            .arg("tilo-curated/2026.07");
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
+        assert!(stdout.contains("installed:"), "stdout: {stdout}");
+        assert!(stdout.contains("attested"), "stdout: {stdout}");
+    }
+    // Phase `install_require_attestor_and_allow_self_signed_takes_attestation_when_present`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let (attestor_sk, attestor_pub_hex) = fresh_key();
+
+        let mut manifest = manifest(&publisher_pub_hex);
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
+        attest_and_inject(
+            &mut manifest,
+            payload_dir.path(),
+            &publisher_sk,
+            "tilo-curated/2026.07",
+            &attestor_sk,
+        );
+
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+        env.write_trusted_attestors(&TrustedAttestors {
+            attestor: vec![TrustedAttestor {
+                id: "tilo-curated/2026.07".into(),
+                pubkey_hex: attestor_pub_hex,
+                scope: AttestorScope::All,
+            }],
+        });
+        env.write_revocation(&RevocationList::default());
+
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-attestor")
+            .arg("tilo-curated/2026.07")
+            .arg("--allow-self-signed");
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
+        // Attestor path took priority — the printed "attested" line
+        // proves it wasn't the self-signed fallback.
+        assert!(stdout.contains("attested"), "stdout: {stdout}");
+    }
+    // Phase `install_require_attestor_and_allow_self_signed_falls_back_when_no_match`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let manifest = manifest(&publisher_pub_hex);
+
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
+
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+        // Registry empty — no attestation on file.
+        env.write_trusted_attestors(&TrustedAttestors::default());
+        env.write_revocation(&RevocationList::default());
+
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-attestor")
+            .arg("tilo-curated/2026.07")
+            .arg("--allow-self-signed");
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(
+            ok,
+            "expected success (allow-self-signed fallback), stderr: {stderr}"
+        );
+        assert!(stdout.contains("installed:"), "stdout: {stdout}");
+        assert!(
+            stderr.contains("--allow-self-signed permits") || stderr.contains("unmatched"),
+            "stderr: {stderr}"
+        );
+    }
 }
 
 #[test]
-fn install_require_attestor_permits_matching_attestation() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let (attestor_sk, attestor_pub_hex) = fresh_key();
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys() {
+    // Phase `install_refuses_revoked_publisher`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let manifest = manifest(&publisher_pub_hex);
 
-    let mut manifest = manifest(&publisher_pub_hex);
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-    attest_and_inject(
-        &mut manifest,
-        payload_dir.path(),
-        &publisher_sk,
-        "tilo-curated/2026.07",
-        &attestor_sk,
-    );
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
 
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-    env.write_trusted_attestors(&TrustedAttestors {
-        attestor: vec![TrustedAttestor {
-            id: "tilo-curated/2026.07".into(),
-            pubkey_hex: attestor_pub_hex,
-            scope: AttestorScope::All,
-        }],
-    });
-    env.write_revocation(&RevocationList::default());
+        env.write_trusted_attestors(&TrustedAttestors::default());
+        env.write_revocation(&RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: publisher_pub_hex,
+                reason: "compromised 2026-07-05".into(),
+            }],
+        });
 
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-attestor")
-        .arg("tilo-curated/2026.07");
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
-    assert!(stdout.contains("installed:"), "stdout: {stdout}");
-    assert!(stdout.contains("attested"), "stdout: {stdout}");
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime");
+        let (ok, _stdout, stderr) = run(cmd);
+        assert!(!ok, "expected refusal, stderr: {stderr}");
+        assert!(
+            stderr.contains("revoked") || stderr.contains("REFUSED"),
+            "stderr: {stderr}"
+        );
+    }
+    // Phase `install_default_warns_but_installs_self_signed`.
+    {
+        // Preserves current default behavior: no flags → warn on
+        // self-signed and proceed.
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let manifest = manifest(&publisher_pub_hex);
+
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
+
+        let tapp_path = env.home.path().join("app.tapp");
+        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+        env.write_trusted_attestors(&TrustedAttestors::default());
+        env.write_revocation(&RevocationList::default());
+
+        let mut cmd = env.cmd();
+        // These prove *signature* policy. The fixture package declares a
+        // runtime bundle it does not ship, which is a separate axis and
+        // would otherwise refuse the install before the trust decision
+        // could be observed.
+        cmd.arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime");
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(ok, "expected success, stderr: {stderr}");
+        assert!(stdout.contains("installed:"), "stdout: {stdout}");
+        assert!(
+            stderr.contains("self-signed") || stderr.contains("WARN"),
+            "stderr: {stderr}"
+        );
+    }
+    // Phase `install_require_publisher_binds_the_package_to_the_registry_key`.
+    {
+        let env = TestEnv::new();
+        let (publisher_sk, publisher_pub_hex) = fresh_key();
+        let manifest = manifest(&publisher_pub_hex);
+        let payload_dir = tempfile::tempdir().unwrap();
+        write_payload(payload_dir.path());
+        let tapp_path = env.home.path().join("app.tapp");
+        let package_root = build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+        env.write_trusted_attestors(&TrustedAttestors::default());
+        env.write_revocation(&RevocationList::default());
+
+        let mut mismatched = env.cmd();
+        mismatched
+            .arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-publisher")
+            .arg("11".repeat(32));
+        let (ok, _stdout, stderr) = run(mismatched);
+        assert!(!ok, "a different publisher key must be refused");
+        assert!(
+            stderr.contains("does not match --require-publisher"),
+            "{stderr}"
+        );
+
+        let mut wrong_root = env.cmd();
+        wrong_root
+            .arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-publisher")
+            .arg(&publisher_pub_hex)
+            .arg("--require-package-root")
+            .arg("22".repeat(32));
+        let (ok, _stdout, stderr) = run(wrong_root);
+        assert!(!ok, "a different signed root must be refused");
+        assert!(
+            stderr.contains("does not match --require-package-root"),
+            "{stderr}"
+        );
+
+        let mut matching = env.cmd();
+        matching
+            .arg("install")
+            .arg(&tapp_path)
+            .arg("--ignore-missing-runtime")
+            .arg("--require-publisher")
+            .arg(&publisher_pub_hex)
+            .arg("--require-package-root")
+            .arg(package_root.to_hex());
+        let (ok, stdout, stderr) = run(matching);
+        assert!(ok, "matching publisher should install: {stderr}");
+        assert!(stdout.contains("installed:"));
+    }
 }
 
 #[test]
-fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let (attestor_sk, attestor_pub_hex) = fresh_key();
+fn trust_store_commands_round_trip() {
+    // Phase `trust_add_list_remove_roundtrip`.
+    {
+        let env = TestEnv::new();
+        let pubkey = "aa".repeat(32);
 
-    let mut manifest = manifest(&publisher_pub_hex);
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-    attest_and_inject(
-        &mut manifest,
-        payload_dir.path(),
-        &publisher_sk,
-        "tilo-curated/2026.07",
-        &attestor_sk,
-    );
+        let mut cmd = env.cmd();
+        cmd.arg("trust")
+            .arg("add")
+            .arg("--id")
+            .arg("acme/1")
+            .arg("--pubkey")
+            .arg(&pubkey);
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(ok, "trust add failed: {stderr}");
+        assert!(stdout.contains("acme/1"), "stdout: {stdout}");
 
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+        let mut cmd = env.cmd();
+        cmd.arg("trust").arg("list");
+        let (ok, stdout, _stderr) = run(cmd);
+        assert!(ok);
+        assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
+        assert!(
+            stdout.contains(&pubkey),
+            "list stdout missing key: {stdout}"
+        );
 
-    env.write_trusted_attestors(&TrustedAttestors {
-        attestor: vec![TrustedAttestor {
-            id: "tilo-curated/2026.07".into(),
-            pubkey_hex: attestor_pub_hex,
-            scope: AttestorScope::All,
-        }],
-    });
-    env.write_revocation(&RevocationList::default());
+        let mut cmd = env.cmd();
+        cmd.arg("trust").arg("remove").arg("acme/1");
+        let (ok, _stdout, stderr) = run(cmd);
+        assert!(ok, "trust remove failed: {stderr}");
 
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-attestor")
-        .arg("tilo-curated/2026.07")
-        .arg("--allow-self-signed");
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
-    // Attestor path took priority — the printed "attested" line
-    // proves it wasn't the self-signed fallback.
-    assert!(stdout.contains("attested"), "stdout: {stdout}");
-}
+        let mut cmd = env.cmd();
+        cmd.arg("trust").arg("list");
+        let (ok, stdout, _stderr) = run(cmd);
+        assert!(ok);
+        assert!(
+            stdout.contains("(no trusted attestors)"),
+            "stdout: {stdout}"
+        );
+    }
+    // Phase `revoke_and_revoked_list_roundtrip`.
+    {
+        let env = TestEnv::new();
+        let pubkey = "bb".repeat(32);
 
-#[test]
-fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let manifest = manifest(&publisher_pub_hex);
+        let mut cmd = env.cmd();
+        cmd.arg("revoke")
+            .arg(&pubkey)
+            .arg("--reason")
+            .arg("compromised");
+        let (ok, stdout, stderr) = run(cmd);
+        assert!(ok, "revoke failed: {stderr}");
+        assert!(stdout.contains(&pubkey), "stdout: {stdout}");
 
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-
-    // Registry empty — no attestation on file.
-    env.write_trusted_attestors(&TrustedAttestors::default());
-    env.write_revocation(&RevocationList::default());
-
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-attestor")
-        .arg("tilo-curated/2026.07")
-        .arg("--allow-self-signed");
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(
-        ok,
-        "expected success (allow-self-signed fallback), stderr: {stderr}"
-    );
-    assert!(stdout.contains("installed:"), "stdout: {stdout}");
-    assert!(
-        stderr.contains("--allow-self-signed permits") || stderr.contains("unmatched"),
-        "stderr: {stderr}"
-    );
-}
-
-#[test]
-fn install_refuses_revoked_publisher() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let manifest = manifest(&publisher_pub_hex);
-
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-
-    env.write_trusted_attestors(&TrustedAttestors::default());
-    env.write_revocation(&RevocationList {
-        revoked: vec![RevokedKey {
-            pubkey_hex: publisher_pub_hex,
-            reason: "compromised 2026-07-05".into(),
-        }],
-    });
-
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime");
-    let (ok, _stdout, stderr) = run(cmd);
-    assert!(!ok, "expected refusal, stderr: {stderr}");
-    assert!(
-        stderr.contains("revoked") || stderr.contains("REFUSED"),
-        "stderr: {stderr}"
-    );
-}
-
-#[test]
-fn install_default_warns_but_installs_self_signed() {
-    // Preserves current default behavior: no flags → warn on
-    // self-signed and proceed.
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let manifest = manifest(&publisher_pub_hex);
-
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-
-    let tapp_path = env.home.path().join("app.tapp");
-    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-
-    env.write_trusted_attestors(&TrustedAttestors::default());
-    env.write_revocation(&RevocationList::default());
-
-    let mut cmd = env.cmd();
-    // These prove *signature* policy. The fixture package declares a
-    // runtime bundle it does not ship, which is a separate axis and
-    // would otherwise refuse the install before the trust decision
-    // could be observed.
-    cmd.arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime");
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "expected success, stderr: {stderr}");
-    assert!(stdout.contains("installed:"), "stdout: {stdout}");
-    assert!(
-        stderr.contains("self-signed") || stderr.contains("WARN"),
-        "stderr: {stderr}"
-    );
-}
-
-#[test]
-fn install_require_publisher_binds_the_package_to_the_registry_key() {
-    let env = TestEnv::new();
-    let (publisher_sk, publisher_pub_hex) = fresh_key();
-    let manifest = manifest(&publisher_pub_hex);
-    let payload_dir = tempfile::tempdir().unwrap();
-    write_payload(payload_dir.path());
-    let tapp_path = env.home.path().join("app.tapp");
-    let package_root = build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-    env.write_trusted_attestors(&TrustedAttestors::default());
-    env.write_revocation(&RevocationList::default());
-
-    let mut mismatched = env.cmd();
-    mismatched
-        .arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-publisher")
-        .arg("11".repeat(32));
-    let (ok, _stdout, stderr) = run(mismatched);
-    assert!(!ok, "a different publisher key must be refused");
-    assert!(
-        stderr.contains("does not match --require-publisher"),
-        "{stderr}"
-    );
-
-    let mut wrong_root = env.cmd();
-    wrong_root
-        .arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-publisher")
-        .arg(&publisher_pub_hex)
-        .arg("--require-package-root")
-        .arg("22".repeat(32));
-    let (ok, _stdout, stderr) = run(wrong_root);
-    assert!(!ok, "a different signed root must be refused");
-    assert!(
-        stderr.contains("does not match --require-package-root"),
-        "{stderr}"
-    );
-
-    let mut matching = env.cmd();
-    matching
-        .arg("install")
-        .arg(&tapp_path)
-        .arg("--ignore-missing-runtime")
-        .arg("--require-publisher")
-        .arg(&publisher_pub_hex)
-        .arg("--require-package-root")
-        .arg(package_root.to_hex());
-    let (ok, stdout, stderr) = run(matching);
-    assert!(ok, "matching publisher should install: {stderr}");
-    assert!(stdout.contains("installed:"));
-}
-
-#[test]
-fn trust_add_list_remove_roundtrip() {
-    let env = TestEnv::new();
-    let pubkey = "aa".repeat(32);
-
-    let mut cmd = env.cmd();
-    cmd.arg("trust")
-        .arg("add")
-        .arg("--id")
-        .arg("acme/1")
-        .arg("--pubkey")
-        .arg(&pubkey);
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "trust add failed: {stderr}");
-    assert!(stdout.contains("acme/1"), "stdout: {stdout}");
-
-    let mut cmd = env.cmd();
-    cmd.arg("trust").arg("list");
-    let (ok, stdout, _stderr) = run(cmd);
-    assert!(ok);
-    assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
-    assert!(
-        stdout.contains(&pubkey),
-        "list stdout missing key: {stdout}"
-    );
-
-    let mut cmd = env.cmd();
-    cmd.arg("trust").arg("remove").arg("acme/1");
-    let (ok, _stdout, stderr) = run(cmd);
-    assert!(ok, "trust remove failed: {stderr}");
-
-    let mut cmd = env.cmd();
-    cmd.arg("trust").arg("list");
-    let (ok, stdout, _stderr) = run(cmd);
-    assert!(ok);
-    assert!(
-        stdout.contains("(no trusted attestors)"),
-        "stdout: {stdout}"
-    );
-}
-
-#[test]
-fn revoke_and_revoked_list_roundtrip() {
-    let env = TestEnv::new();
-    let pubkey = "bb".repeat(32);
-
-    let mut cmd = env.cmd();
-    cmd.arg("revoke")
-        .arg(&pubkey)
-        .arg("--reason")
-        .arg("compromised");
-    let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "revoke failed: {stderr}");
-    assert!(stdout.contains(&pubkey), "stdout: {stdout}");
-
-    let mut cmd = env.cmd();
-    cmd.arg("revoked").arg("list");
-    let (ok, stdout, _stderr) = run(cmd);
-    assert!(ok);
-    assert!(stdout.contains(&pubkey), "list stdout: {stdout}");
-    assert!(stdout.contains("compromised"), "list stdout: {stdout}");
+        let mut cmd = env.cmd();
+        cmd.arg("revoked").arg("list");
+        let (ok, stdout, _stderr) = run(cmd);
+        assert!(ok);
+        assert!(stdout.contains(&pubkey), "list stdout: {stdout}");
+        assert!(stdout.contains("compromised"), "list stdout: {stdout}");
+    }
 }

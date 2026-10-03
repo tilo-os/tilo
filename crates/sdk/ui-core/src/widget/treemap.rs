@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -255,7 +255,7 @@ impl Treemap {
     }
 
     fn tile_rect(&self, tile: Tile) -> Rect {
-        tile.rect.inset(self.style.gap / 2.0).max_size()
+        tile.rect.inset(-self.style.gap / 2.0).max_size()
     }
 
     fn palette(theme: &Theme, index: usize) -> Color {
@@ -304,7 +304,6 @@ impl SafeRect for Rect {
 }
 
 impl Widget for Treemap {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -458,19 +457,8 @@ impl Widget for Treemap {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -482,8 +470,8 @@ impl Widget for Treemap {
                     self.update_hover();
                     if let Some(item) = self.hovered.and_then(|index| self.items.get(index)) {
                         self.activated = Some(item.id.clone());
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -492,7 +480,8 @@ impl Widget for Treemap {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -504,8 +493,8 @@ impl Widget for Treemap {
             } => {
                 if let Some(item) = self.hovered.and_then(|index| self.items.get(index)) {
                     self.activated = Some(item.id.clone());
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -529,8 +518,8 @@ impl Widget for Treemap {
                         self.pointer = rect.center();
                     }
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -569,8 +558,8 @@ impl Widget for Treemap {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -618,21 +607,25 @@ fn format_compact(value: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn layout_covers_each_positive_item_once() {
-        let mut map = Treemap::new(vec![
-            TreemapItem::new("a", "A", 3.0),
-            TreemapItem::new("b", "B", 2.0),
-            TreemapItem::new("c", "C", 1.0),
-        ]);
-        map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
-        assert_eq!(map.layout().len(), 3);
-    }
-    #[test]
-    fn invalid_values_are_omitted() {
-        let map = Treemap::new(vec![
-            TreemapItem::new("a", "A", f64::NAN),
-            TreemapItem::new("b", "B", -2.0),
-        ]);
-        assert!(map.valid_items().is_empty());
+    fn treemap_layout_covers_positive_items_once_and_omits_invalid() {
+        // Case `layout_covers_each_positive_item_once`.
+        {
+            let mut map = Treemap::new(vec![
+                TreemapItem::new("a", "A", 3.0),
+                TreemapItem::new("b", "B", 2.0),
+                TreemapItem::new("c", "C", 1.0),
+            ]);
+            map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
+            assert_eq!(map.layout().len(), 3);
+        }
+
+        // Case `invalid_values_are_omitted`.
+        {
+            let map = Treemap::new(vec![
+                TreemapItem::new("a", "A", f64::NAN),
+                TreemapItem::new("b", "B", -2.0),
+            ]);
+            assert!(map.valid_items().is_empty());
+        }
     }
 }

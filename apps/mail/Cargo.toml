@@ -14,12 +14,14 @@ name = "mail"
 path = "src/main.rs"
 
 [dependencies]
+mime_guess.workspace = true
+md-5.workspace = true
+fnv.workspace = true
 hex.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
 # infer a writable Downloads path or grant itself broad filesystem authority.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo resource + action model: Mail's collaborative-doc mutations (flags,
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.
@@ -30,11 +32,15 @@ tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
 # Durable replace-after-portal-write; a failed/crashed export never leaves a
 # partially-written attachment at the destination the user chose.
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }
+# The draft body is rich text, edited in the SDK rich-text editor and sent as
+# its HTML part.
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["html"] }
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true
@@ -53,10 +59,12 @@ taffy.workspace = true
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
-# OAuth PKCE (S256 challenge, RFC 7636) and the base64 encodings it, XOAUTH2
-# and the sandboxed HTML data: URL use.
-sha2.workspace = true
+# The base64 encodings XOAUTH2 and the sandboxed HTML data: URL use.
 base64.workspace = true
+# Tilo's one OAuth client registration per provider (with Gmail's and
+# Outlook's mail scopes) and the custody of Mail's grants: sign-in, sealing
+# and refresh. The custodian and its HTTPS client are compiled with `live`.
+account-custody = { path = "../../crates/system/account-custody", default-features = false }
 
 # Live IMAP and SMTP for the account engine. These are optional and gated by
 # `live`; the default build uses the offline backend.
@@ -69,8 +77,9 @@ reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
 tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -79,15 +88,19 @@ thin = ["dep:runtime-dylib"]
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
+live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 # Render HTML mail bodies with WPE WebKit; requires the stack from
 # os/dev/build-wpe.sh.
-html-webview = ["ui/webview-wpe"]
+html-webview = ["ui/webview"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true
+# The fake authorization server and browser for the Gmail and Outlook
+# sign-in tests.
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -1,9 +1,6 @@
-//! Presentation and navigation helpers for retained shell history.
+//! Presentation and navigation helpers for the clipboard and resource history.
 
 use std::path::PathBuf;
-use std::time::Instant;
-
-use crate::shell::notification::{Notification, NotificationSeverity};
 
 use super::DeviceFabricView;
 
@@ -12,16 +9,6 @@ pub(super) enum HistoryTargetAddress {
     File(PathBuf),
     Uri(String),
     App,
-}
-
-pub(super) fn notification_history_relative_time(
-    notification: &Notification,
-    now: Instant,
-) -> String {
-    let seconds = now
-        .saturating_duration_since(notification.created_at)
-        .as_secs();
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
 pub(super) fn clipboard_history_relative_time(created_unix_ms: u64, now_unix_ms: u64) -> String {
@@ -34,7 +21,7 @@ pub(super) fn clipboard_history_source_label(
     fabric: Option<&DeviceFabricView>,
 ) -> String {
     let Some(source) = item.source_device.as_ref() else {
-        return "This device".to_string();
+        return crate::shell::i18n::t("history-this-device");
     };
     fabric
         .and_then(|fabric| fabric.devices.iter().find(|device| &device.id == source))
@@ -66,38 +53,6 @@ pub(super) fn clipboard_history_matches_query(
     query
         .split_whitespace()
         .all(|term| searchable.contains(term))
-}
-
-pub(super) fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
-    match severity {
-        NotificationSeverity::Info => "Information",
-        NotificationSeverity::Warning => "Warning",
-        NotificationSeverity::Error => "Error",
-    }
-}
-
-/// Screen-reader description for one retained notification card. Kept beside
-/// the visual card's source/age helpers so both presentations expose the same
-/// hierarchy even when a busy compositor crosses a relative-time boundary.
-pub(super) fn notification_history_accessible_description(
-    notification: &Notification,
-    now: Instant,
-) -> String {
-    let source = notification
-        .app_name
-        .as_deref()
-        .or(notification.app_id.as_deref())
-        .unwrap_or("System");
-    let severity = notification_severity_label(notification.severity);
-    let relative_time = notification_history_relative_time(notification, now);
-    if notification.body.is_empty() {
-        format!("{severity}. From {source}. {relative_time}")
-    } else {
-        format!(
-            "{severity}. From {source}. {relative_time}. {}",
-            notification.body
-        )
-    }
 }
 
 /// Resolve only addresses the action explicitly declared. Semantic resource

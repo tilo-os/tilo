@@ -119,11 +119,10 @@ impl UsbBackend {
             review: ReviewRequest {
                 handle: request_path.clone(),
                 app_id,
-                title: "Choose USB devices".into(),
-                reason: "Select devices individually; read-write can modify a device.".into(),
-                resource: "Space or click toggles a row. Access ends on release or disconnect."
-                    .into(),
-                confirm_label: "Allow selected".into(),
+                title: crate::shell::i18n::t("portal-usb-title"),
+                reason: crate::shell::i18n::t("portal-usb-reason"),
+                resource: crate::shell::i18n::t("portal-usb-resource"),
+                confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
             },
             devices: requested
                 .iter()
@@ -132,7 +131,7 @@ impl UsbBackend {
                     label: device
                         .label
                         .clone()
-                        .unwrap_or_else(|| "USB device".to_string()),
+                        .unwrap_or_else(|| crate::shell::i18n::t("portal-usb-unnamed-device")),
                     writable: device.writable,
                 })
                 .collect(),
@@ -237,48 +236,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_and_duplicate_identifiers_fail_closed() {
-        let device = |id: &str| (id.to_string(), HashMap::new(), HashMap::new());
-        assert!(validate_devices(vec![device("a"), device("a")]).is_none());
-        assert!(validate_devices(vec![device("bad\nidentifier")]).is_none());
-    }
-
-    #[test]
-    fn approval_returns_only_id_and_requested_write_bit() {
-        let devices = vec![RequestedDevice {
-            id: "device-1".into(),
-            writable: false,
-            label: Some("Camera".into()),
-        }];
-        let (response, result) = approved_result(&devices, &["device-1".into()]);
-        assert_eq!(response, 0);
-        assert!(result.contains_key("devices"));
-    }
-
-    #[test]
-    fn approval_is_an_exact_subset_and_cannot_upgrade_write_access() {
-        let devices = vec![
-            RequestedDevice {
-                id: "read-only".into(),
+    fn usb_approval_is_an_exact_subset_of_valid_requests() {
+        // Phase `malformed_and_duplicate_identifiers_fail_closed`.
+        {
+            let device = |id: &str| (id.to_string(), HashMap::new(), HashMap::new());
+            assert!(validate_devices(vec![device("a"), device("a")]).is_none());
+            assert!(validate_devices(vec![device("bad\nidentifier")]).is_none());
+        }
+        // Phase `approval_returns_only_id_and_requested_write_bit`.
+        {
+            let devices = vec![RequestedDevice {
+                id: "device-1".into(),
                 writable: false,
-                label: None,
-            },
-            RequestedDevice {
-                id: "read-write".into(),
-                writable: true,
-                label: None,
-            },
-        ];
-        let (response, result) =
-            approved_result(&devices, &["read-write".into(), "not-requested".into()]);
-        assert_eq!(response, 0);
-        let result = result.get("devices").unwrap().try_clone().unwrap();
-        let rows = Vec::<(String, HashMap<String, OwnedValue>)>::try_from(result).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, "read-write");
-        assert_eq!(
-            bool::try_from(rows[0].1.get("writable").unwrap().try_clone().unwrap()).unwrap(),
-            true
-        );
+                label: Some("Camera".into()),
+            }];
+            let (response, result) = approved_result(&devices, &["device-1".into()]);
+            assert_eq!(response, 0);
+            assert!(result.contains_key("devices"));
+        }
+        // Phase `approval_is_an_exact_subset_and_cannot_upgrade_write_access`.
+        {
+            let devices = vec![
+                RequestedDevice {
+                    id: "read-only".into(),
+                    writable: false,
+                    label: None,
+                },
+                RequestedDevice {
+                    id: "read-write".into(),
+                    writable: true,
+                    label: None,
+                },
+            ];
+            let (response, result) =
+                approved_result(&devices, &["read-write".into(), "not-requested".into()]);
+            assert_eq!(response, 0);
+            let result = result.get("devices").unwrap().try_clone().unwrap();
+            let rows = Vec::<(String, HashMap<String, OwnedValue>)>::try_from(result).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, "read-write");
+            assert_eq!(
+                bool::try_from(rows[0].1.get("writable").unwrap().try_clone().unwrap()).unwrap(),
+                true
+            );
+        }
     }
 }

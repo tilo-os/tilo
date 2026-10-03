@@ -1,6 +1,6 @@
 //! Pure image-attribute decoding and paint geometry.
 
-use qdoc::snapshot::{AttrVal, BlockView};
+use tilo_doc::snapshot::{AttrVal, BlockView};
 use vello::kurbo::{Affine, Rect};
 
 use crate::num;
@@ -142,43 +142,47 @@ mod tests {
         }
     }
 
+    /// Valid attributes decode into layout values and malformed geometry degrades to safe defaults.
     #[test]
-    fn valid_attributes_decode_into_layout_values() {
-        let block = image([
-            ("anchor", AttrVal::Str("page".into())),
-            ("wrap", AttrVal::Str("left".into())),
-            ("crop_left", AttrVal::Int(500)),
-            ("crop_top", AttrVal::Int(250)),
-            ("offset_x", AttrVal::Int(-24)),
-            ("offset_y", AttrVal::Int(36)),
-            ("page", AttrVal::Int(2)),
-            ("width", AttrVal::Int(320)),
-            ("height", AttrVal::Float(180.5)),
-        ]);
+    fn image_layout_attributes_decode_or_degrade_safely() {
+        // Phase: valid_attributes_decode_into_layout_values.
+        {
+            let block = image([
+                ("anchor", AttrVal::Str("page".into())),
+                ("wrap", AttrVal::Str("left".into())),
+                ("crop_left", AttrVal::Int(500)),
+                ("crop_top", AttrVal::Int(250)),
+                ("offset_x", AttrVal::Int(-24)),
+                ("offset_y", AttrVal::Int(36)),
+                ("page", AttrVal::Int(2)),
+                ("width", AttrVal::Int(320)),
+                ("height", AttrVal::Float(180.5)),
+            ]);
 
-        assert!(floats(&block));
-        assert_eq!(crop(&block), (0.05, 0.025, 0.0, 0.0));
-        assert_eq!(free_position(&block), Some((-24.0, 36.0, 2)));
-        assert_eq!(explicit_size(&block), Some((320.0, 180.5)));
-    }
+            assert!(floats(&block));
+            assert_eq!(crop(&block), (0.05, 0.025, 0.0, 0.0));
+            assert_eq!(free_position(&block), Some((-24.0, 36.0, 2)));
+            assert_eq!(explicit_size(&block), Some((320.0, 180.5)));
+        }
 
-    #[test]
-    fn malformed_geometry_degrades_to_safe_defaults() {
-        let block = image([
-            ("crop_left", AttrVal::Int(9_000)),
-            ("crop_right", AttrVal::Int(9_000)),
-            ("offset_x", AttrVal::Int(100_001)),
-            ("offset_y", AttrVal::Int(0)),
-            ("page", AttrVal::Int(0)),
-            ("width", AttrVal::Int(-1)),
-            ("height", AttrVal::Float(f64::NAN)),
-        ]);
+        // Phase: malformed_geometry_degrades_to_safe_defaults.
+        {
+            let block = image([
+                ("crop_left", AttrVal::Int(9_000)),
+                ("crop_right", AttrVal::Int(9_000)),
+                ("offset_x", AttrVal::Int(100_001)),
+                ("offset_y", AttrVal::Int(0)),
+                ("page", AttrVal::Int(0)),
+                ("width", AttrVal::Int(-1)),
+                ("height", AttrVal::Float(f64::NAN)),
+            ]);
 
-        assert_eq!(anchor(&block), "inline");
-        assert_eq!(wrap(&block), "none");
-        assert_eq!(crop(&block), (0.0, 0.0, 0.0, 0.0));
-        assert_eq!(free_position(&block), None);
-        assert_eq!(explicit_size(&block), None);
-        assert!(!floats(&block));
+            assert_eq!(anchor(&block), "inline");
+            assert_eq!(wrap(&block), "none");
+            assert_eq!(crop(&block), (0.0, 0.0, 0.0, 0.0));
+            assert_eq!(free_position(&block), None);
+            assert_eq!(explicit_size(&block), None);
+            assert!(!floats(&block));
+        }
     }
 }

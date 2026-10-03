@@ -51,7 +51,18 @@ fn fixture() -> (
     (cid, alice_g, bob_g, sk, pk)
 }
 
+/// An encrypted signed op round-trips its outer signature, Bob decrypts after verifying it,
+/// unencrypted ops still work alongside, and the metadata epoch matches the group epoch at encrypt
+/// time.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn encrypted_signed_ops_verify_and_decrypt_like_plain_ones() {
+    encrypted_signed_op_round_trips_outer_signature();
+    bob_decrypts_payload_after_verifying_outer_signature();
+    unencrypted_op_still_works_alongside_encrypted_ones();
+    epoch_in_metadata_matches_group_epoch_at_time_of_encrypt();
+}
+
 fn encrypted_signed_op_round_trips_outer_signature() {
     let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
     let cleartext = b"crdt-change-blob".to_vec();
@@ -73,7 +84,6 @@ fn encrypted_signed_op_round_trips_outer_signature() {
     assert!(verify_op(&op).is_ok());
 }
 
-#[test]
 fn bob_decrypts_payload_after_verifying_outer_signature() {
     let (cid, mut alice_g, mut bob_g, sk, pk) = fixture();
     let cleartext = b"crdt-change-blob".to_vec();
@@ -100,7 +110,14 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
     assert_eq!(pt, cleartext);
 }
 
+/// Tampering with the payload or with the encryption metadata breaks the outer signature.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn tampering_with_an_encrypted_op_breaks_its_outer_signature() {
+    tampering_with_payload_breaks_outer_signature();
+    tampering_with_encryption_metadata_breaks_outer_signature();
+}
+
 fn tampering_with_payload_breaks_outer_signature() {
     // The outer signature covers the (cipher)bytes. A peer re-encrypting
     // the inner payload cannot keep the outer signature valid — they'd
@@ -124,7 +141,6 @@ fn tampering_with_payload_breaks_outer_signature() {
     assert!(verify_op(&op).is_err());
 }
 
-#[test]
 fn tampering_with_encryption_metadata_breaks_outer_signature() {
     // Same as above but tampering the metadata: a peer tries to
     // redirect a ciphertext to a *different* channel by rewriting
@@ -150,7 +166,6 @@ fn tampering_with_encryption_metadata_breaks_outer_signature() {
     assert!(verify_op(&op).is_err());
 }
 
-#[test]
 fn unencrypted_op_still_works_alongside_encrypted_ones() {
     // Backwards-compat: legacy/unencrypted channels keep round-tripping
     // with `encryption: None` — same signing pipeline, same verify call, no decrypt.
@@ -169,7 +184,6 @@ fn unencrypted_op_still_works_alongside_encrypted_ones() {
     assert!(verify_op(&op).is_ok());
 }
 
-#[test]
 fn epoch_in_metadata_matches_group_epoch_at_time_of_encrypt() {
     // The receiver uses meta.epoch to decide whether the ChannelGroup is
     // current enough to decrypt; pins the invariant that the producer

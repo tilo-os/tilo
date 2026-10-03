@@ -250,10 +250,18 @@ fn run(cli: &Cli) -> Result<(), String> {
     let mut trust_bytes = serde_json::to_vec_pretty(&trust)
         .map_err(|error| format!("could not encode trust: {error}"))?;
     trust_bytes.push(b'\n');
-    atomic_file::write_creating_parent_with_mode(&cli.catalog_out, &catalog_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
-    atomic_file::write_creating_parent_with_mode(&cli.trust_out, &trust_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.catalog_out,
+        &catalog_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.trust_out,
+        &trust_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
     Ok(())
 }
 
@@ -710,163 +718,182 @@ mod tests {
         }
     }
 
+    /// Checked-in non-production source compiles without network resolution, output is deterministic
+    /// and verifies with public trust only, and an artifact receipt is resolved with a declared mismatch
+    /// failing.
     #[test]
-    fn checked_in_nonproduction_source_compiles_without_network_resolution() {
-        let source: CatalogSource = serde_json::from_str(include_str!(
-            "../../tests/fixtures/catalog-source.example.json"
-        ))
-        .unwrap();
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        let (catalog, trust) =
-            compile(source, &fixtures, &SigningKey::from_bytes(&[11; 32])).unwrap();
-        assert_eq!(catalog.payload.recommendation, "example/tiny-model");
-        assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
-        assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
-        assert_eq!(trust.keys.len(), 1);
+    fn catalog_compilation_is_offline_deterministic_and_receipt_checked() {
+        // Phase: checked_in_nonproduction_source_compiles_without_network_resolution.
+        {
+            let source: CatalogSource = serde_json::from_str(include_str!(
+                "../../tests/fixtures/catalog-source.example.json"
+            ))
+            .unwrap();
+            let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+            let (catalog, trust) =
+                compile(source, &fixtures, &SigningKey::from_bytes(&[11; 32])).unwrap();
+            assert_eq!(catalog.payload.recommendation, "example/tiny-model");
+            assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
+            assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
+            assert_eq!(trust.keys.len(), 1);
+        }
+
+        // Phase: output_is_deterministic_and_verifies_with_public_trust_only.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let first = compile(source(temp.path()), temp.path(), &key).unwrap();
+            let second = compile(source(temp.path()), temp.path(), &key).unwrap();
+            assert_eq!(first, second);
+            let payload = catalog_signing_bytes(&first.0.payload).unwrap();
+            assert!(first.0.payload.models[0].vision);
+            let signature = Signature::from_slice(&first.0.signature).unwrap();
+            key.verifying_key().verify(&payload, &signature).unwrap();
+            let trust_json = serde_json::to_string(&first.1).unwrap();
+            assert!(trust_json.contains(&hex::encode(key.verifying_key().to_bytes())));
+            assert!(!trust_json.contains(&hex::encode(key.to_bytes())));
+        }
+
+        // Phase: artifact_receipt_is_resolved_and_declared_mismatch_fails.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut source = source(temp.path());
+            source.models[0].artifact.sha256 = Some("f".repeat(64));
+            let error =
+                compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+            assert!(error.contains("SHA-256 does not match"));
+        }
     }
 
+    /// Artifact digests never follow a symlink, mutable revisions and URLs are rejected, and a
+    /// production source rejects non-production hosts.
     #[test]
-    fn output_is_deterministic_and_verifies_with_public_trust_only() {
-        let temp = tempfile::tempdir().unwrap();
-        let key = SigningKey::from_bytes(&[7; 32]);
-        let first = compile(source(temp.path()), temp.path(), &key).unwrap();
-        let second = compile(source(temp.path()), temp.path(), &key).unwrap();
-        assert_eq!(first, second);
-        let payload = catalog_signing_bytes(&first.0.payload).unwrap();
-        assert!(first.0.payload.models[0].vision);
-        let signature = Signature::from_slice(&first.0.signature).unwrap();
-        key.verifying_key().verify(&payload, &signature).unwrap();
-        let trust_json = serde_json::to_string(&first.1).unwrap();
-        assert!(trust_json.contains(&hex::encode(key.verifying_key().to_bytes())));
-        assert!(!trust_json.contains(&hex::encode(key.to_bytes())));
-    }
+    fn catalog_sources_must_be_immutable_and_production_hosted() {
+        // Phase: mutable_revision_and_url_are_rejected.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut floating = source(temp.path());
+            floating.models[0].revision = "main".into();
+            assert!(
+                compile(floating, temp.path(), &SigningKey::from_bytes(&[3; 32]))
+                    .unwrap_err()
+                    .contains("lowercase hex commit")
+            );
 
-    #[test]
-    fn artifact_receipt_is_resolved_and_declared_mismatch_fails() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut source = source(temp.path());
-        source.models[0].artifact.sha256 = Some("f".repeat(64));
-        let error = compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
-        assert!(error.contains("SHA-256 does not match"));
-    }
+            let mut mutable_url = source(temp.path());
+            mutable_url.runtimes[0].artifact.url =
+                "https://release.example.invalid/runtime/latest/runtime.bin".into();
+            assert!(
+                compile(mutable_url, temp.path(), &SigningKey::from_bytes(&[3; 32]))
+                    .unwrap_err()
+                    .contains("mutable")
+            );
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn artifact_digest_never_follows_a_symlink() {
-        use std::os::unix::fs::symlink;
+        // Phase: production_source_rejects_nonproduction_hosts.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut source = source(temp.path());
+            source.production = true;
+            assert!(
+                compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32]))
+                    .unwrap_err()
+                    .contains("reserved .invalid")
+            );
+        }
 
-        let temp = tempfile::tempdir().unwrap();
-        let catalog = source(temp.path());
-        let runtime = temp.path().join("runtime.bin");
-        let replacement = temp.path().join("replacement.bin");
-        fs::write(&replacement, b"substituted release payload").unwrap();
-        fs::remove_file(&runtime).unwrap();
-        symlink(&replacement, &runtime).unwrap();
-
-        let error = compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
-        assert!(error.contains("could not securely open"));
-
-        fs::remove_file(&runtime).unwrap();
-        fs::write(&runtime, b"restored runtime payload").unwrap();
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).unwrap();
-        let source = source(temp.path());
-        let error = compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
-        assert!(error.contains("could not securely open"));
-    }
-
-    #[test]
-    fn mutable_revision_and_url_are_rejected() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut floating = source(temp.path());
-        floating.models[0].revision = "main".into();
-        assert!(
-            compile(floating, temp.path(), &SigningKey::from_bytes(&[3; 32]))
-                .unwrap_err()
-                .contains("lowercase hex commit")
-        );
-
-        let mut mutable_url = source(temp.path());
-        mutable_url.runtimes[0].artifact.url =
-            "https://release.example.invalid/runtime/latest/runtime.bin".into();
-        assert!(
-            compile(mutable_url, temp.path(), &SigningKey::from_bytes(&[3; 32]))
-                .unwrap_err()
-                .contains("mutable")
-        );
-    }
-
-    #[test]
-    fn production_source_rejects_nonproduction_hosts() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut source = source(temp.path());
-        source.production = true;
-        assert!(
-            compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32]))
-                .unwrap_err()
-                .contains("reserved .invalid")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_must_be_private_on_disk() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("key");
-        fs::write(&path, hex::encode([9_u8; 32])).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            read_signing_key(&path)
-                .unwrap_err()
-                .contains("group/others")
-        );
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(read_signing_key(&path).unwrap().to_bytes(), [9; 32]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn signing_key_rejects_symlinks_and_aliased_inodes() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("key");
-        let alias = temp.path().join("alias");
-        let link = temp.path().join("link");
-        fs::write(&path, hex::encode([7_u8; 32])).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-
-        symlink(&path, &link).unwrap();
-        assert!(
-            read_signing_key(&link)
-                .unwrap_err()
-                .contains("securely open")
-        );
-
-        fs::hard_link(&path, &alias).unwrap();
-        assert!(
-            read_signing_key(&path)
-                .unwrap_err()
-                .contains("exactly one directory entry")
-        );
-
-        fs::remove_file(&alias).unwrap();
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).unwrap();
-        assert!(
-            read_signing_key(&linked_parent.join("key"))
-                .unwrap_err()
-                .contains("securely open")
-        );
-    }
-
-    #[test]
-    fn signing_key_input_is_bounded() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("key");
-        fs::write(&path, "a".repeat(130)).unwrap();
+        // Phase: artifact_digest_never_follows_a_symlink.
         #[cfg(unix)]
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(read_signing_key(&path).unwrap_err().contains("too large"));
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp = tempfile::tempdir().unwrap();
+            let catalog = source(temp.path());
+            let runtime = temp.path().join("runtime.bin");
+            let replacement = temp.path().join("replacement.bin");
+            fs::write(&replacement, b"substituted release payload").unwrap();
+            fs::remove_file(&runtime).unwrap();
+            symlink(&replacement, &runtime).unwrap();
+
+            let error =
+                compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+            assert!(error.contains("could not securely open"));
+
+            fs::remove_file(&runtime).unwrap();
+            fs::write(&runtime, b"restored runtime payload").unwrap();
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).unwrap();
+            let source = source(temp.path());
+            let error =
+                compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+            assert!(error.contains("could not securely open"));
+        }
+    }
+
+    /// The signing key must be private on disk, rejects symlinks and aliased inodes, and its input
+    /// is bounded.
+    #[test]
+    fn the_catalog_signing_key_must_be_a_private_bounded_single_file() {
+        // Phase: signing_key_must_be_private_on_disk.
+        #[cfg(unix)]
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("key");
+            fs::write(&path, hex::encode([9_u8; 32])).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(
+                read_signing_key(&path)
+                    .unwrap_err()
+                    .contains("group/others")
+            );
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(read_signing_key(&path).unwrap().to_bytes(), [9; 32]);
+        }
+
+        // Phase: signing_key_input_is_bounded.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("key");
+            fs::write(&path, "a".repeat(130)).unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(read_signing_key(&path).unwrap_err().contains("too large"));
+        }
+
+        // Phase: signing_key_rejects_symlinks_and_aliased_inodes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("key");
+            let alias = temp.path().join("alias");
+            let link = temp.path().join("link");
+            fs::write(&path, hex::encode([7_u8; 32])).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+            symlink(&path, &link).unwrap();
+            assert!(
+                read_signing_key(&link)
+                    .unwrap_err()
+                    .contains("securely open")
+            );
+
+            fs::hard_link(&path, &alias).unwrap();
+            assert!(
+                read_signing_key(&path)
+                    .unwrap_err()
+                    .contains("exactly one directory entry")
+            );
+
+            fs::remove_file(&alias).unwrap();
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).unwrap();
+            assert!(
+                read_signing_key(&linked_parent.join("key"))
+                    .unwrap_err()
+                    .contains("securely open")
+            );
+        }
     }
 }

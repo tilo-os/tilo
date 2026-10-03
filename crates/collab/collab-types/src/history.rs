@@ -223,81 +223,87 @@ mod tests {
         )
     }
 
+    /// Scrolling back prefetches near the edge and stops when exhausted; opening an old version pages
+    /// until it is loaded; unsolicited or foreign pages change nothing; an empty non-final page is
+    /// asked again.
     #[test]
-    fn scrolling_back_prefetches_near_the_edge_and_stops_when_exhausted() {
-        let artifact = ArtifactId::new();
-        let log: Vec<SignedOp> = (1..=250).map(|seq| op(artifact, seq)).collect();
-        let mut pager = HistoryPager::new(artifact, 100, 20);
-        pager.anchor(240);
-        assert_eq!(pager.on_viewport(50), None, "far from the edge");
-        let request = pager.on_viewport(10).unwrap();
-        assert_eq!(request.before_seq, 240);
-        assert_eq!(pager.on_viewport(0), None, "one request at a time");
-        let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
-        assert_eq!(page.len(), 100);
-        assert_eq!(page.first().unwrap().seq, 140);
-        assert_eq!(pager.on_page_ops(&page, exhausted), None);
-        assert_eq!(pager.oldest_loaded(), Some(140));
+    fn history_paging_fetches_only_what_the_view_needs() {
+        // Phase: scrolling_back_prefetches_near_the_edge_and_stops_when_exhausted.
+        {
+            let artifact = ArtifactId::new();
+            let log: Vec<SignedOp> = (1..=250).map(|seq| op(artifact, seq)).collect();
+            let mut pager = HistoryPager::new(artifact, 100, 20);
+            pager.anchor(240);
+            assert_eq!(pager.on_viewport(50), None, "far from the edge");
+            let request = pager.on_viewport(10).unwrap();
+            assert_eq!(request.before_seq, 240);
+            assert_eq!(pager.on_viewport(0), None, "one request at a time");
+            let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
+            assert_eq!(page.len(), 100);
+            assert_eq!(page.first().unwrap().seq, 140);
+            assert_eq!(pager.on_page_ops(&page, exhausted), None);
+            assert_eq!(pager.oldest_loaded(), Some(140));
 
-        let request = pager.on_viewport(5).unwrap();
-        let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
-        pager.on_page_ops(&page, exhausted);
-        let request = pager.on_viewport(5).unwrap();
-        let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
-        assert!(exhausted);
-        pager.on_page_ops(&page, exhausted);
-        assert_eq!(pager.oldest_loaded(), Some(1));
-        assert!(pager.is_exhausted());
-        assert_eq!(pager.on_viewport(0), None);
-    }
-
-    #[test]
-    fn opening_an_old_version_pages_until_it_is_loaded() {
-        let artifact = ArtifactId::new();
-        let log: Vec<SignedOp> = (1..=1000).map(|seq| op(artifact, seq)).collect();
-        let mut pager = HistoryPager::new(artifact, 64, 8);
-        pager.anchor(1001);
-        let mut request = pager.ensure_loaded_back_to(700);
-        let mut fetched = 0;
-        while let Some(next) = request {
-            fetched += 1;
-            let (page, exhausted) = page_before(&log, artifact, next.before_seq, next.max);
-            request = pager.on_page_ops(&page, exhausted);
+            let request = pager.on_viewport(5).unwrap();
+            let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
+            pager.on_page_ops(&page, exhausted);
+            let request = pager.on_viewport(5).unwrap();
+            let (page, exhausted) = page_before(&log, artifact, request.before_seq, request.max);
+            assert!(exhausted);
+            pager.on_page_ops(&page, exhausted);
+            assert_eq!(pager.oldest_loaded(), Some(1));
+            assert!(pager.is_exhausted());
+            assert_eq!(pager.on_viewport(0), None);
         }
-        assert_eq!(fetched, 5, "only the pages covering the requested range");
-        assert!(pager.oldest_loaded().unwrap() <= 700);
-        assert!(!pager.is_exhausted());
-        assert_eq!(pager.ensure_loaded_back_to(800), None, "already loaded");
-    }
 
-    #[test]
-    fn unsolicited_or_foreign_pages_change_nothing() {
-        let artifact = ArtifactId::new();
-        let mut pager = HistoryPager::new(artifact, 10, 0);
-        pager.anchor(50);
-        assert_eq!(pager.on_page_ops(&[op(artifact, 3)], false), None);
-        assert_eq!(pager.oldest_loaded(), Some(50));
-        let request = pager.on_viewport(0).unwrap();
-        assert_eq!(request.before_seq, 50);
-        assert_eq!(pager.on_page_ops(&[op(ArtifactId::new(), 3)], false), None);
-        assert!(!pager.is_exhausted());
-        assert_eq!(pager.oldest_loaded(), Some(50));
-    }
+        // Phase: opening_an_old_version_pages_until_it_is_loaded.
+        {
+            let artifact = ArtifactId::new();
+            let log: Vec<SignedOp> = (1..=1000).map(|seq| op(artifact, seq)).collect();
+            let mut pager = HistoryPager::new(artifact, 64, 8);
+            pager.anchor(1001);
+            let mut request = pager.ensure_loaded_back_to(700);
+            let mut fetched = 0;
+            while let Some(next) = request {
+                fetched += 1;
+                let (page, exhausted) = page_before(&log, artifact, next.before_seq, next.max);
+                request = pager.on_page_ops(&page, exhausted);
+            }
+            assert_eq!(fetched, 5, "only the pages covering the requested range");
+            assert!(pager.oldest_loaded().unwrap() <= 700);
+            assert!(!pager.is_exhausted());
+            assert_eq!(pager.ensure_loaded_back_to(800), None, "already loaded");
+        }
 
-    #[test]
-    fn an_empty_page_that_is_not_final_is_asked_again() {
-        let artifact = ArtifactId::new();
-        let mut pager = HistoryPager::new(artifact, 10, 0);
-        pager.anchor(50);
-        let first = pager.ensure_loaded_back_to(10).unwrap();
-        // The host had nothing locally and asked its peers.
-        assert_eq!(pager.on_page(None, false), None);
-        assert!(!pager.is_exhausted());
-        let again = pager.ensure_loaded_back_to(10).unwrap();
-        assert_eq!(again.before_seq, first.before_seq);
-        assert_eq!(pager.on_page(Some(40), false).unwrap().before_seq, 40);
-        assert_eq!(pager.on_page(None, true), None);
-        assert!(pager.is_exhausted());
-        assert_eq!(pager.oldest_loaded(), Some(40));
+        // Phase: unsolicited_or_foreign_pages_change_nothing.
+        {
+            let artifact = ArtifactId::new();
+            let mut pager = HistoryPager::new(artifact, 10, 0);
+            pager.anchor(50);
+            assert_eq!(pager.on_page_ops(&[op(artifact, 3)], false), None);
+            assert_eq!(pager.oldest_loaded(), Some(50));
+            let request = pager.on_viewport(0).unwrap();
+            assert_eq!(request.before_seq, 50);
+            assert_eq!(pager.on_page_ops(&[op(ArtifactId::new(), 3)], false), None);
+            assert!(!pager.is_exhausted());
+            assert_eq!(pager.oldest_loaded(), Some(50));
+        }
+
+        // Phase: an_empty_page_that_is_not_final_is_asked_again.
+        {
+            let artifact = ArtifactId::new();
+            let mut pager = HistoryPager::new(artifact, 10, 0);
+            pager.anchor(50);
+            let first = pager.ensure_loaded_back_to(10).unwrap();
+            // The host had nothing locally and asked its peers.
+            assert_eq!(pager.on_page(None, false), None);
+            assert!(!pager.is_exhausted());
+            let again = pager.ensure_loaded_back_to(10).unwrap();
+            assert_eq!(again.before_seq, first.before_seq);
+            assert_eq!(pager.on_page(Some(40), false).unwrap().before_seq, 40);
+            assert_eq!(pager.on_page(None, true), None);
+            assert!(pager.is_exhausted());
+            assert_eq!(pager.oldest_loaded(), Some(40));
+        }
     }
 }

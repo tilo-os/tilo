@@ -17,10 +17,8 @@ reserved URI schemes. `file`, `data`, and `javascript` are not claimable URI
 schemes: local files use the capability-granting file-open path, while inline
 active content must stay inside an already-authorized application.
 
-Older manifests containing only `[providers].ext` remain valid. `mime` also
-remains source-compatible; `schemes` is optional and accepts the transitional
-`uri-schemes` / `uri_schemes` spellings on input, but canonical serialization
-always writes `schemes`.
+A manifest containing only `[providers].ext` is valid; `mime` and `schemes`
+are optional.
 
 The launcher exposes validated extension, MIME, and scheme claims when it
 enumerates installed GUI apps. Personal Settings and Workspace Settings build

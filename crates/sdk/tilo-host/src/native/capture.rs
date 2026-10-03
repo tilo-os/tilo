@@ -16,7 +16,7 @@ pub struct DesktopScreenCapture;
 impl crate::host::ScreenCaptureProvider for DesktopScreenCapture {
     fn request(&self, request: ScreenCaptureRequest) -> ScreenCaptureChannel {
         let (tx, rx) = std::sync::mpsc::channel();
-        #[cfg(all(feature = "portal", unix))]
+        #[cfg(all(feature = "portal", target_os = "linux"))]
         {
             let wake = crate::wake::WakeHandle::new();
             drop(
@@ -30,7 +30,7 @@ impl crate::host::ScreenCaptureProvider for DesktopScreenCapture {
         }
         // Without the portal (the `portal` feature, on Unix) there is nothing
         // to capture through; answer at once.
-        #[cfg(not(all(feature = "portal", unix)))]
+        #[cfg(not(all(feature = "portal", target_os = "linux")))]
         {
             let _ = request;
             let _ = tx.send(ScreenCaptureOutcome::Unavailable(
@@ -41,7 +41,7 @@ impl crate::host::ScreenCaptureProvider for DesktopScreenCapture {
     }
 }
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", target_os = "linux"))]
 async fn bounded_capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
     match tokio::time::timeout(std::time::Duration::from_secs(120), capture(request)).await {
         Ok(outcome) => outcome,
@@ -51,7 +51,7 @@ async fn bounded_capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome 
     }
 }
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", target_os = "linux"))]
 async fn capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
     use crate::capture::{CaptureStream, ScreenCaptureGrant};
     use ashpd::desktop::screencast::{

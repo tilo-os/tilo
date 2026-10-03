@@ -91,115 +91,169 @@ fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
 }
 
 #[test]
-fn actions_through_the_door_update_the_record_and_the_view() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
-    app.invoke(Checklist::ADD.with("eggs".into())).unwrap();
-    assert_eq!(
-        texts(&app),
-        [("milk".into(), false), ("eggs".into(), false)]
-    );
-    let inspection = app.harness().inspection_json().unwrap();
-    assert!(inspection.contains("2 open"), "{inspection}");
-
-    // The row's checkbox is bound to set-done for its own item.
-    let checkbox = app
-        .harness()
-        .targets()
-        .keys()
-        .find(|name| name.starts_with("set-done-"))
-        .cloned()
-        .unwrap();
-    app.harness().click_named(&checkbox).unwrap();
-    assert_eq!(
-        app.state().items.values().filter(|item| item.done).count(),
-        1
-    );
-
-    // A destructive action asks for confirmation: the unconfirmed click is
-    // refused and changes nothing; the confirmed invocation applies.
-    app.harness().click_named("clear-done").unwrap();
-    assert_eq!(app.state().items.len(), 2);
-    assert!(app.invoke(Checklist::CLEAR_DONE.invoke()).is_err());
-    app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
-        .unwrap();
-    assert_eq!(app.state().items.len(), 1);
-}
-
-#[test]
-fn typing_in_a_bound_field_is_an_action() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.harness().click_named("title").unwrap();
-    app.harness().type_text("Groceries");
-    assert_eq!(app.state().title, "Groceries");
-}
-
-#[test]
-fn undo_and_redo_revert_actions() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("First".into())).unwrap();
-    app.invoke(Checklist::RENAME.with("Second".into())).unwrap();
-    assert!(app.undo());
-    assert_eq!(app.state().title, "First");
-    assert!(app.redo());
-    assert_eq!(app.state().title, "Second");
-}
-
-#[test]
-fn undo_reverts_a_text_splice_exactly() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("first thought".into()))
-        .unwrap();
-    app.invoke(Checklist::RENAME.with("second thought".into()))
-        .unwrap();
-    assert!(app.undo());
-    assert_eq!(app.state().title, "first thought");
-    assert!(app.undo());
-    assert_eq!(app.state().title, "");
-    assert!(app.redo());
-    assert!(app.redo());
-    assert_eq!(app.state().title, "second thought");
-}
-
-#[test]
-fn a_viewer_cannot_edit() {
-    let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    assert!(app.invoke(Checklist::ADD.with("sneaky".into())).is_err());
-    assert!(app.state().items.is_empty());
-}
-
-#[test]
-fn state_survives_a_relaunch() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::ADD.with("persisted".into())).unwrap();
-    let app = app.reopen().unwrap();
-    assert_eq!(texts(&app), [("persisted".into(), false)]);
-}
-
-#[test]
-fn every_action_is_an_attributed_version() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("Weekly".into())).unwrap();
-    let last = app.versions().pop().unwrap();
-    assert_eq!(
-        last.summary().as_deref(),
-        Some("Rename the checklist · Checklist")
-    );
-}
-
-#[test]
-fn the_palette_and_agents_see_every_action() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    let resources = app.harness().resources();
-    let ids: Vec<_> = resources
-        .iter()
-        .flat_map(|resource| resource.actions.iter().map(|spec| spec.id.clone()))
-        .collect();
-    for id in ["rename", "add", "set-done", "clear-done", "apply"] {
-        assert!(
-            ids.iter().any(|candidate| candidate == id),
-            "{id} in {ids:?}"
+fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
+    // phase: actions_through_the_door_update_the_record_and_the_view
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+        app.invoke(Checklist::ADD.with("eggs".into())).unwrap();
+        assert_eq!(
+            texts(&app),
+            [("milk".into(), false), ("eggs".into(), false)]
         );
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("2 open"), "{inspection}");
+
+        // The row's checkbox is bound to set-done for its own item.
+        let checkbox = app
+            .harness()
+            .targets()
+            .keys()
+            .find(|name| name.starts_with("set-done-"))
+            .cloned()
+            .unwrap();
+        app.harness().click_named(&checkbox).unwrap();
+        assert_eq!(
+            app.state().items.values().filter(|item| item.done).count(),
+            1
+        );
+
+        // A destructive action asks for confirmation: the unconfirmed click is
+        // refused and changes nothing; the confirmed invocation applies.
+        app.harness().click_named("clear-done").unwrap();
+        assert_eq!(app.state().items.len(), 2);
+        assert!(app.invoke(Checklist::CLEAR_DONE.invoke()).is_err());
+        app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
+            .unwrap();
+        assert_eq!(app.state().items.len(), 1);
+    }
+    // phase: typing_in_a_bound_field_is_an_action
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.harness().click_named("title").unwrap();
+        app.harness().type_text("Groceries");
+        assert_eq!(app.state().title, "Groceries");
+    }
+    // phase: undo_and_redo_revert_actions
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("First".into())).unwrap();
+        app.invoke(Checklist::RENAME.with("Second".into())).unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "First");
+        assert!(app.redo());
+        assert_eq!(app.state().title, "Second");
+    }
+    // phase: undo_reverts_a_text_splice_exactly
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("first thought".into()))
+            .unwrap();
+        app.invoke(Checklist::RENAME.with("second thought".into()))
+            .unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "first thought");
+        assert!(app.undo());
+        assert_eq!(app.state().title, "");
+        assert!(app.redo());
+        assert!(app.redo());
+        assert_eq!(app.state().title, "second thought");
+    }
+    // phase: state_survives_a_relaunch
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::ADD.with("persisted".into())).unwrap();
+        let app = app.reopen().unwrap();
+        assert_eq!(texts(&app), [("persisted".into(), false)]);
+    }
+    // phase: every_action_is_an_attributed_version
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Weekly".into())).unwrap();
+        let last = app.versions().pop().unwrap();
+        assert_eq!(
+            last.summary().as_deref(),
+            Some("Rename the checklist · Checklist")
+        );
+    }
+}
+
+#[test]
+fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
+    // phase: a_viewer_cannot_edit
+    {
+        let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        assert!(app.invoke(Checklist::ADD.with("sneaky".into())).is_err());
+        assert!(app.state().items.is_empty());
+    }
+    // phase: the_palette_and_agents_see_every_action
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let ids: Vec<_> = resources
+            .iter()
+            .flat_map(|resource| resource.actions.iter().map(|spec| spec.id.clone()))
+            .collect();
+        for id in ["rename", "add", "set-done", "clear-done", "apply"] {
+            assert!(
+                ids.iter().any(|candidate| candidate == id),
+                "{id} in {ids:?}"
+            );
+        }
+    }
+    // phase: the_generic_apply_action_is_for_agents_and_scripts_only
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let apply = resources
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
+            .expect("apply is published for agents and scripts");
+        assert!(apply.is_programmatic(), "never a palette row");
+        assert!(apply.contract.confirmation_depends_on_arguments());
+        let named = resources
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|spec| spec.id == "rename")
+            .unwrap();
+        assert!(
+            !named.is_programmatic(),
+            "named actions stay in the palette"
+        );
+    }
+    // phase: a_destructive_typed_value_is_confirmed_like_its_named_action
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        // An ordinary typed edit applies directly.
+        app.invoke(typed(ChecklistAction::Rename {
+            title: "Weekly".into(),
+        }))
+        .unwrap();
+        assert_eq!(app.state().title, "Weekly");
+
+        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+        let id = app.state().items.ids().next().cloned().unwrap();
+        app.invoke(typed(ChecklistAction::SetDone {
+            item: id,
+            done: true,
+        }))
+        .unwrap();
+
+        // `clear_done` is `#[action(destructive)]`: reached through `apply` it
+        // needs the same confirmation its named declaration does.
+        assert!(matches!(
+            app.invoke(typed(ChecklistAction::ClearDone {})),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert_eq!(
+            app.state().items.len(),
+            1,
+            "the refused edit changed nothing"
+        );
+        app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
+            .unwrap();
+        assert!(app.state().items.is_empty());
     }
 }
 
@@ -209,62 +263,6 @@ fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
         now_ms: 0,
     })
     .unwrap()
-}
-
-#[test]
-fn the_generic_apply_action_is_for_agents_and_scripts_only() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    let resources = app.harness().resources();
-    let apply = resources
-        .iter()
-        .flat_map(|resource| &resource.actions)
-        .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
-        .expect("apply is published for agents and scripts");
-    assert!(apply.is_programmatic(), "never a palette row");
-    assert!(apply.contract.confirmation_depends_on_arguments());
-    let named = resources
-        .iter()
-        .flat_map(|resource| &resource.actions)
-        .find(|spec| spec.id == "rename")
-        .unwrap();
-    assert!(
-        !named.is_programmatic(),
-        "named actions stay in the palette"
-    );
-}
-
-#[test]
-fn a_destructive_typed_value_is_confirmed_like_its_named_action() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    // An ordinary typed edit applies directly.
-    app.invoke(typed(ChecklistAction::Rename {
-        title: "Weekly".into(),
-    }))
-    .unwrap();
-    assert_eq!(app.state().title, "Weekly");
-
-    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
-    let id = app.state().items.ids().next().cloned().unwrap();
-    app.invoke(typed(ChecklistAction::SetDone {
-        item: id,
-        done: true,
-    }))
-    .unwrap();
-
-    // `clear_done` is `#[action(destructive)]`: reached through `apply` it
-    // needs the same confirmation its named declaration does.
-    assert!(matches!(
-        app.invoke(typed(ChecklistAction::ClearDone {})),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    assert_eq!(
-        app.state().items.len(),
-        1,
-        "the refused edit changed nothing"
-    );
-    app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
-        .unwrap();
-    assert!(app.state().items.is_empty());
 }
 
 #[test]

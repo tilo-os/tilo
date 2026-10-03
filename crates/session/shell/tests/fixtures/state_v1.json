@@ -1,4 +1,9 @@
 {
+  "native_authority": {
+    "revision": 0,
+    "rooms": {},
+    "pending": {}
+  },
   "schema_version": 1,
   "workspaces": [
     {
@@ -128,6 +133,14 @@
           "steps": []
         }
       ],
+      "schedule_claims": [
+        {
+          "shortcut": "tidy",
+          "trigger": 0,
+          "due_ms": 1790326800000,
+          "device": "laptop"
+        }
+      ],
       "shared_surfaces": {
         "7": [
           42
@@ -159,6 +172,7 @@
       "tasks": [],
       "effect_receipts": [],
       "shortcuts": [],
+      "schedule_claims": [],
       "shared_surfaces": {}
     }
   ],

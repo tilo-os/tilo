@@ -5,11 +5,19 @@
 //! the executor (the change's actor is the author, its message carries the
 //! action's [`ActionContext`]); materialising a past version is
 //! [`Resource::read`] on the document forked at that version's heads.
+//!
+//! Versions are addressed two ways: by heads (a set of change hashes, what a
+//! collaborator can name) and by position in [`versions`]' causal order (what
+//! a scrubber counts). [`prefix_heads`] turns a position into heads, and
+//! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
+use tilo_clock::{SystemTime, UNIX_EPOCH};
 
 use automerge::ChangeHash;
+use automerge::transaction::{CommitOptions, Transactable};
 use tilo_actions::ActionContext;
+use tilo_automerge::ApplyIncoming;
 
 use crate::model::{Doc, ModelError};
 use crate::resource::Resource;
@@ -51,12 +59,133 @@ fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
     }
 }
 
-/// Every change in causal order, oldest first.
+/// Every change in causal order, oldest first. A change's position in this
+/// list is the address [`prefix_heads`] and [`replay_prefix`] take.
 ///
 /// Reads every change's metadata (never its operations). For a long history
 /// shown a screen at a time, [`page`] reads only the page.
 pub fn versions(doc: &mut Doc) -> Vec<Version> {
     doc.get_changes_meta(&[]).iter().map(version_of).collect()
+}
+
+fn unix_now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
+}
+
+/// Commit the open transaction with a wall-clock timestamp attached.
+/// `AutoCommit::commit()` leaves the change's advisory time at `0`, which is
+/// why routing commits through here is what makes [`Version::time_ms`] — and
+/// any date-range filter over the history — mean something. Returns `None`
+/// when there was nothing to commit, exactly like `AutoCommit::commit`.
+///
+/// An empty commit abandons the empty transaction and records nothing.
+pub fn commit_stamped(doc: &mut Doc) -> Option<ChangeHash> {
+    commit_stamped_at_with_message(doc, unix_now_secs(), None)
+}
+
+/// As [`commit_stamped`], with a caller-supplied Unix time in **seconds**
+/// (Automerge's own unit), for hosts that own a clock: a store replaying a
+/// durable change chain, a test spreading versions across a day.
+pub fn commit_stamped_at(doc: &mut Doc, unix_secs: i64) -> Option<ChangeHash> {
+    commit_stamped_at_with_message(doc, unix_secs, None)
+}
+
+/// Commit a native document edit with a timestamp and an optional semantic
+/// message: the commit-boundary counterpart to action dispatch, so history
+/// learns which app and resource an edit belongs to.
+pub fn commit_stamped_with_message(doc: &mut Doc, message: Option<String>) -> Option<ChangeHash> {
+    commit_stamped_at_with_message(doc, unix_now_secs(), message)
+}
+
+/// [`commit_stamped_with_message`] at a caller-supplied Unix time in seconds.
+pub fn commit_stamped_at_with_message(
+    doc: &mut Doc,
+    unix_secs: i64,
+    message: Option<String>,
+) -> Option<ChangeHash> {
+    // commit_with opens a transaction even when there are no edits, which
+    // can add then prune a fresh actor, poisoning the next differently
+    // authored transaction. Rolling the empty transaction back discards it
+    // with its own patch log branch, so the document's diff cursor — and a
+    // `Tracker` following it — stays valid.
+    if doc.pending_ops() == 0 {
+        doc.rollback();
+        return None;
+    }
+    let mut options = CommitOptions::default().with_time(unix_secs);
+    if let Some(message) = message {
+        options = options.with_message(message);
+    }
+    doc.commit_with(options)
+}
+
+/// Heads of the document as of the first `upto + 1` changes of [`versions`].
+/// Any prefix of that causal order is a valid document state, but with
+/// several collaborators it can have several concurrent frontiers, so "the
+/// heads" is a set: a change is a head of the prefix when no other change in
+/// the prefix depends on it.
+pub fn prefix_heads(doc: &mut Doc, upto: usize) -> Vec<ChangeHash> {
+    let metas = doc.get_changes_meta(&[]);
+    let take = upto.saturating_add(1).min(metas.len());
+    let prefix = metas.get(..take).unwrap_or(&[]);
+    let depended_on: std::collections::HashSet<ChangeHash> = prefix
+        .iter()
+        .flat_map(|meta| meta.deps.iter().copied())
+        .collect();
+    prefix
+        .iter()
+        .map(|meta| meta.hash)
+        .filter(|hash| !depended_on.contains(hash))
+        .collect()
+}
+
+/// The document as of position `version` of [`versions`], rebuilt by
+/// replaying that prefix of the change log into a fresh replica.
+///
+/// # Errors
+/// Returns [`ModelError`] when Automerge rejects the replayed prefix.
+pub fn replay_prefix(doc: &mut Doc, version: usize) -> Result<Doc, ModelError> {
+    let changes = doc.get_changes(&[]);
+    let take = version.saturating_add(1).min(changes.len());
+    let mut rebuilt = Doc::new();
+    rebuilt.apply_incoming(changes.into_iter().take(take))?;
+    Ok(rebuilt)
+}
+
+/// `read` of the document at each of `versions` (ascending positions of
+/// [`versions`]), from one replay of the change log: equivalent to
+/// [`replay_prefix`] per version without replaying the prefix again each
+/// time. A version Automerge rejects, and every later one, is `None`.
+pub fn replay_series<T>(
+    doc: &mut Doc,
+    versions: &[usize],
+    mut read: impl FnMut(&Doc) -> Option<T>,
+) -> Vec<Option<T>> {
+    let mut changes = doc.get_changes(&[]).into_iter();
+    let total = changes.len();
+    let mut rebuilt = Doc::new();
+    let mut applied = 0usize;
+    let mut failed = false;
+    versions
+        .iter()
+        .map(|&version| {
+            let take = version.saturating_add(1).min(total);
+            if !failed && take > applied {
+                let batch: Vec<_> = changes
+                    .by_ref()
+                    .take(take.saturating_sub(applied))
+                    .collect();
+                failed = rebuilt.apply_incoming(batch).is_err();
+                applied = take;
+            }
+            if failed {
+                return None;
+            }
+            read(&rebuilt)
+        })
+        .collect()
 }
 
 /// Where a newest-first walk of the history stopped: hand it back to [`page`]
@@ -155,4 +284,112 @@ impl Walk {
 pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
     let past = doc.fork_at(heads)?;
     R::read(&past)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::{ActorId, ROOT, ReadDoc};
+
+    fn check_empty_commit_actor_transition(open_empty: bool) {
+        let mut doc = Doc::new();
+        doc.set_actor(ActorId::from(vec![0x80]));
+        doc.put(ROOT, "body", "seed").unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        let heads = doc.get_heads();
+        doc.set_actor(ActorId::from(vec![0x10]));
+        if open_empty {
+            doc.delete(ROOT, "absent").unwrap();
+            assert_eq!(doc.pending_ops(), 0);
+        }
+        assert_eq!(commit_stamped_at(&mut doc, 2), None);
+        assert_eq!(doc.get_heads(), heads);
+        doc.set_actor(ActorId::from(vec![0x20]));
+        doc.put(ROOT, "body", "edited").unwrap();
+        let change = commit_stamped_at(&mut doc, 3).unwrap();
+        assert_eq!(doc.get_change_by_hash(&change).unwrap().timestamp(), 3);
+        let after = doc.get_heads();
+        let patches = doc.diff(&heads, &after);
+        assert!(matches!(patches.as_slice(), [automerge::Patch {
+            action: automerge::PatchAction::PutMap { key, value, .. }, ..
+        }] if key == "body" && value.0.as_str() == Some("edited")));
+    }
+
+    #[test]
+    fn empty_stamped_commit_does_not_poison_next_actor() {
+        check_empty_commit_actor_transition(false);
+    }
+
+    #[test]
+    fn empty_open_transaction_does_not_poison_next_actor() {
+        check_empty_commit_actor_transition(true);
+    }
+
+    #[test]
+    fn an_empty_stamped_commit_keeps_changes_tracked_incrementally() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "n", 0).unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        let mut tracker = crate::Tracker::new();
+        tracker.start(&mut doc);
+        for (n, actor) in [(1_i64, 0x10_u8), (2, 0x20)] {
+            doc.set_actor(ActorId::from(vec![actor]));
+            assert_eq!(commit_stamped_at(&mut doc, 2), None);
+            doc.put(ROOT, "n", n).unwrap();
+            commit_stamped_at(&mut doc, 3).unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert!(!delta.is_everything(), "round {n}");
+            assert_eq!(delta.key(&ROOT, "n"), crate::Touch::Written);
+        }
+    }
+
+    /// Two collaborators' interleaved, combined edits.
+    fn combined() -> Doc {
+        let mut left = Doc::new();
+        left.put(ROOT, "n", 0).unwrap();
+        commit_stamped_at(&mut left, 1).unwrap();
+        let mut right = left.fork();
+        for round in 1..8_i64 {
+            left.put(ROOT, "left", round).unwrap();
+            commit_stamped_at(&mut left, round).unwrap();
+            right.put(ROOT, "right", round).unwrap();
+            commit_stamped_at(&mut right, round).unwrap();
+            if round % 3 == 0 {
+                left.merge_incoming(&mut right).unwrap();
+                right.merge_incoming(&mut left).unwrap();
+            }
+        }
+        left.merge_incoming(&mut right).unwrap();
+        left
+    }
+
+    #[test]
+    fn positions_mean_the_same_to_every_addressing_function() {
+        let mut doc = combined();
+        let listed: Vec<ChangeHash> = versions(&mut doc).iter().map(|v| v.hash).collect();
+        let replayed: Vec<ChangeHash> = doc
+            .get_changes(&[])
+            .iter()
+            .map(automerge::Change::hash)
+            .collect();
+        assert_eq!(listed, replayed, "metadata and changes list in one order");
+        for position in 0..listed.len() {
+            let mut rebuilt = replay_prefix(&mut doc, position).unwrap();
+            let mut heads = rebuilt.get_heads();
+            heads.sort();
+            let mut expected = prefix_heads(&mut doc, position);
+            expected.sort();
+            assert_eq!(heads, expected, "position {position}");
+        }
+        let last = listed.len() - 1;
+        let series = replay_series(&mut doc, &[0, 3, last], |doc| {
+            doc.get(ROOT, "left")
+                .ok()
+                .flatten()
+                .map(|(value, _)| value.to_string())
+        });
+        assert_eq!(series.len(), 3);
+        assert_eq!(series[0], None);
+        assert!(series[2].is_some());
+    }
 }

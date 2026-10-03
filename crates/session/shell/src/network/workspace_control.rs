@@ -308,137 +308,164 @@ mod tests {
     }
 
     #[test]
-    fn no_input_before_target_consent() {
-        let target = endpoint(2);
-        let session =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        assert!(
-            session
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
+    fn direct_input_opens_only_after_exact_target_consent() {
+        // Phase `no_input_before_target_consent`.
+        {
+            let target = endpoint(2);
+            let session = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            assert!(
+                session
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
+        }
+        // Phase `exact_target_start_opens_direct_input_path`.
+        {
+            let target = endpoint(2);
+            let attacker = endpoint(9);
+            let mut session = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            assert!(
+                session
+                    .observe_from(Some(attacker), &start(attacker, 44))
+                    .is_none()
+            );
+            assert!(session.observe(&start(target, 44)).is_none());
+            assert!(
+                session
+                    .observe_from(Some(attacker), &grant(11, 44, true))
+                    .is_none()
+            );
+            assert!(
+                session
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
+            assert!(matches!(
+                session.observe_from(Some(target), &grant(11, 44, true)),
+                Some(WorkspaceControlUpdate::ConsentGranted { surface: 44, .. })
+            ));
+            assert!(matches!(
+                session.input_message(&InputEvent::PointerButton {
+                    button: 1,
+                    pressed: true
+                }),
+                Ok(NeighbourMsg::RemoteInput { surface: 44, .. })
+            ));
+        }
     }
 
     #[test]
-    fn exact_target_start_opens_direct_input_path() {
-        let target = endpoint(2);
-        let attacker = endpoint(9);
-        let mut session =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        assert!(
-            session
-                .observe_from(Some(attacker), &start(attacker, 44))
-                .is_none()
-        );
-        assert!(session.observe(&start(target, 44)).is_none());
-        assert!(
-            session
-                .observe_from(Some(attacker), &grant(11, 44, true))
-                .is_none()
-        );
-        assert!(
-            session
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
-        assert!(matches!(
-            session.observe_from(Some(target), &grant(11, 44, true)),
-            Some(WorkspaceControlUpdate::ConsentGranted { surface: 44, .. })
-        ));
-        assert!(matches!(
-            session.input_message(&InputEvent::PointerButton {
-                button: 1,
-                pressed: true
-            }),
-            Ok(NeighbourMsg::RemoteInput { surface: 44, .. })
-        ));
-    }
+    fn lost_revoked_or_denied_sessions_keep_the_input_gate_closed() {
+        // Phase `relay_loss_closes_relay_session`.
+        {
+            let target = endpoint(2);
+            let relay = endpoint(3);
+            let mut session = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Relayed { via: relay },
+            );
+            session.observe(&grant(11, 44, true));
+            session.observe(&start(target, 44));
+            assert_eq!(
+                session.peer_departed(relay),
+                Some(WorkspaceControlUpdate::Closed(
+                    WorkspaceControlCloseReason::RelayDisconnected
+                ))
+            );
+            assert!(
+                session
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
+        }
+        // Phase `target_loss_closes_direct_session`.
+        {
+            let target = endpoint(2);
+            let mut session = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            session.observe(&grant(11, 44, true));
+            session.observe(&start(target, 44));
+            assert_eq!(
+                session.peer_departed(target),
+                Some(WorkspaceControlUpdate::Closed(
+                    WorkspaceControlCloseReason::TargetDisconnected
+                ))
+            );
+            assert!(
+                session
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
+        }
+        // Phase `revocation_disconnect_and_denial_keep_gate_closed`.
+        {
+            let target = endpoint(2);
+            let mut revoked = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            revoked.observe(&grant(11, 44, true));
+            revoked.observe(&start(target, 44));
+            let end = NeighbourMsg::SurfaceStreamEnd {
+                surface: 44,
+                source_peer: peer_liveness_handle(&target),
+                ts: 2,
+            };
+            assert!(matches!(
+                revoked.observe(&end),
+                Some(WorkspaceControlUpdate::Closed(
+                    WorkspaceControlCloseReason::Revoked
+                ))
+            ));
+            assert!(
+                revoked
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
 
-    #[test]
-    fn relay_loss_closes_relay_session() {
-        let target = endpoint(2);
-        let relay = endpoint(3);
-        let mut session = WorkspaceControlSession::new(
-            7,
-            11,
-            target,
-            WorkspaceControlRoute::Relayed { via: relay },
-        );
-        session.observe(&grant(11, 44, true));
-        session.observe(&start(target, 44));
-        assert_eq!(
-            session.peer_departed(relay),
-            Some(WorkspaceControlUpdate::Closed(
-                WorkspaceControlCloseReason::RelayDisconnected
-            ))
-        );
-        assert!(
-            session
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
-    }
+            let mut disconnected = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            disconnected.disconnect();
+            assert!(
+                disconnected
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
 
-    #[test]
-    fn target_loss_closes_direct_session() {
-        let target = endpoint(2);
-        let mut session =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        session.observe(&grant(11, 44, true));
-        session.observe(&start(target, 44));
-        assert_eq!(
-            session.peer_departed(target),
-            Some(WorkspaceControlUpdate::Closed(
-                WorkspaceControlCloseReason::TargetDisconnected
-            ))
-        );
-        assert!(
-            session
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn revocation_disconnect_and_denial_keep_gate_closed() {
-        let target = endpoint(2);
-        let mut revoked =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        revoked.observe(&grant(11, 44, true));
-        revoked.observe(&start(target, 44));
-        let end = NeighbourMsg::SurfaceStreamEnd {
-            surface: 44,
-            source_peer: peer_liveness_handle(&target),
-            ts: 2,
-        };
-        assert!(matches!(
-            revoked.observe(&end),
-            Some(WorkspaceControlUpdate::Closed(
-                WorkspaceControlCloseReason::Revoked
-            ))
-        ));
-        assert!(
-            revoked
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
-
-        let mut disconnected =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        disconnected.disconnect();
-        assert!(
-            disconnected
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
-
-        let mut denied =
-            WorkspaceControlSession::new(7, 11, target, WorkspaceControlRoute::Direct { target });
-        denied.deny("not shared with this viewer");
-        assert!(
-            denied
-                .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
-                .is_err()
-        );
+            let mut denied = WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                WorkspaceControlRoute::Direct { target },
+            );
+            denied.deny("not shared with this viewer");
+            assert!(
+                denied
+                    .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
+                    .is_err()
+            );
+        }
     }
 }

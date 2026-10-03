@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 collab-types = { path = "../collab-types" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

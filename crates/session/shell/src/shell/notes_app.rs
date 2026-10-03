@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -25,8 +26,12 @@ use ui::text_selection::{
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, CompleteContentProvider, EmptyState, IconDescriptor, Widget};
+use ui::widget::{
+    AppKind, AppWidget, CompleteContentProvider, EmptyState, EmptyStateContent, IconDescriptor,
+    Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::Fill;
@@ -300,19 +305,16 @@ impl CompleteContentProvider for NotesApp {
 }
 
 impl Widget for NotesApp {
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::CompleteContentProvider,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
+    );
 
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        Some(self)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&HISTORY)
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.clamp_cursor();
     }
@@ -364,16 +366,17 @@ impl Widget for NotesApp {
 
         if self.body.text.is_empty() && !self.focused {
             self.complete_content_height = self.rect.height();
+            let body = crate::shell::i18n::t("notes-empty-body");
+            let action = crate::shell::i18n::t("notes-empty-action");
             self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                tr,
-                &card_theme,
+                &mut PaintCtx::new(scene, transform, tr, &card_theme),
                 self.rect,
-                Some(Icon::PenTool),
-                "This note is empty",
-                Some("Jot anything here. Changes are saved as you type."),
-                Some("Start writing"),
+                &EmptyStateContent {
+                    icon: Some(Icon::PenTool),
+                    title: &crate::shell::i18n::t("notes-empty-title"),
+                    message: Some(body.as_str()),
+                    action_label: Some(action.as_str()),
+                },
                 self.last_mouse,
             )
             .unwrap_or(Rect::ZERO);
@@ -398,34 +401,35 @@ impl Widget for NotesApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
+                self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: es,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_input(*es, *modifiers, handled, focus_target, node_id);
+                self.handle_mouse_input(
+                    *es,
+                    *ctx.modifiers,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
+                self.handle_keyboard_input(
+                    key_event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -433,16 +437,6 @@ impl Widget for NotesApp {
 
     fn name(&self) -> &'static str {
         "NotesApp"
-    }
-
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
     }
 
     fn get_rect(&self) -> Rect {
@@ -471,15 +465,15 @@ impl Widget for NotesApp {
         (self.empty_action_rect.area() > 0.0 && self.empty_action_rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
+}
 
+impl ui::undo::UndoPoints for NotesApp {
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.body.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         // Encode "anchor:cursor" so undo/redo restores selection state.
         Some(format!(
@@ -487,7 +481,6 @@ impl Widget for NotesApp {
             self.selection.anchor, self.selection.cursor
         ))
     }
-
     fn set_state(&mut self, s: &str) {
         if let Some((a, c)) = s.split_once(':')
             && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>())
@@ -502,6 +495,26 @@ impl Widget for NotesApp {
             self.selection = Selection::collapsed(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::record::capability::RecordScoped for NotesApp {
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for NotesApp {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for NotesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&HISTORY)
     }
 }
 
@@ -985,285 +998,303 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_note_paints_the_shared_zero_state_centred() {
-        let mut app = NotesApp::new();
-        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
-        draw_tile(&mut app, tile);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn blank_note_zero_state_paints_centred_acts_like_a_button_and_clears_on_focus() {
+        fn a_blank_note_paints_the_shared_zero_state_centred() {
+            let mut app = NotesApp::new();
+            let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+            draw_tile(&mut app, tile);
 
-        let pill = app.empty_action_rect;
-        assert!(
-            pill.area() > 0.0,
-            "a blank note paints EmptyState, whose call-to-action resolves a rect",
-        );
-        assert!(
-            tile.contains(pill.center()),
-            "the pill sits inside the tile"
-        );
-        assert!(
-            (pill.center().x - tile.center().x).abs() < 1.0,
-            "the zero-state is horizontally centred, not left-aligned at the padding: \
-             pill centre {} vs tile centre {}",
-            pill.center().x,
-            tile.center().x,
-        );
-        // Trails a vertically-centred stack, so a top-aligned layout would
-        // instead put it in the upper half.
-        assert!(
-            pill.center().y > tile.center().y,
-            "the pill trails a vertically-centred stack, so it is past the midline: \
-             {} vs {}",
-            pill.center().y,
-            tile.center().y,
-        );
-        assert!(
-            pill.y1 < tile.y1,
-            "and the stack still fits inside the tile",
-        );
+            let pill = app.empty_action_rect;
+            assert!(
+                pill.area() > 0.0,
+                "a blank note paints EmptyState, whose call-to-action resolves a rect",
+            );
+            assert!(
+                tile.contains(pill.center()),
+                "the pill sits inside the tile"
+            );
+            assert!(
+                (pill.center().x - tile.center().x).abs() < 1.0,
+                "the zero-state is horizontally centred, not left-aligned at the padding: \
+                 pill centre {} vs tile centre {}",
+                pill.center().x,
+                tile.center().x,
+            );
+            // Trails a vertically-centred stack, so a top-aligned layout would
+            // instead put it in the upper half.
+            assert!(
+                pill.center().y > tile.center().y,
+                "the pill trails a vertically-centred stack, so it is past the midline: \
+                 {} vs {}",
+                pill.center().y,
+                tile.center().y,
+            );
+            assert!(
+                pill.y1 < tile.y1,
+                "and the stack still fits inside the tile",
+            );
+        }
+
+        fn the_zero_state_action_points_like_a_button() {
+            let mut app = NotesApp::new();
+            let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+            draw_tile(&mut app, tile);
+            assert_eq!(
+                app.cursor_shape(app.empty_action_rect.center()),
+                Some(winit::window::CursorIcon::Pointer),
+            );
+            assert_eq!(
+                app.cursor_shape(Point::new(2.0, 2.0)),
+                None,
+                "the rest of the tile is a text surface and keeps the default cursor",
+            );
+        }
+
+        /// Once there is text, no pill is left behind claiming the pointer.
+        fn a_note_with_text_paints_no_zero_state() {
+            let (mut doc, tile_root) = bind();
+            let mut app = NotesApp::with_seed("hello");
+            app.sync(&mut doc, &tile_root);
+            let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+            draw_tile(&mut app, tile);
+            assert_eq!(
+                app.empty_action_rect,
+                Rect::ZERO,
+                "text in the body ⇒ no zero-state",
+            );
+            assert_eq!(app.cursor_shape(tile.center()), None);
+        }
+
+        fn focusing_a_blank_note_clears_the_zero_state() {
+            let mut app = NotesApp::new();
+            let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+            draw_tile(&mut app, tile);
+            assert!(app.empty_action_rect.area() > 0.0);
+
+            app.set_focus(true);
+            draw_tile(&mut app, tile);
+            assert_eq!(app.empty_action_rect, Rect::ZERO);
+            assert_eq!(app.cursor_shape(tile.center()), None);
+        }
+
+        fn body_text_starts_at_the_padding_with_no_header_gap() {
+            let (mut doc, tile_root) = bind();
+            let mut app = NotesApp::with_seed("hello");
+            app.sync(&mut doc, &tile_root);
+            let tile = Rect::new(10.0, 20.0, 910.0, 620.0);
+            draw_tile(&mut app, tile);
+            assert_eq!(app.body_origin.x, tile.x0 + PADDING);
+            assert_eq!(
+                app.body_origin.y,
+                tile.y0 + PADDING,
+                "no header row is reserved above the body",
+            );
+        }
+
+        fn complete_capture_paints_the_whole_document_without_mutating_live_geometry() {
+            let (mut doc, tile_root) = bind();
+            let text = (1..=80)
+                .map(|line| {
+                    format!(
+                        "Design note {line}: preserve the live editor while exporting everything."
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut app = NotesApp::with_seed(text);
+            app.sync(&mut doc, &tile_root);
+            let live_rect = Rect::new(120.0, 90.0, 820.0, 490.0);
+            draw_tile(&mut app, live_rect);
+
+            let size = app
+                .complete_content_size()
+                .expect("a long note advertises its complete semantic canvas");
+            assert_eq!(size.width, live_rect.width());
+            assert!(size.height > live_rect.height());
+
+            let live_body_origin = app.body_origin;
+            let live_wrap_width = app.wrap_width;
+            let live_empty_action_rect = app.empty_action_rect;
+            let live_complete_height = app.complete_content_height;
+            let bounds = Rect::new(
+                live_rect.x0,
+                live_rect.y0,
+                live_rect.x1,
+                live_rect.y0 + size.height,
+            );
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            assert!(app.draw_complete_content(
+                &mut scene,
+                bounds,
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            ));
+            assert_eq!(app.rect, live_rect);
+            assert_eq!(app.body_origin, live_body_origin);
+            assert_eq!(app.wrap_width, live_wrap_width);
+            assert_eq!(app.empty_action_rect, live_empty_action_rect);
+            assert_eq!(app.complete_content_height, live_complete_height);
+        }
+
+        a_blank_note_paints_the_shared_zero_state_centred();
+        the_zero_state_action_points_like_a_button();
+        a_note_with_text_paints_no_zero_state();
+        focusing_a_blank_note_clears_the_zero_state();
+        body_text_starts_at_the_padding_with_no_header_gap();
+        complete_capture_paints_the_whole_document_without_mutating_live_geometry();
     }
 
     #[test]
-    fn the_zero_state_action_points_like_a_button() {
-        let mut app = NotesApp::new();
-        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
-        draw_tile(&mut app, tile);
-        assert_eq!(
-            app.cursor_shape(app.empty_action_rect.center()),
-            Some(winit::window::CursorIcon::Pointer),
-        );
-        assert_eq!(
-            app.cursor_shape(Point::new(2.0, 2.0)),
-            None,
-            "the rest of the tile is a text surface and keeps the default cursor",
-        );
-    }
+    fn note_text_edits_mutate_the_crdt_and_move_the_cursor() {
+        fn sync_creates_body_and_seed_roundtrips() {
+            let (mut doc, tile) = bind();
+            let mut app = NotesApp::with_seed("hi");
+            app.sync(&mut doc, &tile);
+            assert_eq!(app.body.text, "hi");
+            assert!(matches!(
+                doc.get(&tile, BODY_KEY),
+                Ok(Some((Value::Object(ObjType::Text), _)))
+            ));
+        }
 
-    /// Once there is text, no pill is left behind claiming the pointer.
-    #[test]
-    fn a_note_with_text_paints_no_zero_state() {
-        let (mut doc, tile_root) = bind();
-        let mut app = NotesApp::with_seed("hello");
-        app.sync(&mut doc, &tile_root);
-        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
-        draw_tile(&mut app, tile);
-        assert_eq!(
-            app.empty_action_rect,
-            Rect::ZERO,
-            "text in the body ⇒ no zero-state",
-        );
-        assert_eq!(app.cursor_shape(tile.center()), None);
-    }
+        fn insert_and_delete_mutate_crdt() {
+            let (mut doc, tile) = bind();
+            let mut app = NotesApp::new();
+            app.sync(&mut doc, &tile);
+            app.insert_str(&mut doc, &tile, "abc");
+            assert_eq!(app.body.text, "abc");
+            assert_eq!(app.selection.cursor, 3);
+            app.delete_before(&mut doc, &tile);
+            assert_eq!(app.body.text, "ab");
+        }
 
-    #[test]
-    fn complete_capture_paints_the_whole_document_without_mutating_live_geometry() {
-        let (mut doc, tile_root) = bind();
-        let text = (1..=80)
-            .map(|line| {
-                format!("Design note {line}: preserve the live editor while exporting everything.")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut app = NotesApp::with_seed(text);
-        app.sync(&mut doc, &tile_root);
-        let live_rect = Rect::new(120.0, 90.0, 820.0, 490.0);
-        draw_tile(&mut app, live_rect);
+        fn newline_insertion_shifts_cursor_to_next_row() {
+            let (mut doc, tile) = bind();
+            let mut app = NotesApp::new();
+            app.sync(&mut doc, &tile);
+            app.insert_str(&mut doc, &tile, "ab\n");
+            assert_eq!(app.body.text, "ab\n");
+            app.insert_str(&mut doc, &tile, "c");
+            assert_eq!(app.body.text, "ab\nc");
+            assert_eq!(app.selection.cursor, 4);
+        }
 
-        let size = app
-            .complete_content_size()
-            .expect("a long note advertises its complete semantic canvas");
-        assert_eq!(size.width, live_rect.width());
-        assert!(size.height > live_rect.height());
+        fn backspace_with_selection_deletes_range() {
+            let (mut doc, tile) = bind();
+            let mut app = NotesApp::with_seed("hello world");
+            app.sync(&mut doc, &tile);
+            app.selection.anchor = 6;
+            app.selection.cursor = 11;
+            app.delete_selection(&mut doc, &tile);
+            assert_eq!(app.body.text, "hello ");
+            assert!(app.selection.is_collapsed());
+            assert_eq!(app.selection.cursor, 6);
+        }
 
-        let live_body_origin = app.body_origin;
-        let live_wrap_width = app.wrap_width;
-        let live_empty_action_rect = app.empty_action_rect;
-        let live_complete_height = app.complete_content_height;
-        let bounds = Rect::new(
-            live_rect.x0,
-            live_rect.y0,
-            live_rect.x1,
-            live_rect.y0 + size.height,
-        );
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        assert!(app.draw_complete_content(
-            &mut scene,
-            bounds,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        ));
-        assert_eq!(app.rect, live_rect);
-        assert_eq!(app.body_origin, live_body_origin);
-        assert_eq!(app.wrap_width, live_wrap_width);
-        assert_eq!(app.empty_action_rect, live_empty_action_rect);
-        assert_eq!(app.complete_content_height, live_complete_height);
+        fn insert_str_replaces_selection() {
+            let (mut doc, tile) = bind();
+            let mut app = NotesApp::with_seed("hello world");
+            app.sync(&mut doc, &tile);
+            app.selection.anchor = 6;
+            app.selection.cursor = 11;
+            app.insert_str(&mut doc, &tile, "there");
+            assert_eq!(app.body.text, "hello there");
+            assert!(app.selection.is_collapsed());
+            assert_eq!(app.selection.cursor, "hello there".len());
+        }
+
+        sync_creates_body_and_seed_roundtrips();
+        insert_and_delete_mutate_crdt();
+        newline_insertion_shifts_cursor_to_next_row();
+        backspace_with_selection_deletes_range();
+        insert_str_replaces_selection();
     }
 
     #[test]
-    fn focusing_a_blank_note_clears_the_zero_state() {
-        let mut app = NotesApp::new();
-        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
-        draw_tile(&mut app, tile);
-        assert!(app.empty_action_rect.area() > 0.0);
+    fn note_selection_gestures_and_state_serialization() {
+        fn shift_right_extends_selection() {
+            let mut app = NotesApp::with_seed("hello");
+            app.selection = Selection::collapsed(0);
+            let p = app.selection.cursor + 1;
+            app.selection.extend_to(p);
+            assert_eq!(app.selection.anchor, 0);
+            assert_eq!(app.selection.cursor, 1);
+            assert_eq!(
+                app.body.text.get(app.selection.range()).unwrap_or_default(),
+                "h"
+            );
 
-        app.set_focus(true);
-        draw_tile(&mut app, tile);
-        assert_eq!(app.empty_action_rect, Rect::ZERO);
-        assert_eq!(app.cursor_shape(tile.center()), None);
-    }
+            app.selection.extend_to(3);
+            assert_eq!(app.selection.anchor, 0);
+            assert_eq!(app.selection.cursor, 3);
+            assert_eq!(
+                app.body.text.get(app.selection.range()).unwrap_or_default(),
+                "hel"
+            );
+        }
 
-    #[test]
-    fn body_text_starts_at_the_padding_with_no_header_gap() {
-        let (mut doc, tile_root) = bind();
-        let mut app = NotesApp::with_seed("hello");
-        app.sync(&mut doc, &tile_root);
-        let tile = Rect::new(10.0, 20.0, 910.0, 620.0);
-        draw_tile(&mut app, tile);
-        assert_eq!(app.body_origin.x, tile.x0 + PADDING);
-        assert_eq!(
-            app.body_origin.y,
-            tile.y0 + PADDING,
-            "no header row is reserved above the body",
-        );
-    }
+        fn double_click_selects_word() {
+            let app = NotesApp::with_seed("hello world quick");
+            let (s, e) = word_boundaries(&app.body.text, 8);
+            assert_eq!(s, 6);
+            assert_eq!(e, 11);
+            assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "world");
+        }
 
-    #[test]
-    fn sync_creates_body_and_seed_roundtrips() {
-        let (mut doc, tile) = bind();
-        let mut app = NotesApp::with_seed("hi");
-        app.sync(&mut doc, &tile);
-        assert_eq!(app.body.text, "hi");
-        assert!(matches!(
-            doc.get(&tile, BODY_KEY),
-            Ok(Some((Value::Object(ObjType::Text), _)))
-        ));
-    }
+        fn ctrl_a_selects_all() {
+            let mut app = NotesApp::with_seed("alpha\nbeta\ngamma");
+            app.selection.anchor = 0;
+            app.selection.cursor = app.body.text.len();
+            assert!(!app.selection.is_collapsed());
+            assert_eq!(app.selection.min(), 0);
+            assert_eq!(app.selection.max(), app.body.text.len());
+            assert_eq!(
+                app.body.text.get(app.selection.range()).unwrap_or_default(),
+                "alpha\nbeta\ngamma"
+            );
+        }
 
-    #[test]
-    fn insert_and_delete_mutate_crdt() {
-        let (mut doc, tile) = bind();
-        let mut app = NotesApp::new();
-        app.sync(&mut doc, &tile);
-        app.insert_str(&mut doc, &tile, "abc");
-        assert_eq!(app.body.text, "abc");
-        assert_eq!(app.selection.cursor, 3);
-        app.delete_before(&mut doc, &tile);
-        assert_eq!(app.body.text, "ab");
-    }
+        fn triple_click_selects_line() {
+            let app = NotesApp::with_seed("alpha\nbeta\ngamma");
+            let (s, e) = line_boundaries(&app.body.text, 8);
+            // Byte 8 sits inside "beta" (starts at 6, ends at 10 — the \n).
+            assert_eq!(s, 6);
+            assert_eq!(e, 10);
+            assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "beta");
+        }
 
-    #[test]
-    fn newline_insertion_shifts_cursor_to_next_row() {
-        let (mut doc, tile) = bind();
-        let mut app = NotesApp::new();
-        app.sync(&mut doc, &tile);
-        app.insert_str(&mut doc, &tile, "ab\n");
-        assert_eq!(app.body.text, "ab\n");
-        app.insert_str(&mut doc, &tile, "c");
-        assert_eq!(app.body.text, "ab\nc");
-        assert_eq!(app.selection.cursor, 4);
-    }
+        fn state_serializes_anchor_and_cursor() {
+            let mut app = NotesApp::with_seed("hello world");
+            app.selection.anchor = 6;
+            app.selection.cursor = 11;
+            let s = ui::undo::get_state(&app).unwrap();
+            assert_eq!(s, "6:11");
+            let mut app2 = NotesApp::with_seed("hello world");
+            ui::undo::set_state(&mut app2, &s);
+            assert_eq!(app2.selection.anchor, 6);
+            assert_eq!(app2.selection.cursor, 11);
+        }
 
-    #[test]
-    fn shift_right_extends_selection() {
-        let mut app = NotesApp::with_seed("hello");
-        app.selection = Selection::collapsed(0);
-        let p = app.selection.cursor + 1;
-        app.selection.extend_to(p);
-        assert_eq!(app.selection.anchor, 0);
-        assert_eq!(app.selection.cursor, 1);
-        assert_eq!(
-            app.body.text.get(app.selection.range()).unwrap_or_default(),
-            "h"
-        );
+        fn state_backcompat_cursor_only() {
+            let mut app = NotesApp::with_seed("hello");
+            ui::undo::set_state(&mut app, "3");
+            assert_eq!(app.selection.cursor, 3);
+            assert_eq!(app.selection.anchor, 3);
+        }
 
-        app.selection.extend_to(3);
-        assert_eq!(app.selection.anchor, 0);
-        assert_eq!(app.selection.cursor, 3);
-        assert_eq!(
-            app.body.text.get(app.selection.range()).unwrap_or_default(),
-            "hel"
-        );
-    }
-
-    #[test]
-    fn double_click_selects_word() {
-        let app = NotesApp::with_seed("hello world quick");
-        let (s, e) = word_boundaries(&app.body.text, 8);
-        assert_eq!(s, 6);
-        assert_eq!(e, 11);
-        assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "world");
-    }
-
-    #[test]
-    fn ctrl_a_selects_all() {
-        let mut app = NotesApp::with_seed("alpha\nbeta\ngamma");
-        app.selection.anchor = 0;
-        app.selection.cursor = app.body.text.len();
-        assert!(!app.selection.is_collapsed());
-        assert_eq!(app.selection.min(), 0);
-        assert_eq!(app.selection.max(), app.body.text.len());
-        assert_eq!(
-            app.body.text.get(app.selection.range()).unwrap_or_default(),
-            "alpha\nbeta\ngamma"
-        );
-    }
-
-    #[test]
-    fn backspace_with_selection_deletes_range() {
-        let (mut doc, tile) = bind();
-        let mut app = NotesApp::with_seed("hello world");
-        app.sync(&mut doc, &tile);
-        app.selection.anchor = 6;
-        app.selection.cursor = 11;
-        app.delete_selection(&mut doc, &tile);
-        assert_eq!(app.body.text, "hello ");
-        assert!(app.selection.is_collapsed());
-        assert_eq!(app.selection.cursor, 6);
-    }
-
-    #[test]
-    fn insert_str_replaces_selection() {
-        let (mut doc, tile) = bind();
-        let mut app = NotesApp::with_seed("hello world");
-        app.sync(&mut doc, &tile);
-        app.selection.anchor = 6;
-        app.selection.cursor = 11;
-        app.insert_str(&mut doc, &tile, "there");
-        assert_eq!(app.body.text, "hello there");
-        assert!(app.selection.is_collapsed());
-        assert_eq!(app.selection.cursor, "hello there".len());
-    }
-
-    #[test]
-    fn triple_click_selects_line() {
-        let app = NotesApp::with_seed("alpha\nbeta\ngamma");
-        let (s, e) = line_boundaries(&app.body.text, 8);
-        // Byte 8 sits inside "beta" (starts at 6, ends at 10 — the \n).
-        assert_eq!(s, 6);
-        assert_eq!(e, 10);
-        assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "beta");
-    }
-
-    #[test]
-    fn state_serializes_anchor_and_cursor() {
-        let mut app = NotesApp::with_seed("hello world");
-        app.selection.anchor = 6;
-        app.selection.cursor = 11;
-        let s = app.get_state().unwrap();
-        assert_eq!(s, "6:11");
-        let mut app2 = NotesApp::with_seed("hello world");
-        app2.set_state(&s);
-        assert_eq!(app2.selection.anchor, 6);
-        assert_eq!(app2.selection.cursor, 11);
-    }
-
-    #[test]
-    fn state_backcompat_cursor_only() {
-        let mut app = NotesApp::with_seed("hello");
-        app.set_state("3");
-        assert_eq!(app.selection.cursor, 3);
-        assert_eq!(app.selection.anchor, 3);
+        shift_right_extends_selection();
+        double_click_selects_word();
+        ctrl_a_selects_all();
+        triple_click_selects_line();
+        state_serializes_anchor_and_cursor();
+        state_backcompat_cursor_only();
     }
 
     #[test]
@@ -1322,7 +1353,7 @@ mod framework_history_tests {
         tile.bind_record(records.clone(), checkout.clone());
         tile.bind_record(records.clone(), checkout.clone());
         let mut surfaces = 0;
-        tile.visit_framework_history(&mut |_, _| surfaces += 1);
+        ui::history_mode::capability::visit_framework_history(&tile, &mut |_, _| surfaces += 1);
         assert_eq!(surfaces, 1);
         let original = records
             .read(&checkout.id, |doc| doc.base_heads()[0])

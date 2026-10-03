@@ -62,13 +62,33 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn configure_app(app: &mut ui::App) {
-    logs::actions::register(app.action_registry_mut());
+    use ui::tilo_resource::Resource as _;
+    logs::Logs::register(app.action_registry_mut());
 }
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            flag if flag.starts_with('-') => {}
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn main() {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<logs::LogsShell>();
+        return;
+    }
     ui::launch::run_or_exit(&launch_spec(logs::app_root));
 }
 
@@ -115,8 +135,11 @@ mod launch_tests {
         )
     }
 
+    /// The production launch spec installs the root History definition; a
+    /// missing or foreign declaration is not admitted.
     #[test]
-    fn production_launch_spec_installs_the_root_history_definition() {
+    fn launch_admits_only_the_root_history_declaration() {
+        // Production launch spec installs the root history definition.
         let spec = launch_spec(inert_root).open_app_global_state(memory_state);
         spec.validate_history_declaration().unwrap();
         let mut app = spec.build_controlled_app_for_test().unwrap();
@@ -135,10 +158,8 @@ mod launch_tests {
                 .iter()
                 .any(|(_, node)| node.label() == Some("History"))
         );
-    }
 
-    #[test]
-    fn missing_and_foreign_launch_declarations_are_not_admitted() {
+        // Missing and foreign launch declarations are not admitted.
         let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
         assert_eq!(
             missing.validate_history_declaration(),

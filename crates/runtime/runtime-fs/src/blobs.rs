@@ -44,6 +44,7 @@ use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use wire_frame::Framing;
 
 pub use crate::blobs_capnp::{
     ReadStatus as WireReadStatus, blob_upload, document_blobs, session_blobs,
@@ -65,7 +66,7 @@ pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 /// Largest single blob the capability accepts or reassembles. Document media
 /// is images and attachments; bigger content belongs in a file record.
 pub const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_HANDOFF_BYTES: usize = 4096;
+const HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
 const MAX_SCOPE_COMPONENT: usize = 128;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -228,10 +229,8 @@ pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> 
         },
     };
     let bytes = serde_json::to_vec(&frame).map_err(io::Error::other)?;
-    let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
     stream.write_all(&BLOB_HANDOFF_MAGIC)?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 
@@ -250,14 +249,10 @@ where
     if magic != BLOB_HANDOFF_MAGIC {
         return Err(invalid("not a document-media handoff"));
     }
-    let mut length = [0_u8; 4];
-    reader.read_exact(&mut length).await?;
-    let length = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
-    if length == 0 || length > MAX_HANDOFF_BYTES {
-        return Err(invalid("document-media handoff has an invalid length"));
-    }
-    let mut bytes = vec![0_u8; length];
-    reader.read_exact(&mut bytes).await?;
+    let bytes = HANDOFF_FRAMING
+        .read_async(reader)
+        .await?
+        .ok_or(io::ErrorKind::UnexpectedEof)?;
     let frame: HandoffFrame =
         serde_json::from_slice(&bytes).map_err(|_| invalid("malformed document-media handoff"))?;
     if frame.protocol != BLOB_HANDOFF_PROTOCOL {
@@ -724,9 +719,15 @@ impl BlobClient {
     ///
     /// Returns [`BlobError::Disconnected`] when no descriptor was inherited.
     pub fn from_environment() -> Result<Self, BlobError> {
-        let fd = runtime_portal::service_fd(BLOB_SERVICE)
-            .ok_or_else(|| BlobError::Disconnected("no document media service".into()))?;
-        Self::start(fd, false)
+        let connection = runtime_portal::connect_service_fd(BLOB_SERVICE).map_err(|error| {
+            BlobError::Disconnected(match error {
+                runtime_portal::NotAvailable::ServiceFdMissing => {
+                    "no document media service".into()
+                }
+                error => error.to_string(),
+            })
+        })?;
+        Self::start(connection.into_raw_fd(), false)
     }
 
     /// Wrap a connection whose handoff was already written for an app scope.
